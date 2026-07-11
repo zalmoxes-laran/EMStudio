@@ -1,3 +1,16 @@
+# Rust
+/target/
+**/target/
+Cargo.lock   # workspace produces apps; re-evaluate when publishing crates
+
+# Node / frontend
+node_modules/
+dist/
+.vite/
+
+# Tauri
+apps/desktop/src-tauri/target/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

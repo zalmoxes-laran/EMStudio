@@ -1,0 +1,16 @@
+[package]
+name = "em-cli"
+description = "EMStudio command line: validate and lay out .em.json documents"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "emstudio"
+path = "src/main.rs"
+
+[dependencies]
+em-core = { path = "../em-core" }
+serde_json = { workspace = true }
