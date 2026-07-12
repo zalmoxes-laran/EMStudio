@@ -8,8 +8,10 @@
   <body>
     <header id="toolbar">
       <span id="brand">EMStudio</span>
+      <span id="em-version" title="EM language version (from the s3Dgraphy datamodels)"></span>
       <button id="btn-open" title="Open an .em.json file">Open…</button>
       <button id="btn-save" title="Save .em.json (⌘S)">Save</button>
+      <button id="btn-svg" title="Export current view as SVG">SVG</button>
       <span id="dirty-dot" class="hidden" title="unsaved changes">●</span>
       <span class="tb-sep"></span>
       <button id="btn-undo" title="Undo (⌘Z)" disabled>↺</button>
@@ -42,8 +44,16 @@
         <div id="legend" class="hidden"></div>
         <div id="edge-menu" class="hidden"></div>
         <div id="toast" class="hidden"></div>
+        <canvas id="overview" title="Overview — click to move the viewport"></canvas>
       </div>
-      <aside id="inspector" class="hidden"></aside>
+      <aside id="side" class="hidden">
+        <div id="side-tabs">
+          <button id="tab-inspector" class="active">Inspector</button>
+          <button id="tab-nodes">Nodes</button>
+        </div>
+        <div id="inspector"></div>
+        <div id="nodelist" class="hidden"></div>
+      </aside>
     </main>
     <div id="tooltip" class="hidden"></div>
     <script type="module" src="/src/main.ts"></script>

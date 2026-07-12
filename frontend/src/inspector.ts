@@ -26,17 +26,13 @@ export function renderInspector(
   cb: InspectorCallbacks,
 ): void {
   root.innerHTML = "";
-  if (!nodeId) {
-    root.classList.add("hidden");
+  const node = nodeId ? store.node(nodeId) : undefined;
+  if (!nodeId || !node) {
+    const empty = el("div", "insp-empty", "Select a node to inspect it");
+    root.appendChild(empty);
     return;
   }
   const doc = store.doc;
-  const node = store.node(nodeId);
-  if (!node) {
-    root.classList.add("hidden");
-    return;
-  }
-  root.classList.remove("hidden");
 
   const head = el("div", "insp-head");
   const st = nodeStyle(node.node_type);

@@ -2,6 +2,8 @@ import "./style.css";
 import { applyFolding, buildMembership } from "./folding";
 import { renderInspector } from "./inspector";
 import { DocumentStore } from "./model";
+import { buildNodeList } from "./nodelist";
+import { buildOverview } from "./overview";
 import { edgeStyle, SEQUENCE_EDGES } from "./palette";
 import { buildPalette } from "./palette-ui";
 import { render, type ConnectDrag } from "./renderer";
@@ -9,10 +11,12 @@ import {
   allowedEdgeTypes,
   connectValidity,
   edgeTypeLabel,
+  EM_VERSION,
   GENERIC_EDGE,
   isGroupType,
   isStratigraphicType,
 } from "./rules";
+import { sceneToSvg } from "./svg-export";
 import {
   hitHandle,
   hitTest,
@@ -68,6 +72,12 @@ const btnGraph = document.getElementById("btn-graph") as HTMLButtonElement;
 const btnUndo = document.getElementById("btn-undo") as HTMLButtonElement;
 const btnRedo = document.getElementById("btn-redo") as HTMLButtonElement;
 const dirtyDot = document.getElementById("dirty-dot")!;
+const sidePanel = document.getElementById("side")!;
+const tabInspector = document.getElementById("tab-inspector") as HTMLButtonElement;
+const tabNodes = document.getElementById("tab-nodes") as HTMLButtonElement;
+const nodelistEl = document.getElementById("nodelist")!;
+
+document.getElementById("em-version")!.textContent = `EM ${EM_VERSION}`;
 
 let toastTimer: number | undefined;
 function toast(msg: string): void {
@@ -114,16 +124,25 @@ function draw(): void {
     const dpr = window.devicePixelRatio || 1;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, w, h);
+    overview.update(null, viewport(), w, h);
     return;
   }
   render(
     ctx,
     s,
     viewport(),
-    { hoverId, selectedId, edgeVisible, connect, editable: true },
+    {
+      hoverId,
+      selectedId,
+      edgeVisible,
+      filterKey: edgeFilter,
+      connect,
+      editable: true,
+    },
     w,
     h,
   );
+  overview.update(s, viewport(), w, h);
 }
 
 function fit(): void {
@@ -149,6 +168,7 @@ function centerOn(nodeId: string): void {
 function select(nodeId: string | null): void {
   selectedId = nodeId;
   refreshInspector();
+  nodeList.setSelected(nodeId);
   draw();
 }
 
@@ -312,6 +332,7 @@ function loadDocument(d: EmDocument, sourceName: string): void {
     updateLegend();
     updateToolbar();
     refreshInspector();
+    nodeList.refresh();
     draw();
   });
   contextStack = [];
@@ -321,6 +342,8 @@ function loadDocument(d: EmDocument, sourceName: string): void {
   buildScenes();
   select(null);
   dropHint.classList.add("hidden");
+  sidePanel.classList.remove("hidden");
+  nodeList.refresh();
   updateToolbar();
   updateBreadcrumb();
   setView(scenes.matrix ? "matrix" : "graph");
@@ -371,6 +394,31 @@ function cancelPlacing(): void {
   canvas.classList.remove("placing");
   hintBar.classList.add("hidden");
 }
+
+// ---------- accessory views ----------
+const nodeList = buildNodeList(
+  nodelistEl,
+  () => store?.doc ?? null,
+  (id) => {
+    if (inContext()) {
+      contextStack = [];
+      rebuildContext();
+    }
+    select(id);
+    centerOn(id);
+  },
+);
+
+const overview = buildOverview(
+  document.getElementById("overview") as HTMLCanvasElement,
+  (wx, wy) => {
+    const vp = viewport();
+    const { w, h } = viewSize();
+    vp.x = w / 2 - wx * vp.scale;
+    vp.y = h / 2 - wy * vp.scale;
+    draw();
+  },
+);
 
 function placeNode(wx: number, wy: number): void {
   if (!store || !placingType) return;
@@ -517,6 +565,29 @@ fileInput.addEventListener("change", () => {
   fileInput.value = "";
 });
 document.getElementById("btn-save")!.addEventListener("click", saveDocument);
+document.getElementById("btn-svg")!.addEventListener("click", () => {
+  const s = scene();
+  if (!s || !store) return;
+  const g = store.doc.graph;
+  const title = String(g["name"] ?? g.graph_id ?? "graph");
+  const svg = sceneToSvg(s, edgeVisible, title);
+  const blob = new Blob([svg], { type: "image/svg+xml" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `${title.replace(/[^\w.-]+/g, "_")}_${inContext() ? "group" : view}.svg`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+
+// side panel tabs
+function showTab(which: "inspector" | "nodes"): void {
+  tabInspector.classList.toggle("active", which === "inspector");
+  tabNodes.classList.toggle("active", which === "nodes");
+  inspector.classList.toggle("hidden", which !== "inspector");
+  nodelistEl.classList.toggle("hidden", which !== "nodes");
+}
+tabInspector.addEventListener("click", () => showTab("inspector"));
+tabNodes.addEventListener("click", () => showTab("nodes"));
 btnUndo.addEventListener("click", () => store?.undo());
 btnRedo.addEventListener("click", () => store?.redo());
 btnMatrix.addEventListener("click", () => setView("matrix"));

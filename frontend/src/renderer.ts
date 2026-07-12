@@ -1,8 +1,16 @@
 // Single canvas renderer serving both projections (matrix and graph view):
 // one hit-testing model, one style system, styles driven by the EM palette
-// metadata (palette.ts ← em_visual_rules.json).
+// metadata (palette.ts ← em_visual_rules.json). Edges are routed
+// orthogonally with crossing bridges (routing.ts), yEd-style.
 import { edgeStyle, nodeStyle } from "./palette";
-import type { Scene, SceneNode, Viewport } from "./scene";
+import {
+  drawArrowhead,
+  routeScene,
+  SYMMETRIC_EDGES,
+  traceRoute,
+  type EdgeRoute,
+} from "./routing";
+import type { Scene, Viewport } from "./scene";
 
 export interface ConnectDrag {
   fromId: string;
@@ -18,10 +26,30 @@ export interface RenderState {
   selectedId: string | null;
   /** edge_type predicate; edges failing it are skipped */
   edgeVisible: (edgeType: string | undefined) => boolean;
+  /** cache key for the edge filter (routes are recomputed when it changes) */
+  filterKey?: string;
   /** live edge-drawing state (phase 4 editing) */
   connect?: ConnectDrag | null;
   /** show the connect handle on the hovered/selected node */
   editable?: boolean;
+}
+
+// per-scene route cache (scenes are rebuilt on every document mutation)
+interface RouteCache {
+  key: string;
+  routes: EdgeRoute[];
+  visible: boolean[];
+}
+const routeCaches = new WeakMap<Scene, RouteCache>();
+
+function routesFor(scene: Scene, state: RenderState): RouteCache {
+  const key = state.filterKey ?? "all";
+  const hit = routeCaches.get(scene);
+  if (hit && hit.key === key) return hit;
+  const visible = scene.edges.map((e) => state.edgeVisible(e.edge.edge_type));
+  const cache = { key, routes: routeScene(scene, visible), visible };
+  routeCaches.set(scene, cache);
+  return cache;
 }
 
 const LANE_COLORS = ["#EDF3FA", "#F7FAFD"];
@@ -121,28 +149,6 @@ function shapePath(
   }
 }
 
-function edgeAnchors(
-  a: SceneNode,
-  b: SceneNode,
-): [number, number, number, number] {
-  const acx = a.x + a.w / 2,
-    acy = a.y + a.h / 2;
-  const bcx = b.x + b.w / 2,
-    bcy = b.y + b.h / 2;
-  const dx = bcx - acx,
-    dy = bcy - acy;
-  if (Math.abs(dy) * 1.3 > Math.abs(dx)) {
-    // predominantly vertical: bottom → top
-    return dy > 0
-      ? [acx, a.y + a.h, bcx, b.y]
-      : [acx, a.y, bcx, b.y + b.h];
-  }
-  // predominantly horizontal: side midpoints
-  return dx > 0
-    ? [a.x + a.w, acy, b.x, bcy]
-    : [a.x, acy, b.x + b.w, bcy];
-}
-
 export function render(
   ctx: CanvasRenderingContext2D,
   scene: Scene,
@@ -174,40 +180,42 @@ export function render(
 
   // edges (below nodes); incident edges of hover/selection get an accent pass
   const focusId = state.hoverId ?? state.selectedId;
-  const accentEdges: typeof scene.edges = [];
-  for (const e of scene.edges) {
-    if (!state.edgeVisible(e.edge.edge_type)) continue;
-    const a = scene.byId.get(e.source);
-    const b = scene.byId.get(e.target);
-    if (!a || !b) continue;
+  const { routes, visible } = routesFor(scene, state);
+  const bridgeR = 3.5;
+  const arrowSize = 6 / Math.sqrt(vp.scale);
+  const accent: number[] = [];
+  for (let i = 0; i < scene.edges.length; i++) {
+    if (!visible[i]) continue;
+    const e = scene.edges[i];
     if (focusId && (e.source === focusId || e.target === focusId)) {
-      accentEdges.push(e);
+      accent.push(i);
       continue;
     }
     const st = edgeStyle(e.edge.edge_type);
     ctx.strokeStyle = st.color;
-    ctx.globalAlpha = e.edge.edge_type === "is_after" ? 0.8 : 0.38;
+    ctx.globalAlpha = e.edge.edge_type === "is_after" ? 0.85 : 0.45;
     ctx.lineWidth = st.width / Math.sqrt(vp.scale);
     ctx.setLineDash(st.dash.map((d) => d / Math.sqrt(vp.scale)));
-    const [x1, y1, x2, y2] = edgeAnchors(a, b);
     ctx.beginPath();
-    ctx.moveTo(x1, y1);
-    ctx.lineTo(x2, y2);
+    traceRoute(ctx, routes[i], bridgeR);
     ctx.stroke();
+    ctx.setLineDash([]);
+    if (!SYMMETRIC_EDGES.has(e.edge.edge_type ?? ""))
+      drawArrowhead(ctx, routes[i], arrowSize, st.color);
   }
-  for (const e of accentEdges) {
-    const a = scene.byId.get(e.source)!;
-    const b = scene.byId.get(e.target)!;
+  for (const i of accent) {
+    const e = scene.edges[i];
     const st = edgeStyle(e.edge.edge_type);
     ctx.strokeStyle = st.color;
     ctx.globalAlpha = 1;
     ctx.lineWidth = (st.width * 2) / Math.sqrt(vp.scale);
     ctx.setLineDash(st.dash.map((d) => d / Math.sqrt(vp.scale)));
-    const [x1, y1, x2, y2] = edgeAnchors(a, b);
     ctx.beginPath();
-    ctx.moveTo(x1, y1);
-    ctx.lineTo(x2, y2);
+    traceRoute(ctx, routes[i], bridgeR);
     ctx.stroke();
+    ctx.setLineDash([]);
+    if (!SYMMETRIC_EDGES.has(e.edge.edge_type ?? ""))
+      drawArrowhead(ctx, routes[i], arrowSize * 1.4, st.color);
   }
   ctx.globalAlpha = 1;
   ctx.setLineDash([]);

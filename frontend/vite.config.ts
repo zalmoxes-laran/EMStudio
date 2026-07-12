@@ -11,6 +11,8 @@ export default defineConfig({
     // single-file output: nothing stale can linger, and unlink is not
     // always permitted on synced/mounted folders
     emptyOutDir: false,
+    // inline every asset (official EM icons) into the single file
+    assetsInlineLimit: 100000000,
     chunkSizeWarningLimit: 6000,
   },
 });

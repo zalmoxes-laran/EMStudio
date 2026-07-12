@@ -1,7 +1,26 @@
 // Node palette, generated from the EM visual rules + node class registry —
 // the palette is data-driven, EMStudio never hardcodes the EM language.
+// Icons are the official s3Dgraphy 2D assets (JSON_config/src/2D), inlined
+// at build time; types without an official icon fall back to a drawn swatch.
 import { nodeStyle } from "./palette";
 import { typeDescription } from "./rules";
+
+const ICON_FILES = import.meta.glob("./assets/icons2d/*.png", {
+  eager: true,
+  query: "?url",
+  import: "default",
+}) as Record<string, string>;
+
+function iconFor(nodeType: string): string | null {
+  // official file names match node_type, plus a few aliases
+  const alias: Record<string, string> = {
+    BR: "continuity",
+    serUSVn: "serUSV",
+    serUSVs: "serUSV",
+  };
+  const base = alias[nodeType] ?? nodeType;
+  return ICON_FILES[`./assets/icons2d/${base}.png`] ?? null;
+}
 
 interface Section {
   label: string;
@@ -122,7 +141,16 @@ export function buildPalette(
       const b = document.createElement("button");
       b.className = "pal-item";
       b.title = typeDescription(t) || t;
-      b.appendChild(swatch(t));
+      const icon = iconFor(t);
+      if (icon) {
+        const img = document.createElement("img");
+        img.src = icon;
+        img.className = "pal-icon";
+        img.alt = t;
+        b.appendChild(img);
+      } else {
+        b.appendChild(swatch(t));
+      }
       const span = document.createElement("span");
       span.textContent = t;
       b.appendChild(span);

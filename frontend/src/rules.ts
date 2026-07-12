@@ -26,6 +26,14 @@ const NODE_CLASSES = nodeClasses as Record<string, NodeClassDef>;
 
 export const GENERIC_EDGE = "generic_connection";
 
+/** EM language version the palette/rules are aligned to (from the datamodel). */
+export const DATAMODEL_VERSION = String(
+  (connections as Record<string, unknown>)[
+    "s3Dgraphy_connections_model_version"
+  ] ?? "?",
+);
+export const EM_VERSION = DATAMODEL_VERSION.split(".").slice(0, 2).join(".");
+
 /** Class ancestry for a runtime node_type (always includes "Node"). */
 export function ancestorsOf(nodeType: string | undefined): string[] {
   const def = NODE_CLASSES[nodeType ?? ""];

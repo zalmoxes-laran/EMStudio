@@ -10,7 +10,10 @@ const NODE_W = 120;
 const NODE_H = 34;
 const H_GAP = 26;
 const V_GAP = 70;
+const SUB_V_GAP = 18;
 const SWEEPS = 4;
+/** wrap wide layers into sub-rows: top-down aspect, like yEd hierarchic */
+const MAX_COLS = 12;
 
 export function layoutLayered(
   inputNodes: EmNode[],
@@ -100,21 +103,30 @@ export function layoutLayered(
   }
 
   const scene: Scene = { nodes: [], byId: new Map(), edges: [], lanes: [] };
-  rows.forEach((row, r) => {
-    const rowW = row.length * (NODE_W + H_GAP) - H_GAP;
-    row.forEach((v, i) => {
-      const sn: SceneNode = {
-        id: ids[v],
-        x: i * (NODE_W + H_GAP) - rowW / 2,
-        y: r * (NODE_H + V_GAP),
-        w: NODE_W,
-        h: NODE_H,
-        node: nodes[v],
-        badge: badges?.get(ids[v]),
-      };
-      scene.nodes.push(sn);
-      scene.byId.set(sn.id, sn);
+  let y = 0;
+  rows.forEach((row) => {
+    // wrap wide layers into sub-rows so the drawing grows downwards
+    const subRows: number[][] = [];
+    for (let i = 0; i < row.length; i += MAX_COLS)
+      subRows.push(row.slice(i, i + MAX_COLS));
+    subRows.forEach((sub, si) => {
+      const rowW = sub.length * (NODE_W + H_GAP) - H_GAP;
+      sub.forEach((v, i) => {
+        const sn: SceneNode = {
+          id: ids[v],
+          x: i * (NODE_W + H_GAP) - rowW / 2,
+          y,
+          w: NODE_W,
+          h: NODE_H,
+          node: nodes[v],
+          badge: badges?.get(ids[v]),
+        };
+        scene.nodes.push(sn);
+        scene.byId.set(sn.id, sn);
+      });
+      y += NODE_H + (si < subRows.length - 1 ? SUB_V_GAP : 0);
     });
+    y += V_GAP;
   });
 
   for (const e of inputEdges) {

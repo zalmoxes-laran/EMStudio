@@ -44,11 +44,29 @@ validation driven by the same versioned JSON datamodels that drive s3Dgraphy.
    optional reconstructable `layout`. Spec: [`docs/emjson-v1-draft.md`](docs/emjson-v1-draft.md);
    reference implementation in s3Dgraphy (`emjson_exporter` / `emjson_importer`).
 
-## Building and using
+## Quickstart — the two ways to run the GUI
 
-Read-only GUI (phases 2–3): see [`frontend/README.md`](frontend/README.md)
-(`npm run dev` / single-file build) and [`apps/desktop/README.md`](apps/desktop/README.md)
-(`cargo tauri dev`). Editing, folding and from-sketch layout are phases 4–5.
+**A. Browser (no install).** Build once, then double-click the file — it is a
+single self-contained HTML that also works offline:
+
+```bash
+cd frontend
+npm install        # first time only
+npm run build      # → frontend/dist/index.html  (double-click it)
+npm run dev        # OR: live-reload dev server at http://localhost:5173
+```
+
+**B. Standalone desktop app (Tauri).** Native window, no browser:
+
+```bash
+cargo install tauri-cli --locked   # first time only
+cd apps/desktop
+cargo tauri dev                    # run it
+cargo tauri build                  # → .app / .dmg bundle
+```
+
+A third delivery — `em-server` (axum) serving the same frontend to Chrome at a
+local address, for multi-user work — is phase 6 of the roadmap.
 
 Core library and command line:
 
