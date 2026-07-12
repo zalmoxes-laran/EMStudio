@@ -23,14 +23,83 @@ export const SYMMETRIC_EDGES = new Set([
 
 const EPS = 0.5;
 
-function routeOne(scene: Scene, si: number): { x: number; y: number }[] {
+/**
+ * Port assignment: multiple edges leaving/entering the same node side get
+ * distinct anchor positions spread along the side (yEd-style ports),
+ * ordered by the position of the opposite endpoint so fans don't cross.
+ */
+function computePorts(scene: Scene): Map<string, number> {
+  interface Slot {
+    edge: number;
+    end: "s" | "t";
+    otherPos: number;
+  }
+  const sides = new Map<string, Slot[]>(); // `${nodeId}|${side}` → slots
+  const push = (
+    nodeId: string,
+    side: string,
+    edge: number,
+    end: "s" | "t",
+    otherPos: number,
+  ): void => {
+    const key = `${nodeId}|${side}`;
+    if (!sides.has(key)) sides.set(key, []);
+    sides.get(key)!.push({ edge, end, otherPos });
+  };
+
+  for (let i = 0; i < scene.edges.length; i++) {
+    const e = scene.edges[i];
+    const a = scene.byId.get(e.source)!;
+    const b = scene.byId.get(e.target)!;
+    if (b.y >= a.y + a.h - 2) {
+      push(e.source, "bottom", i, "s", b.x + b.w / 2);
+      push(e.target, "top", i, "t", a.x + a.w / 2);
+    } else if (a.y >= b.y + b.h - 2) {
+      push(e.source, "top", i, "s", b.x + b.w / 2);
+      push(e.target, "bottom", i, "t", a.x + a.w / 2);
+    } else if (b.x + b.w / 2 >= a.x + a.w / 2) {
+      push(e.source, "right", i, "s", b.y + b.h / 2);
+      push(e.target, "left", i, "t", a.y + a.h / 2);
+    } else {
+      push(e.source, "left", i, "s", b.y + b.h / 2);
+      push(e.target, "right", i, "t", a.y + a.h / 2);
+    }
+  }
+
+  // distribute anchors along each side
+  const ports = new Map<string, number>(); // `${edge}|${end}` → coordinate
+  for (const [key, slots] of sides) {
+    const nodeId = key.slice(0, key.lastIndexOf("|"));
+    const side = key.slice(key.lastIndexOf("|") + 1);
+    const n = scene.byId.get(nodeId)!;
+    slots.sort(
+      (a, b) => a.otherPos - b.otherPos || a.edge - b.edge,
+    );
+    const m = slots.length;
+    slots.forEach((slot, k) => {
+      const f = (k + 1) / (m + 1);
+      const coord =
+        side === "top" || side === "bottom" ? n.x + n.w * f : n.y + n.h * f;
+      ports.set(`${slot.edge}|${slot.end}`, coord);
+    });
+  }
+  return ports;
+}
+
+function routeOne(
+  scene: Scene,
+  si: number,
+  ports: Map<string, number>,
+): { x: number; y: number }[] {
   const e = scene.edges[si];
   const a = scene.byId.get(e.source)!;
   const b = scene.byId.get(e.target)!;
-  const acx = a.x + a.w / 2;
-  const bcx = b.x + b.w / 2;
-  const acy = a.y + a.h / 2;
-  const bcy = b.y + b.h / 2;
+  const sp = ports.get(`${si}|s`);
+  const tp = ports.get(`${si}|t`);
+  const acx = sp ?? a.x + a.w / 2;
+  const bcx = tp ?? b.x + b.w / 2;
+  const acy = sp ?? a.y + a.h / 2;
+  const bcy = tp ?? b.y + b.h / 2;
 
   // predominantly vertical when there is a real vertical gap
   if (b.y >= a.y + a.h - 2) {
@@ -65,36 +134,38 @@ function routeOne(scene: Scene, si: number): { x: number; y: number }[] {
       { x: bcx, y: y1 },
     ];
   }
-  // same vertical band → horizontal route
-  if (bcx >= acx) {
+  // same vertical band → horizontal route (ports are y coordinates here)
+  const sy = acy;
+  const ty = bcy;
+  if (b.x + b.w / 2 >= a.x + a.w / 2) {
     const x0 = a.x + a.w;
     const x1 = b.x;
-    if (Math.abs(acy - bcy) < EPS || x1 <= x0)
+    if (Math.abs(sy - ty) < EPS || x1 <= x0)
       return [
-        { x: x0, y: acy },
-        { x: Math.max(x1, x0 + 4), y: bcy },
+        { x: x0, y: sy },
+        { x: Math.max(x1, x0 + 4), y: ty },
       ];
     const mx = (x0 + x1) / 2;
     return [
-      { x: x0, y: acy },
-      { x: mx, y: acy },
-      { x: mx, y: bcy },
-      { x: x1, y: bcy },
+      { x: x0, y: sy },
+      { x: mx, y: sy },
+      { x: mx, y: ty },
+      { x: x1, y: ty },
     ];
   }
   const x0 = a.x;
   const x1 = b.x + b.w;
-  if (Math.abs(acy - bcy) < EPS || x0 <= x1)
+  if (Math.abs(sy - ty) < EPS || x0 <= x1)
     return [
-      { x: x0, y: acy },
-      { x: Math.min(x1, x0 - 4), y: bcy },
+      { x: x0, y: sy },
+      { x: Math.min(x1, x0 - 4), y: ty },
     ];
   const mx = (x0 + x1) / 2;
   return [
-    { x: x0, y: acy },
-    { x: mx, y: acy },
-    { x: mx, y: bcy },
-    { x: x1, y: bcy },
+    { x: x0, y: sy },
+    { x: mx, y: sy },
+    { x: mx, y: ty },
+    { x: x1, y: ty },
   ];
 }
 
@@ -106,8 +177,9 @@ interface VSeg {
 }
 
 export function routeScene(scene: Scene, visible: boolean[]): EdgeRoute[] {
+  const ports = computePorts(scene);
   const routes: EdgeRoute[] = scene.edges.map((_, i) => ({
-    pts: routeOne(scene, i),
+    pts: routeOne(scene, i, ports),
     bridges: [],
   }));
 

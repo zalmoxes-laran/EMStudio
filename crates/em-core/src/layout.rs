@@ -95,6 +95,19 @@ const CHAIN_EDGES: [&str; 4] = [
 
 /// Compute a layout for `graph`. Pure function: no I/O, deterministic.
 pub fn compute(graph: &Graph, opts: &LayoutOptions) -> Layout {
+    compute_with_sketch(graph, opts, None)
+}
+
+/// yEd "From Sketch" policy: when `sketch` (previous positions) is given and
+/// `opts.use_sketch` is on, the current arrangement is treated as a soft
+/// constraint — layer order and band order come from the sketched x
+/// coordinates instead of the barycenter sweeps, so a manual arrangement
+/// survives re-layout.
+pub fn compute_with_sketch(
+    graph: &Graph,
+    opts: &LayoutOptions,
+    sketch: Option<&std::collections::BTreeMap<String, Rect>>,
+) -> Layout {
     let node_ix: HashMap<&str, usize> = graph
         .nodes
         .iter()
@@ -361,7 +374,25 @@ pub fn compute(graph: &Graph, opts: &LayoutOptions) -> Layout {
         }
     }
 
-    for sweep in 0..opts.barycenter_sweeps {
+    // From Sketch: seed the in-layer order from the previous x coordinates
+    // and skip the barycenter sweeps (the sketch IS the desired order).
+    let sketching = opts.use_sketch && sketch.is_some();
+    if sketching {
+        let pos = sketch.unwrap();
+        for layer in layers.iter_mut() {
+            layer.sort_by(|&a, &b| {
+                let xa = pos.get(&graph.nodes[a].id).map(|r| r.x).unwrap_or(f64::MAX);
+                let xb = pos.get(&graph.nodes[b].id).map(|r| r.x).unwrap_or(f64::MAX);
+                xa.partial_cmp(&xb)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then(graph.nodes[a].id.cmp(&graph.nodes[b].id))
+            });
+        }
+        refresh(&layers, &mut pos_in_layer);
+    }
+
+    let sweeps = if sketching { 0 } else { opts.barycenter_sweeps };
+    for sweep in 0..sweeps {
         let forward = sweep % 2 == 0;
         let order: Vec<usize> = if forward {
             (0..layers.len()).collect()
@@ -526,7 +557,11 @@ pub fn compute(graph: &Graph, opts: &LayoutOptions) -> Layout {
         (((n as f64).sqrt() * 2.0).ceil() as usize).clamp(8, 40)
     };
     let sub_gap = opts.layer_to_layer * 0.45;
-    let band_gap = opts.node_to_node * 2.0;
+    let band_gap = opts.node_to_node * 1.2;
+    // column caps per slot kind: loose pseudo-bands wrap sooner than the
+    // global cap, nested-group slots stay narrow (they are chains mostly)
+    let loose_cap = max_cols.min(10);
+    let group_cap = max_cols.min(6);
 
     let lane_count = unassigned_lane + 1;
     let mut layers_of_lane: Vec<Vec<usize>> = vec![Vec::new(); lane_count];
@@ -613,7 +648,8 @@ pub fn compute(graph: &Graph, opts: &LayoutOptions) -> Layout {
                 if six > 0 {
                     sx += opts.node_to_node;
                 }
-                let cols = maxc.min(max_cols).max(1);
+                let cap = if sb == usize::MAX { loose_cap } else { group_cap };
+                let cols = maxc.min(cap).max(1);
                 sub_slots.push(SubSlot { sub: sb, x0: sx, cols });
                 sx += cols as f64 * cell - opts.node_to_node;
             }
@@ -868,6 +904,36 @@ mod tests {
         assert!(u20.y < u30.y, "USM20 must sit above USM30");
         assert_eq!(u40.y, u20.y, "contemporaneous units sit side by side");
         assert!(u40.x != u20.x, "contemporaneous units must not overlap");
+    }
+
+    #[test]
+    fn from_sketch_preserves_manual_order() {
+        // two unrelated units in the same layer: a sketch with swapped x
+        // must keep them swapped after re-layout
+        let g = Graph {
+            graph_id: "g".into(),
+            name: None,
+            description: None,
+            nodes: vec![epoch("EP1", 100.0), node("A", "US"), node("B", "US")],
+            edges: vec![
+                edge("e1", "has_first_epoch", "A", "EP1"),
+                edge("e2", "has_first_epoch", "B", "EP1"),
+            ],
+            data: std::collections::BTreeMap::new(),
+        };
+        let mut opts = LayoutOptions::default();
+        let fresh = compute(&g, &opts);
+        // fresh: A before B (id order); build a sketch with B left of A
+        let mut sketch = fresh.positions.clone();
+        let (ax, bx) = (sketch["A"].x, sketch["B"].x);
+        sketch.get_mut("A").unwrap().x = bx.max(ax) + 100.0;
+        sketch.get_mut("B").unwrap().x = ax.min(bx);
+        opts.use_sketch = true;
+        let resketched = compute_with_sketch(&g, &opts, Some(&sketch));
+        assert!(
+            resketched.positions["B"].x < resketched.positions["A"].x,
+            "from-sketch must preserve the manual left-right order"
+        );
     }
 
     #[test]

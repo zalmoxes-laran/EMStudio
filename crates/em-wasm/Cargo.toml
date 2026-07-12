@@ -12,4 +12,5 @@ crate-type = ["cdylib"]
 
 [dependencies]
 em-core = { path = "../em-core" }
+serde = { workspace = true }
 serde_json = { workspace = true }

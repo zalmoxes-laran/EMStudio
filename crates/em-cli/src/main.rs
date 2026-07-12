@@ -68,7 +68,17 @@ fn main() -> ExitCode {
         }
         "layout" => {
             let mut doc = doc;
-            let computed = layout::compute(&doc.graph, &layout::LayoutOptions::default());
+            // --from-sketch: current arrangement as soft constraint
+            let mut opts = layout::LayoutOptions::default();
+            let sketch_positions;
+            let sketch = if args.iter().any(|a| a == "--from-sketch") {
+                opts.use_sketch = true;
+                sketch_positions = doc.layout.as_ref().map(|l| l.positions.clone());
+                sketch_positions.as_ref()
+            } else {
+                None
+            };
+            let computed = layout::compute_with_sketch(&doc.graph, &opts, sketch);
             println!(
                 "layout: {} lanes, {} positions, canvas {:.0}x{:.0}",
                 computed.swimlanes.len(),

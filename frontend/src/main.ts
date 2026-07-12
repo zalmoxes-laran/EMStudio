@@ -616,16 +616,23 @@ btnMatrix.addEventListener("click", () => setView("matrix"));
 btnGraph.addEventListener("click", () => setView("graph"));
 document.getElementById("btn-fit")!.addEventListener("click", fit);
 const btnLayout = document.getElementById("btn-layout") as HTMLButtonElement;
-btnLayout.addEventListener("click", async () => {
+btnLayout.title =
+  "Recompute the layout (em-core). Keeps your manual arrangement (From " +
+  "Sketch); Alt-click for a fresh layout from scratch.";
+btnLayout.addEventListener("click", async (ev) => {
   if (!store) return;
   btnLayout.disabled = true;
   try {
     const { computeLayout } = await import("./emcore");
-    const layout = await computeLayout(store.doc.graph);
+    const fresh = (ev as MouseEvent).altKey;
+    const layout = await computeLayout(
+      store.doc.graph,
+      fresh ? undefined : store.doc.layout,
+    );
     store.setLayout(layout);
     if (view !== "matrix" && !inContext()) setView("matrix");
     fit();
-    toast("Layout recomputed (em-core)");
+    toast(fresh ? "Fresh layout (em-core)" : "Layout from sketch (em-core)");
   } catch (e) {
     toast(`layout failed: ${e instanceof Error ? e.message : e}`);
   } finally {

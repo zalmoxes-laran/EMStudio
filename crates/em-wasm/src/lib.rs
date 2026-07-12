@@ -8,10 +8,18 @@
 //!   em_free(ptr, len)                     release a buffer from em_alloc
 //!   em_free_result(out_ptr)               release a result buffer
 //!
-//! Input: the `graph` section of an .em.json document.
+//! Input: `{ graph, layout? }` — when `layout` is present its positions are
+//! used as a From-Sketch soft constraint (manual arrangements survive).
 //! Output: `{ "ok": Layout }` or `{ "err": "message" }`.
 
-use em_core::{layout, model::Graph};
+use em_core::{layout, model::Graph, model::Layout};
+
+#[derive(serde::Deserialize)]
+struct LayoutRequest {
+    graph: Graph,
+    #[serde(default)]
+    layout: Option<Layout>,
+}
 
 #[no_mangle]
 pub extern "C" fn em_alloc(len: usize) -> *mut u8 {
@@ -55,11 +63,14 @@ pub unsafe extern "C" fn em_layout(ptr: *const u8, len: usize) -> *mut u8 {
     let bytes = std::slice::from_raw_parts(ptr, len);
     let result = match std::str::from_utf8(bytes) {
         Err(e) => format!(r#"{{"err":"invalid utf-8: {e}"}}"#),
-        Ok(text) => match serde_json::from_str::<Graph>(text) {
-            Err(e) => serde_json::to_string(&serde_json::json!({ "err": format!("graph parse: {e}") }))
-                .unwrap_or_else(|_| r#"{"err":"graph parse"}"#.into()),
-            Ok(graph) => {
-                let computed = layout::compute(&graph, &layout::LayoutOptions::default());
+        Ok(text) => match serde_json::from_str::<LayoutRequest>(text) {
+            Err(e) => serde_json::to_string(&serde_json::json!({ "err": format!("request parse: {e}") }))
+                .unwrap_or_else(|_| r#"{"err":"request parse"}"#.into()),
+            Ok(req) => {
+                let mut opts = layout::LayoutOptions::default();
+                let sketch = req.layout.as_ref().map(|l| &l.positions);
+                opts.use_sketch = sketch.is_some();
+                let computed = layout::compute_with_sketch(&req.graph, &opts, sketch);
                 match serde_json::to_string(&computed) {
                     Ok(json) => format!(r#"{{"ok":{json}}}"#),
                     Err(e) => format!(r#"{{"err":"serialize: {e}"}}"#),

@@ -23,6 +23,7 @@ name = "em-wasm"
 version = "0.1.0"
 dependencies = [
  "em-core",
+ "serde",
  "serde_json",
 ]
 

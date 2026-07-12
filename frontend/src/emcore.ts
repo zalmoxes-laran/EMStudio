@@ -25,10 +25,19 @@ async function ensure(): Promise<EmCoreExports> {
   return exportsCache;
 }
 
-/** Compute the swimlane layout for a graph section, via em-core (WASM). */
-export async function computeLayout(graph: EmGraph): Promise<EmLayout> {
+/**
+ * Compute the swimlane layout via em-core (WASM). When `sketch` is passed,
+ * its positions act as a From-Sketch soft constraint: the manual
+ * arrangement survives the re-layout (yEd parity).
+ */
+export async function computeLayout(
+  graph: EmGraph,
+  sketch?: EmLayout,
+): Promise<EmLayout> {
   const core = await ensure();
-  const input = new TextEncoder().encode(JSON.stringify(graph));
+  const input = new TextEncoder().encode(
+    JSON.stringify({ graph, layout: sketch }),
+  );
   const ptr = core.em_alloc(input.length);
   new Uint8Array(core.memory.buffer, ptr, input.length).set(input);
   const out = core.em_layout(ptr, input.length);
