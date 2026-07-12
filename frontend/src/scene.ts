@@ -7,6 +7,8 @@ export interface SceneNode {
   w: number;
   h: number;
   node: EmNode;
+  /** number of hidden nodes this (folded group) node stands for */
+  badge?: number;
 }
 
 export interface SceneEdge {
@@ -88,6 +90,19 @@ export class Viewport {
     this.x = (viewW - b.w * this.scale) / 2 - b.x * this.scale;
     this.y = (viewH - b.h * this.scale) / 2 - b.y * this.scale;
   }
+}
+
+/** Is a world-space point on a node's connect handle (right-edge circle)? */
+export function hitHandle(
+  n: SceneNode,
+  wx: number,
+  wy: number,
+  scale: number,
+): boolean {
+  const r = 8 / Math.sqrt(scale); // slightly larger than drawn, easier to grab
+  const dx = wx - (n.x + n.w);
+  const dy = wy - (n.y + n.h / 2);
+  return dx * dx + dy * dy <= r * r;
 }
 
 /** Topmost node under a world-space point (nodes drawn in array order). */

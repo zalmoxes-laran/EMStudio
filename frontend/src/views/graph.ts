@@ -1,9 +1,10 @@
 // Graph view: the full property graph (epochs as nodes, paradata chains,
-// authors, resources). Uses a small deterministic layered layout computed
-// client-side — this is a *projection for inspection*, not the archival
-// layout (which belongs to em-core and the .em.json layout section).
+// authors, resources). Deterministic client-side layered layout — a
+// projection for inspection, not the archival layout (which belongs to
+// em-core and the .em.json layout section).
+import type { FoldedView } from "../folding";
 import type { Scene, SceneNode } from "../scene";
-import type { EmDocument } from "../types";
+import type { EmDocument, EmEdge, EmNode } from "../types";
 
 const NODE_W = 120;
 const NODE_H = 34;
@@ -11,8 +12,12 @@ const H_GAP = 26;
 const V_GAP = 70;
 const SWEEPS = 4;
 
-export function buildGraphScene(doc: EmDocument): Scene {
-  const nodes = [...doc.graph.nodes].sort((a, b) =>
+export function layoutLayered(
+  inputNodes: EmNode[],
+  inputEdges: EmEdge[],
+  badges?: Map<string, number>,
+): Scene {
+  const nodes = [...inputNodes].sort((a, b) =>
     a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
   );
   const ids = nodes.map((n) => n.id);
@@ -23,7 +28,7 @@ export function buildGraphScene(doc: EmDocument): Scene {
   const out: number[][] = Array.from({ length: n }, () => []);
   const inn: number[][] = Array.from({ length: n }, () => []);
   const seen = new Set<string>();
-  for (const e of doc.graph.edges) {
+  for (const e of inputEdges) {
     const a = index.get(e.source);
     const b = index.get(e.target);
     if (a === undefined || b === undefined || a === b) continue;
@@ -35,12 +40,12 @@ export function buildGraphScene(doc: EmDocument): Scene {
   }
 
   // DAG-ify: DFS in deterministic order, skip back edges
-  const color = new Uint8Array(n); // 0 white, 1 grey, 2 black
+  const color = new Uint8Array(n);
   const dagOut: number[][] = Array.from({ length: n }, () => []);
   const dfs = (u: number): void => {
     color[u] = 1;
     for (const v of out[u]) {
-      if (color[v] === 1) continue; // back edge → skip
+      if (color[v] === 1) continue;
       dagOut[u].push(v);
       if (color[v] === 0) dfs(v);
     }
@@ -48,7 +53,7 @@ export function buildGraphScene(doc: EmDocument): Scene {
   };
   for (let i = 0; i < n; i++) if (color[i] === 0) dfs(i);
 
-  // longest-path layering (topological over dagOut)
+  // longest-path layering
   const indeg = new Uint32Array(n);
   for (let u = 0; u < n; u++) for (const v of dagOut[u]) indeg[v]++;
   const layer = new Int32Array(n);
@@ -63,7 +68,6 @@ export function buildGraphScene(doc: EmDocument): Scene {
     }
   }
 
-  // rows
   const maxLayer = n ? Math.max(...layer) : 0;
   const rows: number[][] = Array.from({ length: maxLayer + 1 }, () => []);
   for (let i = 0; i < n; i++) rows[layer[i]].push(i);
@@ -81,7 +85,9 @@ export function buildGraphScene(doc: EmDocument): Scene {
     });
     const order = row
       .map((_, i) => i)
-      .sort((a, b) => score[a] - score[b] || (ids[row[a]] < ids[row[b]] ? -1 : 1));
+      .sort(
+        (a, b) => score[a] - score[b] || (ids[row[a]] < ids[row[b]] ? -1 : 1),
+      );
     const next = order.map((i) => row[i]);
     row.length = 0;
     row.push(...next);
@@ -93,7 +99,6 @@ export function buildGraphScene(doc: EmDocument): Scene {
     reindex();
   }
 
-  // coordinates: rows centered on x=0
   const scene: Scene = { nodes: [], byId: new Map(), edges: [], lanes: [] };
   rows.forEach((row, r) => {
     const rowW = row.length * (NODE_W + H_GAP) - H_GAP;
@@ -105,16 +110,25 @@ export function buildGraphScene(doc: EmDocument): Scene {
         w: NODE_W,
         h: NODE_H,
         node: nodes[v],
+        badge: badges?.get(ids[v]),
       };
       scene.nodes.push(sn);
       scene.byId.set(sn.id, sn);
     });
   });
 
-  for (const e of doc.graph.edges) {
+  for (const e of inputEdges) {
     if (scene.byId.has(e.source) && scene.byId.has(e.target)) {
       scene.edges.push({ source: e.source, target: e.target, edge: e });
     }
   }
   return scene;
+}
+
+export function buildGraphScene(doc: EmDocument, view?: FoldedView): Scene {
+  return layoutLayered(
+    view?.nodes ?? doc.graph.nodes,
+    view?.edges ?? doc.graph.edges,
+    view?.badges,
+  );
 }

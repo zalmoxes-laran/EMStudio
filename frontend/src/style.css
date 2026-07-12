@@ -311,6 +311,249 @@ main {
   background: #f0f6ff;
 }
 
+/* ---------- palette ---------- */
+#palette {
+  width: 148px;
+  border-right: 1px solid var(--border);
+  background: #fff;
+  overflow-y: auto;
+  padding: 8px 6px;
+}
+
+.pal-sect {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #778;
+  margin: 10px 4px 4px;
+}
+
+.pal-sect:first-child {
+  margin-top: 0;
+}
+
+.pal-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.pal-item:hover {
+  background: #f0f6ff;
+}
+
+.pal-item.active {
+  border-color: var(--accent);
+  background: #e4efff;
+}
+
+/* ---------- editing chrome ---------- */
+.tb-sep {
+  width: 1px;
+  height: 20px;
+  background: rgba(255, 255, 255, 0.25);
+}
+
+#dirty-dot {
+  color: #ffb84d;
+  font-size: 15px;
+  margin-left: -4px;
+}
+
+#toolbar button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+#breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12.5px;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  padding: 3px 8px;
+}
+
+#breadcrumb button {
+  border: none;
+  background: none;
+  padding: 1px 3px;
+  font-weight: 600;
+}
+
+#canvas.placing {
+  cursor: crosshair;
+}
+
+#canvas.connecting {
+  cursor: alias;
+}
+
+#hint-bar {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--accent);
+  color: #fff;
+  font-size: 12.5px;
+  border-radius: 6px;
+  padding: 5px 12px;
+  z-index: 20;
+}
+
+#toast {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: #24292f;
+  color: #fff;
+  font-size: 12.5px;
+  border-radius: 6px;
+  padding: 6px 14px;
+  z-index: 25;
+}
+
+#edge-menu {
+  position: absolute;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  padding: 6px;
+  z-index: 30;
+  min-width: 210px;
+}
+
+.edge-menu-title {
+  font-size: 11.5px;
+  color: #667;
+  padding: 3px 6px 6px;
+  border-bottom: 1px solid #eef1f4;
+  margin-bottom: 4px;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#edge-menu button {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: 5px;
+  padding: 5px 8px;
+  font-size: 12.5px;
+  cursor: pointer;
+  color: var(--text);
+}
+
+#edge-menu button:hover {
+  background: #f0f6ff;
+}
+
+#edge-menu .edge-menu-cancel {
+  color: #888;
+  border-top: 1px solid #eef1f4;
+  border-radius: 0;
+  margin-top: 4px;
+}
+
+/* ---------- inspector editing ---------- */
+.insp-name-input {
+  width: 100%;
+  font-size: 16px;
+  font-weight: 600;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  padding: 4px 6px;
+  margin: 6px 0 2px;
+}
+
+.insp-name-input:hover,
+.insp-name-input:focus {
+  border-color: var(--border);
+}
+
+.insp-desc-input {
+  width: 100%;
+  font-size: 12.5px;
+  font-family: inherit;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 5px 6px;
+  margin: 6px 0;
+  resize: vertical;
+}
+
+.insp-actions {
+  display: flex;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.insp-btn {
+  flex: 1;
+  background: #f4f6f8;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.insp-btn:hover {
+  background: #e9eef4;
+}
+
+.insp-btn.danger {
+  color: #b02a25;
+  border-color: #e4b6b4;
+}
+
+.insp-btn.danger:hover {
+  background: #fbeeed;
+}
+
+.insp-link-row {
+  display: flex;
+  align-items: center;
+}
+
+.insp-link-row .insp-link {
+  flex: 1;
+}
+
+.insp-edge-del {
+  background: none;
+  border: none;
+  color: #b8bfc7;
+  font-size: 14px;
+  cursor: pointer;
+  padding: 0 5px;
+  border-radius: 4px;
+}
+
+.insp-edge-del:hover {
+  color: #b02a25;
+  background: #fbeeed;
+}
+
 /* ---------- tooltip ---------- */
 #tooltip {
   position: fixed;

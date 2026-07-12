@@ -4,11 +4,24 @@
 import { edgeStyle, nodeStyle } from "./palette";
 import type { Scene, SceneNode, Viewport } from "./scene";
 
+export interface ConnectDrag {
+  fromId: string;
+  /** current pointer position, world space */
+  x: number;
+  y: number;
+  targetId: string | null;
+  validity: "valid" | "generic" | "invalid" | null;
+}
+
 export interface RenderState {
   hoverId: string | null;
   selectedId: string | null;
   /** edge_type predicate; edges failing it are skipped */
   edgeVisible: (edgeType: string | undefined) => boolean;
+  /** live edge-drawing state (phase 4 editing) */
+  connect?: ConnectDrag | null;
+  /** show the connect handle on the hovered/selected node */
+  editable?: boolean;
 }
 
 const LANE_COLORS = ["#EDF3FA", "#F7FAFD"];
@@ -240,6 +253,70 @@ export function render(
         text += "…";
       }
       ctx.fillText(text, n.x + n.w / 2, n.y + n.h / 2);
+    }
+
+    // folded-group badge (count of hidden nodes)
+    if (n.badge) {
+      const r = 9 / Math.sqrt(vp.scale);
+      const bx = n.x + n.w;
+      const by = n.y;
+      ctx.beginPath();
+      ctx.arc(bx, by, r, 0, Math.PI * 2);
+      ctx.fillStyle = ACCENT;
+      ctx.fill();
+      ctx.fillStyle = "#fff";
+      ctx.font = `${r * 1.1}px system-ui, sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(String(n.badge), bx, by + r * 0.05);
+    }
+  }
+
+  // connect handle on hovered/selected node + elastic edge while dragging
+  if (state.editable) {
+    const handleOn = state.connect
+      ? null
+      : (state.hoverId ?? state.selectedId);
+    const hn = handleOn ? scene.byId.get(handleOn) : null;
+    if (hn) {
+      const r = 5.5 / Math.sqrt(vp.scale);
+      ctx.beginPath();
+      ctx.arc(hn.x + hn.w, hn.y + hn.h / 2, r, 0, Math.PI * 2);
+      ctx.fillStyle = "#fff";
+      ctx.fill();
+      ctx.strokeStyle = ACCENT;
+      ctx.lineWidth = 2 / Math.sqrt(vp.scale);
+      ctx.stroke();
+    }
+  }
+  if (state.connect) {
+    const from = scene.byId.get(state.connect.fromId);
+    if (from) {
+      const colors = {
+        valid: "#1a7f37",
+        generic: "#8a939e",
+        invalid: "#c93c37",
+      } as const;
+      const c = state.connect.validity
+        ? colors[state.connect.validity]
+        : "#8a939e";
+      ctx.strokeStyle = c;
+      ctx.lineWidth = 2 / vp.scale;
+      ctx.setLineDash([6 / vp.scale, 4 / vp.scale]);
+      ctx.beginPath();
+      ctx.moveTo(from.x + from.w, from.y + from.h / 2);
+      ctx.lineTo(state.connect.x, state.connect.y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      const t = state.connect.targetId
+        ? scene.byId.get(state.connect.targetId)
+        : null;
+      if (t) {
+        ctx.strokeStyle = c;
+        ctx.lineWidth = 3 / vp.scale;
+        shapePath(ctx, nodeStyle(t.node.node_type).shape, t.x - 3, t.y - 3, t.w + 6, t.h + 6);
+        ctx.stroke();
+      }
     }
   }
 

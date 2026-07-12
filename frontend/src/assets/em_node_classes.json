@@ -1,0 +1,370 @@
+{
+ "ActivityNodeGroup": {
+  "ancestors": [
+   "ActivityNodeGroup",
+   "GroupNode",
+   "Node"
+  ],
+  "class": "ActivityNodeGroup",
+  "description": "Nodo gruppo per attivit\u00e0. Una attivit\u00e0 \u00e8 un gruppo logico di azioni che vengono tenute insieme per un fine narrativo e di ordine delle infor"
+ },
+ "BR": {
+  "ancestors": [
+   "ContinuityNode",
+   "StratigraphicNode",
+   "Node"
+  ],
+  "class": "ContinuityNode",
+  "description": "Base class for all stratigraphic units within the graph structure."
+ },
+ "EpochNode": {
+  "ancestors": [
+   "EpochNode",
+   "Node"
+  ],
+  "class": "EpochNode",
+  "description": "Nodo che rappresenta un'epoca temporale. Si tratta di un insieme di comodo che permette di attribuire d'ufficio una serie di azioni ad un de"
+ },
+ "Group": {
+  "ancestors": [
+   "GroupNode",
+   "Node"
+  ],
+  "class": "GroupNode",
+  "description": "Nodo che rappresenta un gruppo di nodi. Tali gruppi possono essere di vari tipi: vedi sottoclassi di seguito."
+ },
+ "LocationNodeGroup": {
+  "ancestors": [
+   "LocationNodeGroup",
+   "GroupNode",
+   "Node"
+  ],
+  "class": "LocationNodeGroup",
+  "description": "Group node for spatial / locational membership of stratigraphic units"
+ },
+ "Node": {
+  "ancestors": [
+   "Node"
+  ],
+  "class": "Node",
+  "description": "Base class to represent a node in the graph."
+ },
+ "ParadataNode": {
+  "ancestors": [
+   "ParadataNode",
+   "Node"
+  ],
+  "class": "ParadataNode",
+  "description": "Classe base per i nodi che rappresentano metadati o informazioni su come i dati sono stati generati."
+ },
+ "ParadataNodeGroup": {
+  "ancestors": [
+   "ParadataNodeGroup",
+   "GroupNode",
+   "Node"
+  ],
+  "class": "ParadataNodeGroup",
+  "description": "Nodo gruppo per paradata. Questo gruppo tiene insieme tutti i paradati relativi ad una unit\u00e0 stratigrafica: normalmente si chiama \"[nome_US]"
+ },
+ "RSF": {
+  "ancestors": [
+   "ReusedSpecialFind",
+   "StratigraphicNode",
+   "Node"
+  ],
+  "class": "ReusedSpecialFind",
+  "description": "Reused Special Find (RSF) \u2014 re-used architectural / decorative"
+ },
+ "SE": {
+  "ancestors": [
+   "StratigraphicEventNode",
+   "StratigraphicNode",
+   "Node"
+  ],
+  "class": "StratigraphicEventNode",
+  "description": "Base class for all stratigraphic units within the graph structure."
+ },
+ "SF": {
+  "ancestors": [
+   "SpecialFindUnit",
+   "StratigraphicNode",
+   "Node"
+  ],
+  "class": "SpecialFindUnit",
+  "description": "Base class for all stratigraphic units within the graph structure."
+ },
+ "StratigraphicNode": {
+  "ancestors": [
+   "StratigraphicNode",
+   "Node"
+  ],
+  "class": "StratigraphicNode",
+  "description": "Base class for all stratigraphic units within the graph structure."
+ },
+ "TSU": {
+  "ancestors": [
+   "TransformationStratigraphicUnit",
+   "StratigraphicNode",
+   "Node"
+  ],
+  "class": "TransformationStratigraphicUnit",
+  "description": "Base class for all stratigraphic units within the graph structure."
+ },
+ "TimeBranchNodeGroup": {
+  "ancestors": [
+   "TimeBranchNodeGroup",
+   "GroupNode",
+   "Node"
+  ],
+  "class": "TimeBranchNodeGroup",
+  "description": "Group node to aggregate all elements belonging to a time branch. Two TB can be connected by a \"contrasts_with\" edge."
+ },
+ "UL": {
+  "ancestors": [
+   "WorkingUnit",
+   "StratigraphicNode",
+   "Node"
+  ],
+  "class": "WorkingUnit",
+  "description": "Base class for all stratigraphic units within the graph structure."
+ },
+ "US": {
+  "ancestors": [
+   "StratigraphicUnit",
+   "StratigraphicNode",
+   "Node"
+  ],
+  "class": "StratigraphicUnit",
+  "description": "Base class for all stratigraphic units within the graph structure."
+ },
+ "USD": {
+  "ancestors": [
+   "DocumentaryStratigraphicUnit",
+   "StratigraphicNode",
+   "Node"
+  ],
+  "class": "DocumentaryStratigraphicUnit",
+  "description": "Base class for all stratigraphic units within the graph structure."
+ },
+ "USN": {
+  "ancestors": [
+   "NegativeStratigraphicUnit",
+   "StratigraphicNode",
+   "Node"
+  ],
+  "class": "NegativeStratigraphicUnit",
+  "description": "Negative Stratigraphic Unit (US negativa / USN)."
+ },
+ "USVn": {
+  "ancestors": [
+   "NonStructuralVirtualStratigraphicUnit",
+   "StratigraphicNode",
+   "Node",
+   "VirtualStratigraphicUnit"
+  ],
+  "class": "NonStructuralVirtualStratigraphicUnit",
+  "description": "Base class for all stratigraphic units within the graph structure."
+ },
+ "USVs": {
+  "ancestors": [
+   "StructuralVirtualStratigraphicUnit",
+   "StratigraphicNode",
+   "Node",
+   "VirtualStratigraphicUnit"
+  ],
+  "class": "StructuralVirtualStratigraphicUnit",
+  "description": "Base class for all stratigraphic units within the graph structure."
+ },
+ "VSF": {
+  "ancestors": [
+   "VirtualSpecialFindUnit",
+   "StratigraphicNode",
+   "Node"
+  ],
+  "class": "VirtualSpecialFindUnit",
+  "description": "Base class for all stratigraphic units within the graph structure."
+ },
+ "author": {
+  "ancestors": [
+   "AuthorNode",
+   "Node"
+  ],
+  "class": "AuthorNode",
+  "description": "Human author node."
+ },
+ "author_ai": {
+  "ancestors": [
+   "AuthorAINode",
+   "AuthorNode",
+   "Node"
+  ],
+  "class": "AuthorAINode",
+  "description": "AI-generated author node (subclass of :class:`AuthorNode`)."
+ },
+ "combiner": {
+  "ancestors": [
+   "CombinerNode",
+   "ParadataNode",
+   "Node"
+  ],
+  "class": "CombinerNode",
+  "description": "Nodo che rappresenta un ragionamento che combina informazioni da pi\u00f9 sorgenti."
+ },
+ "document": {
+  "ancestors": [
+   "DocumentNode",
+   "ParadataNode",
+   "Node"
+  ],
+  "class": "DocumentNode",
+  "description": "Represents a document in the Extended Matrix."
+ },
+ "embargo": {
+  "ancestors": [
+   "EmbargoNode",
+   "Node"
+  ],
+  "class": "EmbargoNode",
+  "description": "Classe per rappresentare un nodo embargo nel grafo."
+ },
+ "extractor": {
+  "ancestors": [
+   "ExtractorNode",
+   "ParadataNode",
+   "Node"
+  ],
+  "class": "ExtractorNode",
+  "description": "Nodo che rappresenta l'estrazione di informazioni da una fonte."
+ },
+ "geo_position": {
+  "ancestors": [
+   "GeoPositionNode",
+   "Node"
+  ],
+  "class": "GeoPositionNode",
+  "description": "Classe per rappresentare un nodo GeoPosition all'interno del grafo."
+ },
+ "graph": {
+  "ancestors": [
+   "GraphNode",
+   "Node"
+  ],
+  "class": "GraphNode",
+  "description": "It represents the node of the graph itself within the system."
+ },
+ "hdt": {
+  "ancestors": [
+   "HDTNode",
+   "Node"
+  ],
+  "class": "HDTNode",
+  "description": "HC2 Heritage Digital Twin (HDT-O / ECHOES D7.1)."
+ },
+ "license": {
+  "ancestors": [
+   "LicenseNode",
+   "Node"
+  ],
+  "class": "LicenseNode",
+  "description": "Classe per rappresentare un nodo di licenza nel grafo."
+ },
+ "link": {
+  "ancestors": [
+   "LinkNode",
+   "Node"
+  ],
+  "class": "LinkNode",
+  "description": "Classe per rappresentare un nodo di collegamento (LinkNode) nel grafo."
+ },
+ "property": {
+  "ancestors": [
+   "PropertyNode",
+   "ParadataNode",
+   "Node"
+  ],
+  "class": "PropertyNode",
+  "description": "Nodo che rappresenta una propriet\u00e0 associata a un altro nodo."
+ },
+ "representation_model": {
+  "ancestors": [
+   "RepresentationModelNode",
+   "RepresentationNode",
+   "Node"
+  ],
+  "class": "RepresentationModelNode",
+  "description": "Node representing a 3D model or spatialized image."
+ },
+ "representation_model_doc": {
+  "ancestors": [
+   "RepresentationModelDocNode",
+   "RepresentationNode",
+   "Node"
+  ],
+  "class": "RepresentationModelDocNode",
+  "description": "Node representing a 3D model or spatialized image for documents."
+ },
+ "representation_model_sf": {
+  "ancestors": [
+   "RepresentationModelSpecialFindNode",
+   "RepresentationNode",
+   "Node"
+  ],
+  "class": "RepresentationModelSpecialFindNode",
+  "description": "Node representing a 3D model for special finds."
+ },
+ "representation_node": {
+  "ancestors": [
+   "RepresentationNode",
+   "Node"
+  ],
+  "class": "RepresentationNode",
+  "description": "Base class for all representation nodes in 3D space."
+ },
+ "serSU": {
+  "ancestors": [
+   "SeriesOfStratigraphicUnit",
+   "StratigraphicNode",
+   "Node"
+  ],
+  "class": "SeriesOfStratigraphicUnit",
+  "description": "Base class for all stratigraphic units within the graph structure."
+ },
+ "serUSD": {
+  "ancestors": [
+   "SeriesOfDocumentaryStratigraphicUnit",
+   "StratigraphicNode",
+   "Node"
+  ],
+  "class": "SeriesOfDocumentaryStratigraphicUnit",
+  "description": "Base class for all stratigraphic units within the graph structure."
+ },
+ "serUSVn": {
+  "ancestors": [
+   "SeriesOfNonStructuralVirtualStratigraphicUnit",
+   "StratigraphicNode",
+   "Node",
+   "VirtualStratigraphicUnit"
+  ],
+  "class": "SeriesOfNonStructuralVirtualStratigraphicUnit",
+  "description": "Base class for all stratigraphic units within the graph structure."
+ },
+ "serUSVs": {
+  "ancestors": [
+   "SeriesOfStructuralVirtualStratigraphicUnit",
+   "StratigraphicNode",
+   "Node",
+   "VirtualStratigraphicUnit"
+  ],
+  "class": "SeriesOfStructuralVirtualStratigraphicUnit",
+  "description": "Base class for all stratigraphic units within the graph structure."
+ },
+ "unknown": {
+  "ancestors": [
+   "UnknownNode",
+   "StratigraphicNode",
+   "Node"
+  ],
+  "class": "UnknownNode",
+  "description": "Base class for all stratigraphic units within the graph structure."
+ }
+}

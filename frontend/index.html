@@ -9,7 +9,12 @@
     <header id="toolbar">
       <span id="brand">EMStudio</span>
       <button id="btn-open" title="Open an .em.json file">Open…</button>
-      <input type="file" id="file-input" accept=".json,.em.json" hidden />
+      <button id="btn-save" title="Save .em.json (⌘S)">Save</button>
+      <span id="dirty-dot" class="hidden" title="unsaved changes">●</span>
+      <span class="tb-sep"></span>
+      <button id="btn-undo" title="Undo (⌘Z)" disabled>↺</button>
+      <button id="btn-redo" title="Redo (⇧⌘Z)" disabled>↻</button>
+      <span class="tb-sep"></span>
       <div id="view-toggle" role="group">
         <button id="btn-matrix" class="active">Matrix</button>
         <button id="btn-graph">Graph</button>
@@ -20,6 +25,8 @@
         <option value="none">No edges</option>
       </select>
       <button id="btn-fit" title="Fit to view (0)">Fit</button>
+      <div id="breadcrumb" class="hidden"></div>
+      <input type="file" id="file-input" accept=".json,.em.json" hidden />
       <div id="search-wrap">
         <input id="search" type="search" placeholder="Search nodes…" autocomplete="off" />
         <div id="search-results" class="hidden"></div>
@@ -27,10 +34,14 @@
       <span id="info">open or drop an .em.json file</span>
     </header>
     <main>
+      <aside id="palette" title="Click a type, then click the canvas to place it"></aside>
       <div id="canvas-wrap">
         <canvas id="canvas"></canvas>
         <div id="drop-hint">Drop an <b>.em.json</b> file here</div>
+        <div id="hint-bar" class="hidden"></div>
         <div id="legend" class="hidden"></div>
+        <div id="edge-menu" class="hidden"></div>
+        <div id="toast" class="hidden"></div>
       </div>
       <aside id="inspector" class="hidden"></aside>
     </main>

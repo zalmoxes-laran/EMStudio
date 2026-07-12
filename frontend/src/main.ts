@@ -1,10 +1,28 @@
 import "./style.css";
-import { edgeStyle, SEQUENCE_EDGES } from "./palette";
-import { render } from "./renderer";
-import { hitTest, sceneBounds, Viewport, type Scene } from "./scene";
+import { applyFolding, buildMembership } from "./folding";
 import { renderInspector } from "./inspector";
+import { DocumentStore } from "./model";
+import { edgeStyle, SEQUENCE_EDGES } from "./palette";
+import { buildPalette } from "./palette-ui";
+import { render, type ConnectDrag } from "./renderer";
+import {
+  allowedEdgeTypes,
+  connectValidity,
+  edgeTypeLabel,
+  GENERIC_EDGE,
+  isGroupType,
+  isStratigraphicType,
+} from "./rules";
+import {
+  hitHandle,
+  hitTest,
+  sceneBounds,
+  Viewport,
+  type Scene,
+} from "./scene";
 import { setupSearch } from "./search";
 import type { EmDocument, ViewKind } from "./types";
+import { buildGroupScene } from "./views/context";
 import { buildGraphScene } from "./views/graph";
 import { buildMatrixScene } from "./views/matrix";
 
@@ -15,7 +33,7 @@ declare global {
 }
 
 // ---------- state ----------
-let doc: EmDocument | null = null;
+let store: DocumentStore | null = null;
 let view: ViewKind = "matrix";
 const scenes: Partial<Record<ViewKind, Scene | null>> = {};
 const viewports: Record<ViewKind, Viewport> = {
@@ -25,6 +43,12 @@ const viewports: Record<ViewKind, Viewport> = {
 let hoverId: string | null = null;
 let selectedId: string | null = null;
 let edgeFilter: "all" | "sequence" | "none" = "all";
+let placingType: string | null = null;
+let connect: ConnectDrag | null = null;
+/** group-context navigation stack; empty = full canvas */
+let contextStack: string[] = [];
+let contextScene: Scene | null = null;
+const contextViewport = new Viewport();
 
 // ---------- dom ----------
 const canvas = document.getElementById("canvas") as HTMLCanvasElement;
@@ -33,10 +57,25 @@ const wrap = document.getElementById("canvas-wrap")!;
 const info = document.getElementById("info")!;
 const tooltip = document.getElementById("tooltip")!;
 const dropHint = document.getElementById("drop-hint")!;
+const hintBar = document.getElementById("hint-bar")!;
 const legend = document.getElementById("legend")!;
 const inspector = document.getElementById("inspector")!;
+const breadcrumb = document.getElementById("breadcrumb")!;
+const edgeMenu = document.getElementById("edge-menu")!;
+const toastEl = document.getElementById("toast")!;
 const btnMatrix = document.getElementById("btn-matrix") as HTMLButtonElement;
 const btnGraph = document.getElementById("btn-graph") as HTMLButtonElement;
+const btnUndo = document.getElementById("btn-undo") as HTMLButtonElement;
+const btnRedo = document.getElementById("btn-redo") as HTMLButtonElement;
+const dirtyDot = document.getElementById("dirty-dot")!;
+
+let toastTimer: number | undefined;
+function toast(msg: string): void {
+  toastEl.textContent = msg;
+  toastEl.classList.remove("hidden");
+  window.clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => toastEl.classList.add("hidden"), 2600);
+}
 
 function viewSize(): { w: number; h: number } {
   return { w: wrap.clientWidth, h: wrap.clientHeight };
@@ -58,8 +97,14 @@ const edgeVisible = (t: string | undefined): boolean => {
   return true;
 };
 
+const inContext = (): boolean => contextStack.length > 0;
+
 function scene(): Scene | null {
-  return scenes[view] ?? null;
+  return inContext() ? contextScene : (scenes[view] ?? null);
+}
+
+function viewport(): Viewport {
+  return inContext() ? contextViewport : viewports[view];
 }
 
 function draw(): void {
@@ -71,14 +116,21 @@ function draw(): void {
     ctx.clearRect(0, 0, w, h);
     return;
   }
-  render(ctx, s, viewports[view], { hoverId, selectedId, edgeVisible }, w, h);
+  render(
+    ctx,
+    s,
+    viewport(),
+    { hoverId, selectedId, edgeVisible, connect, editable: true },
+    w,
+    h,
+  );
 }
 
 function fit(): void {
   const s = scene();
   if (!s) return;
   const { w, h } = viewSize();
-  viewports[view].fit(sceneBounds(s), w, h);
+  viewport().fit(sceneBounds(s), w, h);
   draw();
 }
 
@@ -86,7 +138,7 @@ function centerOn(nodeId: string): void {
   const s = scene();
   const n = s?.byId.get(nodeId);
   if (!n) return;
-  const vp = viewports[view];
+  const vp = viewport();
   const { w, h } = viewSize();
   vp.scale = Math.max(vp.scale, 0.8);
   vp.x = w / 2 - (n.x + n.w / 2) * vp.scale;
@@ -96,14 +148,26 @@ function centerOn(nodeId: string): void {
 
 function select(nodeId: string | null): void {
   selectedId = nodeId;
-  renderInspector(inspector, doc ?? { graph: { nodes: [], edges: [] } }, nodeId, {
+  refreshInspector();
+  draw();
+}
+
+function refreshInspector(): void {
+  if (!store) return;
+  renderInspector(inspector, store, selectedId, {
     onJump: (id) => {
       select(id);
       centerOn(id);
     },
     onClose: () => select(null),
+    onDeleteNode: (id) => {
+      store!.deleteNode(id);
+      select(null);
+    },
+    onDeleteEdge: (edge) => store!.deleteEdge(edge),
+    onToggleFold: (gid) => store!.setFolded(gid, !store!.isFolded(gid)),
+    onEnterGroup: enterGroup,
   });
-  draw();
 }
 
 function updateLegend(): void {
@@ -114,10 +178,8 @@ function updateLegend(): void {
     return;
   }
   const types = new Set<string>();
-  for (const e of s.edges) {
-    const t = e.edge.edge_type ?? "edge";
-    if (edgeVisible(e.edge.edge_type)) types.add(t);
-  }
+  for (const e of s.edges)
+    if (edgeVisible(e.edge.edge_type)) types.add(e.edge.edge_type ?? "edge");
   if (!types.size) {
     legend.classList.add("hidden");
     return;
@@ -137,11 +199,91 @@ function updateLegend(): void {
   legend.classList.remove("hidden");
 }
 
+function updateToolbar(): void {
+  btnUndo.disabled = !store?.canUndo;
+  btnRedo.disabled = !store?.canRedo;
+  dirtyDot.classList.toggle("hidden", !store?.dirty);
+}
+
+function updateBreadcrumb(): void {
+  if (!inContext() || !store) {
+    breadcrumb.classList.add("hidden");
+    breadcrumb.innerHTML = "";
+    return;
+  }
+  breadcrumb.innerHTML = "";
+  const mk = (label: string, depth: number): void => {
+    const b = document.createElement("button");
+    b.textContent = label;
+    b.addEventListener("click", () => {
+      contextStack = contextStack.slice(0, depth);
+      rebuildContext();
+    });
+    breadcrumb.appendChild(b);
+    if (depth < contextStack.length) {
+      breadcrumb.appendChild(document.createTextNode(" ▸ "));
+    }
+  };
+  mk("Canvas", 0);
+  contextStack.forEach((gid, i) => {
+    const g = store!.node(gid);
+    mk(String(g?.name || gid), i + 1);
+  });
+  breadcrumb.classList.remove("hidden");
+}
+
+function enterGroup(groupId: string): void {
+  contextStack.push(groupId);
+  rebuildContext();
+}
+
+function rebuildContext(): void {
+  if (!store) return;
+  select(null);
+  hoverId = null;
+  if (inContext()) {
+    contextScene = buildGroupScene(store.doc, contextStack[contextStack.length - 1]);
+  } else {
+    contextScene = null;
+  }
+  updateBreadcrumb();
+  updateLegend();
+  fit();
+}
+
+function updateInfo(): void {
+  if (!store) return;
+  const g = store.doc.graph;
+  const lanes = scenes.matrix?.lanes.length ?? 0;
+  const title =
+    (g["name"] as string | undefined) ??
+    (store.doc.header?.["name"] as string | undefined) ??
+    g.graph_id ??
+    "untitled";
+  info.textContent =
+    `${title} — ${g.nodes.length} nodes, ${g.edges.length} edges` +
+    (lanes ? `, ${lanes} epochs` : "");
+}
+
+function buildScenes(): void {
+  if (!store) return;
+  const doc = store.doc;
+  const folded = new Set(doc.layout?.folded_groups ?? []);
+  const foldedView = folded.size
+    ? applyFolding(doc, buildMembership(doc), folded)
+    : undefined;
+  scenes.matrix = buildMatrixScene(doc, foldedView);
+  scenes.graph = buildGraphScene(doc, foldedView);
+}
+
 function setView(v: ViewKind): void {
   view = v;
   btnMatrix.classList.toggle("active", v === "matrix");
   btnGraph.classList.toggle("active", v === "graph");
-  if (doc && scenes[v] === undefined) buildScenes();
+  if (contextStack.length) {
+    contextStack = [];
+    rebuildContext();
+  }
   if (scenes[v] === null && v === "matrix") {
     info.textContent =
       "no layout section — run: emstudio layout file.em.json -o out.em.json";
@@ -152,40 +294,35 @@ function setView(v: ViewKind): void {
   fit();
 }
 
-function updateInfo(): void {
-  if (!doc) return;
-  const g = doc.graph;
-  const lanes = scenes.matrix?.lanes.length ?? 0;
-  const title =
-    (g["name"] as string | undefined) ??
-    (doc.header?.["name"] as string | undefined) ??
-    g.graph_id ??
-    "untitled";
-  info.textContent =
-    `${title} — ${g.nodes.length} nodes, ` +
-    `${g.edges.length} edges` +
-    (lanes ? `, ${lanes} epochs` : "");
-}
-
-function buildScenes(): void {
-  if (!doc) return;
-  scenes.matrix = buildMatrixScene(doc);
-  scenes.graph = buildGraphScene(doc);
-}
-
 function loadDocument(d: EmDocument, sourceName: string): void {
   if (!d?.graph?.nodes) {
     info.textContent = `${sourceName}: not an .em.json document (missing graph.nodes)`;
     return;
   }
-  doc = d;
-  scenes.matrix = undefined;
-  scenes.graph = undefined;
+  store = new DocumentStore(d);
+  store.onChange(() => {
+    buildScenes();
+    if (inContext()) {
+      contextScene = buildGroupScene(
+        store!.doc,
+        contextStack[contextStack.length - 1],
+      );
+    }
+    updateInfo();
+    updateLegend();
+    updateToolbar();
+    refreshInspector();
+    draw();
+  });
+  contextStack = [];
+  contextScene = null;
   hoverId = null;
-  select(null);
+  selectedId = null;
   buildScenes();
+  select(null);
   dropHint.classList.add("hidden");
-  // prefer matrix when a layout is present, otherwise fall back to graph view
+  updateToolbar();
+  updateBreadcrumb();
   setView(scenes.matrix ? "matrix" : "graph");
 }
 
@@ -196,13 +333,192 @@ function loadFile(file: File): void {
     .catch((e) => (info.textContent = `parse error: ${e}`));
 }
 
+function saveDocument(): void {
+  if (!store) return;
+  const g = store.doc.graph;
+  const name =
+    (g["name"] as string | undefined) ?? g.graph_id ?? "graph";
+  const blob = new Blob([store.toJSON()], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `${String(name).replace(/[^\w.-]+/g, "_")}.em.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  store.dirty = false;
+  updateToolbar();
+}
+
+// ---------- placing (palette) ----------
+const paletteUi = buildPalette(document.getElementById("palette")!, (t) => {
+  if (!store) {
+    toast("Open a document first");
+    return;
+  }
+  placingType = placingType === t ? null : t;
+  paletteUi.setActive(placingType);
+  canvas.classList.toggle("placing", !!placingType);
+  if (placingType) {
+    hintBar.textContent = `Click the canvas to place a ${placingType} — Esc to cancel`;
+    hintBar.classList.remove("hidden");
+  } else {
+    hintBar.classList.add("hidden");
+  }
+});
+
+function cancelPlacing(): void {
+  placingType = null;
+  paletteUi.setActive(null);
+  canvas.classList.remove("placing");
+  hintBar.classList.add("hidden");
+}
+
+function placeNode(wx: number, wy: number): void {
+  if (!store || !placingType) return;
+  const id = store.freshId(placingType);
+  const w = isGroupType(placingType) ? 120 : 90;
+  const h = 30;
+  const node = { id, name: id, node_type: placingType, description: "" };
+  if (inContext()) {
+    const gid = contextStack[contextStack.length - 1];
+    store.addNode(node);
+    store.moveInGroupSpace(gid, id, { x: wx - w / 2, y: wy - h / 2, w, h }, false);
+    // membership edge into the group we are inside
+    const g = store.node(gid);
+    const types = allowedEdgeTypes(placingType, g?.node_type);
+    const membership = types.find((t) => t.startsWith("is_in_"));
+    if (membership) store.addEdge(id, gid, membership);
+  } else {
+    store.addNode(node, { x: wx - w / 2, y: wy - h / 2, w, h });
+    // matrix view: assign the epoch of the lane the node was dropped in
+    if (view === "matrix" && isStratigraphicType(placingType)) {
+      const lane = scenes.matrix?.lanes.find(
+        (l) => wy >= l.y && wy <= l.y + l.height,
+      );
+      if (lane) store.addEdge(id, lane.id, "has_first_epoch");
+    }
+  }
+  select(id);
+  cancelPlacing();
+  toast(`${id} created`);
+}
+
+// ---------- connect (edge drawing with live socket validation) ----------
+function beginConnect(fromId: string): void {
+  connect = { fromId, x: 0, y: 0, targetId: null, validity: null };
+  canvas.classList.add("connecting");
+}
+
+function updateConnect(wx: number, wy: number): void {
+  if (!connect || !store) return;
+  connect.x = wx;
+  connect.y = wy;
+  const s = scene();
+  const hit = s ? hitTest(s, wx, wy) : null;
+  if (hit && hit.id !== connect.fromId) {
+    connect.targetId = hit.id;
+    connect.validity = connectValidity(
+      store.node(connect.fromId)?.node_type,
+      hit.node.node_type,
+    );
+  } else {
+    connect.targetId = null;
+    connect.validity = null;
+  }
+  draw();
+}
+
+function finishConnect(): void {
+  if (!connect || !store) return;
+  const { fromId, targetId, validity } = connect;
+  connect = null;
+  canvas.classList.remove("connecting");
+  draw();
+  if (!targetId || !validity) return;
+  const src = store.node(fromId)?.node_type;
+  const tgt = store.node(targetId)?.node_type;
+  if (validity === "invalid") {
+    toast(`No EM connection allows ${src} → ${tgt}`);
+    return;
+  }
+  const types =
+    validity === "valid" ? allowedEdgeTypes(src, tgt) : [GENERIC_EDGE];
+  if (types.length === 1) {
+    createEdge(fromId, targetId, types[0]);
+  } else {
+    showEdgeMenu(fromId, targetId, types);
+  }
+}
+
+function createEdge(source: string, target: string, edgeType: string): void {
+  if (!store) return;
+  if (store.hasEdge(source, target, edgeType)) {
+    toast(`${edgeTypeLabel(edgeType)} already exists`);
+    return;
+  }
+  store.addEdge(source, target, edgeType);
+  toast(
+    `${store.node(source)?.name || source} — ${edgeTypeLabel(edgeType)} → ${store.node(target)?.name || target}`,
+  );
+}
+
+function showEdgeMenu(
+  source: string,
+  target: string,
+  types: string[],
+): void {
+  edgeMenu.innerHTML = "";
+  const title = document.createElement("div");
+  title.className = "edge-menu-title";
+  title.textContent = `${store?.node(source)?.name || source} → ${store?.node(target)?.name || target}`;
+  edgeMenu.appendChild(title);
+  for (const t of types) {
+    const b = document.createElement("button");
+    const sw = document.createElement("span");
+    sw.className = "legend-swatch";
+    const st = edgeStyle(t);
+    sw.style.borderBottomColor = st.color;
+    sw.style.borderBottomStyle = st.dash.length ? "dashed" : "solid";
+    b.appendChild(sw);
+    b.appendChild(document.createTextNode(" " + edgeTypeLabel(t)));
+    b.addEventListener("click", () => {
+      hideEdgeMenu();
+      createEdge(source, target, t);
+    });
+    edgeMenu.appendChild(b);
+  }
+  const cancel = document.createElement("button");
+  cancel.className = "edge-menu-cancel";
+  cancel.textContent = "Cancel";
+  cancel.addEventListener("click", hideEdgeMenu);
+  edgeMenu.appendChild(cancel);
+  const s = scene()!;
+  const t = s.byId.get(target)!;
+  const vp = viewport();
+  edgeMenu.style.left =
+    Math.min((t.x + t.w) * vp.scale + vp.x + 10, wrap.clientWidth - 240) + "px";
+  edgeMenu.style.top =
+    Math.min(t.y * vp.scale + vp.y, wrap.clientHeight - 40 * (types.length + 2)) +
+    "px";
+  edgeMenu.classList.remove("hidden");
+}
+
+function hideEdgeMenu(): void {
+  edgeMenu.classList.add("hidden");
+  edgeMenu.innerHTML = "";
+}
+
 // ---------- toolbar wiring ----------
 const fileInput = document.getElementById("file-input") as HTMLInputElement;
-document.getElementById("btn-open")!.addEventListener("click", () => fileInput.click());
+document
+  .getElementById("btn-open")!
+  .addEventListener("click", () => fileInput.click());
 fileInput.addEventListener("change", () => {
   if (fileInput.files?.[0]) loadFile(fileInput.files[0]);
   fileInput.value = "";
 });
+document.getElementById("btn-save")!.addEventListener("click", saveDocument);
+btnUndo.addEventListener("click", () => store?.undo());
+btnRedo.addEventListener("click", () => store?.redo());
 btnMatrix.addEventListener("click", () => setView("matrix"));
 btnGraph.addEventListener("click", () => setView("graph"));
 document.getElementById("btn-fit")!.addEventListener("click", fit);
@@ -218,8 +534,12 @@ document.getElementById("btn-fit")!.addEventListener("click", fit);
 setupSearch(
   document.getElementById("search") as HTMLInputElement,
   document.getElementById("search-results")!,
-  () => doc,
+  () => store?.doc ?? null,
   (id) => {
+    if (inContext()) {
+      contextStack = [];
+      rebuildContext();
+    }
     select(id);
     centerOn(id);
   },
@@ -234,17 +554,52 @@ window.addEventListener("drop", (e) => {
 });
 
 // ---------- canvas interactions ----------
-let panning = false;
+type DragMode = "none" | "pan" | "node" | "connect";
+let dragMode: DragMode = "none";
 let moved = false;
 let lastX = 0;
 let lastY = 0;
+let dragNodeId: string | null = null;
+let dragCheckpointed = false;
+let lastClickTime = 0;
+let lastClickId: string | null = null;
+
+function worldPos(e: PointerEvent | WheelEvent): { x: number; y: number } {
+  const rect = canvas.getBoundingClientRect();
+  return viewport().toWorld(e.clientX - rect.left, e.clientY - rect.top);
+}
 
 canvas.addEventListener("pointerdown", (e) => {
-  panning = true;
+  hideEdgeMenu();
   moved = false;
   lastX = e.clientX;
   lastY = e.clientY;
-  canvas.classList.add("panning");
+  const s = scene();
+  if (!s) return;
+  const w = worldPos(e);
+  if (placingType) {
+    dragMode = "none";
+    return; // click placement handled on pointerup
+  }
+  // connect handle?
+  const focus = hoverId ?? selectedId;
+  const fn = focus ? s.byId.get(focus) : null;
+  if (fn && hitHandle(fn, w.x, w.y, viewport().scale)) {
+    dragMode = "connect";
+    beginConnect(fn.id);
+    updateConnect(w.x, w.y);
+    canvas.setPointerCapture(e.pointerId);
+    return;
+  }
+  const hit = hitTest(s, w.x, w.y);
+  if (hit && (view === "matrix" || inContext())) {
+    dragMode = "node";
+    dragNodeId = hit.id;
+    dragCheckpointed = false;
+  } else {
+    dragMode = "pan";
+    canvas.classList.add("panning");
+  }
   canvas.setPointerCapture(e.pointerId);
 });
 
@@ -252,12 +607,18 @@ canvas.addEventListener("pointermove", (e) => {
   const rect = canvas.getBoundingClientRect();
   const sx = e.clientX - rect.left;
   const sy = e.clientY - rect.top;
-  if (panning) {
+  const vp = viewport();
+  const w = vp.toWorld(sx, sy);
+
+  if (dragMode === "connect") {
+    updateConnect(w.x, w.y);
+    return;
+  }
+  if (dragMode === "pan") {
     const dx = e.clientX - lastX;
     const dy = e.clientY - lastY;
     if (Math.abs(dx) + Math.abs(dy) > 3) moved = true;
     if (moved) {
-      const vp = viewports[view];
       vp.x += dx;
       vp.y += dy;
       lastX = e.clientX;
@@ -267,21 +628,50 @@ canvas.addEventListener("pointermove", (e) => {
     }
     return;
   }
+  if (dragMode === "node" && dragNodeId && store) {
+    const dx = e.clientX - lastX;
+    const dy = e.clientY - lastY;
+    if (Math.abs(dx) + Math.abs(dy) > 3) moved = true;
+    if (moved) {
+      const s = scene();
+      const n = s?.byId.get(dragNodeId);
+      if (n) {
+        const nx = n.x + dx / vp.scale;
+        const ny = n.y + dy / vp.scale;
+        if (inContext()) {
+          store.moveInGroupSpace(
+            contextStack[contextStack.length - 1],
+            dragNodeId,
+            { x: nx, y: ny, w: n.w, h: n.h },
+            !dragCheckpointed,
+          );
+        } else {
+          store.moveNode(dragNodeId, nx, ny, !dragCheckpointed);
+        }
+        dragCheckpointed = true;
+      }
+      lastX = e.clientX;
+      lastY = e.clientY;
+    }
+    return;
+  }
+
+  // hover / tooltip
   const s = scene();
   if (!s) return;
-  const w = viewports[view].toWorld(sx, sy);
   const hit = hitTest(s, w.x, w.y);
   const newHover = hit?.id ?? null;
   if (newHover !== hoverId) {
     hoverId = newHover;
     draw();
   }
-  if (hit) {
+  if (hit && !placingType) {
     tooltip.innerHTML = `<b></b> <span class="tt-type"></span><br><span class="tt-desc"></span>`;
     (tooltip.children[0] as HTMLElement).textContent = String(
       hit.node.name || hit.id,
     );
-    (tooltip.children[1] as HTMLElement).textContent = `[${hit.node.node_type}] ${hit.id}`;
+    (tooltip.children[1] as HTMLElement).textContent =
+      `[${hit.node.node_type}] ${hit.id}`;
     (tooltip.children[3] as HTMLElement).textContent = String(
       hit.node.description ?? "",
     ).slice(0, 220);
@@ -295,16 +685,38 @@ canvas.addEventListener("pointermove", (e) => {
 
 canvas.addEventListener("pointerup", (e) => {
   canvas.classList.remove("panning");
-  if (panning && !moved) {
-    const rect = canvas.getBoundingClientRect();
-    const s = scene();
-    if (s) {
-      const w = viewports[view].toWorld(e.clientX - rect.left, e.clientY - rect.top);
-      const hit = hitTest(s, w.x, w.y);
-      select(hit?.id ?? null);
-    }
+  const mode = dragMode;
+  dragMode = "none";
+  if (mode === "connect") {
+    finishConnect();
+    return;
   }
-  panning = false;
+  const s = scene();
+  if (!s) return;
+  const w = worldPos(e);
+  if (placingType) {
+    placeNode(w.x, w.y);
+    return;
+  }
+  if (!moved) {
+    const hit = hitTest(s, w.x, w.y);
+    const now = Date.now();
+    if (
+      hit &&
+      hit.id === lastClickId &&
+      now - lastClickTime < 400 &&
+      isGroupType(hit.node.node_type)
+    ) {
+      // double-click on a group → enter its isolated canvas
+      enterGroup(hit.id);
+      lastClickId = null;
+      return;
+    }
+    lastClickTime = now;
+    lastClickId = hit?.id ?? null;
+    select(hit?.id ?? null);
+  }
+  dragNodeId = null;
 });
 
 canvas.addEventListener("pointerleave", () => {
@@ -320,7 +732,7 @@ canvas.addEventListener(
   (e) => {
     e.preventDefault();
     const rect = canvas.getBoundingClientRect();
-    viewports[view].zoomAt(
+    viewport().zoomAt(
       e.clientX - rect.left,
       e.clientY - rect.top,
       Math.exp(-e.deltaY * 0.0016),
@@ -331,13 +743,47 @@ canvas.addEventListener(
 );
 
 window.addEventListener("keydown", (e) => {
-  if (e.target instanceof HTMLInputElement) return;
+  const inField =
+    e.target instanceof HTMLInputElement ||
+    e.target instanceof HTMLTextAreaElement;
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
+    e.preventDefault();
+    saveDocument();
+    return;
+  }
+  if (inField) return;
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
+    e.preventDefault();
+    if (e.shiftKey) store?.redo();
+    else store?.undo();
+    return;
+  }
   if (e.key === "0") fit();
-  if (e.key === "Escape") select(null);
-  if (e.key === "+" || e.key === "=")
-    viewports[view].zoomAt(viewSize().w / 2, viewSize().h / 2, 1.25), draw();
-  if (e.key === "-")
-    viewports[view].zoomAt(viewSize().w / 2, viewSize().h / 2, 0.8), draw();
+  if (e.key === "Escape") {
+    if (placingType) cancelPlacing();
+    else if (!edgeMenu.classList.contains("hidden")) hideEdgeMenu();
+    else if (inContext()) {
+      contextStack.pop();
+      rebuildContext();
+    } else select(null);
+  }
+  if ((e.key === "Delete" || e.key === "Backspace") && selectedId && store) {
+    e.preventDefault();
+    store.deleteNode(selectedId);
+    select(null);
+  }
+  if (e.key === "+" || e.key === "=") {
+    viewport().zoomAt(viewSize().w / 2, viewSize().h / 2, 1.25);
+    draw();
+  }
+  if (e.key === "-") {
+    viewport().zoomAt(viewSize().w / 2, viewSize().h / 2, 0.8);
+    draw();
+  }
+});
+
+window.addEventListener("beforeunload", (e) => {
+  if (store?.dirty) e.preventDefault();
 });
 
 new ResizeObserver(resizeCanvas).observe(wrap);
@@ -347,11 +793,10 @@ resizeCanvas();
 if (window.__EM_TEST_DATA__) {
   loadDocument(window.__EM_TEST_DATA__, "embedded test data");
 } else if (location.protocol !== "file:") {
-  // dev convenience: auto-load the sample if it is served alongside the app
   fetch("./testdata/TempluMare.em.json")
     .then((r) => (r.ok ? r.json() : null))
     .then((d) => {
-      if (d && !doc) loadDocument(d as EmDocument, "TempluMare sample");
+      if (d && !store) loadDocument(d as EmDocument, "TempluMare sample");
     })
     .catch(() => void 0);
 }
