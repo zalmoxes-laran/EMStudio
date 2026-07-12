@@ -92,10 +92,82 @@ Same as A but every tool re-implements behaviour ad hoc from the JSONs.
 
 ## Open datamodel issues found while implementing
 
-* `allowed_connections` reference `VirtualStratigraphicUnit`, but no such
-  class exists (USVn/USVs descend from `NonStructuralVirtualStratigraphicUnit` /
-  `StructuralVirtualStratigraphicUnit` directly under `StratigraphicNode`).
-  EMStudio applies a suffix alias as a workaround; upstream curation should
-  either add the intermediate class or list the concrete ones.
+* ~~`allowed_connections` reference `VirtualStratigraphicUnit`, but no such
+  class exists~~ — **curated 2026-07-12**: `VirtualStratigraphicUnit` added
+  as abstract intermediate class (parent of USVn/USVs); the EMStudio alias
+  workaround was removed.
 * `RSF` (`ReusedSpecialFind`) does not descend from `SpecialFindUnit`, so
-  rules targeting `SpecialFindUnit` exclude it. Verify intent.
+  rules targeting `SpecialFindUnit` exclude it. Verify intent — still open.
+
+## Addendum A — compatibility of the registry entries (breakage analysis)
+
+Adding entries under `node_types` was checked against every consumer found
+in the ecosystem (12 July 2026):
+
+* `classification.py` reads `stratigraphic_nodes.…subtypes` — untouched.
+* `rdf_exporter.py` builds its CIDOC index by *recursive descent over every
+  dict carrying a `"class"` field*. For this reason the generated registry
+  entries **deliberately carry no `class` field** (the key already is the
+  class name): they are invisible to that index and the curated
+  family-section entries keep answering all lookups.
+* `emjson_exporter.py` / `graphml/node_registry.py` read specific sections
+  (`referenced_ontology_versions`, family sections) — additive change, safe.
+* Heriverse (aton `wapps/heriverse`) does not read these JSONs today (its
+  `DrawGraph.node_types` is an internal structure); nothing to break, and
+  the enriched datamodel is exactly what it should consume tomorrow.
+
+## Addendum B — how EMStudio procures datamodel updates (e.g. 1.6.0 → 1.6.1)
+
+Today: `frontend/scripts/sync-datamodels.sh <path-to-s3Dgraphy>` copies the
+JSONs (+ 2D icons) into `src/assets/`; the copies are **pinned vendored
+snapshots** — reviewed in the diff, committed, versioned with the app (the
+same model as a lockfile). Planned hardening, in order:
+
+1. **Version handshake at load**: `.em.json` headers carry the s3Dgraphy
+   version that produced them; EMStudio warns when a document's datamodel
+   version is newer than the bundled contract.
+2. **CI sync**: an EMStudio CI job that runs the sync script against the
+   pinned s3Dgraphy release tag and fails on unreviewed drift.
+3. **Dev override (Tauri)**: point the app at a local s3Dgraphy checkout to
+   load the JSONs live while co-developing library and editor.
+
+## Addendum C — running s3dgraphy itself from EMStudio (batch vs runtime)
+
+Question (E.D.): can EMStudio consume s3dgraphy's native tools (filters,
+analysis, importers)? Answer: **yes, off the interactive loop**.
+
+* **Interactive loop (60 fps editing, validation-as-you-draw)**: no Python —
+  this is what options C/D were rejected for; semantics live in the JSONs
+  and (now) in em-core, which since 12 July also ships as **WASM**
+  (`crates/em-wasm`): the browser's *Layout* button runs the very same Rust
+  engine as `emstudio layout`, keeping cross-delivery determinism.
+* **Batch / one-time operations** (GraphML import, Excel import, RDF
+  export, corpus analysis): the Python reference implementation is the
+  right tool and *should* be used — via the CLI today, via a **Tauri
+  sidecar** (bundled or system Python) in the desktop app tomorrow. These
+  operations are rare, non-realtime, and benefit from staying in the one
+  canonical implementation. This *refines* the Decision section rather than
+  changing it: "one runtime implementation" applies to the editor loop;
+  batch interop explicitly delegates to Python.
+
+## Addendum D — could s3dgraphy's Python classes be generated from the JSON?
+
+Curiosity raised by E.D. (analysis only, not implemented). Technically yes:
+a factory (`type()` / metaclass) can synthesise the node classes at import
+time from the datamodel entries — the truth would be *fully* declarative
+and drift impossible by construction. Trade-offs:
+
+* **Pro** — zero duplication; new node types become data-only changes;
+  guaranteed JSON⇄classes coherence without a guard test.
+* **Con** — dynamic classes degrade the developer experience across the
+  ecosystem: IDE completion, mypy/typing, Sphinx autodoc, pickling and
+  debugging all get worse; per-class *behaviour* (custom methods, symbols,
+  validation hooks — several node classes have them) still needs code, so
+  a hybrid registry of mixins would re-introduce the very indirection the
+  JSON was meant to remove; import-time generation also makes grep-ability
+  ("where is class USVn defined?") suffer, which matters in a library
+  consumed by archaeologists' plugins.
+* **Verdict** — with ~43 mostly-static classes, explicit code + the
+  `--check` drift guard gives the same guarantee at lower cognitive cost.
+  Revisit only if the type system starts growing fast (e.g. DP-driven
+  extensions per project).

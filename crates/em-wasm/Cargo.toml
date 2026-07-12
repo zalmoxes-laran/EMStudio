@@ -1,0 +1,15 @@
+[package]
+name = "em-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "em-core compiled to WebAssembly: the same layout engine in the browser (determinism across deliveries — ADR-001 / ARCHITECTURE §4.4)"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+em-core = { path = "../em-core" }
+serde_json = { workspace = true }

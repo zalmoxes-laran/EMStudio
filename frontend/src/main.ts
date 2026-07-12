@@ -416,6 +416,13 @@ const nodeList = buildNodeList(
       contextStack = [];
       enterGroup(id);
     },
+    onFoldAll: (folded) => {
+      if (!store) return;
+      const ids = store.doc.graph.nodes
+        .filter((n) => n.node_type === "ParadataNodeGroup")
+        .map((n) => n.id);
+      store.setFoldedMany(ids, folded);
+    },
   },
 );
 
@@ -603,6 +610,23 @@ btnRedo.addEventListener("click", () => store?.redo());
 btnMatrix.addEventListener("click", () => setView("matrix"));
 btnGraph.addEventListener("click", () => setView("graph"));
 document.getElementById("btn-fit")!.addEventListener("click", fit);
+const btnLayout = document.getElementById("btn-layout") as HTMLButtonElement;
+btnLayout.addEventListener("click", async () => {
+  if (!store) return;
+  btnLayout.disabled = true;
+  try {
+    const { computeLayout } = await import("./emcore");
+    const layout = await computeLayout(store.doc.graph);
+    store.setLayout(layout);
+    if (view !== "matrix" && !inContext()) setView("matrix");
+    fit();
+    toast("Layout recomputed (em-core)");
+  } catch (e) {
+    toast(`layout failed: ${e instanceof Error ? e.message : e}`);
+  } finally {
+    btnLayout.disabled = false;
+  }
+});
 (document.getElementById("edge-filter") as HTMLSelectElement).addEventListener(
   "change",
   (ev) => {

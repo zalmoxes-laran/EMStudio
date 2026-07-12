@@ -324,6 +324,16 @@ main {
   margin: 8px 2px 4px;
 }
 
+.nl-sect-groups {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.nl-sect-groups span {
+  flex: 1;
+}
+
 .nl-grow {
   display: flex;
   align-items: center;

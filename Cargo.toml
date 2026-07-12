@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/em-core",
     "crates/em-cli",
+    "crates/em-wasm",
     # "crates/em-server",   # enable when the axum skeleton lands (phase 6)
 ]
 

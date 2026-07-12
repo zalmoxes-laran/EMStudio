@@ -22,6 +22,17 @@ npm run dev        # http://localhost:5173 — auto-loads testdata/TempluMare.em
 npm run build      # → dist/index.html, fully self-contained (single file)
 ```
 
+The *Layout* button runs em-core compiled to WebAssembly
+(`src/wasm/em_wasm.wasm`, vendored — byte-identical output to
+`emstudio layout`). Rebuild it after touching the Rust engine:
+
+```sh
+./scripts/build-wasm.sh    # needs: rustup target add wasm32-unknown-unknown
+```
+
+Datamodel updates from s3Dgraphy: `./scripts/sync-datamodels.sh
+<path-to-s3Dgraphy>` (see docs/adr-001 for the versioning policy).
+
 The single-file build works over `file://`, inside the Tauri shell
 (`apps/desktop`) and as a portable artefact.
 

@@ -14,6 +14,8 @@ export interface NodeListCallbacks {
   isFolded: (id: string) => boolean;
   onToggleFold: (id: string) => void;
   onExplode: (id: string) => void;
+  /** fold/unfold every paradata node group at once (single undo step) */
+  onFoldAll: (folded: boolean) => void;
 }
 
 export function buildNodeList(
@@ -60,8 +62,22 @@ export function buildNodeList(
       .sort((a, b) => String(a.name || a.id).localeCompare(String(b.name || b.id)));
     if (groups.length) {
       const h = document.createElement("div");
-      h.className = "nl-sect";
-      h.textContent = `Groups (${groups.length})`;
+      h.className = "nl-sect nl-sect-groups";
+      const label = document.createElement("span");
+      label.textContent = `Groups (${groups.length})`;
+      h.appendChild(label);
+      const foldAll = document.createElement("button");
+      foldAll.className = "nl-icon";
+      foldAll.textContent = "⊟";
+      foldAll.title = "Fold all paradata node groups";
+      foldAll.addEventListener("click", () => groupCb.onFoldAll(true));
+      h.appendChild(foldAll);
+      const unfoldAll = document.createElement("button");
+      unfoldAll.className = "nl-icon";
+      unfoldAll.textContent = "⊞";
+      unfoldAll.title = "Unfold all paradata node groups";
+      unfoldAll.addEventListener("click", () => groupCb.onFoldAll(false));
+      h.appendChild(unfoldAll);
       listEl.appendChild(h);
       for (const g of groups) {
         const row = document.createElement("div");

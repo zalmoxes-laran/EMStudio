@@ -187,6 +187,31 @@ export class DocumentStore {
     this.emit();
   }
 
+  /** Replace the layout (recompute), preserving fold state + group spaces. */
+  setLayout(layout: import("./types").EmLayout): void {
+    this.checkpoint();
+    const old = this.doc.layout;
+    if (old?.folded_groups?.length) layout.folded_groups = old.folded_groups;
+    if (old?.group_spaces && Object.keys(old.group_spaces).length)
+      layout.group_spaces = old.group_spaces;
+    this.doc.layout = layout;
+    this.emit();
+  }
+
+  /** Fold/unfold a whole set of groups as ONE undo step. */
+  setFoldedMany(groupIds: string[], folded: boolean): void {
+    if (!groupIds.length) return;
+    this.checkpoint();
+    const layout = (this.doc.layout ??= {});
+    const set = new Set(layout.folded_groups ?? []);
+    for (const id of groupIds) {
+      if (folded) set.add(id);
+      else set.delete(id);
+    }
+    layout.folded_groups = [...set].sort();
+    this.emit();
+  }
+
   isFolded(groupId: string): boolean {
     return this.doc.layout?.folded_groups?.includes(groupId) ?? false;
   }

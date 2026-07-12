@@ -35,10 +35,8 @@ for (const [className, entry] of Object.entries(CLASS_ENTRIES)) {
   if (entry.node_type) TYPE_TO_CLASS.set(entry.node_type, className);
 }
 
-// class name → ancestry (walking `parent` chains), with the alias fix for
-// the two abstract names referenced by allowed_connections but not present
-// as classes (upstream curation pending in s3Dgraphy):
-//   *VirtualStratigraphicUnit → VirtualStratigraphicUnit
+// class name → ancestry, walking `parent` chains (the hierarchy is complete
+// in the datamodel since the VirtualStratigraphicUnit curation of 2026-07-12)
 const ANCESTRY = new Map<string, string[]>();
 function classAncestors(className: string): string[] {
   const hit = ANCESTRY.get(className);
@@ -48,11 +46,6 @@ function classAncestors(className: string): string[] {
   let guard = 0;
   while (cur && guard++ < 20) {
     out.push(cur);
-    if (
-      cur.endsWith("VirtualStratigraphicUnit") &&
-      cur !== "VirtualStratigraphicUnit"
-    )
-      out.push("VirtualStratigraphicUnit");
     cur = CLASS_ENTRIES[cur]?.parent;
   }
   ANCESTRY.set(className, out);
