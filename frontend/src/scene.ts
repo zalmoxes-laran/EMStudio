@@ -24,11 +24,41 @@ export interface Lane {
   height: number;
 }
 
+/** yEd-style group container drawn on the canvas (open box or closed tab). */
+export interface SceneGroup {
+  id: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  headerH: number;
+  title: string;
+  folded: boolean;
+}
+
 export interface Scene {
   nodes: SceneNode[];
   byId: Map<string, SceneNode>;
   edges: SceneEdge[];
   lanes: Lane[];
+  /** container groups (matrix view); the group node itself stays in nodes */
+  groups?: SceneGroup[];
+  groupsById?: Map<string, SceneGroup>;
+  /** member id → container group id (open containers only) */
+  memberOf?: Map<string, string>;
+}
+
+/** ± toggle button of a group container under a world-space point. */
+export function hitGroupToggle(
+  scene: Scene,
+  wx: number,
+  wy: number,
+): SceneGroup | null {
+  for (const g of scene.groups ?? []) {
+    if (wx >= g.x + 3 && wx <= g.x + 19 && wy >= g.y + 3 && wy <= g.y + 19)
+      return g;
+  }
+  return null;
 }
 
 export interface Bounds {

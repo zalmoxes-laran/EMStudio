@@ -1,9 +1,26 @@
 // Matrix view: the Extended Matrix swimlane projection. Geometry comes from
 // the .em.json layout section (em-cli `layout`); folding is applied as a
-// view-state projection before building the scene.
-import type { FoldedView } from "../folding";
-import type { Scene } from "../scene";
+// view-state projection; container groups (yEd-style boxes) are drawn for
+// the paradata node groups, with members relocated inside the box and the
+// swimlanes expanding dynamically when a container needs more room.
+//
+// NOTE: ActivityNodeGroup / TimeBranch / Location groups keep the plain
+// node + fold behaviour for now: turning them into open containers requires
+// the group-aware layout of em-core compaction v2 (they own stratigraphic
+// members whose x-order must stay meaningful).
+import { buildMembership, type FoldedView } from "../folding";
+import type { Scene, SceneGroup, SceneNode } from "../scene";
 import type { EmDocument } from "../types";
+
+export const GROUP_HEADER = 20;
+export const GROUP_PAD = 12;
+const CELL_GAP = 14;
+const LANE_PAD = 14;
+const CLOSED_W = 150;
+const CLOSED_H = 40;
+
+/** group types rendered as open/closed containers in the matrix canvas */
+export const CONTAINER_TYPES = new Set(["ParadataNodeGroup"]);
 
 export function buildMatrixScene(
   doc: EmDocument,
@@ -16,9 +33,20 @@ export function buildMatrixScene(
   const nodes = view?.nodes ?? doc.graph.nodes;
   const edges = view?.edges ?? doc.graph.edges;
   const nodeById = new Map(doc.graph.nodes.map((n) => [n.id, n]));
-  const scene: Scene = { nodes: [], byId: new Map(), edges: [], lanes: [] };
+  const folded = new Set(layout.folded_groups ?? []);
+  const membership = buildMembership(doc);
 
-  for (const lane of layout.swimlanes ?? []) {
+  const scene: Scene = {
+    nodes: [],
+    byId: new Map(),
+    edges: [],
+    lanes: [],
+    groups: [],
+    groupsById: new Map(),
+    memberOf: new Map(),
+  };
+
+  for (const lane of [...(layout.swimlanes ?? [])].sort((a, b) => a.y - b.y)) {
     const epoch = nodeById.get(lane.epoch_id);
     scene.lanes.push({
       id: lane.epoch_id,
@@ -28,10 +56,13 @@ export function buildMatrixScene(
     });
   }
 
+  // base placement from the stored layout
+  const containerIds: string[] = [];
+  const normal: SceneNode[] = [];
   for (const node of nodes) {
     const r = positions[node.id];
     if (!r) continue;
-    const sn = {
+    const sn: SceneNode = {
       id: node.id,
       x: r.x,
       y: r.y,
@@ -40,14 +71,136 @@ export function buildMatrixScene(
       node,
       badge: view?.badges.get(node.id),
     };
-    scene.nodes.push(sn);
     scene.byId.set(node.id, sn);
+    if (CONTAINER_TYPES.has(node.node_type)) {
+      containerIds.push(node.id);
+    } else {
+      normal.push(sn);
+    }
+  }
+
+  // containers first (drawn under their members), then everything else
+  const containerNodes = containerIds.map((id) => scene.byId.get(id)!);
+  scene.nodes = [...containerNodes, ...normal];
+
+  // ---- container pass: relocate members inside open boxes ----
+  const laneIdxOfY = (cy: number): number => {
+    for (let i = 0; i < scene.lanes.length; i++) {
+      const l = scene.lanes[i];
+      if (cy >= l.y && cy < l.y + l.height) return i;
+    }
+    return scene.lanes.length - 1;
+  };
+  const laneOf = new Map<string, number>(); // node id → lane index
+
+  for (const g of containerNodes) {
+    if (folded.has(g.id)) {
+      g.w = CLOSED_W;
+      g.h = CLOSED_H;
+      continue; // members are already hidden by the folding projection
+    }
+    const memberIds = (membership.membersOf.get(g.id) ?? []).filter((m) =>
+      scene.byId.has(m),
+    );
+    if (!memberIds.length) continue;
+    const space = layout.group_spaces?.[g.id] ?? {};
+    const originX = g.x + GROUP_PAD;
+    const originY = g.y + GROUP_HEADER + GROUP_PAD;
+
+    // auto-grid defaults for members without a stored local position
+    const cols = Math.max(1, Math.ceil(Math.sqrt(memberIds.length * 1.6)));
+    let gi = 0;
+    let maxW = 0;
+    let maxH = 0;
+    for (const m of memberIds) {
+      const sn = scene.byId.get(m)!;
+      maxW = Math.max(maxW, sn.w);
+      maxH = Math.max(maxH, sn.h);
+    }
+    for (const m of memberIds) {
+      const sn = scene.byId.get(m)!;
+      const local = space[m];
+      if (local) {
+        sn.x = originX + local.x;
+        sn.y = originY + local.y;
+      } else {
+        sn.x = originX + (gi % cols) * (maxW + CELL_GAP);
+        sn.y = originY + Math.floor(gi / cols) * (maxH + CELL_GAP);
+        gi++;
+      }
+      scene.memberOf!.set(m, g.id);
+    }
+    // box from members' bbox
+    let mx = Infinity,
+      my = Infinity,
+      Mx = -Infinity,
+      My = -Infinity;
+    for (const m of memberIds) {
+      const sn = scene.byId.get(m)!;
+      mx = Math.min(mx, sn.x);
+      my = Math.min(my, sn.y);
+      Mx = Math.max(Mx, sn.x + sn.w);
+      My = Math.max(My, sn.y + sn.h);
+    }
+    g.w = Math.max(CLOSED_W, Mx - g.x + GROUP_PAD);
+    g.h = Math.max(CLOSED_H + 20, My - g.y + GROUP_PAD);
+    // members always share the group's lane for the expansion pass
+    const gLane = laneIdxOfY(g.y + GROUP_HEADER / 2);
+    laneOf.set(g.id, gLane);
+    for (const m of memberIds) laneOf.set(m, gLane);
+  }
+
+  // ---- dynamic swimlane expansion ----
+  if (scene.lanes.length) {
+    for (const sn of scene.nodes) {
+      if (!laneOf.has(sn.id)) laneOf.set(sn.id, laneIdxOfY(sn.y + sn.h / 2));
+    }
+    const delta = scene.lanes.map(() => 0);
+    for (const sn of scene.nodes) {
+      const li = laneOf.get(sn.id)!;
+      const lane = scene.lanes[li];
+      const overflow = sn.y + sn.h + LANE_PAD - (lane.y + lane.height);
+      if (overflow > 0) delta[li] = Math.max(delta[li], overflow);
+    }
+    let shift = 0;
+    const prefix: number[] = [];
+    for (let i = 0; i < scene.lanes.length; i++) {
+      prefix.push(shift);
+      scene.lanes[i].y += shift;
+      scene.lanes[i].height += delta[i];
+      shift += delta[i];
+    }
+    if (shift > 0) {
+      for (const sn of scene.nodes) sn.y += prefix[laneOf.get(sn.id)!];
+    }
+  }
+
+  // ---- container descriptors for the renderer ----
+  for (const g of containerNodes) {
+    const sg: SceneGroup = {
+      id: g.id,
+      x: g.x,
+      y: g.y,
+      w: g.w,
+      h: g.h,
+      headerH: GROUP_HEADER,
+      title: String(g.node.name || g.id),
+      folded: folded.has(g.id),
+    };
+    scene.groups!.push(sg);
+    scene.groupsById!.set(g.id, sg);
   }
 
   for (const e of edges) {
-    if (scene.byId.has(e.source) && scene.byId.has(e.target)) {
-      scene.edges.push({ source: e.source, target: e.target, edge: e });
-    }
+    if (!scene.byId.has(e.source) || !scene.byId.has(e.target)) continue;
+    // containment already expresses membership: hide the member→own-container
+    // edge when the container is drawn open (yEd semantics)
+    if (
+      scene.memberOf!.get(e.source) === e.target ||
+      scene.memberOf!.get(e.target) === e.source
+    )
+      continue;
+    scene.edges.push({ source: e.source, target: e.target, edge: e });
   }
   return scene;
 }

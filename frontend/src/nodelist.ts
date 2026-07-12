@@ -1,6 +1,8 @@
-// Node list view: filterable table of every node (name / type / description)
-// next to the 2D canvas; click selects and centres the node.
+// Node list view (outliner): the node groups on top — with inline
+// fold/unfold and explode (isolate) controls — then the filterable table of
+// every node (name / type / description); click selects and centres.
 import { nodeStyle } from "./palette";
+import { isGroupType } from "./rules";
 import type { EmDocument } from "./types";
 
 export interface NodeListApi {
@@ -8,10 +10,17 @@ export interface NodeListApi {
   setSelected: (id: string | null) => void;
 }
 
+export interface NodeListCallbacks {
+  isFolded: (id: string) => boolean;
+  onToggleFold: (id: string) => void;
+  onExplode: (id: string) => void;
+}
+
 export function buildNodeList(
   root: HTMLElement,
   getDoc: () => EmDocument | null,
   onPick: (id: string) => void,
+  groupCb: NodeListCallbacks,
 ): NodeListApi {
   root.innerHTML = "";
   const filter = document.createElement("input");
@@ -42,12 +51,61 @@ export function buildNodeList(
       String(s ?? "")
         .toLowerCase()
         .includes(q);
+    const matches = (n: (typeof doc.graph.nodes)[number]): boolean =>
+      !q || match(n.name) || match(n.id) || match(n.node_type) || match(n.description);
+
+    // ---- groups section (fold / explode inline) ----
+    const groups = doc.graph.nodes
+      .filter((n) => isGroupType(n.node_type) && matches(n))
+      .sort((a, b) => String(a.name || a.id).localeCompare(String(b.name || b.id)));
+    if (groups.length) {
+      const h = document.createElement("div");
+      h.className = "nl-sect";
+      h.textContent = `Groups (${groups.length})`;
+      listEl.appendChild(h);
+      for (const g of groups) {
+        const row = document.createElement("div");
+        row.className = "nl-grow";
+        const fold = document.createElement("button");
+        fold.className = "nl-icon";
+        const folded = groupCb.isFolded(g.id);
+        fold.textContent = folded ? "▸" : "▾";
+        fold.title = folded ? "Unfold group" : "Fold group";
+        fold.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          groupCb.onToggleFold(g.id);
+        });
+        row.appendChild(fold);
+        const name = document.createElement("button");
+        name.className = "nl-gname";
+        name.textContent = String(g.name || g.id);
+        name.title = `${g.id} [${g.node_type}]`;
+        name.addEventListener("click", () => onPick(g.id));
+        row.appendChild(name);
+        const explode = document.createElement("button");
+        explode.className = "nl-icon";
+        explode.textContent = "⤢";
+        explode.title = "Explode: isolate the group contents";
+        explode.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          groupCb.onExplode(g.id);
+        });
+        row.appendChild(explode);
+        listEl.appendChild(row);
+        rows.set(g.id, row);
+      }
+      const h2 = document.createElement("div");
+      h2.className = "nl-sect";
+      h2.textContent = "Nodes";
+      listEl.appendChild(h2);
+    }
+
     const nodes = doc.graph.nodes
-      .filter((n) => !q || match(n.name) || match(n.id) || match(n.node_type) || match(n.description))
+      .filter((n) => !isGroupType(n.node_type) && matches(n))
       .sort((a, b) =>
         String(a.name || a.id).localeCompare(String(b.name || b.id)),
       );
-    count.textContent = `${nodes.length} / ${doc.graph.nodes.length} nodes`;
+    count.textContent = `${nodes.length + groups.length} / ${doc.graph.nodes.length} nodes`;
     for (const n of nodes) {
       const row = document.createElement("button");
       row.className = "nl-row" + (n.id === selected ? " selected" : "");

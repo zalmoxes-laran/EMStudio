@@ -18,12 +18,14 @@ import {
 } from "./rules";
 import { sceneToSvg } from "./svg-export";
 import {
+  hitGroupToggle,
   hitHandle,
   hitTest,
   sceneBounds,
   Viewport,
   type Scene,
 } from "./scene";
+import { GROUP_HEADER, GROUP_PAD } from "./views/matrix";
 import { setupSearch } from "./search";
 import type { EmDocument, ViewKind } from "./types";
 import { buildGroupScene } from "./views/context";
@@ -407,6 +409,14 @@ const nodeList = buildNodeList(
     select(id);
     centerOn(id);
   },
+  {
+    isFolded: (id) => store?.isFolded(id) ?? false,
+    onToggleFold: (id) => store?.setFolded(id, !store.isFolded(id)),
+    onExplode: (id) => {
+      contextStack = [];
+      enterGroup(id);
+    },
+  },
 );
 
 const overview = buildOverview(
@@ -706,14 +716,29 @@ canvas.addEventListener("pointermove", (e) => {
     if (moved) {
       const s = scene();
       const n = s?.byId.get(dragNodeId);
-      if (n) {
+      if (n && s) {
         const nx = n.x + dx / vp.scale;
         const ny = n.y + dy / vp.scale;
+        const containerId = s.memberOf?.get(dragNodeId);
         if (inContext()) {
           store.moveInGroupSpace(
             contextStack[contextStack.length - 1],
             dragNodeId,
             { x: nx, y: ny, w: n.w, h: n.h },
+            !dragCheckpointed,
+          );
+        } else if (containerId) {
+          // member of an open container: persist the local position
+          const g = s.groupsById!.get(containerId)!;
+          store.moveInGroupSpace(
+            containerId,
+            dragNodeId,
+            {
+              x: nx - (g.x + GROUP_PAD),
+              y: ny - (g.y + GROUP_HEADER + GROUP_PAD),
+              w: n.w,
+              h: n.h,
+            },
             !dragCheckpointed,
           );
         } else {
@@ -770,6 +795,12 @@ canvas.addEventListener("pointerup", (e) => {
     return;
   }
   if (!moved) {
+    // group container ± toggle
+    const toggle = hitGroupToggle(s, w.x, w.y);
+    if (toggle && store) {
+      store.setFolded(toggle.id, !store.isFolded(toggle.id));
+      return;
+    }
     const hit = hitTest(s, w.x, w.y);
     const now = Date.now();
     if (

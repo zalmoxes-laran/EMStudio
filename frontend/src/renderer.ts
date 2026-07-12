@@ -54,6 +54,77 @@ function routesFor(scene: Scene, state: RenderState): RouteCache {
 
 const LANE_COLORS = ["#EDF3FA", "#F7FAFD"];
 const ACCENT = "#1F6FEB";
+const GROUP_HEADER_FILL = "#F6D7A4"; // yEd folder tab
+const GROUP_BODY_FILL = "rgba(190,196,204,0.25)";
+
+function drawGroupContainer(
+  ctx: CanvasRenderingContext2D,
+  g: import("./scene").SceneGroup,
+  borderColor: string,
+  scale: number,
+  badge: number | undefined,
+  drawLabels: boolean,
+): void {
+  // body
+  ctx.beginPath();
+  ctx.roundRect(g.x, g.y, g.w, g.h, 5);
+  ctx.fillStyle = GROUP_BODY_FILL;
+  ctx.fill();
+  ctx.setLineDash([5, 3]);
+  ctx.strokeStyle = borderColor;
+  ctx.lineWidth = 1.2 / Math.sqrt(scale);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  // header band
+  ctx.beginPath();
+  ctx.roundRect(g.x, g.y, g.w, g.headerH, [5, 5, 0, 0]);
+  ctx.fillStyle = GROUP_HEADER_FILL;
+  ctx.fill();
+  // ± toggle
+  ctx.fillStyle = "#fff";
+  ctx.strokeStyle = "#555";
+  ctx.lineWidth = 1 / Math.sqrt(scale);
+  ctx.fillRect(g.x + 4, g.y + 4, 13, 13);
+  ctx.strokeRect(g.x + 4, g.y + 4, 13, 13);
+  ctx.strokeStyle = "#333";
+  ctx.lineWidth = 1.4 / Math.sqrt(scale);
+  ctx.beginPath();
+  ctx.moveTo(g.x + 7, g.y + 10.5);
+  ctx.lineTo(g.x + 14, g.y + 10.5);
+  if (g.folded) {
+    ctx.moveTo(g.x + 10.5, g.y + 7);
+    ctx.lineTo(g.x + 10.5, g.y + 14);
+  }
+  ctx.stroke();
+  // title
+  if (drawLabels) {
+    ctx.font = `600 ${Math.min(11, g.headerH * 0.55)}px system-ui, sans-serif`;
+    ctx.fillStyle = "#4a3317";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "middle";
+    let t = g.title;
+    const maxW = g.w - 26;
+    if (ctx.measureText(t).width > maxW) {
+      while (t.length > 2 && ctx.measureText(t + "…").width > maxW)
+        t = t.slice(0, -1);
+      t += "…";
+    }
+    ctx.fillText(t, g.x + 21, g.y + g.headerH / 2 + 0.5);
+  }
+  // badge for folded containers
+  if (badge) {
+    const r = 9 / Math.sqrt(scale);
+    ctx.beginPath();
+    ctx.arc(g.x + g.w, g.y, r, 0, Math.PI * 2);
+    ctx.fillStyle = ACCENT;
+    ctx.fill();
+    ctx.fillStyle = "#fff";
+    ctx.font = `${r * 1.1}px system-ui, sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(String(badge), g.x + g.w, g.y + r * 0.05);
+  }
+}
 
 function shapePath(
   ctx: CanvasRenderingContext2D,
@@ -224,6 +295,16 @@ export function render(
   const drawLabels = vp.scale > 0.35;
   for (const n of scene.nodes) {
     const st = nodeStyle(n.node.node_type);
+    const group = scene.groupsById?.get(n.id);
+    if (group) {
+      drawGroupContainer(ctx, group, st.border, vp.scale, n.badge, drawLabels);
+      if (n.id === state.selectedId || n.id === state.hoverId) {
+        ctx.strokeStyle = n.id === state.selectedId ? ACCENT : "#7fb0f0";
+        ctx.lineWidth = 2.2 / vp.scale;
+        ctx.strokeRect(n.x - 2, n.y - 2, n.w + 4, n.h + 4);
+      }
+      continue;
+    }
     shapePath(ctx, st.shape, n.x, n.y, n.w, n.h);
     ctx.fillStyle = st.fill;
     ctx.fill();
