@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>EMStudio</title>
+  </head>
+  <body>
+    <header id="toolbar">
+      <span id="brand">EMStudio</span>
+      <button id="btn-open" title="Open an .em.json file">Open…</button>
+      <input type="file" id="file-input" accept=".json,.em.json" hidden />
+      <div id="view-toggle" role="group">
+        <button id="btn-matrix" class="active">Matrix</button>
+        <button id="btn-graph">Graph</button>
+      </div>
+      <select id="edge-filter" title="Edge visibility">
+        <option value="all">All edges</option>
+        <option value="sequence">Stratigraphic only</option>
+        <option value="none">No edges</option>
+      </select>
+      <button id="btn-fit" title="Fit to view (0)">Fit</button>
+      <div id="search-wrap">
+        <input id="search" type="search" placeholder="Search nodes…" autocomplete="off" />
+        <div id="search-results" class="hidden"></div>
+      </div>
+      <span id="info">open or drop an .em.json file</span>
+    </header>
+    <main>
+      <div id="canvas-wrap">
+        <canvas id="canvas"></canvas>
+        <div id="drop-hint">Drop an <b>.em.json</b> file here</div>
+        <div id="legend" class="hidden"></div>
+      </div>
+      <aside id="inspector" class="hidden"></aside>
+    </main>
+    <div id="tooltip" class="hidden"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

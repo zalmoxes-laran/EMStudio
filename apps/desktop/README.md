@@ -1,21 +1,41 @@
 # EMStudio desktop (Tauri shell)
 
-Not yet initialised — requires local toolchain (not available in the CI
-sandbox). To scaffold (phase 2):
+Phase-2 scaffold: a Tauri v2 window wrapping the web frontend. File opening
+uses the frontend's own picker / drag-and-drop (native menus, recent files
+and in-process em-core calls come with the editing phase; Oxigraph embedding
+for local SPARQL comes in phase 6).
 
-```bash
-# prerequisites: rustup, node >= 20
+## Prerequisites (macOS)
+
+```sh
+xcode-select --install          # if not already present
 cargo install tauri-cli --locked
-cd apps/desktop
-cargo tauri init   # app name: EMStudio, frontend dist: ../../frontend/dist
+cd ../../frontend && npm install
 ```
 
-Then add `apps/desktop/src-tauri` to the workspace members in the root
-`Cargo.toml`, and wire `em-core` as a dependency of the Tauri backend.
-Oxigraph embedding (local SPARQL) comes in phase 6:
+## Run
+
+```sh
+cd apps/desktop
+cargo tauri dev        # dev: Vite server + live reload
+cargo tauri build      # release bundle (.app / .dmg)
+```
+
+Before the first `cargo tauri build`, generate the full icon set from the
+base PNG:
+
+```sh
+cargo tauri icon src-tauri/icons/icon.png
+```
+
+## Notes
+
+- The Tauri crate is deliberately **outside** the root cargo workspace
+  (`[workspace]` table in `src-tauri/Cargo.toml`) so `cargo build` at the
+  repo root stays lean (em-core + em-cli only).
+- When the editing phase lands, wire em-core in-process:
 
 ```toml
 [dependencies]
-em-core = { path = "../../crates/em-core" }
-oxigraph = "0.4"   # MIT/Apache-2.0 — GPLv3-compatible
+em-core = { path = "../../../crates/em-core" }
 ```

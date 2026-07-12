@@ -1,0 +1,31 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "EMStudio",
+  "version": "0.1.0",
+  "identifier": "org.extendedmatrix.emstudio",
+  "build": {
+    "frontendDist": "../../../frontend/dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm --prefix ../../frontend run dev",
+    "beforeBuildCommand": "npm --prefix ../../frontend run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "EMStudio",
+        "width": 1440,
+        "height": 920,
+        "minWidth": 800,
+        "minHeight": 500
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/icon.png"]
+  }
+}

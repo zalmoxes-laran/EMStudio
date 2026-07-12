@@ -5,7 +5,9 @@ the EM swimlane matrix (epochs as lanes, time flowing upward) and the full
 knowledge graph with every relation visible. Web service and desktop app from
 a single codebase.
 
-> Status: architecture phase (July 2026). See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+> Status: read-only GUI (roadmap phases 2–3, July 2026) — core + CLI + layout
+> engine v1 + web frontend (matrix/graph views) + Tauri shell scaffold.
+> See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Why
 
@@ -42,10 +44,13 @@ validation driven by the same versioned JSON datamodels that drive s3Dgraphy.
    optional reconstructable `layout`. Spec: [`docs/emjson-v1-draft.md`](docs/emjson-v1-draft.md);
    reference implementation in s3Dgraphy (`emjson_exporter` / `emjson_importer`).
 
-## Building and using (current state: core + CLI)
+## Building and using
 
-The GUI does not exist yet (phases 2–4 of the roadmap). What compiles and
-works today is the core library and the command line:
+Read-only GUI (phases 2–3): see [`frontend/README.md`](frontend/README.md)
+(`npm run dev` / single-file build) and [`apps/desktop/README.md`](apps/desktop/README.md)
+(`cargo tauri dev`). Editing, folding and from-sketch layout are phases 4–5.
+
+Core library and command line:
 
 ```bash
 # prerequisites: Rust toolchain (https://rustup.rs)
@@ -72,8 +77,8 @@ export_emjson(GraphMLImporter("project.graphml").parse(), "project.em.json")
 ```
 crates/em-core/     Rust core: model, emjson I/O, validation, layout
 crates/em-server/   axum HTTP/WebSocket delivery (skeleton, TBD)
-apps/desktop/       Tauri shell (init instructions inside)
-frontend/           web UI (canvas, palette, dual views)
+apps/desktop/       Tauri v2 shell wrapping the web frontend
+frontend/           web UI: TS + Vite, single canvas renderer, dual views
 docs/               architecture, format spec, yEd parity checklist
 schemas/            JSON Schema drafts for .em.json
 ```
