@@ -170,6 +170,36 @@ export function edgeStyle(edgeType?: string): EdgeStyle {
   return style;
 }
 
+/**
+ * EM 1.6 Master/Instance document variants (geometry axis): border colour
+ * and width straight from em_visual_rules.document_variant_styles. Legacy
+ * certainty_class values map onto the current variant keys.
+ */
+const VARIANT_LEGACY: Record<string, string> = {
+  direct: "reality_based",
+  reconstructed: "observable",
+  hypothetical: "asserted",
+};
+
+export function documentVariant(certainty?: string): {
+  color: string;
+  width: number;
+} {
+  const styles = (
+    rules as unknown as {
+      document_variant_styles?: Record<
+        string,
+        { border_color?: string; border_width?: number }
+      >;
+    }
+  ).document_variant_styles;
+  const key = certainty ? (VARIANT_LEGACY[certainty] ?? certainty) : "";
+  const st = styles?.[key];
+  if (st?.border_color)
+    return { color: st.border_color, width: st.border_width ?? 4 };
+  return { color: "#000000", width: 4 }; // master_unknown / missing
+}
+
 /** Edge types considered part of the stratigraphic backbone. */
 export const SEQUENCE_EDGES = new Set([
   "is_after",

@@ -3,7 +3,7 @@
 // metadata (palette.ts ← em_visual_rules.json). Edges are routed
 // orthogonally with crossing bridges (routing.ts), yEd-style.
 import { ICON_NODE_TYPES, imageFor } from "./icons";
-import { edgeStyle, nodeStyle } from "./palette";
+import { documentVariant, edgeStyle, nodeStyle } from "./palette";
 import {
   drawArrowhead,
   routeScene,
@@ -333,6 +333,84 @@ export function render(
     const icon = ICON_NODE_TYPES.has(n.node.node_type)
       ? imageFor(n.node.node_type)
       : null;
+    // document: vector sheet with ITS OWN border — thickness carries the
+    // Master/Instance role, colour the geometry-axis variant
+    // (em_visual_rules.document_variant_styles); corner decorator counts
+    // the scene uses
+    if (n.node.node_type === "document") {
+      const data = (n.node.data ?? {}) as Record<string, unknown>;
+      const isMaster =
+        data["is_master"] === true ||
+        (!n.instanceOf && (n.useCount ?? 0) > 1);
+      const variant = documentVariant(
+        typeof data["certainty_class"] === "string"
+          ? (data["certainty_class"] as string)
+          : undefined,
+      );
+      const ih = Math.min(n.h, 30);
+      const iw = ih * 0.78;
+      const x0 = n.x + n.w / 2 - iw / 2;
+      const y0 = n.y + n.h / 2 - ih / 2;
+      const f = iw * 0.32; // folded corner
+      ctx.beginPath();
+      ctx.moveTo(x0, y0);
+      ctx.lineTo(x0 + iw - f, y0);
+      ctx.lineTo(x0 + iw, y0 + f);
+      ctx.lineTo(x0 + iw, y0 + ih);
+      ctx.lineTo(x0, y0 + ih);
+      ctx.closePath();
+      ctx.fillStyle = "#FFFFFF";
+      ctx.fill();
+      ctx.strokeStyle = isMaster ? variant.color : "#1a1a1a";
+      ctx.lineWidth =
+        (isMaster ? Math.max(2.4, variant.width * 0.65) : 0.9) /
+        Math.sqrt(vp.scale);
+      ctx.stroke();
+      // fold
+      ctx.beginPath();
+      ctx.moveTo(x0 + iw - f, y0);
+      ctx.lineTo(x0 + iw - f, y0 + f);
+      ctx.lineTo(x0 + iw, y0 + f);
+      ctx.strokeStyle = isMaster ? variant.color : "#1a1a1a";
+      ctx.lineWidth = 0.9 / Math.sqrt(vp.scale);
+      ctx.stroke();
+      if (drawLabels) {
+        const label = String(n.node.name || n.id);
+        ctx.font = `10px system-ui, sans-serif`;
+        ctx.fillStyle = "#1a1a1a";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(label, n.x + n.w / 2, y0 + ih * 0.62);
+      }
+      if (n.useCount) {
+        const r = 6.5 / Math.sqrt(vp.scale);
+        const bx = x0 + iw + 1;
+        const by = y0 + ih + 1;
+        ctx.beginPath();
+        ctx.arc(bx, by, r, 0, Math.PI * 2);
+        ctx.fillStyle = n.instanceOf ? "#8a939e" : "#4a5568";
+        ctx.fill();
+        ctx.fillStyle = "#fff";
+        ctx.font = `${r * 1.15}px system-ui, sans-serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(String(n.useCount), bx, by + r * 0.05);
+      }
+      if (
+        n.id === state.selectedId ||
+        n.instanceOf === state.selectedId ||
+        n.id === state.hoverId
+      ) {
+        ctx.strokeStyle =
+          n.id === state.selectedId || n.instanceOf === state.selectedId
+            ? ACCENT
+            : "#7fb0f0";
+        ctx.lineWidth = 2.2 / vp.scale;
+        ctx.strokeRect(x0 - 3, y0 - 3, iw + 6, ih + 6);
+      }
+      continue;
+    }
+
     // property: yEd chip — white rectangle with a corner tab, name inside
     if (n.node.node_type === "property") {
       ctx.fillStyle = "#FFFFFF";
@@ -376,25 +454,6 @@ export function render(
       const ix = n.x + n.w / 2 - iw / 2;
       const iy = n.y + n.h / 2 - ih / 2;
       ctx.drawImage(icon, ix, iy, iw, ih);
-      // EM 1.6 Master/Instance documents: thick border = master, thin =
-      // instance; corner decorator (bottom-right) counts the scene uses
-      if (n.node.node_type === "document" && n.useCount) {
-        ctx.strokeStyle = "#1a1a1a";
-        ctx.lineWidth = (n.instanceOf ? 0.8 : 2.6) / Math.sqrt(vp.scale);
-        ctx.strokeRect(ix - 2.5, iy - 2.5, iw + 5, ih + 5);
-        const r = 6.5 / Math.sqrt(vp.scale);
-        const bx = ix + iw + 1;
-        const by = iy + ih + 1;
-        ctx.beginPath();
-        ctx.arc(bx, by, r, 0, Math.PI * 2);
-        ctx.fillStyle = n.instanceOf ? "#8a939e" : "#4a5568";
-        ctx.fill();
-        ctx.fillStyle = "#fff";
-        ctx.font = `${r * 1.15}px system-ui, sans-serif`;
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        ctx.fillText(String(n.useCount), bx, by + r * 0.05);
-      }
       if (drawLabels) {
         const label = String(n.node.name || n.id);
         const fs = 10;

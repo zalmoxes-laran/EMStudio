@@ -18,9 +18,10 @@ export function iconUrlFor(nodeType: string): string | null {
 }
 
 /** node types drawn ON CANVAS as their official icon (yEd parity).
- * property is NOT here: its PNG embeds the word "property" (palette asset),
- * so the canvas draws the yEd chip vectorially with the node name inside. */
-export const ICON_NODE_TYPES = new Set(["extractor", "combiner", "document"]);
+ * property and document are NOT here: property's PNG embeds the word
+ * "property", and the document sheet must carry ITS OWN border (thick =
+ * master, coloured by geometry variant) — both are drawn vectorially. */
+export const ICON_NODE_TYPES = new Set(["extractor", "combiner"]);
 
 const imageCache = new Map<string, HTMLImageElement>();
 let redraw: (() => void) | null = null;

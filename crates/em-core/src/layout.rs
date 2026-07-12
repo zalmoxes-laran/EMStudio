@@ -166,17 +166,41 @@ pub fn compute_with_sketch(
             }
         }
     }
-    // Chain inheritance: propagate source lane to target along chain edges,
-    // repeated until fixpoint (chains are short; bounded by 8 sweeps).
+    // Chain inheritance: propagate source lane to target along chain edges;
+    // membership edges propagate in BOTH directions (a dangling paradata
+    // node with only its is_in_* edge inherits the lane of its group, and a
+    // group inherits from its members) — otherwise such nodes fall into the
+    // trailing lane far away from their box (lenght_pipe bug, 12 July 2026).
+    let membership_edge = |t: &str| {
+        matches!(
+            t,
+            "is_in_activity"
+                | "is_in_paradata_nodegroup"
+                | "is_in_location"
+                | "is_in_timebranch"
+                | "is_part_of"
+                | "has_paradata_nodegroup"
+        )
+    };
     for _ in 0..8 {
         let mut changed = false;
         for e in &graph.edges {
-            if CHAIN_EDGES.contains(&e.edge_type.as_str()) {
-                if let (Some(&s), Some(&t)) = (node_ix.get(e.source.as_str()), node_ix.get(e.target.as_str())) {
-                    if lane[t].is_none() && lane[s].is_some() {
-                        lane[t] = lane[s];
-                        changed = true;
-                    }
+            let et = e.edge_type.as_str();
+            let chain = CHAIN_EDGES.contains(&et);
+            let member = membership_edge(et);
+            if !chain && !member {
+                continue;
+            }
+            if let (Some(&s), Some(&t)) =
+                (node_ix.get(e.source.as_str()), node_ix.get(e.target.as_str()))
+            {
+                if lane[t].is_none() && lane[s].is_some() {
+                    lane[t] = lane[s];
+                    changed = true;
+                }
+                if member && lane[s].is_none() && lane[t].is_some() {
+                    lane[s] = lane[t];
+                    changed = true;
                 }
             }
         }
