@@ -98,15 +98,18 @@ pub fn compute(graph: &Graph, opts: &LayoutOptions) -> Layout {
     compute_with_sketch(graph, opts, None)
 }
 
-/// yEd "From Sketch" policy: when `sketch` (previous positions) is given and
-/// `opts.use_sketch` is on, the current arrangement is treated as a soft
+/// yEd "From Sketch" policy: when `sketch` (the previous layout) is given
+/// and `opts.use_sketch` is on, the current arrangement is a soft
 /// constraint — layer order and band order come from the sketched x
 /// coordinates instead of the barycenter sweeps, so a manual arrangement
-/// survives re-layout.
+/// survives re-layout. The sketch's `folded_groups` COMPACT the layout:
+/// members of folded groups release their band slots (they are parked at
+/// the proxy position, invisible anyway), exactly like yEd's group
+/// compaction on closed folders.
 pub fn compute_with_sketch(
     graph: &Graph,
     opts: &LayoutOptions,
-    sketch: Option<&std::collections::BTreeMap<String, Rect>>,
+    sketch: Option<&Layout>,
 ) -> Layout {
     let node_ix: HashMap<&str, usize> = graph
         .nodes
@@ -330,112 +333,9 @@ pub fn compute_with_sketch(
         }
     }
 
-    // global layers = (lane, topological sub-layer). Epoch nodes are NOT
-    // placed: in the swimlane projection the epoch IS the lane (it renders
-    // as a node only in graph view, which computes its own layout).
-    let mut layers: Vec<Vec<usize>> = Vec::new();
-    let layer_key: Vec<(usize, u32)> = {
-        let mut keys: Vec<(usize, u32)> = (0..n)
-            .filter(|&i| !is_epoch[i])
-            .map(|i| (lane[i], sub[i]))
-            .collect();
-        keys.sort();
-        keys.dedup();
-        let key_ix: HashMap<(usize, u32), usize> =
-            keys.iter().enumerate().map(|(ix, k)| (*k, ix)).collect();
-        layers.resize(keys.len(), Vec::new());
-        for i in 0..n {
-            if is_epoch[i] {
-                continue;
-            }
-            layers[key_ix[&(lane[i], sub[i])]].push(i);
-        }
-        keys
-    };
-
-    // ── 3. crossing minimisation (barycenter sweeps) ─────────────────────
-    // position of node within its layer
-    let mut pos_in_layer: Vec<usize> = vec![0; n];
-    let refresh = |layers: &Vec<Vec<usize>>, pos: &mut Vec<usize>| {
-        for layer in layers {
-            for (p, &i) in layer.iter().enumerate() {
-                pos[i] = p;
-            }
-        }
-    };
-    refresh(&layers, &mut pos_in_layer);
-
-    // adjacency (undirected, for barycenter)
-    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
-    for e in &graph.edges {
-        if let (Some(&s), Some(&t)) = (node_ix.get(e.source.as_str()), node_ix.get(e.target.as_str())) {
-            adj[s].push(t);
-            adj[t].push(s);
-        }
-    }
-
-    // From Sketch: seed the in-layer order from the previous x coordinates
-    // and skip the barycenter sweeps (the sketch IS the desired order).
-    let sketching = opts.use_sketch && sketch.is_some();
-    if sketching {
-        let pos = sketch.unwrap();
-        for layer in layers.iter_mut() {
-            layer.sort_by(|&a, &b| {
-                let xa = pos.get(&graph.nodes[a].id).map(|r| r.x).unwrap_or(f64::MAX);
-                let xb = pos.get(&graph.nodes[b].id).map(|r| r.x).unwrap_or(f64::MAX);
-                xa.partial_cmp(&xb)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then(graph.nodes[a].id.cmp(&graph.nodes[b].id))
-            });
-        }
-        refresh(&layers, &mut pos_in_layer);
-    }
-
-    let sweeps = if sketching { 0 } else { opts.barycenter_sweeps };
-    for sweep in 0..sweeps {
-        let forward = sweep % 2 == 0;
-        let order: Vec<usize> = if forward {
-            (0..layers.len()).collect()
-        } else {
-            (0..layers.len()).rev().collect()
-        };
-        for li in order {
-            let mut scored: Vec<(f64, usize, usize)> = layers[li]
-                .iter()
-                .map(|&i| {
-                    let neigh: Vec<f64> = adj[i]
-                        .iter()
-                        .filter(|&&j| (lane[j], sub[j]) != layer_key[li])
-                        .map(|&j| pos_in_layer[j] as f64)
-                        .collect();
-                    let bc = if neigh.is_empty() {
-                        pos_in_layer[i] as f64
-                    } else {
-                        neigh.iter().sum::<f64>() / neigh.len() as f64
-                    };
-                    (bc, pos_in_layer[i], i)
-                })
-                .collect();
-            // stable: barycenter, then previous position (determinism)
-            scored.sort_by(|a, b| {
-                a.0.partial_cmp(&b.0)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then(a.1.cmp(&b.1))
-            });
-            layers[li] = scored.into_iter().map(|(_, _, i)| i).collect();
-            refresh(&layers, &mut pos_in_layer);
-        }
-    }
-
-    // ── 3b. bands: every EM node group is a horizontal cluster ───────────
-    // Each node maps to its ROOT group (groups can nest: paradata group
-    // inside activity). Bands stay contiguous in x across every sub-layer
-    // of the lane, so a group occupies one vertical column band and the
-    // frontend can draw its container around it. Ungrouped nodes share one
-    // pseudo-band per lane.
-    // direct membership, MOST SPECIFIC first (paradata group > location >
-    // timebranch > activity): a property inside a PD group inside an
-    // activity has direct = PD group, root band = activity.
+    // ── bands & fold state (needed before the layers are built) ──────────
+    // direct membership, MOST SPECIFIC first (containment > paradata group
+    // > location > timebranch > activity)
     let direct_of: Vec<Option<usize>> = {
         let mut best: Vec<Option<(u8, usize)>> = vec![None; n];
         let prio = |et: &str| -> u8 {
@@ -488,16 +388,142 @@ pub fn compute_with_sketch(
             }
         })
         .collect();
-    // sub-band inside the root band: the direct (nested) group, e.g. the
-    // paradata group — its members get their own column slot, so PD boxes
-    // can never overlap each other or foreign nodes.
+    // sub-band inside the root band: the direct (nested) group
     let sub_of: Vec<usize> = (0..n)
         .map(|i| match direct_of[i] {
             Some(d) if band_of[i] != usize::MAX && d != band_of[i] => d,
             _ => usize::MAX, // loose within its band
         })
         .collect();
+    // fold compaction: members of folded groups (from the sketch) release
+    // their slots — they are parked at the proxy and hidden by the views
+    let folded_ix: std::collections::BTreeSet<usize> = sketch
+        .map(|l| {
+            l.folded_groups
+                .iter()
+                .filter_map(|id| node_ix.get(id.as_str()).copied())
+                .collect()
+        })
+        .unwrap_or_default();
+    let hidden: Vec<bool> = (0..n)
+        .map(|i| {
+            if folded_ix.is_empty() {
+                return false;
+            }
+            let mut cur = i;
+            for _ in 0..10 {
+                match direct_of[cur] {
+                    Some(g) if g != cur => {
+                        if folded_ix.contains(&g) {
+                            return true;
+                        }
+                        cur = g;
+                    }
+                    _ => break,
+                }
+            }
+            false
+        })
+        .collect();
 
+    // global layers = (lane, topological sub-layer). Epoch nodes are NOT
+    // placed (the epoch IS the lane in the swimlane projection); members of
+    // folded groups are parked at their proxy and skipped too.
+    let mut layers: Vec<Vec<usize>> = Vec::new();
+    let layer_key: Vec<(usize, u32)> = {
+        let mut keys: Vec<(usize, u32)> = (0..n)
+            .filter(|&i| !is_epoch[i] && !hidden[i])
+            .map(|i| (lane[i], sub[i]))
+            .collect();
+        keys.sort();
+        keys.dedup();
+        let key_ix: HashMap<(usize, u32), usize> =
+            keys.iter().enumerate().map(|(ix, k)| (*k, ix)).collect();
+        layers.resize(keys.len(), Vec::new());
+        for i in 0..n {
+            if is_epoch[i] || hidden[i] {
+                continue;
+            }
+            layers[key_ix[&(lane[i], sub[i])]].push(i);
+        }
+        keys
+    };
+
+    // ── 3. crossing minimisation (barycenter sweeps) ─────────────────────
+    // position of node within its layer
+    let mut pos_in_layer: Vec<usize> = vec![0; n];
+    let refresh = |layers: &Vec<Vec<usize>>, pos: &mut Vec<usize>| {
+        for layer in layers {
+            for (p, &i) in layer.iter().enumerate() {
+                pos[i] = p;
+            }
+        }
+    };
+    refresh(&layers, &mut pos_in_layer);
+
+    // adjacency (undirected, for barycenter)
+    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for e in &graph.edges {
+        if let (Some(&s), Some(&t)) = (node_ix.get(e.source.as_str()), node_ix.get(e.target.as_str())) {
+            adj[s].push(t);
+            adj[t].push(s);
+        }
+    }
+
+    // From Sketch: seed the in-layer order from the previous x coordinates
+    // and skip the barycenter sweeps (the sketch IS the desired order).
+    let sketching = opts.use_sketch && sketch.is_some();
+    if sketching {
+        let pos = &sketch.unwrap().positions;
+        for layer in layers.iter_mut() {
+            layer.sort_by(|&a, &b| {
+                let xa = pos.get(&graph.nodes[a].id).map(|r| r.x).unwrap_or(f64::MAX);
+                let xb = pos.get(&graph.nodes[b].id).map(|r| r.x).unwrap_or(f64::MAX);
+                xa.partial_cmp(&xb)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then(graph.nodes[a].id.cmp(&graph.nodes[b].id))
+            });
+        }
+        refresh(&layers, &mut pos_in_layer);
+    }
+
+    let sweeps = if sketching { 0 } else { opts.barycenter_sweeps };
+    for sweep in 0..sweeps {
+        let forward = sweep % 2 == 0;
+        let order: Vec<usize> = if forward {
+            (0..layers.len()).collect()
+        } else {
+            (0..layers.len()).rev().collect()
+        };
+        for li in order {
+            let mut scored: Vec<(f64, usize, usize)> = layers[li]
+                .iter()
+                .map(|&i| {
+                    let neigh: Vec<f64> = adj[i]
+                        .iter()
+                        .filter(|&&j| !hidden[j] && (lane[j], sub[j]) != layer_key[li])
+                        .map(|&j| pos_in_layer[j] as f64)
+                        .collect();
+                    let bc = if neigh.is_empty() {
+                        pos_in_layer[i] as f64
+                    } else {
+                        neigh.iter().sum::<f64>() / neigh.len() as f64
+                    };
+                    (bc, pos_in_layer[i], i)
+                })
+                .collect();
+            // stable: barycenter, then previous position (determinism)
+            scored.sort_by(|a, b| {
+                a.0.partial_cmp(&b.0)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then(a.1.cmp(&b.1))
+            });
+            layers[li] = scored.into_iter().map(|(_, _, i)| i).collect();
+            refresh(&layers, &mut pos_in_layer);
+        }
+    }
+
+    // ── 3b. contiguity over the bands computed above ─────────────────────
     // contiguity: reorder every layer clustering two-level — first by root
     // band, then by sub-band (nested group) — blocks ordered by mean
     // barycenter position (deterministic tie-breaks on ids)
@@ -752,6 +778,35 @@ pub fn compute_with_sketch(
         }
     }
 
+    // park hidden members at their folded ancestor's position (they are
+    // invisible; unfolding + re-layout expands them again)
+    if !folded_ix.is_empty() {
+        for i in 0..n {
+            if !hidden[i] {
+                continue;
+            }
+            let mut cur = i;
+            let mut rep = None;
+            for _ in 0..10 {
+                match direct_of[cur] {
+                    Some(g) if g != cur => {
+                        if folded_ix.contains(&g) && !hidden[g] {
+                            rep = Some(g);
+                            break;
+                        }
+                        cur = g;
+                    }
+                    _ => break,
+                }
+            }
+            if let Some(r) = rep {
+                if let Some(rect) = positions.get(&graph.nodes[r].id).cloned() {
+                    positions.insert(graph.nodes[i].id.clone(), rect);
+                }
+            }
+        }
+    }
+
     let swimlanes: Vec<Swimlane> = epochs
         .iter()
         .enumerate()
@@ -776,6 +831,53 @@ pub fn compute_with_sketch(
         group_spaces: std::collections::BTreeMap::new(),
         edge_routes: std::collections::BTreeMap::new(),
     }
+}
+
+/// Diagnostic (E.D., 12 July 2026): arrows must point DOWN — a node that is
+/// chronologically earlier sits below. The layering enforces this within
+/// lanes and the epoch order across lanes; residual upward edges indicate
+/// data anomalies (e.g. an is_after towards a newer epoch) and are counted
+/// here rather than force-bent, so they can be reviewed.
+pub fn upward_edges(
+    graph: &Graph,
+    positions: &std::collections::BTreeMap<String, Rect>,
+) -> Vec<String> {
+    let symmetric = |t: &str| {
+        matches!(
+            t,
+            "has_same_time"
+                | "is_physically_equal_to"
+                | "equals"
+                | "bonded_to"
+                | "is_bonded_to"
+                | "contrasts_with"
+        )
+    };
+    let membership = |t: &str| {
+        matches!(
+            t,
+            "is_in_activity"
+                | "is_in_paradata_nodegroup"
+                | "is_in_location"
+                | "is_in_timebranch"
+                | "is_part_of"
+        )
+    };
+    let epoch_edge = |t: &str| matches!(t, "has_first_epoch" | "survive_in_epoch");
+    let mut out = Vec::new();
+    for e in &graph.edges {
+        let t = e.edge_type.as_str();
+        if symmetric(t) || membership(t) || epoch_edge(t) {
+            continue;
+        }
+        let (Some(s), Some(tg)) = (positions.get(&e.source), positions.get(&e.target)) else {
+            continue;
+        };
+        if tg.y + 0.5 < s.y {
+            out.push(format!("{} --{}--> {}", e.source, t, e.target));
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -924,16 +1026,65 @@ mod tests {
         let mut opts = LayoutOptions::default();
         let fresh = compute(&g, &opts);
         // fresh: A before B (id order); build a sketch with B left of A
-        let mut sketch = fresh.positions.clone();
-        let (ax, bx) = (sketch["A"].x, sketch["B"].x);
-        sketch.get_mut("A").unwrap().x = bx.max(ax) + 100.0;
-        sketch.get_mut("B").unwrap().x = ax.min(bx);
+        let mut sketch = fresh.clone();
+        let (ax, bx) = (sketch.positions["A"].x, sketch.positions["B"].x);
+        sketch.positions.get_mut("A").unwrap().x = bx.max(ax) + 100.0;
+        sketch.positions.get_mut("B").unwrap().x = ax.min(bx);
         opts.use_sketch = true;
         let resketched = compute_with_sketch(&g, &opts, Some(&sketch));
         assert!(
             resketched.positions["B"].x < resketched.positions["A"].x,
             "from-sketch must preserve the manual left-right order"
         );
+    }
+
+    #[test]
+    fn folded_groups_compact_the_layout() {
+        // an activity with three members: folding it must shrink the canvas
+        // and park the hidden members at the proxy position
+        let g = Graph {
+            graph_id: "g".into(),
+            name: None,
+            description: None,
+            nodes: vec![
+                epoch("EP1", 100.0),
+                node("ACT", "ActivityNodeGroup"),
+                node("U1", "US"),
+                node("U2", "US"),
+                node("U3", "US"),
+                node("LOOSE", "US"),
+            ],
+            edges: vec![
+                edge("e1", "has_first_epoch", "U1", "EP1"),
+                edge("e2", "has_first_epoch", "U2", "EP1"),
+                edge("e3", "has_first_epoch", "U3", "EP1"),
+                edge("e4", "has_first_epoch", "LOOSE", "EP1"),
+                edge("e5", "has_first_epoch", "ACT", "EP1"),
+                edge("m1", "is_in_activity", "U1", "ACT"),
+                edge("m2", "is_in_activity", "U2", "ACT"),
+                edge("m3", "is_in_activity", "U3", "ACT"),
+            ],
+            data: std::collections::BTreeMap::new(),
+        };
+        let opts = LayoutOptions::default();
+        let fresh = compute(&g, &opts);
+        let mut sketch = fresh.clone();
+        sketch.folded_groups = vec!["ACT".into()];
+        let folded = compute_with_sketch(&g, &opts, Some(&sketch));
+        assert!(
+            folded.canvas.width < fresh.canvas.width,
+            "folding must shrink the canvas ({} < {})",
+            folded.canvas.width,
+            fresh.canvas.width
+        );
+        // hidden members parked at the proxy
+        let act = &folded.positions["ACT"];
+        for m in ["U1", "U2", "U3"] {
+            assert_eq!(folded.positions[m].x, act.x);
+            assert_eq!(folded.positions[m].y, act.y);
+        }
+        // untouched node still placed normally
+        assert!(folded.positions["LOOSE"].x != act.x || folded.positions["LOOSE"].y != act.y);
     }
 
     #[test]

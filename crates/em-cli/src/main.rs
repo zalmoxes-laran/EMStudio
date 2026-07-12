@@ -70,15 +70,24 @@ fn main() -> ExitCode {
             let mut doc = doc;
             // --from-sketch: current arrangement as soft constraint
             let mut opts = layout::LayoutOptions::default();
-            let sketch_positions;
             let sketch = if args.iter().any(|a| a == "--from-sketch") {
                 opts.use_sketch = true;
-                sketch_positions = doc.layout.as_ref().map(|l| l.positions.clone());
-                sketch_positions.as_ref()
+                doc.layout.as_ref()
             } else {
                 None
             };
             let computed = layout::compute_with_sketch(&doc.graph, &opts, sketch);
+            let upward = layout::upward_edges(&doc.graph, &computed.positions);
+            if !upward.is_empty() {
+                eprintln!(
+                    "warning: {} directed edge(s) point upwards (chronology \
+                     check — review the data):",
+                    upward.len()
+                );
+                for e in upward.iter().take(10) {
+                    eprintln!("  {e}");
+                }
+            }
             println!(
                 "layout: {} lanes, {} positions, canvas {:.0}x{:.0}",
                 computed.swimlanes.len(),

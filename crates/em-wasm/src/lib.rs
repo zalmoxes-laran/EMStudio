@@ -68,7 +68,7 @@ pub unsafe extern "C" fn em_layout(ptr: *const u8, len: usize) -> *mut u8 {
                 .unwrap_or_else(|_| r#"{"err":"request parse"}"#.into()),
             Ok(req) => {
                 let mut opts = layout::LayoutOptions::default();
-                let sketch = req.layout.as_ref().map(|l| &l.positions);
+                let sketch = req.layout.as_ref();
                 opts.use_sketch = sketch.is_some();
                 let computed = layout::compute_with_sketch(&req.graph, &opts, sketch);
                 match serde_json::to_string(&computed) {
