@@ -68,6 +68,9 @@ export function buildMatrixScene(
   const outlineIds: string[] = [];
   const normal: SceneNode[] = [];
   for (const node of nodes) {
+    // in the swimlane projection the epoch IS the lane — epochs render as
+    // nodes only in graph view (E.D., 12 July 2026)
+    if (node.node_type === "epoch" || node.node_type === "EpochNode") continue;
     const r = positions[node.id];
     if (!r) continue;
     const sn: SceneNode = {
@@ -120,7 +123,8 @@ export function buildMatrixScene(
     const originY = g.y + GROUP_HEADER + GROUP_PAD;
 
     // auto-grid defaults for members without a stored local position
-    const cols = Math.max(1, Math.ceil(Math.sqrt(memberIds.length * 1.6)));
+    // (narrow grid: keeps the box inside its band, less outline overlap)
+    const cols = Math.max(1, Math.min(3, Math.ceil(Math.sqrt(memberIds.length))));
     let gi = 0;
     let maxW = 0;
     let maxH = 0;
@@ -162,33 +166,8 @@ export function buildMatrixScene(
     for (const m of memberIds) laneOf.set(m, gLane);
   }
 
-  // ---- dynamic swimlane expansion ----
-  if (scene.lanes.length) {
-    for (const sn of scene.nodes) {
-      if (!laneOf.has(sn.id)) laneOf.set(sn.id, laneIdxOfY(sn.y + sn.h / 2));
-    }
-    const delta = scene.lanes.map(() => 0);
-    for (const sn of scene.nodes) {
-      const li = laneOf.get(sn.id)!;
-      const lane = scene.lanes[li];
-      const overflow = sn.y + sn.h + LANE_PAD - (lane.y + lane.height);
-      if (overflow > 0) delta[li] = Math.max(delta[li], overflow);
-    }
-    let shift = 0;
-    const prefix: number[] = [];
-    for (let i = 0; i < scene.lanes.length; i++) {
-      prefix.push(shift);
-      scene.lanes[i].y += shift;
-      scene.lanes[i].height += delta[i];
-      shift += delta[i];
-    }
-    if (shift > 0) {
-      for (const sn of scene.nodes) sn.y += prefix[laneOf.get(sn.id)!];
-    }
-  }
-
   // ---- outline containers: box AROUND engine-placed members ----
-  // computed after lane expansion so member rects are final; nothing moves.
+  // computed BEFORE lane expansion so the expansion accounts for the boxes
   const outlineMemberOf = new Map<string, string>();
   for (const g of outlineNodes) {
     if (folded.has(g.id)) {
@@ -216,6 +195,31 @@ export function buildMatrixScene(
     g.y = my - GROUP_HEADER - 6;
     g.w = Mx - mx + GROUP_PAD * 2;
     g.h = My - g.y + GROUP_PAD;
+  }
+
+  // ---- dynamic swimlane expansion ----
+  if (scene.lanes.length) {
+    for (const sn of scene.nodes) {
+      if (!laneOf.has(sn.id)) laneOf.set(sn.id, laneIdxOfY(sn.y + sn.h / 2));
+    }
+    const delta = scene.lanes.map(() => 0);
+    for (const sn of scene.nodes) {
+      const li = laneOf.get(sn.id)!;
+      const lane = scene.lanes[li];
+      const overflow = sn.y + sn.h + LANE_PAD - (lane.y + lane.height);
+      if (overflow > 0) delta[li] = Math.max(delta[li], overflow);
+    }
+    let shift = 0;
+    const prefix: number[] = [];
+    for (let i = 0; i < scene.lanes.length; i++) {
+      prefix.push(shift);
+      scene.lanes[i].y += shift;
+      scene.lanes[i].height += delta[i];
+      shift += delta[i];
+    }
+    if (shift > 0) {
+      for (const sn of scene.nodes) sn.y += prefix[laneOf.get(sn.id)!];
+    }
   }
 
   // ---- container descriptors for the renderer ----

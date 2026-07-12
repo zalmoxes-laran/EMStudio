@@ -314,16 +314,24 @@ pub fn compute(graph: &Graph, opts: &LayoutOptions) -> Layout {
         }
     }
 
-    // global layers = (lane, topological sub-layer)
+    // global layers = (lane, topological sub-layer). Epoch nodes are NOT
+    // placed: in the swimlane projection the epoch IS the lane (it renders
+    // as a node only in graph view, which computes its own layout).
     let mut layers: Vec<Vec<usize>> = Vec::new();
     let layer_key: Vec<(usize, u32)> = {
-        let mut keys: Vec<(usize, u32)> = (0..n).map(|i| (lane[i], sub[i])).collect();
+        let mut keys: Vec<(usize, u32)> = (0..n)
+            .filter(|&i| !is_epoch[i])
+            .map(|i| (lane[i], sub[i]))
+            .collect();
         keys.sort();
         keys.dedup();
         let key_ix: HashMap<(usize, u32), usize> =
             keys.iter().enumerate().map(|(ix, k)| (*k, ix)).collect();
         layers.resize(keys.len(), Vec::new());
         for i in 0..n {
+            if is_epoch[i] {
+                continue;
+            }
             layers[key_ix[&(lane[i], sub[i])]].push(i);
         }
         keys

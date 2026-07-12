@@ -665,6 +665,7 @@ let moved = false;
 let lastX = 0;
 let lastY = 0;
 let dragNodeId: string | null = null;
+let dragMemberIds: string[] | null = null;
 let dragCheckpointed = false;
 let lastClickTime = 0;
 let lastClickId: string | null = null;
@@ -701,6 +702,23 @@ canvas.addEventListener("pointerdown", (e) => {
     dragMode = "node";
     dragNodeId = hit.id;
     dragCheckpointed = false;
+    // dragging a group container moves the whole group (recursive members)
+    dragMemberIds = null;
+    if (s.groupsById?.has(hit.id) && store) {
+      const mm = buildMembership(store.doc);
+      const acc: string[] = [];
+      const stack = [hit.id];
+      while (stack.length) {
+        const g = stack.pop()!;
+        for (const m of mm.membersOf.get(g) ?? []) {
+          if (m !== hit.id && !acc.includes(m)) {
+            acc.push(m);
+            stack.push(m);
+          }
+        }
+      }
+      dragMemberIds = acc;
+    }
   } else {
     dragMode = "pan";
     canvas.classList.add("panning");
@@ -740,6 +758,19 @@ canvas.addEventListener("pointermove", (e) => {
     if (moved) {
       const s = scene();
       const n = s?.byId.get(dragNodeId);
+      if (n && s && dragMemberIds && store && !inContext()) {
+        // whole-group drag: shift the group node and every member
+        store.moveNodesBy(
+          [dragNodeId, ...dragMemberIds],
+          dx / vp.scale,
+          dy / vp.scale,
+          !dragCheckpointed,
+        );
+        dragCheckpointed = true;
+        lastX = e.clientX;
+        lastY = e.clientY;
+        return;
+      }
       if (n && s) {
         const nx = n.x + dx / vp.scale;
         const ny = n.y + dy / vp.scale;
@@ -843,6 +874,7 @@ canvas.addEventListener("pointerup", (e) => {
     select(hit?.id ?? null);
   }
   dragNodeId = null;
+  dragMemberIds = null;
 });
 
 canvas.addEventListener("pointerleave", () => {
@@ -914,6 +946,8 @@ window.addEventListener("beforeunload", (e) => {
 
 new ResizeObserver(resizeCanvas).observe(wrap);
 resizeCanvas();
+// repaint when an official icon finishes decoding
+import("./icons").then(({ setIconRedraw }) => setIconRedraw(() => draw()));
 
 // ---------- boot ----------
 if (window.__EM_TEST_DATA__) {

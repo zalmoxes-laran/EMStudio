@@ -2,6 +2,7 @@
 // one hit-testing model, one style system, styles driven by the EM palette
 // metadata (palette.ts ← em_visual_rules.json). Edges are routed
 // orthogonally with crossing bridges (routing.ts), yEd-style.
+import { ICON_NODE_TYPES, imageFor } from "./icons";
 import { edgeStyle, nodeStyle } from "./palette";
 import {
   drawArrowhead,
@@ -54,13 +55,25 @@ function routesFor(scene: Scene, state: RenderState): RouteCache {
 
 const LANE_COLORS = ["#EDF3FA", "#F7FAFD"];
 const ACCENT = "#1F6FEB";
-const GROUP_HEADER_FILL = "#F6D7A4"; // yEd folder tab
+const GROUP_HEADER_FILL = "#F6D7A4"; // yEd folder tab (paradata groups)
 const GROUP_BODY_FILL = "rgba(190,196,204,0.25)";
+
+/** header tint from the group type's own colour (em_visual_rules border) */
+function headerFillFor(nodeType: string, border: string): string {
+  if (nodeType === "ParadataNodeGroup") return GROUP_HEADER_FILL;
+  const h = border.replace("#", "");
+  if (h.length < 6) return GROUP_HEADER_FILL;
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},0.22)`;
+}
 
 function drawGroupContainer(
   ctx: CanvasRenderingContext2D,
   g: import("./scene").SceneGroup,
   borderColor: string,
+  headerFill: string,
   scale: number,
   badge: number | undefined,
   drawLabels: boolean,
@@ -78,7 +91,7 @@ function drawGroupContainer(
   // header band
   ctx.beginPath();
   ctx.roundRect(g.x, g.y, g.w, g.headerH, [5, 5, 0, 0]);
-  ctx.fillStyle = GROUP_HEADER_FILL;
+  ctx.fillStyle = headerFill;
   ctx.fill();
   // ± toggle
   ctx.fillStyle = "#fff";
@@ -297,7 +310,15 @@ export function render(
     const st = nodeStyle(n.node.node_type);
     const group = scene.groupsById?.get(n.id);
     if (group) {
-      drawGroupContainer(ctx, group, st.border, vp.scale, n.badge, drawLabels);
+      drawGroupContainer(
+        ctx,
+        group,
+        st.border,
+        headerFillFor(n.node.node_type, st.border),
+        vp.scale,
+        n.badge,
+        drawLabels,
+      );
       if (n.id === state.selectedId || n.id === state.hoverId) {
         ctx.strokeStyle = n.id === state.selectedId ? ACCENT : "#7fb0f0";
         ctx.lineWidth = 2.2 / vp.scale;
@@ -305,6 +326,52 @@ export function render(
       }
       continue;
     }
+
+    // paradata nodes render as their official 2D icon (yEd parity):
+    // extractor / combiner get the glyph with the label top-left,
+    // document gets the sheet with the label over it
+    const icon = ICON_NODE_TYPES.has(n.node.node_type)
+      ? imageFor(n.node.node_type)
+      : null;
+    if (icon) {
+      const ih = Math.min(n.h, 30);
+      const iw = (icon.naturalWidth / icon.naturalHeight) * ih;
+      const ix = n.x + n.w / 2 - iw / 2;
+      const iy = n.y + n.h / 2 - ih / 2;
+      ctx.drawImage(icon, ix, iy, iw, ih);
+      if (drawLabels) {
+        const label = String(n.node.name || n.id);
+        const fs = 10;
+        ctx.font = `${fs}px system-ui, sans-serif`;
+        ctx.fillStyle = "#1a1a1a";
+        if (st.labelPosition === "top_left") {
+          ctx.textAlign = "left";
+          ctx.textBaseline = "bottom";
+          const lx = n.x + n.w / 2 - iw / 2 - 2;
+          const ly = iy - 2;
+          ctx.fillText(label, lx, ly);
+          const tw = ctx.measureText(label).width;
+          ctx.strokeStyle = "#1a1a1a";
+          ctx.lineWidth = 0.8 / Math.sqrt(vp.scale);
+          ctx.beginPath();
+          ctx.moveTo(lx, ly + 1.5);
+          ctx.lineTo(lx + tw, ly + 1.5);
+          ctx.stroke();
+        } else {
+          // "over": centred on the icon (document sheet)
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(label, n.x + n.w / 2, iy + ih * 0.62);
+        }
+      }
+      if (n.id === state.selectedId || n.id === state.hoverId) {
+        ctx.strokeStyle = n.id === state.selectedId ? ACCENT : "#7fb0f0";
+        ctx.lineWidth = 2.2 / vp.scale;
+        ctx.strokeRect(ix - 3, iy - 3, iw + 6, ih + 6);
+      }
+      continue;
+    }
+
     shapePath(ctx, st.shape, n.x, n.y, n.w, n.h);
     ctx.fillStyle = st.fill;
     ctx.fill();

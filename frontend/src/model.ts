@@ -173,6 +173,21 @@ export class DocumentStore {
     this.emit();
   }
 
+  /** Shift a set of nodes by a delta (dragging a whole group). */
+  moveNodesBy(ids: string[], dx: number, dy: number, checkpoint: boolean): void {
+    const positions = this.doc.layout?.positions;
+    if (!positions) return;
+    if (checkpoint) this.checkpoint();
+    for (const id of ids) {
+      const r = positions[id];
+      if (r) {
+        r.x += dx;
+        r.y += dy;
+      }
+    }
+    this.emit();
+  }
+
   /** Position inside a group context (layout.group_spaces). */
   moveInGroupSpace(
     groupId: string,

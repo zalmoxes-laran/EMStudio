@@ -10,6 +10,8 @@ export interface NodeStyle {
   border: string;
   borderStyle: "solid" | "dashed" | "dotted";
   textColor: string;
+  /** label placement from the visual rules: "over" | "top_left" | "center" */
+  labelPosition: string;
 }
 
 export interface EdgeStyle {
@@ -20,6 +22,7 @@ export interface EdgeStyle {
 }
 
 interface RawNodeStyle {
+  label_position?: string;
   style?: {
     fill_color?: string;
     border_color?: string;
@@ -95,6 +98,7 @@ export function nodeStyle(nodeType?: string): NodeStyle {
     border: s.border_color ?? "#333333",
     borderStyle: (s.border_style as NodeStyle["borderStyle"]) ?? "solid",
     textColor: luminance(fill) > 0.45 ? "#1a1a1a" : "#f5f5f5",
+    labelPosition: raw?.label_position ?? "over",
   };
   nodeCache.set(key, style);
   return style;
