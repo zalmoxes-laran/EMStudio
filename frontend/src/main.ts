@@ -959,7 +959,8 @@ canvas.addEventListener("pointerup", (e) => {
     }
     lastClickTime = now;
     lastClickId = hit?.id ?? null;
-    select(hit?.id ?? null);
+    // a document instance resolves to its real node (same outliner row)
+    select(hit ? (hit.instanceOf ?? hit.id) : null);
   }
   dragNodeId = null;
   dragMemberIds = null;

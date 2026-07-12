@@ -179,6 +179,58 @@ export function buildMatrixScene(
     for (const m of memberIds) laneOf.set(m, gLane);
   }
 
+  // ---- EM 1.6 Master/Instance documents ----
+  // The graph holds ONE document node (the GraphML importer dedupes the
+  // yEd instances); the DRAWING re-instances it: one visual copy per usage
+  // context (the paradata group of each extractor that references it),
+  // with a corner decorator counting the uses. The master (thick border)
+  // stays at its engine position; instances carry thin borders.
+  const instanceByEdge = new Map<string, string>(); // edge key → instance id
+  const instancesByGroup = new Map<string, SceneNode[]>();
+  {
+    const docUsages = new Map<string, { edgeKey: string; extractorId: string }[]>();
+    for (const e of edges) {
+      if (e.edge_type !== "extracted_from") continue;
+      const doc = nodeById.get(e.target);
+      if (!doc || doc.node_type !== "document") continue;
+      if (!scene.byId.has(e.source) || !scene.byId.has(e.target)) continue;
+      const key = e.id ?? `${e.source}→${e.target}`;
+      if (!docUsages.has(e.target)) docUsages.set(e.target, []);
+      docUsages.get(e.target)!.push({ edgeKey: key, extractorId: e.source });
+    }
+    for (const [docId, usages] of docUsages) {
+      if (usages.length < 2) continue;
+      const master = scene.byId.get(docId)!;
+      master.useCount = usages.length;
+      const masterCtx = membership.primaryOf.get(docId);
+      let k = 0;
+      for (const u of usages) {
+        const ctx = membership.primaryOf.get(u.extractorId);
+        // the master already serves its own context
+        if (ctx !== undefined && ctx === masterCtx) continue;
+        const ex = scene.byId.get(u.extractorId);
+        if (!ex) continue;
+        const inst: SceneNode = {
+          id: `${docId}##${k++}`,
+          x: ex.x + ex.w / 2 - master.w / 2,
+          y: ex.y + ex.h + 26,
+          w: master.w,
+          h: master.h,
+          node: master.node,
+          instanceOf: docId,
+          useCount: usages.length,
+        };
+        scene.nodes.push(inst);
+        scene.byId.set(inst.id, inst);
+        instanceByEdge.set(u.edgeKey, inst.id);
+        if (ctx) {
+          if (!instancesByGroup.has(ctx)) instancesByGroup.set(ctx, []);
+          instancesByGroup.get(ctx)!.push(inst);
+        }
+      }
+    }
+  }
+
   // ---- outline containers: box AROUND engine-placed members ----
   // computed BEFORE lane expansion so the expansion accounts for the boxes;
   // innermost groups first, so an activity's box wraps its PD boxes
@@ -206,6 +258,8 @@ export function buildMatrixScene(
     const memberIds = (membership.childrenOf.get(g.id) ?? []).filter(
       (m) => m !== g.id && scene.byId.has(m),
     );
+    // document instances drawn inside this group count as members
+    for (const inst of instancesByGroup.get(g.id) ?? []) memberIds.push(inst.id);
     if (!memberIds.length) continue; // no visible members → plain node
     let mx = Infinity,
       my = Infinity,
@@ -230,23 +284,32 @@ export function buildMatrixScene(
     for (const sn of scene.nodes) {
       if (!laneOf.has(sn.id)) laneOf.set(sn.id, laneIdxOfY(sn.y + sn.h / 2));
     }
-    const delta = scene.lanes.map(() => 0);
+    // both directions: content may exceed the lane bottom (bottom delta)
+    // AND poke above the lane top (group headers) — the lane grows both
+    // ways so boxes never spill outside their swimlane
+    const bottom = scene.lanes.map(() => 0);
+    const top = scene.lanes.map(() => 0);
     for (const sn of scene.nodes) {
       const li = laneOf.get(sn.id)!;
       const lane = scene.lanes[li];
-      const overflow = sn.y + sn.h + LANE_PAD - (lane.y + lane.height);
-      if (overflow > 0) delta[li] = Math.max(delta[li], overflow);
+      const over = sn.y + sn.h + LANE_PAD - (lane.y + lane.height);
+      if (over > 0) bottom[li] = Math.max(bottom[li], over);
+      const above = lane.y + 8 - sn.y;
+      if (above > 0) top[li] = Math.max(top[li], above);
     }
     let shift = 0;
     const prefix: number[] = [];
     for (let i = 0; i < scene.lanes.length; i++) {
       prefix.push(shift);
       scene.lanes[i].y += shift;
-      scene.lanes[i].height += delta[i];
-      shift += delta[i];
+      scene.lanes[i].height += top[i] + bottom[i];
+      shift += top[i] + bottom[i];
     }
-    if (shift > 0) {
-      for (const sn of scene.nodes) sn.y += prefix[laneOf.get(sn.id)!];
+    if (shift > 0 || top.some((t) => t > 0)) {
+      for (const sn of scene.nodes) {
+        const li = laneOf.get(sn.id)!;
+        sn.y += prefix[li] + top[li];
+      }
     }
   }
 
@@ -283,7 +346,21 @@ export function buildMatrixScene(
       outlineMemberOf.get(e.target) === e.source
     )
       continue;
-    scene.edges.push({ source: e.source, target: e.target, edge: e });
+    // a document instance inside the group already expresses the secondary
+    // membership — no need for the long edge to the master
+    if (
+      e.edge_type === "is_in_paradata_nodegroup" &&
+      instancesByGroup.get(e.target)?.some((i) => i.instanceOf === e.source)
+    )
+      continue;
+    // extracted_from usages rewire to their local instance
+    const key = e.id ?? `${e.source}→${e.target}`;
+    const instTarget = instanceByEdge.get(key);
+    scene.edges.push({
+      source: e.source,
+      target: instTarget ?? e.target,
+      edge: e,
+    });
   }
   return scene;
 }

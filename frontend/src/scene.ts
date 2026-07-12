@@ -9,6 +9,14 @@ export interface SceneNode {
   node: EmNode;
   /** number of hidden nodes this (folded group) node stands for */
   badge?: number;
+  /**
+   * EM 1.6 Master/Instance documents: a visual instance of a document node
+   * (the graph holds ONE node; the drawing repeats it per usage context).
+   * Points to the real node id — selection resolves to it.
+   */
+  instanceOf?: string;
+  /** how many times this document is used in the scene (corner decorator) */
+  useCount?: number;
 }
 
 export interface SceneEdge {

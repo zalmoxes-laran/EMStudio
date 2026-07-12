@@ -319,8 +319,8 @@ export function render(
         n.badge,
         drawLabels,
       );
-      if (n.id === state.selectedId || n.id === state.hoverId) {
-        ctx.strokeStyle = n.id === state.selectedId ? ACCENT : "#7fb0f0";
+      if (n.id === state.selectedId || n.instanceOf === state.selectedId || n.id === state.hoverId) {
+        ctx.strokeStyle = n.id === state.selectedId || n.instanceOf === state.selectedId ? ACCENT : "#7fb0f0";
         ctx.lineWidth = 2.2 / vp.scale;
         ctx.strokeRect(n.x - 2, n.y - 2, n.w + 4, n.h + 4);
       }
@@ -362,8 +362,8 @@ export function render(
         }
         ctx.fillText(text, n.x + n.w / 2, n.y + n.h / 2);
       }
-      if (n.id === state.selectedId || n.id === state.hoverId) {
-        ctx.strokeStyle = n.id === state.selectedId ? ACCENT : "#7fb0f0";
+      if (n.id === state.selectedId || n.instanceOf === state.selectedId || n.id === state.hoverId) {
+        ctx.strokeStyle = n.id === state.selectedId || n.instanceOf === state.selectedId ? ACCENT : "#7fb0f0";
         ctx.lineWidth = 2.2 / vp.scale;
         ctx.strokeRect(n.x - 3, n.y - 3, n.w + 6, n.h + 6);
       }
@@ -376,6 +376,25 @@ export function render(
       const ix = n.x + n.w / 2 - iw / 2;
       const iy = n.y + n.h / 2 - ih / 2;
       ctx.drawImage(icon, ix, iy, iw, ih);
+      // EM 1.6 Master/Instance documents: thick border = master, thin =
+      // instance; corner decorator (bottom-right) counts the scene uses
+      if (n.node.node_type === "document" && n.useCount) {
+        ctx.strokeStyle = "#1a1a1a";
+        ctx.lineWidth = (n.instanceOf ? 0.8 : 2.6) / Math.sqrt(vp.scale);
+        ctx.strokeRect(ix - 2.5, iy - 2.5, iw + 5, ih + 5);
+        const r = 6.5 / Math.sqrt(vp.scale);
+        const bx = ix + iw + 1;
+        const by = iy + ih + 1;
+        ctx.beginPath();
+        ctx.arc(bx, by, r, 0, Math.PI * 2);
+        ctx.fillStyle = n.instanceOf ? "#8a939e" : "#4a5568";
+        ctx.fill();
+        ctx.fillStyle = "#fff";
+        ctx.font = `${r * 1.15}px system-ui, sans-serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(String(n.useCount), bx, by + r * 0.05);
+      }
       if (drawLabels) {
         const label = String(n.node.name || n.id);
         const fs = 10;
@@ -408,8 +427,8 @@ export function render(
           ctx.fillText(text, n.x + n.w / 2, iy + ih * 0.62);
         }
       }
-      if (n.id === state.selectedId || n.id === state.hoverId) {
-        ctx.strokeStyle = n.id === state.selectedId ? ACCENT : "#7fb0f0";
+      if (n.id === state.selectedId || n.instanceOf === state.selectedId || n.id === state.hoverId) {
+        ctx.strokeStyle = n.id === state.selectedId || n.instanceOf === state.selectedId ? ACCENT : "#7fb0f0";
         ctx.lineWidth = 2.2 / vp.scale;
         ctx.strokeRect(ix - 3, iy - 3, iw + 6, ih + 6);
       }
@@ -431,9 +450,9 @@ export function render(
     ctx.stroke();
     ctx.setLineDash([]);
 
-    if (n.id === state.selectedId || n.id === state.hoverId) {
+    if (n.id === state.selectedId || n.instanceOf === state.selectedId || n.id === state.hoverId) {
       shapePath(ctx, st.shape, n.x - 2, n.y - 2, n.w + 4, n.h + 4);
-      ctx.strokeStyle = n.id === state.selectedId ? ACCENT : "#7fb0f0";
+      ctx.strokeStyle = n.id === state.selectedId || n.instanceOf === state.selectedId ? ACCENT : "#7fb0f0";
       ctx.lineWidth = 2.2 / vp.scale;
       ctx.stroke();
     }
