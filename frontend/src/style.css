@@ -383,6 +383,45 @@ main {
   white-space: nowrap;
 }
 
+/* ---------- liquid filters panel ---------- */
+#filter-panel {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 250px;
+  max-height: 70vh;
+  overflow-y: auto;
+  background: rgba(255, 255, 255, 0.97);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15);
+  padding: 10px 12px;
+  z-index: 22;
+  font-size: 12.5px;
+}
+
+.fp-hint {
+  color: #99a3ad;
+  font-size: 11px;
+  margin-bottom: 4px;
+}
+
+.fp-sect {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #778;
+  margin: 10px 0 4px;
+}
+
+.fp-row {
+  display: block;
+  padding: 1.5px 0;
+  cursor: pointer;
+  font-family: ui-monospace, monospace;
+  font-size: 11.5px;
+}
+
 /* ---------- overview minimap ---------- */
 #overview {
   position: absolute;

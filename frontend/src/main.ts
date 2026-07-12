@@ -51,6 +51,9 @@ let selectedId: string | null = null;
 let edgeFilter: "all" | "sequence" | "none" = "all";
 let placingType: string | null = null;
 let connect: ConnectDrag | null = null;
+/** graph-view "liquid" filters: hidden node / edge types */
+const hiddenNodeTypes = new Set<string>();
+const hiddenEdgeTypes = new Set<string>();
 /** group-context navigation stack; empty = full canvas */
 let contextStack: string[] = [];
 let contextScene: Scene | null = null;
@@ -295,7 +298,24 @@ function buildScenes(): void {
     ? applyFolding(doc, buildMembership(doc), folded)
     : undefined;
   scenes.matrix = buildMatrixScene(doc, foldedView);
-  scenes.graph = buildGraphScene(doc, foldedView);
+  // graph view: apply the liquid type filters on top of the folding
+  let gNodes = foldedView?.nodes ?? doc.graph.nodes;
+  let gEdges = foldedView?.edges ?? doc.graph.edges;
+  if (hiddenNodeTypes.size || hiddenEdgeTypes.size) {
+    gNodes = gNodes.filter((n) => !hiddenNodeTypes.has(n.node_type));
+    const present = new Set(gNodes.map((n) => n.id));
+    gEdges = gEdges.filter(
+      (e) =>
+        !hiddenEdgeTypes.has(e.edge_type ?? "") &&
+        present.has(e.source) &&
+        present.has(e.target),
+    );
+  }
+  scenes.graph = buildGraphScene(doc, {
+    nodes: gNodes,
+    edges: gEdges,
+    badges: foldedView?.badges ?? new Map(),
+  });
 }
 
 function setView(v: ViewKind): void {
@@ -599,6 +619,62 @@ document.getElementById("btn-svg")!.addEventListener("click", () => {
   a.download = `${title.replace(/[^\w.-]+/g, "_")}_${inContext() ? "group" : view}.svg`;
   a.click();
   URL.revokeObjectURL(a.href);
+});
+
+// liquid filters panel (graph view): include/exclude node & edge types
+const filterPanel = document.getElementById("filter-panel")!;
+function rebuildFilterPanel(): void {
+  filterPanel.innerHTML = "";
+  if (!store) return;
+  const nodeCounts = new Map<string, number>();
+  for (const n of store.doc.graph.nodes)
+    nodeCounts.set(n.node_type, (nodeCounts.get(n.node_type) ?? 0) + 1);
+  const edgeCounts = new Map<string, number>();
+  for (const e of store.doc.graph.edges)
+    edgeCounts.set(e.edge_type ?? "?", (edgeCounts.get(e.edge_type ?? "?") ?? 0) + 1);
+
+  const section = (
+    title: string,
+    counts: Map<string, number>,
+    hiddenSet: Set<string>,
+  ): void => {
+    const h = document.createElement("div");
+    h.className = "fp-sect";
+    h.textContent = title;
+    filterPanel.appendChild(h);
+    for (const [t, c] of [...counts.entries()].sort()) {
+      const row = document.createElement("label");
+      row.className = "fp-row";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = !hiddenSet.has(t);
+      cb.addEventListener("change", () => {
+        if (cb.checked) hiddenSet.delete(t);
+        else hiddenSet.add(t);
+        buildScenes();
+        updateLegend();
+        draw();
+      });
+      row.appendChild(cb);
+      row.appendChild(document.createTextNode(` ${t} (${c})`));
+      filterPanel.appendChild(row);
+    }
+  };
+  const hint = document.createElement("div");
+  hint.className = "fp-hint";
+  hint.textContent = "Filters apply to the graph view";
+  filterPanel.appendChild(hint);
+  section("Node types", nodeCounts, hiddenNodeTypes);
+  section("Edge types", edgeCounts, hiddenEdgeTypes);
+}
+document.getElementById("btn-filters")!.addEventListener("click", () => {
+  if (filterPanel.classList.contains("hidden")) {
+    rebuildFilterPanel();
+    filterPanel.classList.remove("hidden");
+    if (view !== "graph" && !inContext()) setView("graph");
+  } else {
+    filterPanel.classList.add("hidden");
+  }
 });
 
 // side panel tabs

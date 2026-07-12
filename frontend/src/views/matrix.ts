@@ -90,10 +90,11 @@ export function buildMatrixScene(
     };
     scene.byId.set(node.id, sn);
     // outline containers: group-type nodes AND any stratigraphic node that
-    // physically contains others (is_part_of members → yEd US/USD/VSF
-    // containers; the container is a regular node, containment a relation)
+    // physically contains others. Containment follows the PRIMARY parent
+    // (engine-consistent): a shared node lives in ONE box, its other
+    // memberships stay visible as edges (yEd single-parent semantics).
     const hasMembers =
-      (membership.membersOf.get(node.id)?.filter((m) => m !== node.id)
+      (membership.childrenOf.get(node.id)?.filter((m) => m !== node.id)
         .length ?? 0) > 0;
     if (CONTAINER_TYPES.has(node.node_type)) {
       relocateIds.push(node.id);
@@ -202,7 +203,7 @@ export function buildMatrixScene(
       g.h = CLOSED_H;
       continue;
     }
-    const memberIds = (membership.membersOf.get(g.id) ?? []).filter(
+    const memberIds = (membership.childrenOf.get(g.id) ?? []).filter(
       (m) => m !== g.id && scene.byId.has(m),
     );
     if (!memberIds.length) continue; // no visible members → plain node
