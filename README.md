@@ -42,6 +42,31 @@ validation driven by the same versioned JSON datamodels that drive s3Dgraphy.
    optional reconstructable `layout`. Spec: [`docs/emjson-v1-draft.md`](docs/emjson-v1-draft.md);
    reference implementation in s3Dgraphy (`emjson_exporter` / `emjson_importer`).
 
+## Building and using (current state: core + CLI)
+
+The GUI does not exist yet (phases 2–4 of the roadmap). What compiles and
+works today is the core library and the command line:
+
+```bash
+# prerequisites: Rust toolchain (https://rustup.rs)
+cargo test                      # run the test suite (em-core)
+cargo build --release -p em-cli # build the CLI → target/release/emstudio
+cargo install --path crates/em-cli   # or: install `emstudio` into ~/.cargo/bin
+
+# usage
+emstudio validate  file.em.json          # header/format conformance + stats
+emstudio stats     file.em.json          # node counts by type
+emstudio layout    file.em.json -o out.em.json   # compute swimlane layout
+```
+
+`.em.json` files are produced from GraphML (or any s3Dgraphy source) with:
+
+```python
+from s3dgraphy.importer.import_graphml import GraphMLImporter
+from s3dgraphy.exporter.emjson_exporter import export_emjson
+export_emjson(GraphMLImporter("project.graphml").parse(), "project.em.json")
+```
+
 ## Repository layout
 
 ```

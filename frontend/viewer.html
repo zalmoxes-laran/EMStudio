@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>EMStudio viewer (phase 2, read-only)</title>
+<style>
+  body{margin:0;font-family:system-ui,sans-serif;background:#fafafa}
+  #bar{padding:8px 12px;background:#1F3864;color:#fff;display:flex;gap:12px;align-items:center}
+  #bar input{color:#fff} #info{font-size:12px;opacity:.85}
+  #wrap{overflow:auto;height:calc(100vh - 46px)}
+  svg text{pointer-events:none}
+  .node:hover{stroke-width:2}
+  #tip{position:fixed;background:#222;color:#fff;padding:6px 8px;border-radius:4px;
+       font-size:12px;display:none;max-width:340px;z-index:9}
+</style>
+</head>
+<body>
+<div id="bar">
+  <strong>EMStudio viewer</strong>
+  <input type="file" id="file" accept=".json,.em.json">
+  <span id="info">open a .em.json (with layout) — or drag &amp; drop it here</span>
+</div>
+<div id="wrap"><svg id="svg" xmlns="http://www.w3.org/2000/svg"></svg></div>
+<div id="tip"></div>
+<script>
+const COLORS={US:"#9B3333",USM:"#9B3333",USR:"#9B3333",serSU:"#9B3333",
+  USVs:"#2F6B2F",USVn:"#88B04B",serUSVn:"#88B04B",USD:"#D86400",serUSD:"#D86400",
+  SF:"#C9A227",VSF:"#B19F61",RSF:"#9B3333",TSU:"#D07070",BR:"#111",SE:"#7A4EAB",
+  USN:"#555",UL:"#777",EpochNode:"#7FB3D5",epoch:"#7FB3D5",
+  property:"#E8E8E8",extractor:"#BBB",combiner:"#999",document:"#F5F5DC",
+  ActivityNodeGroup:"#CCF",ParadataNodeGroup:"#FC9",geo_position:"#DDD",link:"#DDF"};
+const tip=document.getElementById("tip");
+function render(doc){
+  const L=doc.layout;
+  if(!L||!L.positions||!Object.keys(L.positions).length){
+    document.getElementById("info").textContent=
+      "no layout section — run: emstudio layout file.em.json -o out.em.json"; return;}
+  const nodes={}; (doc.graph.nodes||[]).forEach(n=>nodes[n.id]=n);
+  const W=(L.canvas&&L.canvas.width||2000)+120, H=(L.canvas&&L.canvas.height||1000)+60;
+  const svg=document.getElementById("svg");
+  svg.setAttribute("viewBox",`0 0 ${W} ${H}`);
+  svg.setAttribute("width",W); svg.setAttribute("height",H);
+  let s="";
+  (L.swimlanes||[]).forEach((l,i)=>{
+    s+=`<rect x="0" y="${l.y}" width="${W}" height="${l.height}"
+         fill="${i%2?"#F7FAFD":"#EAF2FB"}"/>`;
+    const ep=nodes[l.epoch_id];
+    s+=`<text x="6" y="${l.y+16}" font-size="13" fill="#345">${(ep&&ep.name)||l.epoch_id}</text>`;});
+  const pos=L.positions;
+  (doc.graph.edges||[]).forEach(e=>{
+    const a=pos[e.source],b=pos[e.target]; if(!a||!b)return;
+    const dash=e.edge_type==="is_after"?"":' stroke-dasharray="4 3"';
+    s+=`<line x1="${a.x+a.w/2}" y1="${a.y+a.h/2}" x2="${b.x+b.w/2}" y2="${b.y+b.h/2}"
+         stroke="#8888" stroke-width="0.7"${dash}/>`;});
+  for(const[id,r]of Object.entries(pos)){
+    const n=nodes[id]||{}, c=COLORS[n.node_type]||"#FFF";
+    s+=`<g class="node" data-id="${id}">
+        <rect x="${r.x}" y="${r.y}" width="${r.w}" height="${r.h}" fill="${c}"
+         fill-opacity="0.88" stroke="#333" stroke-width="0.6" rx="3"/>
+        <text x="${r.x+3}" y="${r.y+13}" font-size="8">${String(n.name||id).slice(0,14)}</text></g>`;}
+  svg.innerHTML=s;
+  document.getElementById("info").textContent=
+    `${doc.graph.graph_id} — ${(doc.graph.nodes||[]).length} nodes, `+
+    `${(doc.graph.edges||[]).length} edges, ${(L.swimlanes||[]).length} epoch lanes`;
+  svg.querySelectorAll("g.node").forEach(g=>{
+    g.addEventListener("mousemove",ev=>{
+      const n=nodes[g.dataset.id]||{};
+      tip.style.display="block"; tip.style.left=(ev.clientX+12)+"px"; tip.style.top=(ev.clientY+12)+"px";
+      tip.textContent=`${g.dataset.id} [${n.node_type||"?"}] ${n.name||""} — ${n.description||""}`;});
+    g.addEventListener("mouseleave",()=>tip.style.display="none");});
+}
+function load(file){file.text().then(t=>render(JSON.parse(t)))
+  .catch(e=>document.getElementById("info").textContent="parse error: "+e);}
+document.getElementById("file").addEventListener("change",e=>e.target.files[0]&&load(e.target.files[0]));
+addEventListener("dragover",e=>e.preventDefault());
+addEventListener("drop",e=>{e.preventDefault();e.dataTransfer.files[0]&&load(e.dataTransfer.files[0]);});
+</script>
+</body>
+</html>
