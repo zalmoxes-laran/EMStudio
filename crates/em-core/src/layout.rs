@@ -213,15 +213,11 @@ pub fn compute_with_sketch(
         .map(|l| l.unwrap_or(unassigned_lane))
         .collect();
 
-    // ── 2. vertical sub-layering: directed edges point DOWN ──────────────
-    // Arrows flow downwards (E.D., 12 July 2026): if A --is_after--> B then
-    // A sits above B — never beside it. Every directed edge between two
-    // nodes of the same lane is a vertical constraint (source above
-    // target); this covers the stratigraphic sequence AND the paradata
-    // chain alike. Only the symmetric / equivalence connectors
-    // (contemporaneity, physical equality, bonds) keep their endpoints side
-    // by side. Membership edges (is_in_*) are containment, not sequence;
-    // epoch nodes are lane labels, not flow participants.
+    // ── 2. shared structures for the recursive layout (v4) ───────────────
+    // Arrows flow downwards (E.D., 12 July 2026): every directed edge is a
+    // vertical constraint (source above target) INSIDE its container;
+    // symmetric connectors stay side by side; membership edges are
+    // containment, not sequence; epoch nodes are lane labels.
     let symmetric = |t: &str| {
         matches!(
             t,
@@ -240,8 +236,6 @@ pub fn compute_with_sketch(
                 | "is_in_paradata_nodegroup"
                 | "is_in_location"
                 | "is_in_timebranch"
-                // stratigraphic containment: US/USD/VSF containers are
-                // regular nodes, the relation is the containment (P46i)
                 | "is_part_of"
         )
     };
@@ -251,6 +245,7 @@ pub fn compute_with_sketch(
         .map(|nd| nd.node_type == "epoch" || nd.node_type == "EpochNode")
         .collect();
 
+    // global directed / symmetric relations (projected locally later)
     let mut down: Vec<Vec<usize>> = vec![Vec::new(); n];
     let mut sym_pairs: Vec<(usize, usize)> = Vec::new();
     for e in &graph.edges {
@@ -259,7 +254,7 @@ pub fn compute_with_sketch(
         else {
             continue;
         };
-        if s == t || lane[s] != lane[t] || is_epoch[s] || is_epoch[t] {
+        if s == t || is_epoch[s] || is_epoch[t] {
             continue;
         }
         let et = e.edge_type.as_str();
@@ -273,98 +268,12 @@ pub fn compute_with_sketch(
         }
     }
 
-    // DAG-ify: deterministic iterative DFS, back edges (cycles) skipped
-    let mut dag: Vec<Vec<usize>> = vec![Vec::new(); n];
-    {
-        let mut color = vec![0u8; n]; // 0 white, 1 grey, 2 black
-        let mut stack: Vec<(usize, usize)> = Vec::new();
-        for root in 0..n {
-            if color[root] != 0 {
-                continue;
-            }
-            color[root] = 1;
-            stack.push((root, 0));
-            while let Some(top) = stack.last_mut() {
-                let u = top.0;
-                if top.1 < down[u].len() {
-                    let v = down[u][top.1];
-                    top.1 += 1;
-                    if color[v] == 1 {
-                        continue; // back edge → cycle, skip
-                    }
-                    dag[u].push(v);
-                    if color[v] == 0 {
-                        color[v] = 1;
-                        stack.push((v, 0));
-                    }
-                } else {
-                    color[u] = 2;
-                    stack.pop();
-                }
-            }
-        }
-    }
-
-    // longest-path layering (edges never cross lanes here)
-    let mut indeg = vec![0usize; n];
-    for u in 0..n {
-        for &v in &dag[u] {
-            indeg[v] += 1;
-        }
-    }
-    let mut sub = vec![0u32; n];
-    let mut topo: Vec<usize> = (0..n).filter(|&i| indeg[i] == 0).collect();
-    let mut qi = 0;
-    while qi < topo.len() {
-        let u = topo[qi];
-        qi += 1;
-        for k in 0..dag[u].len() {
-            let v = dag[u][k];
-            if sub[v] < sub[u] + 1 {
-                sub[v] = sub[u] + 1;
-            }
-            indeg[v] -= 1;
-            if indeg[v] == 0 {
-                topo.push(v);
-            }
-        }
-    }
-
-    // symmetric endpoints side by side: pull to a common level, then repair
-    // any directed violation this may introduce
-    for _ in 0..2 {
-        for &(a, b) in &sym_pairs {
-            let m = sub[a].max(sub[b]);
-            sub[a] = m;
-            sub[b] = m;
-        }
-        let mut guard = 0;
-        loop {
-            let mut changed = false;
-            for u in 0..n {
-                for k in 0..dag[u].len() {
-                    let v = dag[u][k];
-                    if sub[v] <= sub[u] {
-                        sub[v] = sub[u] + 1;
-                        changed = true;
-                    }
-                }
-            }
-            guard += 1;
-            if !changed || guard > 12 {
-                break;
-            }
-        }
-    }
-
-    // ── bands & fold state (needed before the layers are built) ──────────
-    // direct membership, MOST SPECIFIC first (containment > paradata group
-    // > location > timebranch > activity)
+    // primary containment tree (most specific membership first)
     let direct_of: Vec<Option<usize>> = {
         let mut best: Vec<Option<(u8, usize)>> = vec![None; n];
         let prio = |et: &str| -> u8 {
             match et {
-                "is_part_of" => 0, // stratigraphic containment: most specific
+                "is_part_of" => 0,
                 "is_in_paradata_nodegroup" => 1,
                 "is_in_location" => 2,
                 "is_in_timebranch" => 3,
@@ -387,40 +296,17 @@ pub fn compute_with_sketch(
         }
         best.into_iter().map(|b| b.map(|(_, t)| t)).collect()
     };
-    let walk_root = |i: usize| -> usize {
-        let mut cur = i;
-        for _ in 0..10 {
-            match direct_of[cur] {
-                Some(g) if g != cur => cur = g,
-                _ => break,
+    let mut children_of: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for i in 0..n {
+        if let Some(p) = direct_of[i] {
+            if p != i {
+                children_of[p].push(i);
             }
         }
-        cur
-    };
-    let band_roots: std::collections::BTreeSet<usize> = (0..n)
-        .filter(|&i| direct_of[i].is_some())
-        .map(walk_root)
-        .collect();
-    let band_of: Vec<usize> = (0..n)
-        .map(|i| {
-            if direct_of[i].is_some() {
-                walk_root(i)
-            } else if band_roots.contains(&i) {
-                i // a root group node belongs to its own band
-            } else {
-                usize::MAX // ungrouped: lane-level pseudo-band
-            }
-        })
-        .collect();
-    // sub-band inside the root band: the direct (nested) group
-    let sub_of: Vec<usize> = (0..n)
-        .map(|i| match direct_of[i] {
-            Some(d) if band_of[i] != usize::MAX && d != band_of[i] => d,
-            _ => usize::MAX, // loose within its band
-        })
-        .collect();
-    // fold compaction: members of folded groups (from the sketch) release
-    // their slots — they are parked at the proxy and hidden by the views
+    }
+
+    // fold state from the sketch: members of folded groups release their
+    // slots and are parked at the proxy afterwards
     let folded_ix: std::collections::BTreeSet<usize> = sketch
         .map(|l| {
             l.folded_groups
@@ -450,360 +336,533 @@ pub fn compute_with_sketch(
         })
         .collect();
 
-    // global layers = (lane, topological sub-layer). Epoch nodes are NOT
-    // placed (the epoch IS the lane in the swimlane projection); members of
-    // folded groups are parked at their proxy and skipped too.
-    let mut layers: Vec<Vec<usize>> = Vec::new();
-    let layer_key: Vec<(usize, u32)> = {
-        let mut keys: Vec<(usize, u32)> = (0..n)
-            .filter(|&i| !is_epoch[i] && !hidden[i])
-            .map(|i| (lane[i], sub[i]))
-            .collect();
-        keys.sort();
-        keys.dedup();
-        let key_ix: HashMap<(usize, u32), usize> =
-            keys.iter().enumerate().map(|(ix, k)| (*k, ix)).collect();
-        layers.resize(keys.len(), Vec::new());
-        for i in 0..n {
-            if is_epoch[i] || hidden[i] {
-                continue;
-            }
-            layers[key_ix[&(lane[i], sub[i])]].push(i);
-        }
-        keys
-    };
-
-    // ── 3. crossing minimisation (barycenter sweeps) ─────────────────────
-    // position of node within its layer
-    let mut pos_in_layer: Vec<usize> = vec![0; n];
-    let refresh = |layers: &Vec<Vec<usize>>, pos: &mut Vec<usize>| {
-        for layer in layers {
-            for (p, &i) in layer.iter().enumerate() {
-                pos[i] = p;
-            }
-        }
-    };
-    refresh(&layers, &mut pos_in_layer);
-
-    // adjacency (undirected, for barycenter)
-    let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
-    for e in &graph.edges {
-        if let (Some(&s), Some(&t)) = (node_ix.get(e.source.as_str()), node_ix.get(e.target.as_str())) {
-            adj[s].push(t);
-            adj[t].push(s);
-        }
-    }
-
-    // From Sketch: seed the in-layer order from the previous x coordinates
-    // and skip the barycenter sweeps (the sketch IS the desired order).
-    let sketching = opts.use_sketch && sketch.is_some();
-    if sketching {
-        let pos = &sketch.unwrap().positions;
-        for layer in layers.iter_mut() {
-            layer.sort_by(|&a, &b| {
-                let xa = pos.get(&graph.nodes[a].id).map(|r| r.x).unwrap_or(f64::MAX);
-                let xb = pos.get(&graph.nodes[b].id).map(|r| r.x).unwrap_or(f64::MAX);
-                xa.partial_cmp(&xb)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then(graph.nodes[a].id.cmp(&graph.nodes[b].id))
-            });
-        }
-        refresh(&layers, &mut pos_in_layer);
-    }
-
-    let sweeps = if sketching { 0 } else { opts.barycenter_sweeps };
-    for sweep in 0..sweeps {
-        let forward = sweep % 2 == 0;
-        let order: Vec<usize> = if forward {
-            (0..layers.len()).collect()
-        } else {
-            (0..layers.len()).rev().collect()
-        };
-        for li in order {
-            let mut scored: Vec<(f64, usize, usize)> = layers[li]
-                .iter()
-                .map(|&i| {
-                    let neigh: Vec<f64> = adj[i]
-                        .iter()
-                        .filter(|&&j| !hidden[j] && (lane[j], sub[j]) != layer_key[li])
-                        .map(|&j| pos_in_layer[j] as f64)
-                        .collect();
-                    let bc = if neigh.is_empty() {
-                        pos_in_layer[i] as f64
-                    } else {
-                        neigh.iter().sum::<f64>() / neigh.len() as f64
-                    };
-                    (bc, pos_in_layer[i], i)
-                })
-                .collect();
-            // stable: barycenter, then previous position (determinism)
-            scored.sort_by(|a, b| {
-                a.0.partial_cmp(&b.0)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then(a.1.cmp(&b.1))
-            });
-            layers[li] = scored.into_iter().map(|(_, _, i)| i).collect();
-            refresh(&layers, &mut pos_in_layer);
-        }
-    }
-
-    // ── 3b. contiguity over the bands computed above ─────────────────────
-    // contiguity: reorder every layer clustering two-level — first by root
-    // band, then by sub-band (nested group) — blocks ordered by mean
-    // barycenter position (deterministic tie-breaks on ids)
-    if opts.respect_groups {
-        for layer in layers.iter_mut() {
-            let mut blocks: Vec<(usize, usize, Vec<usize>)> = Vec::new(); // (band, sub, members)
-            let mut block_ix: HashMap<(usize, usize), usize> = HashMap::new();
-            for &i in layer.iter() {
-                let key = (band_of[i], sub_of[i]);
-                let bix = *block_ix.entry(key).or_insert_with(|| {
-                    blocks.push((key.0, key.1, Vec::new()));
-                    blocks.len() - 1
-                });
-                blocks[bix].2.push(i);
-            }
-            // band-level average position in this layer
-            let mut band_stat: HashMap<usize, (f64, usize)> = HashMap::new();
-            for &i in layer.iter() {
-                let s = band_stat.entry(band_of[i]).or_insert((0.0, 0));
-                s.0 += pos_in_layer[i] as f64;
-                s.1 += 1;
-            }
-            let scored: Vec<(f64, usize, f64, usize, usize, Vec<usize>)> = blocks
-                .into_iter()
-                .map(|(band, sb, members)| {
-                    let (bs, bc) = band_stat[&band];
-                    let band_avg = bs / bc.max(1) as f64;
-                    let sub_avg = members
-                        .iter()
-                        .map(|&i| pos_in_layer[i] as f64)
-                        .sum::<f64>()
-                        / members.len().max(1) as f64;
-                    (band_avg, band, sub_avg, sb, members.iter().map(|&i| pos_in_layer[i]).min().unwrap_or(0), members)
-                })
-                .collect();
-            let mut scored = scored;
-            scored.sort_by(|a, b| {
-                a.0.partial_cmp(&b.0)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then(a.1.cmp(&b.1))
-                    .then(a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
-                    .then(a.3.cmp(&b.3))
-                    .then(a.4.cmp(&b.4))
-            });
-            *layer = scored.into_iter().flat_map(|b| b.5).collect();
-        }
-        refresh(&layers, &mut pos_in_layer);
-    }
-
-    // ── 4. coordinates: band columns per lane, wrapped sub-rows ──────────
+    // ── 3. RECURSIVE GROUP LAYOUT (yEd technique) ─────────────────────────
+    // Every group is laid out as its own hierarchic sub-graph (local
+    // topological layering + local crossing minimisation + median X
+    // alignment), then becomes a rigid macro-block in its parent. Blocks
+    // reserve their column for the layers they span, so nothing overlaps.
     let node_w = opts.default_node_w;
     let node_h = opts.default_node_h;
-    let cell = node_w + opts.node_to_node;
-    let max_cols: usize = if opts.max_row_nodes > 0 {
-        opts.max_row_nodes
-    } else {
-        (((n as f64).sqrt() * 2.0).ceil() as usize).clamp(8, 40)
-    };
+    let gap_x = opts.node_to_node;
     let sub_gap = opts.layer_to_layer * 0.45;
-    let band_gap = opts.node_to_node * 1.2;
-    // column caps per slot kind: loose pseudo-bands wrap sooner than the
-    // global cap, nested-group slots stay narrow (they are chains mostly)
-    let loose_cap = max_cols.min(10);
-    let group_cap = max_cols.min(6);
+    let pitch = node_h + sub_gap;
+    let group_pad = 14.0f64;
+    let group_header = 22.0f64;
+    let closed_w = 150.0f64;
+    let closed_h = 40.0f64;
+    let sketching = opts.use_sketch && sketch.is_some();
+    let sketch_x = |i: usize| -> f64 {
+        sketch
+            .and_then(|l| l.positions.get(&graph.nodes[i].id))
+            .map(|r| r.x)
+            .unwrap_or(f64::MAX)
+    };
 
-    let lane_count = unassigned_lane + 1;
-    let mut layers_of_lane: Vec<Vec<usize>> = vec![Vec::new(); lane_count];
-    for (li, &(l, _)) in layer_key.iter().enumerate() {
-        layers_of_lane[l].push(li); // layer_key sorted by (lane, sub)
+    struct Block {
+        w: f64,
+        h: f64,
+        /// absolute-in-block rects for every descendant node (leafs AND
+        /// group nodes, the latter spanning their whole box)
+        places: Vec<(usize, f64, f64, f64, f64)>,
     }
 
-    // per lane: nested column slots — band (root group) → sub-band (nested
-    // group, e.g. paradata group) → members. Slots are disjoint by
-    // construction, so group boxes can never overlap.
-    struct SubSlot {
-        sub: usize,
-        x0: f64, // relative to the band
-        cols: usize,
+    // context for the recursion (plain fn to allow recursion)
+    struct Ctx<'a> {
+        graph: &'a Graph,
+        down: &'a [Vec<usize>],
+        sym_pairs: &'a [(usize, usize)],
+        direct_of: &'a [Option<usize>],
+        children_of: &'a [Vec<usize>],
+        hidden: &'a [bool],
+        folded: &'a std::collections::BTreeSet<usize>,
+        node_w: f64,
+        node_h: f64,
+        gap_x: f64,
+        pitch: f64,
+        group_pad: f64,
+        group_header: f64,
+        closed_w: f64,
+        closed_h: f64,
+        sketching: bool,
+        barycenter_sweeps: u32,
     }
-    struct BandSlot {
-        band: usize,
-        x0: f64, // relative to the lane
-        subs: Vec<SubSlot>,
-    }
-    struct LaneBands {
-        slots: Vec<BandSlot>,
-        /// (local layer index, band, sub) → members in layer order
-        members: HashMap<(usize, usize, usize), Vec<usize>>,
-        width: f64,
-        /// rows needed per local layer index
-        rows: Vec<usize>,
-    }
-    let mut lane_bands: Vec<LaneBands> = Vec::new();
-    for l in 0..lane_count {
-        let locals = &layers_of_lane[l];
-        let mut members: HashMap<(usize, usize, usize), Vec<usize>> = HashMap::new();
-        // (band, sub) → (Σpos, cnt, max per-layer count); band → (Σpos, cnt)
-        let mut sub_stats: HashMap<(usize, usize), (f64, usize, usize)> = HashMap::new();
-        let mut band_stats: HashMap<usize, (f64, usize)> = HashMap::new();
-        for (k, &li) in locals.iter().enumerate() {
-            let mut per_key_count: HashMap<(usize, usize), usize> = HashMap::new();
-            for &i in &layers[li] {
-                let key = (band_of[i], sub_of[i]);
-                members.entry((k, key.0, key.1)).or_default().push(i);
-                *per_key_count.entry(key).or_insert(0) += 1;
-                let s = sub_stats.entry(key).or_insert((0.0, 0, 0));
-                s.0 += pos_in_layer[i] as f64;
-                s.1 += 1;
-                let b = band_stats.entry(key.0).or_insert((0.0, 0));
-                b.0 += pos_in_layer[i] as f64;
-                b.1 += 1;
-            }
-            for (key, c) in per_key_count {
-                let s = sub_stats.entry(key).or_insert((0.0, 0, 0));
-                s.2 = s.2.max(c);
-            }
-        }
-        // band order by lane-wide average position
-        let mut band_order: Vec<(f64, usize)> = band_stats
-            .iter()
-            .map(|(&b, &(sum, cnt))| (sum / cnt.max(1) as f64, b))
-            .collect();
-        band_order.sort_by(|a, b| {
-            a.0.partial_cmp(&b.0)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(a.1.cmp(&b.1))
-        });
-        let mut x = 0.0;
-        let mut slots: Vec<BandSlot> = Vec::new();
-        for (bix, &(_, band)) in band_order.iter().enumerate() {
-            if bix > 0 {
-                x += band_gap;
-            }
-            // sub order within the band, by average position
-            let mut subs: Vec<(f64, usize, usize)> = sub_stats
+
+    #[allow(clippy::too_many_arguments)]
+    fn layout_container(
+        ctx: &Ctx,
+        members: &[usize],
+        sketch_x: &dyn Fn(usize) -> f64,
+    ) -> Block {
+        // 1. resolve item dimensions (leafs, open groups → recursive block,
+        //    folded groups → closed tab)
+        let mut item_dims: Vec<(usize, f64, f64, Option<Block>)> = Vec::new();
+        for &m in members {
+            let kids: Vec<usize> = ctx.children_of[m]
                 .iter()
-                .filter(|((b, _), _)| *b == band)
-                .map(|(&(_, sb), &(sum, cnt, maxc))| (sum / cnt.max(1) as f64, sb, maxc))
+                .copied()
+                .filter(|&c| !ctx.hidden[c])
                 .collect();
-            subs.sort_by(|a, b| {
-                a.0.partial_cmp(&b.0)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then(a.1.cmp(&b.1))
-            });
-            let mut sx = 0.0;
-            let mut sub_slots: Vec<SubSlot> = Vec::new();
-            for (six, &(_, sb, maxc)) in subs.iter().enumerate() {
-                if six > 0 {
-                    sx += opts.node_to_node;
-                }
-                let cap = if sb == usize::MAX { loose_cap } else { group_cap };
-                let cols = maxc.min(cap).max(1);
-                sub_slots.push(SubSlot { sub: sb, x0: sx, cols });
-                sx += cols as f64 * cell - opts.node_to_node;
+            if ctx.folded.contains(&m) {
+                item_dims.push((m, ctx.closed_w, ctx.closed_h, None));
+            } else if !kids.is_empty() {
+                let inner = layout_container(ctx, &kids, sketch_x);
+                item_dims.push((
+                    m,
+                    inner.w + ctx.group_pad * 2.0,
+                    inner.h + ctx.group_header + ctx.group_pad,
+                    Some(inner),
+                ));
+            } else {
+                item_dims.push((m, ctx.node_w, ctx.node_h, None));
             }
-            slots.push(BandSlot {
-                band,
-                x0: x,
-                subs: sub_slots,
-            });
-            x += sx;
         }
-        let width = x.max(node_w);
-        let rows: Vec<usize> = locals
+        let index_of: std::collections::HashMap<usize, usize> = item_dims
             .iter()
             .enumerate()
-            .map(|(k, _)| {
-                slots
-                    .iter()
-                    .flat_map(|bs| bs.subs.iter().map(move |ss| (bs.band, ss.sub, ss.cols)))
-                    .map(|(b, sb, cols)| {
-                        members
-                            .get(&(k, b, sb))
-                            .map(|m| m.len().div_ceil(cols))
-                            .unwrap_or(0)
-                    })
-                    .max()
-                    .unwrap_or(1)
-                    .max(1)
-            })
+            .map(|(k, (m, ..))| (*m, k))
             .collect();
-        lane_bands.push(LaneBands {
-            slots,
-            members,
-            width,
-            rows,
-        });
-    }
 
-    // lane geometry
-    let mut lane_y = vec![0.0f64; lane_count];
-    let mut lane_h = vec![0.0f64; lane_count];
-    let mut layer_y_in_lane = vec![0.0f64; layers.len()];
-    let mut y_cursor = 0.0;
-    for l in 0..lane_count {
-        let locals = &layers_of_lane[l];
-        let mut h = opts.lane_min_insets;
-        for (k, &li) in locals.iter().enumerate() {
-            if k > 0 {
-                h += opts.layer_to_layer;
+        // 2. project global relations onto the local items: a descendant is
+        //    represented by the member that contains it
+        let member_set: std::collections::HashSet<usize> =
+            members.iter().copied().collect();
+        let project = |mut x: usize| -> Option<usize> {
+            for _ in 0..12 {
+                if member_set.contains(&x) {
+                    return Some(x);
+                }
+                match ctx.direct_of[x] {
+                    Some(p) if p != x => x = p,
+                    _ => return None,
+                }
             }
-            layer_y_in_lane[li] = h;
-            let rows = lane_bands[l].rows[k] as f64;
-            h += rows * node_h + (rows - 1.0) * sub_gap;
-        }
-        h += opts.lane_min_insets;
-        if locals.is_empty() {
-            h = opts.lane_min_insets * 2.0 + node_h;
-        }
-        lane_y[l] = y_cursor;
-        lane_h[l] = h;
-        y_cursor += h;
-    }
-
-    let max_row_w = lane_bands
-        .iter()
-        .map(|lb| lb.width)
-        .fold(0.0f64, f64::max)
-        .max(node_w);
-
-    let mut positions: std::collections::BTreeMap<String, Rect> = std::collections::BTreeMap::new();
-    for l in 0..lane_count {
-        let locals = &layers_of_lane[l];
-        let lb = &lane_bands[l];
-        let lane_x0 = if opts.symmetric_placement {
-            (max_row_w - lb.width) / 2.0
-        } else {
-            0.0
+            None
         };
-        for (k, &li) in locals.iter().enumerate() {
-            let base_y = lane_y[l] + layer_y_in_lane[li];
-            for bs in &lb.slots {
-                for ss in &bs.subs {
-                    let Some(ms) = lb.members.get(&(k, bs.band, ss.sub)) else {
-                        continue;
-                    };
-                    for (p, &i) in ms.iter().enumerate() {
-                        let row = p / ss.cols;
-                        let col = p % ss.cols;
-                        positions.insert(
-                            graph.nodes[i].id.clone(),
-                            Rect {
-                                x: lane_x0 + bs.x0 + ss.x0 + col as f64 * cell,
-                                y: base_y + row as f64 * (node_h + sub_gap),
-                                w: node_w,
-                                h: node_h,
-                            },
-                        );
+        let k = item_dims.len();
+        let mut local_down: Vec<Vec<usize>> = vec![Vec::new(); k];
+        for (s, outs) in ctx.down.iter().enumerate() {
+            let Some(ps) = project(s) else { continue };
+            for &t in outs {
+                let Some(pt) = project(t) else { continue };
+                if ps != pt {
+                    local_down[index_of[&ps]].push(index_of[&pt]);
+                }
+            }
+        }
+        let mut local_syms: Vec<(usize, usize)> = Vec::new();
+        for &(a, b) in ctx.sym_pairs {
+            if let (Some(pa), Some(pb)) = (project(a), project(b)) {
+                if pa != pb {
+                    local_syms.push((index_of[&pa], index_of[&pb]));
+                }
+            }
+        }
+
+        // 3. local layering: DAG-ify (skip back edges) + longest path,
+        //    symmetric endpoints pulled level (with repair)
+        let mut dag: Vec<Vec<usize>> = vec![Vec::new(); k];
+        {
+            let mut color = vec![0u8; k];
+            let mut stack: Vec<(usize, usize)> = Vec::new();
+            for root in 0..k {
+                if color[root] != 0 {
+                    continue;
+                }
+                color[root] = 1;
+                stack.push((root, 0));
+                while let Some(top) = stack.last_mut() {
+                    let u = top.0;
+                    if top.1 < local_down[u].len() {
+                        let v = local_down[u][top.1];
+                        top.1 += 1;
+                        if color[v] == 1 {
+                            continue;
+                        }
+                        dag[u].push(v);
+                        if color[v] == 0 {
+                            color[v] = 1;
+                            stack.push((v, 0));
+                        }
+                    } else {
+                        color[u] = 2;
+                        stack.pop();
                     }
                 }
             }
         }
+        // items spanning several layers (tall blocks) push their
+        // successors BELOW the whole block, not beside it
+        let span_of = |i: usize| -> u32 {
+            ((item_dims[i].2 / ctx.pitch).ceil() as u32).max(1)
+        };
+        let mut indeg = vec![0usize; k];
+        for u in 0..k {
+            for &v in &dag[u] {
+                indeg[v] += 1;
+            }
+        }
+        let mut layer = vec![0u32; k];
+        let mut topo: Vec<usize> = (0..k).filter(|&i| indeg[i] == 0).collect();
+        let mut qi = 0;
+        while qi < topo.len() {
+            let u = topo[qi];
+            qi += 1;
+            for kk in 0..dag[u].len() {
+                let v = dag[u][kk];
+                if layer[v] < layer[u] + span_of(u) {
+                    layer[v] = layer[u] + span_of(u);
+                }
+                indeg[v] -= 1;
+                if indeg[v] == 0 {
+                    topo.push(v);
+                }
+            }
+        }
+        for _ in 0..2 {
+            for &(a, b) in &local_syms {
+                let m = layer[a].max(layer[b]);
+                layer[a] = m;
+                layer[b] = m;
+            }
+            let mut guard = 0;
+            loop {
+                let mut changed = false;
+                for u in 0..k {
+                    for kk in 0..dag[u].len() {
+                        let v = dag[u][kk];
+                        if layer[v] < layer[u] + span_of(u) {
+                            layer[v] = layer[u] + span_of(u);
+                            changed = true;
+                        }
+                    }
+                }
+                guard += 1;
+                if !changed || guard > 12 {
+                    break;
+                }
+            }
+        }
+        let n_layers = item_dims
+            .iter()
+            .enumerate()
+            .map(|(i, _)| layer[i] + 1)
+            .max()
+            .unwrap_or(1) as usize;
+        let mut rows: Vec<Vec<usize>> = vec![Vec::new(); n_layers];
+        for i in 0..k {
+            rows[layer[i] as usize].push(i);
+        }
+
+        // 4. in-layer order: sketch order when sketching, else barycenter
+        let mut pos_in: Vec<usize> = vec![0; k];
+        let refresh = |rows: &Vec<Vec<usize>>, pos: &mut Vec<usize>| {
+            for row in rows {
+                for (p, &i) in row.iter().enumerate() {
+                    pos[i] = p;
+                }
+            }
+        };
+        for row in rows.iter_mut() {
+            row.sort_by(|&a, &b| {
+                let (ma, mb) = (item_dims[a].0, item_dims[b].0);
+                if ctx.sketching {
+                    sketch_x(ma)
+                        .partial_cmp(&sketch_x(mb))
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then(ma.cmp(&mb))
+                } else {
+                    ma.cmp(&mb)
+                }
+            });
+        }
+        refresh(&rows, &mut pos_in);
+        if !ctx.sketching {
+            // undirected adjacency for the barycenter
+            let mut adj: Vec<Vec<usize>> = vec![Vec::new(); k];
+            for u in 0..k {
+                for &v in &local_down[u] {
+                    adj[u].push(v);
+                    adj[v].push(u);
+                }
+            }
+            for &(a, b) in &local_syms {
+                adj[a].push(b);
+                adj[b].push(a);
+            }
+            for _ in 0..ctx.barycenter_sweeps {
+                for row in rows.iter_mut() {
+                    let mut scored: Vec<(f64, usize, usize)> = row
+                        .iter()
+                        .map(|&i| {
+                            let neigh: Vec<f64> = adj[i]
+                                .iter()
+                                .filter(|&&j| layer[j] != layer[i])
+                                .map(|&j| pos_in[j] as f64)
+                                .collect();
+                            let bc = if neigh.is_empty() {
+                                pos_in[i] as f64
+                            } else {
+                                neigh.iter().sum::<f64>() / neigh.len() as f64
+                            };
+                            (bc, pos_in[i], i)
+                        })
+                        .collect();
+                    scored.sort_by(|x, y| {
+                        x.0.partial_cmp(&y.0)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                            .then(x.1.cmp(&y.1))
+                    });
+                    *row = scored.into_iter().map(|(_, _, i)| i).collect();
+                }
+                refresh(&rows, &mut pos_in);
+            }
+        }
+
+        // 4b. wrap over-wide rows (top-down aspect, like the global cap of
+        // v2/v3): rows longer than ~2·√k split into sub-rows; every later
+        // row shifts down accordingly, so vertical constraints still hold
+        {
+            // width-aware: aim at a roughly landscape block (area-based)
+            let total_area: f64 = item_dims.iter().map(|(_, w, h, _)| w * h).sum();
+            let target_w = (total_area.sqrt() * 1.9).max(1400.0);
+            let needs_wrap = rows.iter().any(|r| {
+                r.iter().map(|&i| item_dims[i].1 + ctx.gap_x).sum::<f64>() > target_w
+            });
+            if needs_wrap {
+                let mut new_rows: Vec<Vec<usize>> = Vec::new();
+                for row in rows.iter() {
+                    let mut cur: Vec<usize> = Vec::new();
+                    let mut wsum = 0.0f64;
+                    for &i in row {
+                        let w = item_dims[i].1 + ctx.gap_x;
+                        if !cur.is_empty() && wsum + w > target_w {
+                            new_rows.push(std::mem::take(&mut cur));
+                            wsum = 0.0;
+                        }
+                        cur.push(i);
+                        wsum += w;
+                    }
+                    if !cur.is_empty() {
+                        new_rows.push(cur);
+                    }
+                }
+                rows = new_rows;
+                for (li, row) in rows.iter().enumerate() {
+                    for &i in row {
+                        layer[i] = li as u32;
+                    }
+                }
+                refresh(&rows, &mut pos_in);
+            }
+        }
+
+        // 5. X assignment: init sequential, then median alignment sweeps
+        //    with a scanline that respects blocks spanning multiple layers
+        let span = |i: usize| -> usize { span_of(i) as usize };
+        let mut x = vec![0.0f64; k];
+        let place_row = |row: &[usize],
+                         desired: &dyn Fn(usize) -> f64,
+                         x: &mut Vec<f64>,
+                         active: &mut Vec<(f64, f64, usize)>,
+                         li: usize,
+                         gap: f64,
+                         dims: &[(usize, f64, f64, Option<Block>)]| {
+            active.retain(|&(_, _, until)| until >= li);
+            active.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+            let mut cursor = 0.0f64;
+            for &i in row {
+                let w = dims[i].1;
+                let mut xi = desired(i).max(cursor);
+                // single forward pass over the (sorted) active block columns
+                for &(bx0, bx1, _) in active.iter() {
+                    if xi < bx1 && xi + w > bx0 {
+                        xi = bx1 + gap;
+                    }
+                }
+                x[i] = xi;
+                cursor = xi + w + gap;
+            }
+        };
+        // init pass
+        {
+            let mut active: Vec<(f64, f64, usize)> = Vec::new();
+            for (li, row) in rows.iter().enumerate() {
+                let des = |_: usize| 0.0f64;
+                place_row(row, &des, &mut x, &mut active, li, gap_x_of(ctx), &item_dims);
+                for &i in row {
+                    if span(i) > 1 {
+                        active.push((x[i], x[i] + item_dims[i].1, li + span(i) - 1));
+                    }
+                }
+            }
+        }
+        // one downward median-alignment sweep (stable; the upward sweep
+        // interacts badly with multi-layer block reservations)
+        for sweep in 0..1 {
+            let downward = sweep % 2 == 0;
+            let mut active: Vec<(f64, f64, usize)> = Vec::new();
+            let order: Vec<usize> = if downward {
+                (0..rows.len()).collect()
+            } else {
+                (0..rows.len()).rev().collect()
+            };
+            for li in order {
+                let row = &rows[li];
+                let xs = x.clone();
+                let des = |i: usize| -> f64 {
+                    let mut refs: Vec<f64> = Vec::new();
+                    if downward {
+                        for u in 0..k {
+                            if local_down[u].contains(&i) && layer[u] < layer[i] {
+                                refs.push(xs[u] + item_dims[u].1 / 2.0);
+                            }
+                        }
+                    } else {
+                        for &v in &local_down[i] {
+                            if layer[v] > layer[i] {
+                                refs.push(xs[v] + item_dims[v].1 / 2.0);
+                            }
+                        }
+                    }
+                    if refs.is_empty() {
+                        xs[i]
+                    } else {
+                        refs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+                        refs[refs.len() / 2] - item_dims[i].1 / 2.0
+                    }
+                };
+                place_row(row, &des, &mut x, &mut active, li, gap_x_of(ctx), &item_dims);
+                for &i in row {
+                    if span(i) > 1 {
+                        active.push((x[i], x[i] + item_dims[i].1, li + span(i) - 1));
+                    }
+                }
+            }
+        }
+        // normalise to x >= 0
+        let min_x = (0..k).map(|i| x[i]).fold(f64::INFINITY, f64::min).min(0.0);
+        for xi in x.iter_mut() {
+            *xi -= min_x;
+        }
+
+        // 6. assemble the block
+        let mut places: Vec<(usize, f64, f64, f64, f64)> = Vec::new();
+        let mut w_max = 0.0f64;
+        let mut h_max = 0.0f64;
+        for (i, (m, w, h, inner)) in item_dims.iter().enumerate() {
+            let y = layer[i] as f64 * ctx.pitch;
+            w_max = w_max.max(x[i] + w);
+            h_max = h_max.max(y + h);
+            places.push((*m, x[i], y, *w, *h));
+            if let Some(b) = inner {
+                for &(d, dx, dy, dw, dh) in &b.places {
+                    places.push((
+                        d,
+                        x[i] + ctx.group_pad + dx,
+                        y + ctx.group_header + dy,
+                        dw,
+                        dh,
+                    ));
+                }
+            }
+        }
+        Block {
+            w: w_max.max(ctx.node_w),
+            h: h_max.max(ctx.node_h),
+            places,
+        }
     }
 
-    // park hidden members at their folded ancestor's position (they are
-    // invisible; unfolding + re-layout expands them again)
+    fn gap_x_of(ctx: &Ctx) -> f64 {
+        ctx.gap_x
+    }
+
+    let ctx = Ctx {
+        graph,
+        down: &down,
+        sym_pairs: &sym_pairs,
+        direct_of: &direct_of,
+        children_of: &children_of,
+        hidden: &hidden,
+        folded: &folded_ix,
+        node_w,
+        node_h,
+        gap_x,
+        pitch,
+        group_pad,
+        group_header,
+        closed_w,
+        closed_h,
+        sketching,
+        barycenter_sweeps: opts.barycenter_sweeps,
+    };
+
+    // top-level members per lane: alive nodes whose primary parent is
+    // absent (or lives in another lane — containment then wins for its
+    // children, which follow the root's lane)
+    let lane_count = unassigned_lane + 1;
+    let mut top_of_lane: Vec<Vec<usize>> = vec![Vec::new(); lane_count];
+    for i in 0..n {
+        if is_epoch[i] || hidden[i] {
+            continue;
+        }
+        let top = match direct_of[i] {
+            None => true,
+            Some(p) => hidden[p] || is_epoch[p],
+        };
+        if top {
+            top_of_lane[lane[i]].push(i);
+        }
+    }
+
+    let mut positions: std::collections::BTreeMap<String, Rect> =
+        std::collections::BTreeMap::new();
+    let mut lane_y = vec![0.0f64; lane_count];
+    let mut lane_h = vec![0.0f64; lane_count];
+    let mut lane_blocks: Vec<Option<Block>> = Vec::new();
+    let mut max_w = node_w;
+    for l in 0..lane_count {
+        if top_of_lane[l].is_empty() {
+            lane_blocks.push(None);
+            continue;
+        }
+        let block = layout_container(&ctx, &top_of_lane[l], &sketch_x);
+        max_w = max_w.max(block.w);
+        lane_blocks.push(Some(block));
+    }
+    let mut y_cursor = 0.0f64;
+    for l in 0..lane_count {
+        let h = match &lane_blocks[l] {
+            Some(b) => b.h + opts.lane_min_insets * 2.0,
+            None => opts.lane_min_insets * 2.0 + node_h,
+        };
+        lane_y[l] = y_cursor;
+        lane_h[l] = h;
+        y_cursor += h;
+    }
+    for l in 0..lane_count {
+        let Some(block) = &lane_blocks[l] else { continue };
+        let x0 = if opts.symmetric_placement {
+            (max_w - block.w) / 2.0
+        } else {
+            0.0
+        };
+        let oy = lane_y[l] + opts.lane_min_insets;
+        for &(m, dx, dy, dw, dh) in &block.places {
+            positions.insert(
+                graph.nodes[m].id.clone(),
+                Rect {
+                    x: x0 + dx,
+                    y: oy + dy,
+                    w: dw,
+                    h: dh,
+                },
+            );
+        }
+    }
+    let max_row_w = max_w;
+
+    // park hidden members at their folded ancestor's position
     if !folded_ix.is_empty() {
         for i in 0..n {
             if !hidden[i] {
