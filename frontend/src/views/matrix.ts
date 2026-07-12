@@ -89,9 +89,15 @@ export function buildMatrixScene(
       badge: view?.badges.get(node.id),
     };
     scene.byId.set(node.id, sn);
+    // outline containers: group-type nodes AND any stratigraphic node that
+    // physically contains others (is_part_of members → yEd US/USD/VSF
+    // containers; the container is a regular node, containment a relation)
+    const hasMembers =
+      (membership.membersOf.get(node.id)?.filter((m) => m !== node.id)
+        .length ?? 0) > 0;
     if (CONTAINER_TYPES.has(node.node_type)) {
       relocateIds.push(node.id);
-    } else if (OUTLINE_TYPES.has(node.node_type)) {
+    } else if (OUTLINE_TYPES.has(node.node_type) || hasMembers) {
       outlineIds.push(node.id);
     } else {
       normal.push(sn);

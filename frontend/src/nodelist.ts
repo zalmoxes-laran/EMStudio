@@ -16,6 +16,8 @@ export interface NodeListCallbacks {
   onExplode: (id: string) => void;
   /** fold/unfold every paradata node group at once (single undo step) */
   onFoldAll: (folded: boolean) => void;
+  /** true when the node physically contains others (is_part_of members) */
+  isContainer: (id: string) => boolean;
 }
 
 export function buildNodeList(
@@ -57,8 +59,12 @@ export function buildNodeList(
       !q || match(n.name) || match(n.id) || match(n.node_type) || match(n.description);
 
     // ---- groups section (fold / explode inline) ----
+    // node groups by type PLUS stratigraphic containers (is_part_of members)
     const groups = doc.graph.nodes
-      .filter((n) => isGroupType(n.node_type) && matches(n))
+      .filter(
+        (n) =>
+          (isGroupType(n.node_type) || groupCb.isContainer(n.id)) && matches(n),
+      )
       .sort((a, b) => String(a.name || a.id).localeCompare(String(b.name || b.id)));
     if (groups.length) {
       const h = document.createElement("div");

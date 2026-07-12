@@ -423,6 +423,11 @@ const nodeList = buildNodeList(
         .map((n) => n.id);
       store.setFoldedMany(ids, folded);
     },
+    isContainer: (id) => {
+      if (!store) return false;
+      const mm = buildMembership(store.doc);
+      return (mm.membersOf.get(id)?.filter((m) => m !== id).length ?? 0) > 0;
+    },
   },
 );
 

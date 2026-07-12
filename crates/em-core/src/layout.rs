@@ -200,6 +200,9 @@ pub fn compute(graph: &Graph, opts: &LayoutOptions) -> Layout {
                 | "is_in_paradata_nodegroup"
                 | "is_in_location"
                 | "is_in_timebranch"
+                // stratigraphic containment: US/USD/VSF containers are
+                // regular nodes, the relation is the containment (P46i)
+                | "is_part_of"
         )
     };
     let is_epoch: Vec<bool> = graph
@@ -406,10 +409,11 @@ pub fn compute(graph: &Graph, opts: &LayoutOptions) -> Layout {
         let mut best: Vec<Option<(u8, usize)>> = vec![None; n];
         let prio = |et: &str| -> u8 {
             match et {
-                "is_in_paradata_nodegroup" => 0,
-                "is_in_location" => 1,
-                "is_in_timebranch" => 2,
-                _ => 3, // is_in_activity
+                "is_part_of" => 0, // stratigraphic containment: most specific
+                "is_in_paradata_nodegroup" => 1,
+                "is_in_location" => 2,
+                "is_in_timebranch" => 3,
+                _ => 4, // is_in_activity
             }
         };
         for e in &graph.edges {
