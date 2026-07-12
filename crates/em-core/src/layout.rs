@@ -82,17 +82,6 @@ impl Default for LayoutOptions {
     }
 }
 
-/// Paradata role rank within a lane (sub-layer). Unknown types rank with units.
-fn role_rank(node_type: &str) -> u32 {
-    match node_type {
-        "property" => 1,
-        "combiner" => 2,
-        "extractor" => 3,
-        "document" => 4,
-        _ => 0,
-    }
-}
-
 /// Edge types along which a paradata node inherits the lane of its "anchor".
 /// Directions as canonically stored: unit --has_property--> property,
 /// property --has_data_provenance--> extractor/combiner,
@@ -184,18 +173,158 @@ pub fn compute(graph: &Graph, opts: &LayoutOptions) -> Layout {
         .map(|l| l.unwrap_or(unassigned_lane))
         .collect();
 
-    // ── 2. global layers = (lane, role_rank) ─────────────────────────────
-    let rank: Vec<u32> = graph.nodes.iter().map(|n| role_rank(&n.node_type)).collect();
+    // ── 2. vertical sub-layering: directed edges point DOWN ──────────────
+    // Arrows flow downwards (E.D., 12 July 2026): if A --is_after--> B then
+    // A sits above B — never beside it. Every directed edge between two
+    // nodes of the same lane is a vertical constraint (source above
+    // target); this covers the stratigraphic sequence AND the paradata
+    // chain alike. Only the symmetric / equivalence connectors
+    // (contemporaneity, physical equality, bonds) keep their endpoints side
+    // by side. Membership edges (is_in_*) are containment, not sequence;
+    // epoch nodes are lane labels, not flow participants.
+    let symmetric = |t: &str| {
+        matches!(
+            t,
+            "has_same_time"
+                | "is_physically_equal_to"
+                | "equals"
+                | "bonded_to"
+                | "is_bonded_to"
+                | "contrasts_with"
+        )
+    };
+    let membership = |t: &str| {
+        matches!(
+            t,
+            "is_in_activity"
+                | "is_in_paradata_nodegroup"
+                | "is_in_location"
+                | "is_in_timebranch"
+        )
+    };
+    let is_epoch: Vec<bool> = graph
+        .nodes
+        .iter()
+        .map(|nd| nd.node_type == "epoch" || nd.node_type == "EpochNode")
+        .collect();
+
+    let mut down: Vec<Vec<usize>> = vec![Vec::new(); n];
+    let mut sym_pairs: Vec<(usize, usize)> = Vec::new();
+    for e in &graph.edges {
+        let (Some(&s), Some(&t)) =
+            (node_ix.get(e.source.as_str()), node_ix.get(e.target.as_str()))
+        else {
+            continue;
+        };
+        if s == t || lane[s] != lane[t] || is_epoch[s] || is_epoch[t] {
+            continue;
+        }
+        let et = e.edge_type.as_str();
+        if membership(et) {
+            continue;
+        }
+        if symmetric(et) {
+            sym_pairs.push((s, t));
+        } else {
+            down[s].push(t);
+        }
+    }
+
+    // DAG-ify: deterministic iterative DFS, back edges (cycles) skipped
+    let mut dag: Vec<Vec<usize>> = vec![Vec::new(); n];
+    {
+        let mut color = vec![0u8; n]; // 0 white, 1 grey, 2 black
+        let mut stack: Vec<(usize, usize)> = Vec::new();
+        for root in 0..n {
+            if color[root] != 0 {
+                continue;
+            }
+            color[root] = 1;
+            stack.push((root, 0));
+            while let Some(top) = stack.last_mut() {
+                let u = top.0;
+                if top.1 < down[u].len() {
+                    let v = down[u][top.1];
+                    top.1 += 1;
+                    if color[v] == 1 {
+                        continue; // back edge → cycle, skip
+                    }
+                    dag[u].push(v);
+                    if color[v] == 0 {
+                        color[v] = 1;
+                        stack.push((v, 0));
+                    }
+                } else {
+                    color[u] = 2;
+                    stack.pop();
+                }
+            }
+        }
+    }
+
+    // longest-path layering (edges never cross lanes here)
+    let mut indeg = vec![0usize; n];
+    for u in 0..n {
+        for &v in &dag[u] {
+            indeg[v] += 1;
+        }
+    }
+    let mut sub = vec![0u32; n];
+    let mut topo: Vec<usize> = (0..n).filter(|&i| indeg[i] == 0).collect();
+    let mut qi = 0;
+    while qi < topo.len() {
+        let u = topo[qi];
+        qi += 1;
+        for k in 0..dag[u].len() {
+            let v = dag[u][k];
+            if sub[v] < sub[u] + 1 {
+                sub[v] = sub[u] + 1;
+            }
+            indeg[v] -= 1;
+            if indeg[v] == 0 {
+                topo.push(v);
+            }
+        }
+    }
+
+    // symmetric endpoints side by side: pull to a common level, then repair
+    // any directed violation this may introduce
+    for _ in 0..2 {
+        for &(a, b) in &sym_pairs {
+            let m = sub[a].max(sub[b]);
+            sub[a] = m;
+            sub[b] = m;
+        }
+        let mut guard = 0;
+        loop {
+            let mut changed = false;
+            for u in 0..n {
+                for k in 0..dag[u].len() {
+                    let v = dag[u][k];
+                    if sub[v] <= sub[u] {
+                        sub[v] = sub[u] + 1;
+                        changed = true;
+                    }
+                }
+            }
+            guard += 1;
+            if !changed || guard > 12 {
+                break;
+            }
+        }
+    }
+
+    // global layers = (lane, topological sub-layer)
     let mut layers: Vec<Vec<usize>> = Vec::new();
     let layer_key: Vec<(usize, u32)> = {
-        let mut keys: Vec<(usize, u32)> = (0..n).map(|i| (lane[i], rank[i])).collect();
+        let mut keys: Vec<(usize, u32)> = (0..n).map(|i| (lane[i], sub[i])).collect();
         keys.sort();
         keys.dedup();
         let key_ix: HashMap<(usize, u32), usize> =
             keys.iter().enumerate().map(|(ix, k)| (*k, ix)).collect();
         layers.resize(keys.len(), Vec::new());
         for i in 0..n {
-            layers[key_ix[&(lane[i], rank[i])]].push(i);
+            layers[key_ix[&(lane[i], sub[i])]].push(i);
         }
         keys
     };
@@ -234,7 +363,7 @@ pub fn compute(graph: &Graph, opts: &LayoutOptions) -> Layout {
                 .map(|&i| {
                     let neigh: Vec<f64> = adj[i]
                         .iter()
-                        .filter(|&&j| (lane[j], rank[j]) != layer_key[li])
+                        .filter(|&&j| (lane[j], sub[j]) != layer_key[li])
                         .map(|&j| pos_in_layer[j] as f64)
                         .collect();
                     let bc = if neigh.is_empty() {
@@ -256,88 +385,212 @@ pub fn compute(graph: &Graph, opts: &LayoutOptions) -> Layout {
         }
     }
 
-    // ── 3b. group contiguity within layers (compaction v2) ───────────────
-    // Members of the same activity / paradata group become contiguous
-    // blocks; blocks keep the barycenter flow (ordered by mean position).
-    if opts.respect_groups {
-        let mut member_group: Vec<Option<usize>> = vec![None; n];
+    // ── 3b. bands: every EM node group is a horizontal cluster ───────────
+    // Each node maps to its ROOT group (groups can nest: paradata group
+    // inside activity). Bands stay contiguous in x across every sub-layer
+    // of the lane, so a group occupies one vertical column band and the
+    // frontend can draw its container around it. Ungrouped nodes share one
+    // pseudo-band per lane.
+    let parent_group: Vec<Option<usize>> = {
+        let mut best: Vec<Option<(u8, usize)>> = vec![None; n];
+        let prio = |et: &str| -> u8 {
+            match et {
+                "is_in_activity" => 0,
+                "is_in_timebranch" => 1,
+                "is_in_location" => 2,
+                _ => 3, // is_in_paradata_nodegroup
+            }
+        };
         for e in &graph.edges {
-            if e.edge_type == "is_in_activity" || e.edge_type == "is_in_paradata_nodegroup" {
-                if let (Some(&s), Some(&t)) =
-                    (node_ix.get(e.source.as_str()), node_ix.get(e.target.as_str()))
-                {
-                    member_group[s] = Some(t);
+            let et = e.edge_type.as_str();
+            if !membership(et) {
+                continue;
+            }
+            if let (Some(&s), Some(&t)) =
+                (node_ix.get(e.source.as_str()), node_ix.get(e.target.as_str()))
+            {
+                let cand = (prio(et), t);
+                if best[s].is_none() || cand < best[s].unwrap() {
+                    best[s] = Some(cand);
                 }
             }
         }
-        for layer in layers.iter_mut() {
-            let mut blocks: Vec<(f64, usize, Vec<usize>)> = Vec::new();
-            let mut block_of_group: HashMap<usize, usize> = HashMap::new();
-            for &i in layer.iter() {
-                match member_group[i] {
-                    Some(g) => {
-                        let bix = *block_of_group.entry(g).or_insert_with(|| {
-                            blocks.push((0.0, usize::MAX, Vec::new()));
-                            blocks.len() - 1
-                        });
-                        blocks[bix].2.push(i);
-                    }
-                    None => blocks.push((0.0, usize::MAX, vec![i])),
+        best.into_iter().map(|b| b.map(|(_, t)| t)).collect()
+    };
+    let band_roots: std::collections::BTreeSet<usize> = (0..n)
+        .filter(|&i| parent_group[i].is_some())
+        .map(|i| {
+            let mut cur = i;
+            for _ in 0..10 {
+                match parent_group[cur] {
+                    Some(g) if g != cur => cur = g,
+                    _ => break,
                 }
             }
-            for b in blocks.iter_mut() {
-                b.0 = b.2.iter().map(|&i| pos_in_layer[i] as f64).sum::<f64>()
-                    / b.2.len() as f64;
-                b.1 = b.2.iter().map(|&i| pos_in_layer[i]).min().unwrap_or(0);
+            cur
+        })
+        .collect();
+    let band_of: Vec<usize> = (0..n)
+        .map(|i| {
+            if parent_group[i].is_some() {
+                let mut cur = i;
+                for _ in 0..10 {
+                    match parent_group[cur] {
+                        Some(g) if g != cur => cur = g,
+                        _ => break,
+                    }
+                }
+                cur
+            } else if band_roots.contains(&i) {
+                i // a root group node belongs to its own band
+            } else {
+                usize::MAX // ungrouped: lane-level pseudo-band
+            }
+        })
+        .collect();
+
+    // contiguity: reorder every layer clustering by band, blocks ordered by
+    // mean barycenter position (deterministic tie-break on band id)
+    if opts.respect_groups {
+        for layer in layers.iter_mut() {
+            let mut blocks: Vec<(f64, usize, usize, Vec<usize>)> = Vec::new();
+            let mut block_of_band: HashMap<usize, usize> = HashMap::new();
+            for &i in layer.iter() {
+                let b = band_of[i];
+                let bix = *block_of_band.entry(b).or_insert_with(|| {
+                    blocks.push((0.0, usize::MAX, b, Vec::new()));
+                    blocks.len() - 1
+                });
+                blocks[bix].3.push(i);
+            }
+            for blk in blocks.iter_mut() {
+                blk.0 = blk.3.iter().map(|&i| pos_in_layer[i] as f64).sum::<f64>()
+                    / blk.3.len() as f64;
+                blk.1 = blk.3.iter().map(|&i| pos_in_layer[i]).min().unwrap_or(0);
             }
             blocks.sort_by(|a, b| {
                 a.0.partial_cmp(&b.0)
                     .unwrap_or(std::cmp::Ordering::Equal)
                     .then(a.1.cmp(&b.1))
+                    .then(a.2.cmp(&b.2))
             });
-            *layer = blocks.into_iter().flat_map(|b| b.2).collect();
+            *layer = blocks.into_iter().flat_map(|b| b.3).collect();
         }
         refresh(&layers, &mut pos_in_layer);
     }
 
-    // ── 4. coordinates (compaction v2: layers wrap into sub-rows) ────────
+    // ── 4. coordinates: band columns per lane, wrapped sub-rows ──────────
     let node_w = opts.default_node_w;
     let node_h = opts.default_node_h;
+    let cell = node_w + opts.node_to_node;
     let max_cols: usize = if opts.max_row_nodes > 0 {
         opts.max_row_nodes
     } else {
         (((n as f64).sqrt() * 2.0).ceil() as usize).clamp(8, 40)
     };
     let sub_gap = opts.layer_to_layer * 0.45;
+    let band_gap = opts.node_to_node * 2.0;
 
-    // wrapped sub-rows per layer (barycenter + contiguity order preserved)
-    let chunked: Vec<Vec<Vec<usize>>> = layers
-        .iter()
-        .map(|layer| layer.chunks(max_cols).map(|c| c.to_vec()).collect())
-        .collect();
-
-    // lane heights from the sub-row counts of each rank present in the lane
     let lane_count = unassigned_lane + 1;
     let mut layers_of_lane: Vec<Vec<usize>> = vec![Vec::new(); lane_count];
     for (li, &(l, _)) in layer_key.iter().enumerate() {
-        layers_of_lane[l].push(li); // layer_key is sorted by (lane, rank)
+        layers_of_lane[l].push(li); // layer_key sorted by (lane, sub)
     }
+
+    // per lane: ordered bands with per-layer member lists
+    struct LaneBands {
+        /// band order: (band id, x offset, columns)
+        order: Vec<(usize, f64, usize)>,
+        /// (local layer index, band id) → members in layer order
+        members: HashMap<(usize, usize), Vec<usize>>,
+        width: f64,
+        /// rows needed per local layer index
+        rows: Vec<usize>,
+    }
+    let mut lane_bands: Vec<LaneBands> = Vec::new();
+    for l in 0..lane_count {
+        let locals = &layers_of_lane[l];
+        let mut members: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
+        let mut stats: HashMap<usize, (f64, usize, usize)> = HashMap::new(); // band → (Σpos, cnt, max per layer)
+        for (k, &li) in locals.iter().enumerate() {
+            let mut per_band_count: HashMap<usize, usize> = HashMap::new();
+            for &i in &layers[li] {
+                let b = band_of[i];
+                members.entry((k, b)).or_default().push(i);
+                *per_band_count.entry(b).or_insert(0) += 1;
+                let s = stats.entry(b).or_insert((0.0, 0, 0));
+                s.0 += pos_in_layer[i] as f64;
+                s.1 += 1;
+            }
+            for (b, c) in per_band_count {
+                let s = stats.entry(b).or_insert((0.0, 0, 0));
+                s.2 = s.2.max(c);
+            }
+        }
+        let mut order: Vec<(f64, usize)> = stats
+            .iter()
+            .map(|(&b, &(sum, cnt, _))| (sum / cnt.max(1) as f64, b))
+            .collect();
+        order.sort_by(|a, b| {
+            a.0.partial_cmp(&b.0)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then(a.1.cmp(&b.1))
+        });
+        let mut x = 0.0;
+        let mut placed: Vec<(usize, f64, usize)> = Vec::new();
+        for (ix, &(_, b)) in order.iter().enumerate() {
+            if ix > 0 {
+                x += band_gap;
+            }
+            let max_count = stats[&b].2.max(1);
+            let cols = max_count.min(max_cols).max(1);
+            placed.push((b, x, cols));
+            x += cols as f64 * cell - opts.node_to_node;
+        }
+        let width = x.max(node_w);
+        let rows: Vec<usize> = locals
+            .iter()
+            .enumerate()
+            .map(|(k, _)| {
+                placed
+                    .iter()
+                    .map(|&(b, _, cols)| {
+                        members
+                            .get(&(k, b))
+                            .map(|m| m.len().div_ceil(cols))
+                            .unwrap_or(0)
+                    })
+                    .max()
+                    .unwrap_or(1)
+                    .max(1)
+            })
+            .collect();
+        lane_bands.push(LaneBands {
+            order: placed,
+            members,
+            width,
+            rows,
+        });
+    }
+
+    // lane geometry
     let mut lane_y = vec![0.0f64; lane_count];
     let mut lane_h = vec![0.0f64; lane_count];
     let mut layer_y_in_lane = vec![0.0f64; layers.len()];
     let mut y_cursor = 0.0;
     for l in 0..lane_count {
+        let locals = &layers_of_lane[l];
         let mut h = opts.lane_min_insets;
-        for (k, &li) in layers_of_lane[l].iter().enumerate() {
+        for (k, &li) in locals.iter().enumerate() {
             if k > 0 {
                 h += opts.layer_to_layer;
             }
             layer_y_in_lane[li] = h;
-            let rows = chunked[li].len().max(1) as f64;
+            let rows = lane_bands[l].rows[k] as f64;
             h += rows * node_h + (rows - 1.0) * sub_gap;
         }
         h += opts.lane_min_insets;
-        if layers_of_lane[l].is_empty() {
+        if locals.is_empty() {
             h = opts.lane_min_insets * 2.0 + node_h;
         }
         lane_y[l] = y_cursor;
@@ -345,35 +598,40 @@ pub fn compute(graph: &Graph, opts: &LayoutOptions) -> Layout {
         y_cursor += h;
     }
 
-    // widest sub-row, for centring and canvas width
-    let max_row_w = chunked
+    let max_row_w = lane_bands
         .iter()
-        .flat_map(|c| c.iter())
-        .map(|row| row.len() as f64 * (node_w + opts.node_to_node) - opts.node_to_node)
+        .map(|lb| lb.width)
         .fold(0.0f64, f64::max)
         .max(node_w);
 
     let mut positions: std::collections::BTreeMap<String, Rect> = std::collections::BTreeMap::new();
-    for (li, chunks) in chunked.iter().enumerate() {
-        let (l, _) = layer_key[li];
-        for (ri, row) in chunks.iter().enumerate() {
-            let y = lane_y[l] + layer_y_in_lane[li] + ri as f64 * (node_h + sub_gap);
-            let row_w = row.len() as f64 * (node_w + opts.node_to_node) - opts.node_to_node;
-            let x0 = if opts.symmetric_placement {
-                (max_row_w - row_w) / 2.0
-            } else {
-                0.0
-            };
-            for (p, &i) in row.iter().enumerate() {
-                positions.insert(
-                    graph.nodes[i].id.clone(),
-                    Rect {
-                        x: x0 + p as f64 * (node_w + opts.node_to_node),
-                        y,
-                        w: node_w,
-                        h: node_h,
-                    },
-                );
+    for l in 0..lane_count {
+        let locals = &layers_of_lane[l];
+        let lb = &lane_bands[l];
+        let lane_x0 = if opts.symmetric_placement {
+            (max_row_w - lb.width) / 2.0
+        } else {
+            0.0
+        };
+        for (k, &li) in locals.iter().enumerate() {
+            let base_y = lane_y[l] + layer_y_in_lane[li];
+            for &(b, bx, cols) in &lb.order {
+                let Some(ms) = lb.members.get(&(k, b)) else {
+                    continue;
+                };
+                for (p, &i) in ms.iter().enumerate() {
+                    let row = p / cols;
+                    let col = p % cols;
+                    positions.insert(
+                        graph.nodes[i].id.clone(),
+                        Rect {
+                            x: lane_x0 + bx + col as f64 * cell,
+                            y: base_y + row as f64 * (node_h + sub_gap),
+                            w: node_w,
+                            h: node_h,
+                        },
+                    );
+                }
             }
         }
     }
@@ -490,6 +748,46 @@ mod tests {
         for r in [pr, ex, d] {
             assert!(r.y >= roman.y && r.y <= roman.y + roman.height);
         }
+    }
+
+    #[test]
+    fn directed_edges_point_down_within_lane() {
+        // USM10 --is_after--> USM20 in the SAME epoch: USM10 above, USM20
+        // below — never side by side (E.D., 12 July 2026). Contemporaneity
+        // keeps nodes on the same level instead.
+        let g = Graph {
+            graph_id: "g".into(),
+            name: None,
+            description: None,
+            nodes: vec![
+                epoch("EP1", 100.0),
+                node("USM10", "US"),
+                node("USM20", "US"),
+                node("USM30", "US"),
+                node("USM40", "US"),
+            ],
+            edges: vec![
+                edge("e1", "has_first_epoch", "USM10", "EP1"),
+                edge("e2", "has_first_epoch", "USM20", "EP1"),
+                edge("e3", "has_first_epoch", "USM30", "EP1"),
+                edge("e4", "has_first_epoch", "USM40", "EP1"),
+                edge("e5", "is_after", "USM10", "USM20"),
+                edge("e6", "is_after", "USM20", "USM30"),
+                edge("e7", "has_same_time", "USM40", "USM20"),
+            ],
+            data: std::collections::BTreeMap::new(),
+        };
+        let l = compute(&g, &LayoutOptions::default());
+        let (u10, u20, u30, u40) = (
+            &l.positions["USM10"],
+            &l.positions["USM20"],
+            &l.positions["USM30"],
+            &l.positions["USM40"],
+        );
+        assert!(u10.y < u20.y, "USM10 must sit above USM20");
+        assert!(u20.y < u30.y, "USM20 must sit above USM30");
+        assert_eq!(u40.y, u20.y, "contemporaneous units sit side by side");
+        assert!(u40.x != u20.x, "contemporaneous units must not overlap");
     }
 
     #[test]

@@ -1,13 +1,14 @@
 // Matrix view: the Extended Matrix swimlane projection. Geometry comes from
-// the .em.json layout section (em-cli `layout`); folding is applied as a
-// view-state projection; container groups (yEd-style boxes) are drawn for
-// the paradata node groups, with members relocated inside the box and the
-// swimlanes expanding dynamically when a container needs more room.
+// the .em.json layout section (em-cli `layout` / em-core WASM); folding is
+// a view-state projection. Every EM node group is a yEd-style container:
 //
-// NOTE: ActivityNodeGroup / TimeBranch / Location groups keep the plain
-// node + fold behaviour for now: turning them into open containers requires
-// the group-aware layout of em-core compaction v2 (they own stratigraphic
-// members whose x-order must stay meaningful).
+//  * ParadataNodeGroup — "relocate" mode: members are pulled into a grid
+//    inside the box (their canvas position is the box), swimlanes expand
+//    dynamically when the box needs room;
+//  * ActivityNodeGroup / TimeBranchNodeGroup / LocationNodeGroup —
+//    "outline" mode: the layout engine already placed the members in a
+//    contiguous band (layout v3), the box is drawn AROUND them without
+//    moving anything.
 import { buildMembership, type FoldedView } from "../folding";
 import type { Scene, SceneGroup, SceneNode } from "../scene";
 import type { EmDocument } from "../types";
@@ -19,8 +20,14 @@ const LANE_PAD = 14;
 const CLOSED_W = 150;
 const CLOSED_H = 40;
 
-/** group types rendered as open/closed containers in the matrix canvas */
+/** groups whose members are RELOCATED into the box (grid) */
 export const CONTAINER_TYPES = new Set(["ParadataNodeGroup"]);
+/** groups drawn as an outline around their engine-placed members */
+export const OUTLINE_TYPES = new Set([
+  "ActivityNodeGroup",
+  "TimeBranchNodeGroup",
+  "LocationNodeGroup",
+]);
 
 export function buildMatrixScene(
   doc: EmDocument,
@@ -57,7 +64,8 @@ export function buildMatrixScene(
   }
 
   // base placement from the stored layout
-  const containerIds: string[] = [];
+  const relocateIds: string[] = [];
+  const outlineIds: string[] = [];
   const normal: SceneNode[] = [];
   for (const node of nodes) {
     const r = positions[node.id];
@@ -73,15 +81,19 @@ export function buildMatrixScene(
     };
     scene.byId.set(node.id, sn);
     if (CONTAINER_TYPES.has(node.node_type)) {
-      containerIds.push(node.id);
+      relocateIds.push(node.id);
+    } else if (OUTLINE_TYPES.has(node.node_type)) {
+      outlineIds.push(node.id);
     } else {
       normal.push(sn);
     }
   }
 
-  // containers first (drawn under their members), then everything else
-  const containerNodes = containerIds.map((id) => scene.byId.get(id)!);
-  scene.nodes = [...containerNodes, ...normal];
+  // containers first (drawn under their members): outlines are the
+  // outermost boxes, then relocate boxes, then plain nodes
+  const outlineNodes = outlineIds.map((id) => scene.byId.get(id)!);
+  const containerNodes = relocateIds.map((id) => scene.byId.get(id)!);
+  scene.nodes = [...outlineNodes, ...containerNodes, ...normal];
 
   // ---- container pass: relocate members inside open boxes ----
   const laneIdxOfY = (cy: number): number => {
@@ -175,8 +187,45 @@ export function buildMatrixScene(
     }
   }
 
+  // ---- outline containers: box AROUND engine-placed members ----
+  // computed after lane expansion so member rects are final; nothing moves.
+  const outlineMemberOf = new Map<string, string>();
+  for (const g of outlineNodes) {
+    if (folded.has(g.id)) {
+      g.w = CLOSED_W;
+      g.h = CLOSED_H;
+      continue;
+    }
+    const memberIds = (membership.membersOf.get(g.id) ?? []).filter(
+      (m) => m !== g.id && scene.byId.has(m),
+    );
+    if (!memberIds.length) continue; // no visible members → plain node
+    let mx = Infinity,
+      my = Infinity,
+      Mx = -Infinity,
+      My = -Infinity;
+    for (const m of memberIds) {
+      const sn = scene.byId.get(m)!;
+      mx = Math.min(mx, sn.x);
+      my = Math.min(my, sn.y);
+      Mx = Math.max(Mx, sn.x + sn.w);
+      My = Math.max(My, sn.y + sn.h);
+      outlineMemberOf.set(m, g.id);
+    }
+    g.x = mx - GROUP_PAD;
+    g.y = my - GROUP_HEADER - 6;
+    g.w = Mx - mx + GROUP_PAD * 2;
+    g.h = My - g.y + GROUP_PAD;
+  }
+
   // ---- container descriptors for the renderer ----
-  for (const g of containerNodes) {
+  for (const g of [...outlineNodes, ...containerNodes]) {
+    if (
+      OUTLINE_TYPES.has(g.node.node_type) &&
+      !folded.has(g.id) &&
+      ![...outlineMemberOf.values()].includes(g.id)
+    )
+      continue; // outline group without visible members: plain node
     const sg: SceneGroup = {
       id: g.id,
       x: g.x,
@@ -197,7 +246,9 @@ export function buildMatrixScene(
     // edge when the container is drawn open (yEd semantics)
     if (
       scene.memberOf!.get(e.source) === e.target ||
-      scene.memberOf!.get(e.target) === e.source
+      scene.memberOf!.get(e.target) === e.source ||
+      outlineMemberOf.get(e.source) === e.target ||
+      outlineMemberOf.get(e.target) === e.source
     )
       continue;
     scene.edges.push({ source: e.source, target: e.target, edge: e });
