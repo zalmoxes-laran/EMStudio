@@ -333,6 +333,43 @@ export function render(
     const icon = ICON_NODE_TYPES.has(n.node.node_type)
       ? imageFor(n.node.node_type)
       : null;
+    // property: yEd chip — white rectangle with a corner tab, name inside
+    if (n.node.node_type === "property") {
+      ctx.fillStyle = "#FFFFFF";
+      ctx.strokeStyle = "#1a1a1a";
+      ctx.lineWidth = 1.1 / Math.sqrt(vp.scale);
+      ctx.fillRect(n.x, n.y, n.w, n.h);
+      ctx.strokeRect(n.x, n.y, n.w, n.h);
+      // the two little tab ticks on the left edge (palette template)
+      ctx.beginPath();
+      ctx.moveTo(n.x, n.y + 4);
+      ctx.lineTo(n.x - 4, n.y + 4);
+      ctx.lineTo(n.x - 4, n.y + n.h - 4);
+      ctx.lineTo(n.x, n.y + n.h - 4);
+      ctx.stroke();
+      if (drawLabels) {
+        const label = String(n.node.name || n.id);
+        ctx.font = `${Math.min(11, n.h * 0.42)}px system-ui, sans-serif`;
+        ctx.fillStyle = "#1a1a1a";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        const maxW = n.w - 10;
+        let text = label;
+        if (ctx.measureText(text).width > maxW) {
+          while (text.length > 2 && ctx.measureText(text + "…").width > maxW)
+            text = text.slice(0, -1);
+          text += "…";
+        }
+        ctx.fillText(text, n.x + n.w / 2, n.y + n.h / 2);
+      }
+      if (n.id === state.selectedId || n.id === state.hoverId) {
+        ctx.strokeStyle = n.id === state.selectedId ? ACCENT : "#7fb0f0";
+        ctx.lineWidth = 2.2 / vp.scale;
+        ctx.strokeRect(n.x - 3, n.y - 3, n.w + 6, n.h + 6);
+      }
+      continue;
+    }
+
     if (icon) {
       const ih = Math.min(n.h, 30);
       const iw = (icon.naturalWidth / icon.naturalHeight) * ih;
@@ -358,10 +395,17 @@ export function render(
           ctx.lineTo(lx + tw, ly + 1.5);
           ctx.stroke();
         } else {
-          // "over": centred on the icon (document sheet)
+          // "over": centred on the icon (document sheet / property chip)
           ctx.textAlign = "center";
           ctx.textBaseline = "middle";
-          ctx.fillText(label, n.x + n.w / 2, iy + ih * 0.62);
+          const maxW = iw - 10;
+          let text = label;
+          if (ctx.measureText(text).width > maxW) {
+            while (text.length > 2 && ctx.measureText(text + "…").width > maxW)
+              text = text.slice(0, -1);
+            text += "…";
+          }
+          ctx.fillText(text, n.x + n.w / 2, iy + ih * 0.62);
         }
       }
       if (n.id === state.selectedId || n.id === state.hoverId) {

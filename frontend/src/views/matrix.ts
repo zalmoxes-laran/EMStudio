@@ -20,11 +20,17 @@ const LANE_PAD = 14;
 const CLOSED_W = 150;
 const CLOSED_H = 40;
 
-/** groups whose members are RELOCATED into the box (grid) */
-export const CONTAINER_TYPES = new Set(["ParadataNodeGroup"]);
+/**
+ * Groups whose members are RELOCATED into the box (grid). Empty since the
+ * engine allocates a dedicated sub-band column slot to every nested group
+ * (layout v3.1): all EM node groups are now outline containers around
+ * engine-placed members. The relocate machinery stays for view-only spaces.
+ */
+export const CONTAINER_TYPES = new Set<string>([]);
 /** groups drawn as an outline around their engine-placed members */
 export const OUTLINE_TYPES = new Set([
   "ActivityNodeGroup",
+  "ParadataNodeGroup",
   "TimeBranchNodeGroup",
   "LocationNodeGroup",
 ]);
@@ -167,7 +173,22 @@ export function buildMatrixScene(
   }
 
   // ---- outline containers: box AROUND engine-placed members ----
-  // computed BEFORE lane expansion so the expansion accounts for the boxes
+  // computed BEFORE lane expansion so the expansion accounts for the boxes;
+  // innermost groups first, so an activity's box wraps its PD boxes
+  const groupDepth = (id: string): number => {
+    let d = 0;
+    let cur = id;
+    const seen = new Set<string>();
+    while (!seen.has(cur) && d < 10) {
+      seen.add(cur);
+      const parents = membership.groupsOf.get(cur);
+      if (!parents?.length) break;
+      cur = [...parents].sort()[0];
+      d++;
+    }
+    return d;
+  };
+  outlineNodes.sort((a, b) => groupDepth(b.id) - groupDepth(a.id));
   const outlineMemberOf = new Map<string, string>();
   for (const g of outlineNodes) {
     if (folded.has(g.id)) {

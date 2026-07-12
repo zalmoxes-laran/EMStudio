@@ -17,7 +17,9 @@ export function iconUrlFor(nodeType: string): string | null {
   return ICON_FILES[`./assets/icons2d/${base}.png`] ?? null;
 }
 
-/** node types drawn ON CANVAS as their official icon (yEd parity) */
+/** node types drawn ON CANVAS as their official icon (yEd parity).
+ * property is NOT here: its PNG embeds the word "property" (palette asset),
+ * so the canvas draws the yEd chip vectorially with the node name inside. */
 export const ICON_NODE_TYPES = new Set(["extractor", "combiner", "document"]);
 
 const imageCache = new Map<string, HTMLImageElement>();

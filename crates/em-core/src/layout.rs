@@ -399,14 +399,17 @@ pub fn compute(graph: &Graph, opts: &LayoutOptions) -> Layout {
     // of the lane, so a group occupies one vertical column band and the
     // frontend can draw its container around it. Ungrouped nodes share one
     // pseudo-band per lane.
-    let parent_group: Vec<Option<usize>> = {
+    // direct membership, MOST SPECIFIC first (paradata group > location >
+    // timebranch > activity): a property inside a PD group inside an
+    // activity has direct = PD group, root band = activity.
+    let direct_of: Vec<Option<usize>> = {
         let mut best: Vec<Option<(u8, usize)>> = vec![None; n];
         let prio = |et: &str| -> u8 {
             match et {
-                "is_in_activity" => 0,
-                "is_in_timebranch" => 1,
-                "is_in_location" => 2,
-                _ => 3, // is_in_paradata_nodegroup
+                "is_in_paradata_nodegroup" => 0,
+                "is_in_location" => 1,
+                "is_in_timebranch" => 2,
+                _ => 3, // is_in_activity
             }
         };
         for e in &graph.edges {
@@ -425,30 +428,24 @@ pub fn compute(graph: &Graph, opts: &LayoutOptions) -> Layout {
         }
         best.into_iter().map(|b| b.map(|(_, t)| t)).collect()
     };
-    let band_roots: std::collections::BTreeSet<usize> = (0..n)
-        .filter(|&i| parent_group[i].is_some())
-        .map(|i| {
-            let mut cur = i;
-            for _ in 0..10 {
-                match parent_group[cur] {
-                    Some(g) if g != cur => cur = g,
-                    _ => break,
-                }
+    let walk_root = |i: usize| -> usize {
+        let mut cur = i;
+        for _ in 0..10 {
+            match direct_of[cur] {
+                Some(g) if g != cur => cur = g,
+                _ => break,
             }
-            cur
-        })
+        }
+        cur
+    };
+    let band_roots: std::collections::BTreeSet<usize> = (0..n)
+        .filter(|&i| direct_of[i].is_some())
+        .map(walk_root)
         .collect();
     let band_of: Vec<usize> = (0..n)
         .map(|i| {
-            if parent_group[i].is_some() {
-                let mut cur = i;
-                for _ in 0..10 {
-                    match parent_group[cur] {
-                        Some(g) if g != cur => cur = g,
-                        _ => break,
-                    }
-                }
-                cur
+            if direct_of[i].is_some() {
+                walk_root(i)
             } else if band_roots.contains(&i) {
                 i // a root group node belongs to its own band
             } else {
@@ -456,33 +453,61 @@ pub fn compute(graph: &Graph, opts: &LayoutOptions) -> Layout {
             }
         })
         .collect();
+    // sub-band inside the root band: the direct (nested) group, e.g. the
+    // paradata group — its members get their own column slot, so PD boxes
+    // can never overlap each other or foreign nodes.
+    let sub_of: Vec<usize> = (0..n)
+        .map(|i| match direct_of[i] {
+            Some(d) if band_of[i] != usize::MAX && d != band_of[i] => d,
+            _ => usize::MAX, // loose within its band
+        })
+        .collect();
 
-    // contiguity: reorder every layer clustering by band, blocks ordered by
-    // mean barycenter position (deterministic tie-break on band id)
+    // contiguity: reorder every layer clustering two-level — first by root
+    // band, then by sub-band (nested group) — blocks ordered by mean
+    // barycenter position (deterministic tie-breaks on ids)
     if opts.respect_groups {
         for layer in layers.iter_mut() {
-            let mut blocks: Vec<(f64, usize, usize, Vec<usize>)> = Vec::new();
-            let mut block_of_band: HashMap<usize, usize> = HashMap::new();
+            let mut blocks: Vec<(usize, usize, Vec<usize>)> = Vec::new(); // (band, sub, members)
+            let mut block_ix: HashMap<(usize, usize), usize> = HashMap::new();
             for &i in layer.iter() {
-                let b = band_of[i];
-                let bix = *block_of_band.entry(b).or_insert_with(|| {
-                    blocks.push((0.0, usize::MAX, b, Vec::new()));
+                let key = (band_of[i], sub_of[i]);
+                let bix = *block_ix.entry(key).or_insert_with(|| {
+                    blocks.push((key.0, key.1, Vec::new()));
                     blocks.len() - 1
                 });
-                blocks[bix].3.push(i);
+                blocks[bix].2.push(i);
             }
-            for blk in blocks.iter_mut() {
-                blk.0 = blk.3.iter().map(|&i| pos_in_layer[i] as f64).sum::<f64>()
-                    / blk.3.len() as f64;
-                blk.1 = blk.3.iter().map(|&i| pos_in_layer[i]).min().unwrap_or(0);
+            // band-level average position in this layer
+            let mut band_stat: HashMap<usize, (f64, usize)> = HashMap::new();
+            for &i in layer.iter() {
+                let s = band_stat.entry(band_of[i]).or_insert((0.0, 0));
+                s.0 += pos_in_layer[i] as f64;
+                s.1 += 1;
             }
-            blocks.sort_by(|a, b| {
+            let scored: Vec<(f64, usize, f64, usize, usize, Vec<usize>)> = blocks
+                .into_iter()
+                .map(|(band, sb, members)| {
+                    let (bs, bc) = band_stat[&band];
+                    let band_avg = bs / bc.max(1) as f64;
+                    let sub_avg = members
+                        .iter()
+                        .map(|&i| pos_in_layer[i] as f64)
+                        .sum::<f64>()
+                        / members.len().max(1) as f64;
+                    (band_avg, band, sub_avg, sb, members.iter().map(|&i| pos_in_layer[i]).min().unwrap_or(0), members)
+                })
+                .collect();
+            let mut scored = scored;
+            scored.sort_by(|a, b| {
                 a.0.partial_cmp(&b.0)
                     .unwrap_or(std::cmp::Ordering::Equal)
                     .then(a.1.cmp(&b.1))
-                    .then(a.2.cmp(&b.2))
+                    .then(a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal))
+                    .then(a.3.cmp(&b.3))
+                    .then(a.4.cmp(&b.4))
             });
-            *layer = blocks.into_iter().flat_map(|b| b.3).collect();
+            *layer = scored.into_iter().flat_map(|b| b.5).collect();
         }
         refresh(&layers, &mut pos_in_layer);
     }
@@ -505,12 +530,23 @@ pub fn compute(graph: &Graph, opts: &LayoutOptions) -> Layout {
         layers_of_lane[l].push(li); // layer_key sorted by (lane, sub)
     }
 
-    // per lane: ordered bands with per-layer member lists
+    // per lane: nested column slots — band (root group) → sub-band (nested
+    // group, e.g. paradata group) → members. Slots are disjoint by
+    // construction, so group boxes can never overlap.
+    struct SubSlot {
+        sub: usize,
+        x0: f64, // relative to the band
+        cols: usize,
+    }
+    struct BandSlot {
+        band: usize,
+        x0: f64, // relative to the lane
+        subs: Vec<SubSlot>,
+    }
     struct LaneBands {
-        /// band order: (band id, x offset, columns)
-        order: Vec<(usize, f64, usize)>,
-        /// (local layer index, band id) → members in layer order
-        members: HashMap<(usize, usize), Vec<usize>>,
+        slots: Vec<BandSlot>,
+        /// (local layer index, band, sub) → members in layer order
+        members: HashMap<(usize, usize, usize), Vec<usize>>,
         width: f64,
         /// rows needed per local layer index
         rows: Vec<usize>,
@@ -518,53 +554,83 @@ pub fn compute(graph: &Graph, opts: &LayoutOptions) -> Layout {
     let mut lane_bands: Vec<LaneBands> = Vec::new();
     for l in 0..lane_count {
         let locals = &layers_of_lane[l];
-        let mut members: HashMap<(usize, usize), Vec<usize>> = HashMap::new();
-        let mut stats: HashMap<usize, (f64, usize, usize)> = HashMap::new(); // band → (Σpos, cnt, max per layer)
+        let mut members: HashMap<(usize, usize, usize), Vec<usize>> = HashMap::new();
+        // (band, sub) → (Σpos, cnt, max per-layer count); band → (Σpos, cnt)
+        let mut sub_stats: HashMap<(usize, usize), (f64, usize, usize)> = HashMap::new();
+        let mut band_stats: HashMap<usize, (f64, usize)> = HashMap::new();
         for (k, &li) in locals.iter().enumerate() {
-            let mut per_band_count: HashMap<usize, usize> = HashMap::new();
+            let mut per_key_count: HashMap<(usize, usize), usize> = HashMap::new();
             for &i in &layers[li] {
-                let b = band_of[i];
-                members.entry((k, b)).or_default().push(i);
-                *per_band_count.entry(b).or_insert(0) += 1;
-                let s = stats.entry(b).or_insert((0.0, 0, 0));
+                let key = (band_of[i], sub_of[i]);
+                members.entry((k, key.0, key.1)).or_default().push(i);
+                *per_key_count.entry(key).or_insert(0) += 1;
+                let s = sub_stats.entry(key).or_insert((0.0, 0, 0));
                 s.0 += pos_in_layer[i] as f64;
                 s.1 += 1;
+                let b = band_stats.entry(key.0).or_insert((0.0, 0));
+                b.0 += pos_in_layer[i] as f64;
+                b.1 += 1;
             }
-            for (b, c) in per_band_count {
-                let s = stats.entry(b).or_insert((0.0, 0, 0));
+            for (key, c) in per_key_count {
+                let s = sub_stats.entry(key).or_insert((0.0, 0, 0));
                 s.2 = s.2.max(c);
             }
         }
-        let mut order: Vec<(f64, usize)> = stats
+        // band order by lane-wide average position
+        let mut band_order: Vec<(f64, usize)> = band_stats
             .iter()
-            .map(|(&b, &(sum, cnt, _))| (sum / cnt.max(1) as f64, b))
+            .map(|(&b, &(sum, cnt))| (sum / cnt.max(1) as f64, b))
             .collect();
-        order.sort_by(|a, b| {
+        band_order.sort_by(|a, b| {
             a.0.partial_cmp(&b.0)
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then(a.1.cmp(&b.1))
         });
         let mut x = 0.0;
-        let mut placed: Vec<(usize, f64, usize)> = Vec::new();
-        for (ix, &(_, b)) in order.iter().enumerate() {
-            if ix > 0 {
+        let mut slots: Vec<BandSlot> = Vec::new();
+        for (bix, &(_, band)) in band_order.iter().enumerate() {
+            if bix > 0 {
                 x += band_gap;
             }
-            let max_count = stats[&b].2.max(1);
-            let cols = max_count.min(max_cols).max(1);
-            placed.push((b, x, cols));
-            x += cols as f64 * cell - opts.node_to_node;
+            // sub order within the band, by average position
+            let mut subs: Vec<(f64, usize, usize)> = sub_stats
+                .iter()
+                .filter(|((b, _), _)| *b == band)
+                .map(|(&(_, sb), &(sum, cnt, maxc))| (sum / cnt.max(1) as f64, sb, maxc))
+                .collect();
+            subs.sort_by(|a, b| {
+                a.0.partial_cmp(&b.0)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then(a.1.cmp(&b.1))
+            });
+            let mut sx = 0.0;
+            let mut sub_slots: Vec<SubSlot> = Vec::new();
+            for (six, &(_, sb, maxc)) in subs.iter().enumerate() {
+                if six > 0 {
+                    sx += opts.node_to_node;
+                }
+                let cols = maxc.min(max_cols).max(1);
+                sub_slots.push(SubSlot { sub: sb, x0: sx, cols });
+                sx += cols as f64 * cell - opts.node_to_node;
+            }
+            slots.push(BandSlot {
+                band,
+                x0: x,
+                subs: sub_slots,
+            });
+            x += sx;
         }
         let width = x.max(node_w);
         let rows: Vec<usize> = locals
             .iter()
             .enumerate()
             .map(|(k, _)| {
-                placed
+                slots
                     .iter()
-                    .map(|&(b, _, cols)| {
+                    .flat_map(|bs| bs.subs.iter().map(move |ss| (bs.band, ss.sub, ss.cols)))
+                    .map(|(b, sb, cols)| {
                         members
-                            .get(&(k, b))
+                            .get(&(k, b, sb))
                             .map(|m| m.len().div_ceil(cols))
                             .unwrap_or(0)
                     })
@@ -574,7 +640,7 @@ pub fn compute(graph: &Graph, opts: &LayoutOptions) -> Layout {
             })
             .collect();
         lane_bands.push(LaneBands {
-            order: placed,
+            slots,
             members,
             width,
             rows,
@@ -623,22 +689,24 @@ pub fn compute(graph: &Graph, opts: &LayoutOptions) -> Layout {
         };
         for (k, &li) in locals.iter().enumerate() {
             let base_y = lane_y[l] + layer_y_in_lane[li];
-            for &(b, bx, cols) in &lb.order {
-                let Some(ms) = lb.members.get(&(k, b)) else {
-                    continue;
-                };
-                for (p, &i) in ms.iter().enumerate() {
-                    let row = p / cols;
-                    let col = p % cols;
-                    positions.insert(
-                        graph.nodes[i].id.clone(),
-                        Rect {
-                            x: lane_x0 + bx + col as f64 * cell,
-                            y: base_y + row as f64 * (node_h + sub_gap),
-                            w: node_w,
-                            h: node_h,
-                        },
-                    );
+            for bs in &lb.slots {
+                for ss in &bs.subs {
+                    let Some(ms) = lb.members.get(&(k, bs.band, ss.sub)) else {
+                        continue;
+                    };
+                    for (p, &i) in ms.iter().enumerate() {
+                        let row = p / ss.cols;
+                        let col = p % ss.cols;
+                        positions.insert(
+                            graph.nodes[i].id.clone(),
+                            Rect {
+                                x: lane_x0 + bs.x0 + ss.x0 + col as f64 * cell,
+                                y: base_y + row as f64 * (node_h + sub_gap),
+                                w: node_w,
+                                h: node_h,
+                            },
+                        );
+                    }
                 }
             }
         }
