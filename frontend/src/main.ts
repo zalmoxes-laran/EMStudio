@@ -790,7 +790,10 @@ canvas.addEventListener("pointerdown", (e) => {
     dragMode = "node";
     dragNodeId = hit.id;
     dragCheckpointed = false;
-    // dragging a group container moves the whole group (recursive members)
+    // dragging a group container moves the whole group — but only along
+    // the PRIMARY containment tree: a shared document whose master lives
+    // in another group must NOT follow (its local instance moves with the
+    // extractors of THIS group anyway)
     dragMemberIds = null;
     if (s.groupsById?.has(hit.id) && store) {
       const mm = buildMembership(store.doc);
@@ -798,7 +801,7 @@ canvas.addEventListener("pointerdown", (e) => {
       const stack = [hit.id];
       while (stack.length) {
         const g = stack.pop()!;
-        for (const m of mm.membersOf.get(g) ?? []) {
+        for (const m of mm.childrenOf.get(g) ?? []) {
           if (m !== hit.id && !acc.includes(m)) {
             acc.push(m);
             stack.push(m);

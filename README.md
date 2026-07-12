@@ -44,29 +44,50 @@ validation driven by the same versioned JSON datamodels that drive s3Dgraphy.
    optional reconstructable `layout`. Spec: [`docs/emjson-v1-draft.md`](docs/emjson-v1-draft.md);
    reference implementation in s3Dgraphy (`emjson_exporter` / `emjson_importer`).
 
-## Quickstart — the two ways to run the GUI
+## Quickstart — how to run EMStudio
 
-**A. Browser (no install).** Build once, then double-click the file — it is a
-single self-contained HTML that also works offline:
+**A. Standalone desktop app (Tauri).** Native window, no browser:
+
+```bash
+cargo install tauri-cli --locked   # first time only
+cd frontend && npm install         # first time only
+cd ../apps/desktop
+cargo tauri dev                    # run (dev, live reload)
+cargo tauri build                  # → .app / .dmg bundle to install
+```
+
+**B. Zero-install browser file.** One self-contained HTML, works offline:
 
 ```bash
 cd frontend
 npm install        # first time only
-npm run build      # → frontend/dist/index.html  (double-click it)
-npm run dev        # OR: live-reload dev server at http://localhost:5173
+npm run build      # → frontend/dist/index.html — double-click it
 ```
 
-**B. Standalone desktop app (Tauri).** Native window, no browser:
+**C. Server + client (local network).** Serve the built app at a local
+address and open it from any browser (yours or a colleague's on the LAN):
 
 ```bash
-cargo install tauri-cli --locked   # first time only
-cd apps/desktop
-cargo tauri dev                    # run it
-cargo tauri build                  # → .app / .dmg bundle
+cd frontend
+npm run build
+npm run serve      # → http://<your-ip>:4173  (Vite preview, --host)
+npm run dev        # dev alternative: http://localhost:5173, live reload
 ```
 
-A third delivery — `em-server` (axum) serving the same frontend to Chrome at a
-local address, for multi-user work — is phase 6 of the roadmap.
+This is single-user-per-document for now; the multi-user `em-server`
+(axum, CRDT) is phase 6 of the roadmap and will serve the same frontend.
+
+**Importing a yEd GraphML.** Batch interop runs on the Python reference
+implementation (see `docs/adr-001`, Addendum C):
+
+```bash
+python3 tools/graphml2em.py project.graphml project.em.json
+emstudio layout project.em.json -o project.em.json   # compute the layout
+```
+
+then open `project.em.json` from EMStudio (Open… or drag & drop). The
+importer needs `s3dgraphy` (pip install, or `--s3dgraphy` pointing at a
+checkout's `src/`).
 
 Core library and command line:
 
