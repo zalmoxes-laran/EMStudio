@@ -48,6 +48,10 @@ pub struct LayoutOptions {
     pub default_node_h: f64,
     // Crossing-minimisation sweeps
     pub barycenter_sweeps: u32,
+    /// Maximum nodes per sub-row before a layer wraps (compaction v2):
+    /// keeps the matrix top-down instead of arbitrarily wide. 0 = auto
+    /// (≈ 2·√N, clamped to 8..40).
+    pub max_row_nodes: usize,
 }
 
 impl Default for LayoutOptions {
@@ -73,6 +77,7 @@ impl Default for LayoutOptions {
             default_node_w: 90.0,
             default_node_h: 32.0,
             barycenter_sweeps: 4,
+            max_row_nodes: 0,
         }
     }
 }
@@ -251,60 +256,125 @@ pub fn compute(graph: &Graph, opts: &LayoutOptions) -> Layout {
         }
     }
 
-    // ── 4. coordinates ───────────────────────────────────────────────────
+    // ── 3b. group contiguity within layers (compaction v2) ───────────────
+    // Members of the same activity / paradata group become contiguous
+    // blocks; blocks keep the barycenter flow (ordered by mean position).
+    if opts.respect_groups {
+        let mut member_group: Vec<Option<usize>> = vec![None; n];
+        for e in &graph.edges {
+            if e.edge_type == "is_in_activity" || e.edge_type == "is_in_paradata_nodegroup" {
+                if let (Some(&s), Some(&t)) =
+                    (node_ix.get(e.source.as_str()), node_ix.get(e.target.as_str()))
+                {
+                    member_group[s] = Some(t);
+                }
+            }
+        }
+        for layer in layers.iter_mut() {
+            let mut blocks: Vec<(f64, usize, Vec<usize>)> = Vec::new();
+            let mut block_of_group: HashMap<usize, usize> = HashMap::new();
+            for &i in layer.iter() {
+                match member_group[i] {
+                    Some(g) => {
+                        let bix = *block_of_group.entry(g).or_insert_with(|| {
+                            blocks.push((0.0, usize::MAX, Vec::new()));
+                            blocks.len() - 1
+                        });
+                        blocks[bix].2.push(i);
+                    }
+                    None => blocks.push((0.0, usize::MAX, vec![i])),
+                }
+            }
+            for b in blocks.iter_mut() {
+                b.0 = b.2.iter().map(|&i| pos_in_layer[i] as f64).sum::<f64>()
+                    / b.2.len() as f64;
+                b.1 = b.2.iter().map(|&i| pos_in_layer[i]).min().unwrap_or(0);
+            }
+            blocks.sort_by(|a, b| {
+                a.0.partial_cmp(&b.0)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then(a.1.cmp(&b.1))
+            });
+            *layer = blocks.into_iter().flat_map(|b| b.2).collect();
+        }
+        refresh(&layers, &mut pos_in_layer);
+    }
+
+    // ── 4. coordinates (compaction v2: layers wrap into sub-rows) ────────
     let node_w = opts.default_node_w;
     let node_h = opts.default_node_h;
+    let max_cols: usize = if opts.max_row_nodes > 0 {
+        opts.max_row_nodes
+    } else {
+        (((n as f64).sqrt() * 2.0).ceil() as usize).clamp(8, 40)
+    };
+    let sub_gap = opts.layer_to_layer * 0.45;
 
-    // lane heights: ranks present per lane
+    // wrapped sub-rows per layer (barycenter + contiguity order preserved)
+    let chunked: Vec<Vec<Vec<usize>>> = layers
+        .iter()
+        .map(|layer| layer.chunks(max_cols).map(|c| c.to_vec()).collect())
+        .collect();
+
+    // lane heights from the sub-row counts of each rank present in the lane
     let lane_count = unassigned_lane + 1;
-    let mut ranks_in_lane: Vec<Vec<u32>> = vec![Vec::new(); lane_count];
-    for i in 0..n {
-        if !ranks_in_lane[lane[i]].contains(&rank[i]) {
-            ranks_in_lane[lane[i]].push(rank[i]);
-        }
-    }
-    for r in ranks_in_lane.iter_mut() {
-        r.sort();
+    let mut layers_of_lane: Vec<Vec<usize>> = vec![Vec::new(); lane_count];
+    for (li, &(l, _)) in layer_key.iter().enumerate() {
+        layers_of_lane[l].push(li); // layer_key is sorted by (lane, rank)
     }
     let mut lane_y = vec![0.0f64; lane_count];
     let mut lane_h = vec![0.0f64; lane_count];
+    let mut layer_y_in_lane = vec![0.0f64; layers.len()];
     let mut y_cursor = 0.0;
     for l in 0..lane_count {
-        let slots = ranks_in_lane[l].len().max(1) as f64;
-        let h = opts.lane_min_insets * 2.0 + slots * node_h + (slots - 1.0) * opts.layer_to_layer;
+        let mut h = opts.lane_min_insets;
+        for (k, &li) in layers_of_lane[l].iter().enumerate() {
+            if k > 0 {
+                h += opts.layer_to_layer;
+            }
+            layer_y_in_lane[li] = h;
+            let rows = chunked[li].len().max(1) as f64;
+            h += rows * node_h + (rows - 1.0) * sub_gap;
+        }
+        h += opts.lane_min_insets;
+        if layers_of_lane[l].is_empty() {
+            h = opts.lane_min_insets * 2.0 + node_h;
+        }
         lane_y[l] = y_cursor;
         lane_h[l] = h;
         y_cursor += h;
     }
 
-    // widest layer, for centring
-    let max_row_w = layers
+    // widest sub-row, for centring and canvas width
+    let max_row_w = chunked
         .iter()
-        .map(|layer| layer.len() as f64 * (node_w + opts.node_to_node) - opts.node_to_node)
+        .flat_map(|c| c.iter())
+        .map(|row| row.len() as f64 * (node_w + opts.node_to_node) - opts.node_to_node)
         .fold(0.0f64, f64::max)
         .max(node_w);
 
     let mut positions: std::collections::BTreeMap<String, Rect> = std::collections::BTreeMap::new();
-    for (li, layer) in layers.iter().enumerate() {
-        let (l, r) = layer_key[li];
-        let slot = ranks_in_lane[l].iter().position(|&x| x == r).unwrap_or(0) as f64;
-        let y = lane_y[l] + opts.lane_min_insets + slot * (node_h + opts.layer_to_layer);
-        let row_w = layer.len() as f64 * (node_w + opts.node_to_node) - opts.node_to_node;
-        let x0 = if opts.symmetric_placement {
-            (max_row_w - row_w) / 2.0
-        } else {
-            0.0
-        };
-        for (p, &i) in layer.iter().enumerate() {
-            positions.insert(
-                graph.nodes[i].id.clone(),
-                Rect {
-                    x: x0 + p as f64 * (node_w + opts.node_to_node),
-                    y,
-                    w: node_w,
-                    h: node_h,
-                },
-            );
+    for (li, chunks) in chunked.iter().enumerate() {
+        let (l, _) = layer_key[li];
+        for (ri, row) in chunks.iter().enumerate() {
+            let y = lane_y[l] + layer_y_in_lane[li] + ri as f64 * (node_h + sub_gap);
+            let row_w = row.len() as f64 * (node_w + opts.node_to_node) - opts.node_to_node;
+            let x0 = if opts.symmetric_placement {
+                (max_row_w - row_w) / 2.0
+            } else {
+                0.0
+            };
+            for (p, &i) in row.iter().enumerate() {
+                positions.insert(
+                    graph.nodes[i].id.clone(),
+                    Rect {
+                        x: x0 + p as f64 * (node_w + opts.node_to_node),
+                        y,
+                        w: node_w,
+                        h: node_h,
+                    },
+                );
+            }
         }
     }
 
