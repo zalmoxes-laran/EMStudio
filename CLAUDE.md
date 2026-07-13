@@ -140,23 +140,49 @@ fixture when served, or open the file and drop an .em.json).
    verify natively (no cargo in the dev sandbox). Likely tweak if it
    fails: the fs scope `**` (Tauri glob) — narrow/adjust to the real path
    roots if read/write is denied.
-3. **GUI refinements** (Emanuel has the list).
+3. **GUI refinements** (Emanuel's list, first pass DONE July 2026):
+   - Header overflow fixed: body is now a column flex (header · main · footer);
+     the toolbar `flex-wrap`s instead of clipping, and `#breadcrumb` + `#info`
+     moved OUT of the crowded header into a new `<footer id="statusbar">` — so
+     entering a hypergraph (context breadcrumb) no longer overflows.
+   - Canvas header metadata editable: the inspector's no-selection state now
+     shows a "Canvas" panel with editable Name + ID (`store.updateGraphMeta`).
+     The richer base paradata (authors/license as real nodes) is deferred.
+   - Stratigraphic nodes get a THICK coloured frame (the historical EM look):
+     `NodeStyle.borderWidth` (from `em_visual_rules` `border_width` if present,
+     else 2.6) used by the renderer's shape stroke. Colours already came from
+     the visual rules.
+   - Still TODO (Emanuel: "poi lo miglioreremo"): expandable header sections,
+     base-paradata nodes (title/authors), per-type border widths in the rules.
 4. **EMtools (Blender)**: ship the emjson importer in the addon.
-5. **Realtime bridge EMStudio ⇄ EMtools**: needs architectural design.
-   Facts: EMtools holds a live s3dgraphy graph in memory; EMStudio holds
-   the em.json document in the DocumentStore (JSON, same flat schema).
-   Sketch: WebSocket server inside Blender (asyncio + bpy timer), EMStudio
-   client (browser & Tauri both speak WS); protocol = em.json operations
-   (add/update/delete node/edge, select, layout patch) — the same op-log
-   that phase-6 em-server/CRDT needs, so design it ONCE.
+5. **Realtime bridge EMStudio ⇄ EMtools**: design fixed in
+   **`docs/adr-002-sync-architecture.md`** (July 2026). Source of truth =
+   a single HOST role per session (not a fixed tool); browser EMStudio is
+   always a WS client, EMStudio-desktop/EMtools/em-server can host. Two
+   channels: ephemeral selection/focus vs the op-log (add/update/delete/
+   move/layout-patch → host applies + rebroadcasts, same stream em-server
+   will CRDT). Single-host removes collisions while connected; UUID node
+   ids (done — `DocumentStore.newId`, GUI nodes no longer `US_01`) guard
+   offline merges. Phased: (1) selection sync EMStudio↔Blender (Blender
+   host, EMStudio client) — NEXT; (2) op-log data; (3) em-server.
 6. **Auth**: Keycloak (existing StratiGraph services) + ORCID as user id —
    enters with em-server (phase 6); frontend OIDC flow.
 7. **Multigraph + cross-graph edges** (Emanuel knows the design), and
    internal citation edges rendered ONLY in Graph view, hidden in Matrix
    view (hook exists: per-view edge filtering in `buildScenes`).
-8. Engine polish: re-enable the upward alignment sweep (was unstable with
-   column reservation), persist `edge_routes`, sectors, remove the unused
-   `max_row_nodes` option.
+8. Engine polish: MOSTLY DONE (July 2026). Removed the unused
+   `max_row_nodes` LayoutOptions field + the dead `Ctx.graph` field (0
+   warnings). `sectors` + `edge_routes` now PERSIST across a re-layout —
+   `compute_with_sketch` carries them from the sketch instead of clobbering
+   to empty (the engine still doesn't synthesise them; test
+   `sectors_and_edge_routes_persist_across_relayout`, 9/9 green). The
+   upward alignment sweep stays DISABLED: re-enabling keeps tests green and
+   deterministic but blows the TempluMare canvas from ~3213 wide to ~28223
+   (9x) — the documented "unstable with column reservation" regression;
+   proper re-enable needs a fix to the multi-layer block-reservation
+   interaction, not just the extra sweep (see the comment at the sweep
+   loop). Still open: persist `folded_groups` on output (currently reset to
+   empty in the returned Layout).
 
 ## Gotchas
 

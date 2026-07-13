@@ -81,11 +81,28 @@ export class DocumentStore {
     return this.doc.graph.nodes.find((n) => n.id === id);
   }
 
-  freshId(nodeType: string): string {
-    const ids = new Set(this.doc.graph.nodes.map((n) => n.id));
+  /** A globally-unique node identity (UUID). New nodes MUST use this so
+   * they never collide with EMtools / imported nodes when graphs are merged
+   * or synced — the id is the identity, the human label is `name`. */
+  newId(): string {
+    if (typeof crypto !== "undefined" && "randomUUID" in crypto)
+      return crypto.randomUUID();
+    // Fallback for non-secure contexts (shouldn't happen on localhost/Tauri).
+    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0;
+      return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
+    });
+  }
+
+  /** A fresh human-readable label ("US_01", "US_02", …), unique among the
+   * existing node NAMES. This is the display name, NOT the id (see newId). */
+  freshLabel(nodeType: string): string {
+    const names = new Set(
+      this.doc.graph.nodes.map((n) => String(n.name ?? "")),
+    );
     const base = nodeType.replace(/[^A-Za-z0-9]/g, "") || "node";
     let i = 1;
-    while (ids.has(`${base}_${String(i).padStart(2, "0")}`)) i++;
+    while (names.has(`${base}_${String(i).padStart(2, "0")}`)) i++;
     return `${base}_${String(i).padStart(2, "0")}`;
   }
 
@@ -158,6 +175,18 @@ export class DocumentStore {
     if (!n) return;
     this.checkpoint();
     Object.assign(n, patch);
+    this.emit();
+  }
+
+  /** Edit the canvas header metadata (graph name + id). The GraphML/em.json
+   * header shows these; both are user-editable (identity + display). */
+  updateGraphMeta(patch: { name?: string; graph_id?: string }): void {
+    this.checkpoint();
+    const g = this.doc.graph as Record<string, unknown> & {
+      graph_id: string;
+    };
+    if (patch.name !== undefined) g["name"] = patch.name;
+    if (patch.graph_id) g.graph_id = patch.graph_id;
     this.emit();
   }
 

@@ -14,6 +14,7 @@
       <button id="btn-save-as" title="Save .em.json to a new file (⇧⌘S)">Save As…</button>
       <button id="btn-svg" title="Export current view as SVG">SVG</button>
       <button id="btn-graphml" title="Export as yEd GraphML (needs the local dev bridge — see dev.sh)">GraphML</button>
+      <button id="btn-sync" title="Connect to Blender/EMtools for live selection sync (ADR-002)">Sync</button>
       <span id="dirty-dot" class="hidden" title="unsaved changes">●</span>
       <span class="tb-sep"></span>
       <button id="btn-undo" title="Undo (⌘Z)" disabled>↺</button>
@@ -31,13 +32,11 @@
       <button id="btn-filters" title="Filter node and edge types (graph view)">Filters</button>
       <button id="btn-fit" title="Fit to view (0)">Fit</button>
       <button id="btn-layout" title="Recompute the swimlane layout (em-core, same engine as the CLI)">Layout</button>
-      <div id="breadcrumb" class="hidden"></div>
       <input type="file" id="file-input" accept=".json,.em.json" hidden />
       <div id="search-wrap">
         <input id="search" type="search" placeholder="Search nodes…" autocomplete="off" />
         <div id="search-results" class="hidden"></div>
       </div>
-      <span id="info">open or drop an .em.json file</span>
     </header>
     <main>
       <aside id="palette" title="Click a type, then click the canvas to place it"></aside>
@@ -60,6 +59,10 @@
         <div id="nodelist" class="hidden"></div>
       </aside>
     </main>
+    <footer id="statusbar">
+      <div id="breadcrumb" class="hidden"></div>
+      <span id="info">open or drop an .em.json file</span>
+    </footer>
     <div id="tooltip" class="hidden"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>

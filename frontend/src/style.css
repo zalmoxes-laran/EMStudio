@@ -18,15 +18,23 @@ body {
   overflow: hidden;
 }
 
+/* full-height column: header (wraps) · main (fills) · status footer */
+body {
+  display: flex;
+  flex-direction: column;
+}
+
 /* ---------- toolbar ---------- */
 #toolbar {
   display: flex;
   align-items: center;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 8px 10px;
   padding: 6px 12px;
   background: var(--brand);
   color: #fff;
-  height: 46px;
+  flex: 0 0 auto;
+  min-height: 46px;
 }
 
 #brand {
@@ -74,7 +82,10 @@ body {
 
 #search-wrap {
   position: relative;
-  margin-left: auto;
+  /* rides the first toolbar row inline with the actions; margin-left:auto
+     dropped so a wrap never strands the search alone on a second row */
+  flex: 0 1 auto;
+  min-width: 0;
 }
 
 #search {
@@ -84,7 +95,8 @@ body {
   color: #fff;
   padding: 5px 10px;
   font-size: 13px;
-  width: 220px;
+  width: 190px;
+  max-width: 100%;
 }
 
 #search::placeholder {
@@ -143,7 +155,28 @@ body {
 /* ---------- main area ---------- */
 main {
   display: flex;
-  height: calc(100vh - 46px);
+  flex: 1;
+  min-height: 0;
+}
+
+/* ---------- status footer ---------- */
+#statusbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex: 0 0 auto;
+  min-height: 26px;
+  padding: 3px 12px;
+  background: #eef1f5;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: #46505c;
+  overflow: hidden;
+}
+
+#statusbar #info {
+  margin-left: auto;
+  opacity: 0.9;
 }
 
 #canvas-wrap {
@@ -246,6 +279,33 @@ main {
   font-size: 13px;
   text-align: center;
   margin-top: 40px;
+}
+
+/* canvas header editor (shown when no node is selected) */
+.insp-canvas {
+  padding: 4px 2px;
+}
+.insp-section-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: #6b7682;
+  margin: 2px 0 8px;
+}
+.insp-field-label {
+  display: block;
+  font-size: 11px;
+  color: #6b7682;
+  margin: 8px 0 2px;
+}
+.insp-id-input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: #46505c;
+}
+.insp-canvas .insp-empty {
+  margin-top: 24px;
 }
 
 #nodelist {
@@ -613,14 +673,20 @@ main {
   cursor: default;
 }
 
+#btn-sync.active {
+  background: #2ca05a;
+  border-color: #2ca05a;
+}
+
 #breadcrumb {
   display: flex;
   align-items: center;
   gap: 4px;
-  font-size: 12.5px;
-  background: rgba(255, 255, 255, 0.12);
-  border-radius: 6px;
-  padding: 3px 8px;
+  font-size: 12px;
+  color: #46505c;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
 }
 
 #breadcrumb button {
@@ -628,6 +694,13 @@ main {
   background: none;
   padding: 1px 3px;
   font-weight: 600;
+  font-size: 12px;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+#breadcrumb button:hover {
+  text-decoration: underline;
 }
 
 #canvas.placing {

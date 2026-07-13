@@ -25,6 +25,7 @@ import {
   setWindowTitle,
   baseName,
 } from "./tauri";
+import { SyncClient } from "./sync";
 import {
   hitGroupToggle,
   hitHandle,
@@ -51,6 +52,13 @@ let store: DocumentStore | null = null;
 // Absolute path of the currently-open file on desktop (Tauri). null =
 // no file yet (Save falls back to Save As) or running in a browser.
 let currentFilePath: string | null = null;
+
+// Live-sync (ADR-002 phase 1: selection). EMStudio is always the WS client.
+const sync = new SyncClient();
+// True while applying a selection that ARRIVED from the peer, so we don't
+// echo it straight back (loop guard).
+let applyingRemoteSelect = false;
+const SYNC_URL = "ws://localhost:8788";
 let view: ViewKind = "matrix";
 const scenes: Partial<Record<ViewKind, Scene | null>> = {};
 const viewports: Record<ViewKind, Viewport> = {
@@ -186,6 +194,9 @@ function select(nodeId: string | null): void {
   refreshInspector();
   nodeList.setSelected(nodeId);
   draw();
+  // mirror the selection to a connected peer (Blender), unless this
+  // selection just arrived FROM the peer (avoid the echo loop)
+  if (!applyingRemoteSelect) sync.sendSelect(nodeId);
 }
 
 function refreshInspector(): void {
@@ -558,10 +569,12 @@ const overview = buildOverview(
 
 function placeNode(wx: number, wy: number): void {
   if (!store || !placingType) return;
-  const id = store.freshId(placingType);
+  // id = UUID (identity, collision-free across tools); name = human label
+  const id = store.newId();
+  const name = store.freshLabel(placingType);
   const w = isGroupType(placingType) ? 120 : 90;
   const h = 30;
-  const node = { id, name: id, node_type: placingType, description: "" };
+  const node = { id, name, node_type: placingType, description: "" };
   if (inContext()) {
     const gid = contextStack[contextStack.length - 1];
     store.addNode(node);
@@ -765,6 +778,31 @@ document.getElementById("btn-graphml")!.addEventListener("click", async () => {
       "GraphML bridge not reachable — start it with ./dev.sh (or python3 tools/em_bridge.py)",
     );
   }
+});
+
+// Sync toggle: connect/disconnect the live selection bridge (ADR-002).
+const btnSync = document.getElementById("btn-sync") as HTMLButtonElement;
+btnSync.addEventListener("click", () => {
+  if (sync.connected) {
+    sync.disconnect();
+    return;
+  }
+  sync.connect(SYNC_URL, {
+    onSelect: (id) => {
+      // selection arrived from the peer → reflect it without echoing back
+      applyingRemoteSelect = true;
+      select(id);
+      centerOn(id);
+      applyingRemoteSelect = false;
+    },
+    onStatus: (state) => {
+      btnSync.classList.toggle("active", state === "open");
+      btnSync.textContent = state === "open" ? "Sync ●" : "Sync";
+      if (state === "open") info.textContent = `sync: connected to ${SYNC_URL}`;
+      else if (state === "closed")
+        info.textContent = "sync: disconnected (is Blender's server running?)";
+    },
+  });
 });
 
 // liquid filters panel (graph view): include/exclude node & edge types

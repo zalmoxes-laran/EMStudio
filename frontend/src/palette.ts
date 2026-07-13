@@ -9,6 +9,8 @@ export interface NodeStyle {
   fill: string;
   border: string;
   borderStyle: "solid" | "dashed" | "dotted";
+  /** stroke width (px, world units) — thick coloured frame like the EM icons */
+  borderWidth: number;
   textColor: string;
   /** label placement from the visual rules: "over" | "top_left" | "center" */
   labelPosition: string;
@@ -27,6 +29,7 @@ interface RawNodeStyle {
     fill_color?: string;
     border_color?: string;
     border_style?: string;
+    border_width?: number;
     shape?: string;
   };
 }
@@ -97,6 +100,9 @@ export function nodeStyle(nodeType?: string): NodeStyle {
     fill,
     border: s.border_color ?? "#333333",
     borderStyle: (s.border_style as NodeStyle["borderStyle"]) ?? "solid",
+    // thick coloured frame like the historical EM icons; from the visual
+    // rules when present, else a bold default ("tanto per iniziare").
+    borderWidth: s.border_width ?? 2.6,
     textColor: luminance(fill) > 0.45 ? "#1a1a1a" : "#f5f5f5",
     labelPosition: raw?.label_position ?? "over",
   };

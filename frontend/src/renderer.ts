@@ -498,7 +498,8 @@ export function render(
     ctx.fillStyle = st.fill;
     ctx.fill();
     ctx.strokeStyle = st.border;
-    ctx.lineWidth = 1.1 / Math.sqrt(vp.scale);
+    // thick coloured frame so US/USV/SF/… read like the historical EM icons
+    ctx.lineWidth = st.borderWidth / Math.sqrt(vp.scale);
     ctx.setLineDash(
       st.borderStyle === "dashed"
         ? [5, 3]

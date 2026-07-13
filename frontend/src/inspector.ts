@@ -28,8 +28,40 @@ export function renderInspector(
   root.innerHTML = "";
   const node = nodeId ? store.node(nodeId) : undefined;
   if (!nodeId || !node) {
-    const empty = el("div", "insp-empty", "Select a node to inspect it");
-    root.appendChild(empty);
+    // No node selected → show the canvas header metadata (name + id),
+    // editable. These are what the GraphML/em.json header carries; the
+    // richer base paradata (authors, license, …) become real nodes later.
+    const g = store.doc.graph as Record<string, unknown> & {
+      graph_id: string;
+    };
+    const panel = el("div", "insp-canvas");
+    panel.appendChild(el("div", "insp-section-title", "Canvas"));
+
+    panel.appendChild(el("label", "insp-field-label", "Name"));
+    const nameIn = document.createElement("input");
+    nameIn.className = "insp-name-input";
+    nameIn.value = String((g["name"] as string | undefined) ?? "");
+    nameIn.placeholder = "untitled graph";
+    nameIn.addEventListener("change", () =>
+      store.updateGraphMeta({ name: nameIn.value }),
+    );
+    panel.appendChild(nameIn);
+
+    panel.appendChild(el("label", "insp-field-label", "ID"));
+    const idIn = document.createElement("input");
+    idIn.className = "insp-name-input insp-id-input";
+    idIn.value = g.graph_id ?? "";
+    idIn.addEventListener("change", () => {
+      const v = idIn.value.trim();
+      if (v) store.updateGraphMeta({ graph_id: v });
+      else idIn.value = g.graph_id ?? "";
+    });
+    panel.appendChild(idIn);
+
+    panel.appendChild(
+      el("div", "insp-empty", "Select a node to inspect it"),
+    );
+    root.appendChild(panel);
     return;
   }
   const doc = store.doc;
