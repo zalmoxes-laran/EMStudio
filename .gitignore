@@ -229,3 +229,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Claude Code local tooling (dev-server launch config, settings)
+.claude/

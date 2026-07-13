@@ -18,6 +18,14 @@ import {
 } from "./rules";
 import { sceneToSvg } from "./svg-export";
 import {
+  isTauri,
+  openEmJson,
+  writeEmJson,
+  saveAsEmJson,
+  setWindowTitle,
+  baseName,
+} from "./tauri";
+import {
   hitGroupToggle,
   hitHandle,
   hitTest,
@@ -40,6 +48,9 @@ declare global {
 
 // ---------- state ----------
 let store: DocumentStore | null = null;
+// Absolute path of the currently-open file on desktop (Tauri). null =
+// no file yet (Save falls back to Save As) or running in a browser.
+let currentFilePath: string | null = null;
 let view: ViewKind = "matrix";
 const scenes: Partial<Record<ViewKind, Scene | null>> = {};
 const viewports: Record<ViewKind, Viewport> = {
@@ -228,6 +239,22 @@ function updateToolbar(): void {
   btnUndo.disabled = !store?.canUndo;
   btnRedo.disabled = !store?.canRedo;
   dirtyDot.classList.toggle("hidden", !store?.dirty);
+  updateWindowTitle();
+}
+
+// On desktop, reflect the open file + dirty state in the OS window title
+// (e.g. "TempluMare.em.json ● — EMStudio"). No-op in a browser.
+function updateWindowTitle(): void {
+  if (!isTauri()) return;
+  let title = "EMStudio";
+  if (store) {
+    const g = store.doc.graph;
+    const name = currentFilePath
+      ? baseName(currentFilePath)
+      : String(g["name"] ?? g.graph_id ?? "untitled");
+    title = `${name}${store.dirty ? " ●" : ""} — EMStudio`;
+  }
+  void setWindowTitle(title);
 }
 
 function updateBreadcrumb(): void {
@@ -336,11 +363,16 @@ function setView(v: ViewKind): void {
   fit();
 }
 
-function loadDocument(d: EmDocument, sourceName: string): void {
+function loadDocument(
+  d: EmDocument,
+  sourceName: string,
+  path: string | null = null,
+): void {
   if (!d?.graph?.nodes) {
     info.textContent = `${sourceName}: not an .em.json document (missing graph.nodes)`;
     return;
   }
+  currentFilePath = path; // desktop: enables in-place Save; null in browser
   store = new DocumentStore(d);
   store.onChange(() => {
     buildScenes();
@@ -378,19 +410,81 @@ function loadFile(file: File): void {
     .catch((e) => (info.textContent = `parse error: ${e}`));
 }
 
-function saveDocument(): void {
+function defaultFileName(): string {
+  const g = store!.doc.graph;
+  const name = (g["name"] as string | undefined) ?? g.graph_id ?? "graph";
+  return `${String(name).replace(/[^\w.-]+/g, "_")}.em.json`;
+}
+
+// Save: on desktop overwrite the open file in place (Save As if none yet);
+// in a browser, download a fresh .em.json (no filesystem access).
+async function saveDocument(): Promise<void> {
   if (!store) return;
-  const g = store.doc.graph;
-  const name =
-    (g["name"] as string | undefined) ?? g.graph_id ?? "graph";
-  const blob = new Blob([store.toJSON()], { type: "application/json" });
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob);
-  a.download = `${String(name).replace(/[^\w.-]+/g, "_")}.em.json`;
-  a.click();
-  URL.revokeObjectURL(a.href);
+  if (isTauri()) {
+    if (!currentFilePath) return saveAsDocument();
+    try {
+      await writeEmJson(currentFilePath, store.toJSON());
+      store.dirty = false;
+      info.textContent = `saved ${baseName(currentFilePath)}`;
+      updateToolbar();
+    } catch (e) {
+      toast(`save failed: ${e instanceof Error ? e.message : e}`);
+    }
+    return;
+  }
+  browserDownload(store.toJSON(), defaultFileName());
   store.dirty = false;
   updateToolbar();
+}
+
+// Save As: on desktop prompt for a path and remember it; in a browser this
+// is the same as Save (a download with a fresh name).
+async function saveAsDocument(): Promise<void> {
+  if (!store) return;
+  if (isTauri()) {
+    try {
+      const path = await saveAsEmJson(store.toJSON(), defaultFileName());
+      if (!path) return; // user cancelled
+      currentFilePath = path;
+      store.dirty = false;
+      info.textContent = `saved ${baseName(path)}`;
+      updateToolbar();
+    } catch (e) {
+      toast(`save failed: ${e instanceof Error ? e.message : e}`);
+    }
+    return;
+  }
+  browserDownload(store.toJSON(), defaultFileName());
+  store.dirty = false;
+  updateToolbar();
+}
+
+function browserDownload(text: string, filename: string): void {
+  const blob = new Blob([text], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+// Open: native dialog on desktop, <input type=file> in a browser.
+async function openDocument(): Promise<void> {
+  if (isTauri()) {
+    try {
+      const res = await openEmJson();
+      if (!res) return; // cancelled
+      loadDocument(
+        JSON.parse(res.text) as EmDocument,
+        baseName(res.path),
+        res.path,
+      );
+    } catch (e) {
+      info.textContent = `open failed: ${e instanceof Error ? e.message : e}`;
+    }
+    return;
+  }
+  fileInput.click();
 }
 
 // ---------- placing (palette) ----------
@@ -601,12 +695,17 @@ function hideEdgeMenu(): void {
 const fileInput = document.getElementById("file-input") as HTMLInputElement;
 document
   .getElementById("btn-open")!
-  .addEventListener("click", () => fileInput.click());
+  .addEventListener("click", () => void openDocument());
 fileInput.addEventListener("change", () => {
   if (fileInput.files?.[0]) loadFile(fileInput.files[0]);
   fileInput.value = "";
 });
-document.getElementById("btn-save")!.addEventListener("click", saveDocument);
+document
+  .getElementById("btn-save")!
+  .addEventListener("click", () => void saveDocument());
+document
+  .getElementById("btn-save-as")!
+  .addEventListener("click", () => void saveAsDocument());
 document.getElementById("btn-svg")!.addEventListener("click", () => {
   const s = scene();
   if (!s || !store) return;
@@ -1045,7 +1144,8 @@ window.addEventListener("keydown", (e) => {
     e.target instanceof HTMLTextAreaElement;
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
     e.preventDefault();
-    saveDocument();
+    if (e.shiftKey) void saveAsDocument();
+    else void saveDocument();
     return;
   }
   if (inField) return;

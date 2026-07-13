@@ -46,7 +46,9 @@ validation driven by the same versioned JSON datamodels that drive s3Dgraphy.
 
 ## Quickstart — how to run EMStudio
 
-**A. Standalone desktop app (Tauri).** Native window, no browser:
+**A. Standalone desktop app (Tauri).** Native window, no browser, with
+native **Open / Save / Save As…** dialogs (⌘S save in place, ⇧⌘S save as)
+and the open file + dirty state shown in the window title:
 
 ```bash
 cargo install tauri-cli --locked   # first time only
