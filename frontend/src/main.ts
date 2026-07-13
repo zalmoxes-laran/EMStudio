@@ -400,6 +400,9 @@ function loadDocument(
     nodeList.refresh();
     draw();
   });
+  // forward local graph mutations to a connected peer (op-log, ADR-002 §2).
+  // Remote-applied ops don't re-emit (DocumentStore suppresses), so no echo.
+  store.onOp((op) => sync.sendOp(op));
   contextStack = [];
   contextScene = null;
   hoverId = null;
@@ -794,6 +797,11 @@ btnSync.addEventListener("click", () => {
       select(id);
       centerOn(id);
       applyingRemoteSelect = false;
+    },
+    onOp: (op) => {
+      // a graph mutation arrived from the peer/host → apply to our replica
+      // (DocumentStore.applyRemoteOp suppresses re-emission, no echo)
+      store?.applyRemoteOp(op);
     },
     onStatus: (state) => {
       btnSync.classList.toggle("active", state === "open");

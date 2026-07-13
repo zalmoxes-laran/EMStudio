@@ -11,15 +11,16 @@
 //   { v:1, type:"focus",  node_id:"<uuid>", source:... }   // reserved
 // `source` lets a peer ignore its own echo.
 
-export type SyncMessage = {
-  v: number;
-  type: "select" | "focus";
-  node_id: string | null;
-  source?: string;
-};
+import type { GraphOp } from "./model";
+
+export type SyncMessage =
+  | { v: number; type: "select" | "focus"; node_id: string | null; source?: string }
+  | ({ v: number; type: "op"; source?: string } & GraphOp);
 
 export interface SyncCallbacks {
   onSelect: (nodeId: string) => void;
+  /** a graph mutation arrived from the peer (ADR-002 phase 2 op-log) */
+  onOp: (op: GraphOp) => void;
   onStatus: (state: "connecting" | "open" | "closed") => void;
 }
 
@@ -71,6 +72,10 @@ export class SyncClient {
       }
       if (msg.source === SOURCE) return; // ignore our own echo
       if (msg.type === "select" && msg.node_id) this.cb?.onSelect(msg.node_id);
+      else if (msg.type === "op") {
+        const { type: _t, v: _v, source: _s, ...op } = msg;
+        this.cb?.onOp(op as GraphOp);
+      }
     };
   }
 
@@ -80,6 +85,16 @@ export class SyncClient {
     const msg: SyncMessage = { v: 1, type: "select", node_id: nodeId, source: SOURCE };
     try {
       this.ws!.send(JSON.stringify(msg));
+    } catch {
+      /* dropped */
+    }
+  }
+
+  /** Send a graph mutation to the peer/host (no-op when disconnected). */
+  sendOp(op: GraphOp): void {
+    if (!this.connected) return;
+    try {
+      this.ws!.send(JSON.stringify({ v: 1, type: "op", source: SOURCE, ...op }));
     } catch {
       /* dropped */
     }

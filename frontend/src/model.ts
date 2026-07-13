@@ -5,6 +5,14 @@
 // em-core (WASM / Tauri IPC) when the core editing API lands.
 import type { EmDocument, EmEdge, EmNode, LayoutRect } from "./types";
 
+/** A structured graph mutation for the live op-log bridge (ADR-002 phase 2).
+ * Kept small and additive; more variants (add/delete node/edge) land next. */
+export type GraphOp = {
+  op: "update_node";
+  node_id: string;
+  patch: Partial<EmNode>;
+};
+
 interface Snapshot {
   graph: string;
   layout: string;
@@ -18,6 +26,10 @@ export class DocumentStore {
   private undoStack: Snapshot[] = [];
   private redoStack: Snapshot[] = [];
   private listeners: Array<() => void> = [];
+  // op-log listener (ADR-002 phase 2): every mutation also emits a structured
+  // operation for the live bridge. Suppressed while APPLYING a remote op.
+  private opFn: ((op: GraphOp) => void) | null = null;
+  private suppressOp = false;
 
   constructor(doc: EmDocument) {
     this.doc = doc;
@@ -27,9 +39,27 @@ export class DocumentStore {
     this.listeners.push(fn);
   }
 
+  onOp(fn: (op: GraphOp) => void): void {
+    this.opFn = fn;
+  }
+
   private emit(): void {
     this.dirty = true;
     for (const fn of this.listeners) fn();
+  }
+
+  private emitOp(op: GraphOp): void {
+    if (!this.suppressOp) this.opFn?.(op);
+  }
+
+  /** Apply an operation that arrived from a peer, WITHOUT re-emitting it. */
+  applyRemoteOp(op: GraphOp): void {
+    this.suppressOp = true;
+    try {
+      if (op.op === "update_node") this.updateNode(op.node_id, op.patch);
+    } finally {
+      this.suppressOp = false;
+    }
   }
 
   private take(): Snapshot {
@@ -176,6 +206,7 @@ export class DocumentStore {
     this.checkpoint();
     Object.assign(n, patch);
     this.emit();
+    this.emitOp({ op: "update_node", node_id: id, patch });
   }
 
   /** Edit the canvas header metadata (graph name + id). The GraphML/em.json
