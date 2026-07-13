@@ -48,10 +48,6 @@ pub struct LayoutOptions {
     pub default_node_h: f64,
     // Crossing-minimisation sweeps
     pub barycenter_sweeps: u32,
-    /// Maximum nodes per sub-row before a layer wraps (compaction v2):
-    /// keeps the matrix top-down instead of arbitrarily wide. 0 = auto
-    /// (≈ 2·√N, clamped to 8..40).
-    pub max_row_nodes: usize,
 }
 
 impl Default for LayoutOptions {
@@ -77,7 +73,6 @@ impl Default for LayoutOptions {
             default_node_w: 90.0,
             default_node_h: 32.0,
             barycenter_sweeps: 4,
-            max_row_nodes: 0,
         }
     }
 }
@@ -368,7 +363,6 @@ pub fn compute_with_sketch(
 
     // context for the recursion (plain fn to allow recursion)
     struct Ctx<'a> {
-        graph: &'a Graph,
         down: &'a [Vec<usize>],
         sym_pairs: &'a [(usize, usize)],
         direct_of: &'a [Option<usize>],
@@ -696,8 +690,14 @@ pub fn compute_with_sketch(
                 }
             }
         }
-        // one downward median-alignment sweep (stable; the upward sweep
-        // interacts badly with multi-layer block reservations)
+        // one downward median-alignment sweep only. The upward pass is
+        // deliberately disabled: although it keeps the 8 contract tests
+        // green and stays deterministic, on real graphs with multi-layer
+        // block reservations (containers/series spanning layers, e.g.
+        // TempluMare) it blows the canvas width up ~9x (28k px vs the
+        // ~3.2k near-square target) — the "unstable with column
+        // reservation" regression. Re-enabling needs a real fix to the
+        // block-reservation interaction, not just the extra sweep.
         for sweep in 0..1 {
             let downward = sweep % 2 == 0;
             let mut active: Vec<(f64, f64, usize)> = Vec::new();
@@ -778,7 +778,6 @@ pub fn compute_with_sketch(
     }
 
     let ctx = Ctx {
-        graph,
         down: &down,
         sym_pairs: &sym_pairs,
         direct_of: &direct_of,
@@ -908,11 +907,16 @@ pub fn compute_with_sketch(
             height: y_cursor,
         },
         swimlanes,
-        sectors: Vec::new(),
+        // Persist sectors and edge_routes across a re-layout: the engine
+        // does not compute them yet (v2 router / sector columns), so
+        // carrying whatever the sketch held is strictly better than
+        // clobbering to empty — a manual/router arrangement or data set by
+        // another tool survives the Layout action, like positions do.
+        sectors: sketch.map(|s| s.sectors.clone()).unwrap_or_default(),
         positions,
         folded_groups: Vec::new(),
         group_spaces: std::collections::BTreeMap::new(),
-        edge_routes: std::collections::BTreeMap::new(),
+        edge_routes: sketch.map(|s| s.edge_routes.clone()).unwrap_or_default(),
     }
 }
 
@@ -1196,5 +1200,47 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn sectors_and_edge_routes_persist_across_relayout() {
+        // The engine does not compute sectors / edge_routes yet, so a
+        // re-layout must CARRY them from the sketch instead of clobbering
+        // to empty — a manual/router arrangement or externally-set data
+        // survives the Layout action, like positions do.
+        use crate::model::Sector;
+        let g = Graph {
+            graph_id: "g".into(),
+            name: None,
+            description: None,
+            nodes: vec![epoch("EP1", 100.0), node("A", "US")],
+            edges: vec![edge("e1", "has_first_epoch", "A", "EP1")],
+            data: std::collections::BTreeMap::new(),
+        };
+        let opts = LayoutOptions::default();
+        let mut sketch = compute(&g, &opts);
+        sketch.sectors = vec![Sector {
+            id: "S1".into(),
+            order: 0,
+            x: 10.0,
+            width: 50.0,
+        }];
+        sketch
+            .edge_routes
+            .insert("e1".into(), vec![(0.0, 0.0), (5.0, 5.0)]);
+
+        let out = compute_with_sketch(&g, &opts, Some(&sketch));
+        assert_eq!(out.sectors.len(), 1, "sectors must survive re-layout");
+        assert_eq!(out.sectors[0].id, "S1");
+        assert_eq!(
+            out.edge_routes.get("e1").map(Vec::len),
+            Some(2),
+            "edge_routes must survive re-layout"
+        );
+
+        // A fresh layout (no sketch) has neither — the engine does not
+        // synthesise them.
+        let fresh = compute(&g, &opts);
+        assert!(fresh.sectors.is_empty() && fresh.edge_routes.is_empty());
     }
 }
