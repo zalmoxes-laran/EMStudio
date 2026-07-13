@@ -621,6 +621,53 @@ document.getElementById("btn-svg")!.addEventListener("click", () => {
   URL.revokeObjectURL(a.href);
 });
 
+// Export as yEd GraphML via the local dev bridge (tools/em_bridge.py). The
+// frontend cannot run s3Dgraphy (ADR-001 invariant 2), so we POST the current
+// .em.json to the bridge and download the GraphML it returns. Bridge URL is
+// overridable with ?bridge= or window.EM_BRIDGE (default localhost:8765).
+const BRIDGE_URL =
+  new URLSearchParams(location.search).get("bridge") ??
+  (window as unknown as { EM_BRIDGE?: string }).EM_BRIDGE ??
+  "http://localhost:8765";
+document.getElementById("btn-graphml")!.addEventListener("click", async () => {
+  if (!store) {
+    toast("Open a document first");
+    return;
+  }
+  const g = store.doc.graph;
+  const name = String(g["name"] ?? g.graph_id ?? "graph");
+  toast("Exporting GraphML…");
+  try {
+    const res = await fetch(`${BRIDGE_URL}/graphml`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: store.toJSON(),
+    });
+    if (!res.ok) {
+      let msg = `bridge error ${res.status}`;
+      try {
+        const j = await res.json();
+        if (j?.error) msg = j.error;
+      } catch {
+        /* non-JSON error body */
+      }
+      toast(`GraphML export failed: ${msg}`);
+      return;
+    }
+    const blob = await res.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `${name.replace(/[^\w.-]+/g, "_")}.graphml`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    toast("GraphML exported");
+  } catch {
+    toast(
+      "GraphML bridge not reachable — start it with ./dev.sh (or python3 tools/em_bridge.py)",
+    );
+  }
+});
+
 // liquid filters panel (graph view): include/exclude node & edge types
 const filterPanel = document.getElementById("filter-panel")!;
 function rebuildFilterPanel(): void {

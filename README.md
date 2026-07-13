@@ -77,6 +77,24 @@ npm run dev        # dev alternative: http://localhost:5173, live reload
 This is single-user-per-document for now; the multi-user `em-server`
 (axum, CRDT) is phase 6 of the roadmap and will serve the same frontend.
 
+**D. Iterative dev stack (`./dev.sh`, macOS/Linux).** One command starts
+the Vite frontend (live reload, no Tauri rebuild) *and* the local Python
+GraphML bridge that backs the in-app **GraphML** export button:
+
+```bash
+./dev.sh                 # frontend :5173 + bridge :8765
+./dev.sh --port 8888     # override the bridge port
+```
+
+The frontend cannot run s3Dgraphy (ADR-001 invariant 2: batch interop
+stays in Python), so the GraphML button POSTs the current `.em.json` to
+`tools/em_bridge.py`, which runs the s3Dgraphy exporter in-process and
+returns a yEd-openable `.graphml` for download (US/USD/VSF containers,
+ActivityNodeGroups, continuity BR diamonds, epoch swimlanes). Edit the
+frontend and just reload; edit the Python exporter and restart the bridge
+(Ctrl-C, re-run `./dev.sh`). The bridge needs a Python that can import
+s3Dgraphy (pandas + lxml) — `dev.sh` prefers `../s3Dgraphy/.venv`.
+
 **Importing a yEd GraphML.** Batch interop runs on the Python reference
 implementation (see `docs/adr-001`, Addendum C):
 

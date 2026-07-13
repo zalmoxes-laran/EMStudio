@@ -1,0 +1,21 @@
+# Python deps for the EMStudio batch-interop tools (graphml2em.py,
+# em2graphml.py, em_bridge.py). Install with:
+#     pip install -r tools/requirements.txt
+#
+# s3Dgraphy is the reference implementation of the EM language (ADR-001):
+# all GraphML <-> em.json conversion runs here, never in the frontend.
+#
+# Version policy: pin an EXACT release. pip only resolves a .devN
+# pre-release when the version is pinned exactly (or with --pre), so a bare
+# `s3dgraphy` would silently prefer the latest STABLE and miss dev fixes.
+#
+# NOTE: the dev line pinned below tracks the published PyPI dev. Local
+# working-tree changes to s3Dgraphy are NOT on PyPI — for those, run the
+# tools against a checkout instead (editable install or the --s3dgraphy
+# flag / dev.sh, which puts ../s3Dgraphy/src on sys.path). Bump this pin
+# after publishing a new dev that contains the changes you depend on.
+s3dgraphy==1.6.0.dev10
+
+# Hard runtime deps of the s3Dgraphy importer/exporter used by the tools.
+lxml>=4.9
+pandas>=1.3
