@@ -37,6 +37,17 @@ body {
   min-height: 46px;
 }
 
+/* Live-sync mode: unmistakable green tint on header + footer so it is always
+   obvious the canvas mirrors a connected host (ADR-002). */
+body.sync-active #toolbar {
+  background: #1b6e4b;
+  box-shadow: inset 0 -2px 0 #35c98a;
+}
+body.sync-active #statusbar {
+  background: #123f2c;
+  color: #d7f5e8;
+}
+
 #brand {
   font-weight: 700;
   letter-spacing: 0.4px;
@@ -193,6 +204,13 @@ main {
 }
 
 #canvas.panning {
+  cursor: grabbing;
+}
+/* Space held → pan-always mode: show the grab cursor even over nodes/groups */
+#canvas.space-pan {
+  cursor: grab;
+}
+#canvas.space-pan.panning {
   cursor: grabbing;
 }
 

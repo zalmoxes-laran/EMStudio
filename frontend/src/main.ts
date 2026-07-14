@@ -439,6 +439,44 @@ function loadFile(file: File): void {
     .catch((e) => (info.textContent = `parse error: ${e}`));
 }
 
+// Create a fresh, empty .em.json document. New nodes minted in the GUI get a
+// UUID id (ADR-002 §6). An empty layout is included so the Matrix view renders
+// (empty) without invoking em-core on nothing.
+function newDocument(): void {
+  const doc: EmDocument = {
+    graph: {
+      graph_id: crypto.randomUUID(),
+      name: "untitled graph",
+      nodes: [],
+      edges: [],
+    },
+    layout: { canvas: { width: 1200, height: 800 }, swimlanes: [], positions: {} },
+  };
+  loadDocument(doc, "new graph");
+  info.textContent = "new empty graph";
+}
+
+// Tear the document down to an empty canvas (used when Sync is turned off — the
+// synced graph is the host's, so it should not linger locally).
+function clearDocument(): void {
+  store = null;
+  currentFilePath = null;
+  scenes.matrix = null;
+  scenes.graph = null;
+  contextStack = [];
+  contextScene = null;
+  hoverId = null;
+  selectedId = null;
+  dropHint.classList.remove("hidden");
+  sidePanel.classList.add("hidden");
+  info.textContent = "open or drop an .em.json file";
+  updateToolbar();
+  updateBreadcrumb();
+  updateLegend();
+  nodeList.refresh();
+  draw();
+}
+
 function defaultFileName(): string {
   const g = store!.doc.graph;
   const name = (g["name"] as string | undefined) ?? g.graph_id ?? "graph";
@@ -587,6 +625,17 @@ const overview = buildOverview(
 
 function placeNode(wx: number, wy: number): void {
   if (!store || !placingType) return;
+  // Epochs are special: an EpochNode + a swimlane (Matrix lane / Graph node,
+  // invariant 4). Lets you populate epochs in a fresh graph.
+  if (placingType === "EpochNode") {
+    const w = 140,
+      h = 30;
+    const ep = store.addEpoch(undefined, { x: wx - w / 2, y: wy - h / 2, w, h });
+    select(ep.id);
+    cancelPlacing();
+    toast(`epoch ${ep.name} created`);
+    return;
+  }
   // id = UUID (identity, collision-free across tools); name = human label
   const id = store.newId();
   const name = store.freshLabel(placingType);
@@ -725,6 +774,9 @@ function hideEdgeMenu(): void {
 // ---------- toolbar wiring ----------
 const fileInput = document.getElementById("file-input") as HTMLInputElement;
 document
+  .getElementById("btn-new")!
+  .addEventListener("click", () => newDocument());
+document
   .getElementById("btn-open")!
   .addEventListener("click", () => void openDocument());
 fileInput.addEventListener("change", () => {
@@ -803,6 +855,7 @@ const btnSync = document.getElementById("btn-sync") as HTMLButtonElement;
 btnSync.addEventListener("click", () => {
   if (sync.connected) {
     sync.disconnect();
+    clearDocument(); // the synced graph is the host's — don't leave it lingering
     return;
   }
   sync.connect(SYNC_URL, {
@@ -826,6 +879,8 @@ btnSync.addEventListener("click", () => {
     },
     onStatus: (state) => {
       btnSync.classList.toggle("active", state === "open");
+      // clear, high-visibility signal that we are in live-sync mode
+      document.body.classList.toggle("sync-active", state === "open");
       btnSync.textContent = state === "open" ? "Sync ●" : "Sync";
       if (state === "open") info.textContent = `sync: connected to ${SYNC_URL}`;
       else if (state === "closed")
@@ -976,6 +1031,8 @@ let lastY = 0;
 let dragNodeId: string | null = null;
 let dragMemberIds: string[] | null = null;
 let dragCheckpointed = false;
+let dragDetachPending = false; // Shift+drag a member → pull it out of its group
+let spaceHeld = false; // Space → pan-always gesture (see pointerdown)
 let lastClickTime = 0;
 let lastClickId: string | null = null;
 
@@ -989,6 +1046,17 @@ canvas.addEventListener("pointerdown", (e) => {
   moved = false;
   lastX = e.clientX;
   lastY = e.clientY;
+  // Pan-always gesture, evaluated BEFORE any hit logic: middle mouse button,
+  // or Space held (portable — Mac trackpads have no middle button). With many
+  // hypergraphs covering the canvas there may be no empty space to grab, so
+  // this pans regardless of what is under the cursor.
+  if (e.button === 1 || spaceHeld) {
+    dragMode = "pan";
+    canvas.classList.add("panning");
+    canvas.setPointerCapture(e.pointerId);
+    e.preventDefault();
+    return;
+  }
   const s = scene();
   if (!s) return;
   const w = worldPos(e);
@@ -1011,6 +1079,10 @@ canvas.addEventListener("pointerdown", (e) => {
     dragMode = "node";
     dragNodeId = hit.id;
     dragCheckpointed = false;
+    // Shift+drag a member node → detach it from its container (D2). Only in
+    // the matrix projection where containers render as boxes.
+    dragDetachPending =
+      e.shiftKey && !inContext() && (s.memberOf?.has(hit.id) ?? false);
     // dragging a group container moves the whole group — but only along
     // the PRIMARY containment tree: a shared document whose master lives
     // in another group must NOT follow (its local instance moves with the
@@ -1070,6 +1142,20 @@ canvas.addEventListener("pointermove", (e) => {
     if (moved) {
       const s = scene();
       const n = s?.byId.get(dragNodeId);
+      // Shift+drag detach (D2): drop the membership edge, free the node at its
+      // current canvas position, then let subsequent frames move it normally.
+      if (dragDetachPending && n && s && store) {
+        const cid = s.memberOf?.get(dragNodeId);
+        if (cid) {
+          store.removeFromGroup(dragNodeId, cid, { x: n.x, y: n.y, w: n.w, h: n.h });
+          toast("moved out of group");
+        }
+        dragDetachPending = false;
+        dragCheckpointed = true;
+        lastX = e.clientX;
+        lastY = e.clientY;
+        return;
+      }
       if (n && s && dragMemberIds && store && !inContext()) {
         // whole-group drag: shift the group node and every member
         store.moveNodesBy(
@@ -1150,6 +1236,7 @@ canvas.addEventListener("pointerup", (e) => {
   canvas.classList.remove("panning");
   const mode = dragMode;
   dragMode = "none";
+  dragDetachPending = false;
   if (mode === "connect") {
     finishConnect();
     return;
@@ -1224,6 +1311,13 @@ window.addEventListener("keydown", (e) => {
     return;
   }
   if (inField) return;
+  if (e.code === "Space") {
+    // hold Space → pan-always (grab) gesture; prevent page scroll
+    spaceHeld = true;
+    canvas.classList.add("space-pan");
+    e.preventDefault();
+    return;
+  }
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
     e.preventDefault();
     if (e.shiftKey) store?.redo();
@@ -1254,6 +1348,13 @@ window.addEventListener("keydown", (e) => {
   }
 });
 
+window.addEventListener("keyup", (e) => {
+  if (e.code === "Space") {
+    spaceHeld = false;
+    canvas.classList.remove("space-pan");
+  }
+});
+
 window.addEventListener("beforeunload", (e) => {
   if (store?.dirty) e.preventDefault();
 });
@@ -1264,13 +1365,9 @@ resizeCanvas();
 import("./icons").then(({ setIconRedraw }) => setIconRedraw(() => draw()));
 
 // ---------- boot ----------
+// Start from an EMPTY canvas (more natural than auto-loading a sample): use
+// New, Open…, drop a file, or Sync. __EM_TEST_DATA__ still injects a fixture
+// for automated tests.
 if (window.__EM_TEST_DATA__) {
   loadDocument(window.__EM_TEST_DATA__, "embedded test data");
-} else if (location.protocol !== "file:") {
-  fetch("./testdata/TempluMare.em.json")
-    .then((r) => (r.ok ? r.json() : null))
-    .then((d) => {
-      if (d && !store) loadDocument(d as EmDocument, "TempluMare sample");
-    })
-    .catch(() => void 0);
 }

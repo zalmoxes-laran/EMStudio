@@ -3,7 +3,8 @@
 // live in the optional layout section, exactly as persisted in .em.json.
 // NOTE: this is the phase-4 in-frontend editing model; it migrates behind
 // em-core (WASM / Tauri IPC) when the core editing API lands.
-import type { EmDocument, EmEdge, EmNode, LayoutRect } from "./types";
+import type { EmDocument, EmEdge, EmNode, LayoutRect, Swimlane } from "./types";
+import { MEMBERSHIP_EDGES } from "./folding";
 
 /** A structured graph mutation for the live op-log bridge (ADR-002 phase 2).
  * Kept small and additive; more variants (add/delete node/edge) land next. */
@@ -148,6 +149,31 @@ export class DocumentStore {
     return node;
   }
 
+  /** Create an epoch: an EpochNode in the graph PLUS a swimlane in the layout
+   * so it shows as a lane in Matrix view (it renders as a node in Graph view,
+   * invariant 4). The lane is appended below the existing ones; the optional
+   * `pos` places the node for the graph view. */
+  addEpoch(name?: string, pos?: LayoutRect): EmNode {
+    this.checkpoint();
+    const id = this.newId();
+    const node: EmNode = {
+      id,
+      name: name ?? this.freshLabel("Epoch"),
+      node_type: "EpochNode",
+      description: "",
+    };
+    this.doc.graph.nodes.push(node);
+    const layout = (this.doc.layout ??= {});
+    const lanes = (layout.swimlanes ??= []);
+    const DEFAULT_H = 200;
+    const y = lanes.length ? Math.max(...lanes.map((l) => l.y + l.height)) : 0;
+    const lane: Swimlane = { epoch_id: id, y, height: DEFAULT_H, order: lanes.length };
+    lanes.push(lane);
+    (layout.positions ??= {})[id] = pos ?? { x: 0, y, w: 140, h: 30 };
+    this.emit();
+    return node;
+  }
+
   addEdge(source: string, target: string, edgeType: string): EmEdge {
     this.checkpoint();
     const ids = new Set(this.doc.graph.edges.map((e) => e.id));
@@ -197,6 +223,27 @@ export class DocumentStore {
           e.edge_type === edge.edge_type),
     );
     if (ix >= 0) g.edges.splice(ix, 1);
+    this.emit();
+  }
+
+  /** Remove a node from a container/group: drop the membership edge(s) from
+   * `nodeId` to `containerId` (is_part_of / is_in_*). Other memberships stay.
+   * `pos` places the freed node on the canvas at the drop point. */
+  removeFromGroup(nodeId: string, containerId: string, pos?: LayoutRect): void {
+    this.checkpoint();
+    const g = this.doc.graph;
+    g.edges = g.edges.filter(
+      (e) =>
+        !(
+          e.source === nodeId &&
+          e.target === containerId &&
+          MEMBERSHIP_EDGES.has(e.edge_type ?? "")
+        ),
+    );
+    if (pos) {
+      const layout = (this.doc.layout ??= {});
+      (layout.positions ??= {})[nodeId] = pos;
+    }
     this.emit();
   }
 
