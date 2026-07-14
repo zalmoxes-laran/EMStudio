@@ -25,6 +25,8 @@ export interface ConnectDrag {
 export interface RenderState {
   hoverId: string | null;
   selectedId: string | null;
+  /** multi-selection set (D3); the primary is still `selectedId` */
+  selectedIds?: Set<string> | null;
   /** edge_type predicate; edges failing it are skipped */
   edgeVisible: (edgeType: string | undefined) => boolean;
   /** cache key for the edge filter (routes are recomputed when it changes) */
@@ -306,6 +308,10 @@ export function render(
 
   // nodes
   const drawLabels = vp.scale > 0.35;
+  const isSel = (n: { id: string; instanceOf?: string }): boolean =>
+    n.id === state.selectedId ||
+    n.instanceOf === state.selectedId ||
+    (state.selectedIds?.has(n.id) ?? false);
   for (const n of scene.nodes) {
     const st = nodeStyle(n.node.node_type);
     const group = scene.groupsById?.get(n.id);
@@ -319,8 +325,8 @@ export function render(
         n.badge,
         drawLabels,
       );
-      if (n.id === state.selectedId || n.instanceOf === state.selectedId || n.id === state.hoverId) {
-        ctx.strokeStyle = n.id === state.selectedId || n.instanceOf === state.selectedId ? ACCENT : "#7fb0f0";
+      if (isSel(n) || n.id === state.hoverId) {
+        ctx.strokeStyle = isSel(n) ? ACCENT : "#7fb0f0";
         ctx.lineWidth = 2.2 / vp.scale;
         ctx.strokeRect(n.x - 2, n.y - 2, n.w + 4, n.h + 4);
       }
@@ -396,15 +402,8 @@ export function render(
         ctx.textBaseline = "middle";
         ctx.fillText(String(n.useCount), bx, by + r * 0.05);
       }
-      if (
-        n.id === state.selectedId ||
-        n.instanceOf === state.selectedId ||
-        n.id === state.hoverId
-      ) {
-        ctx.strokeStyle =
-          n.id === state.selectedId || n.instanceOf === state.selectedId
-            ? ACCENT
-            : "#7fb0f0";
+      if (isSel(n) || n.id === state.hoverId) {
+        ctx.strokeStyle = isSel(n) ? ACCENT : "#7fb0f0";
         ctx.lineWidth = 2.2 / vp.scale;
         ctx.strokeRect(x0 - 3, y0 - 3, iw + 6, ih + 6);
       }
@@ -440,8 +439,8 @@ export function render(
         }
         ctx.fillText(text, n.x + n.w / 2, n.y + n.h / 2);
       }
-      if (n.id === state.selectedId || n.instanceOf === state.selectedId || n.id === state.hoverId) {
-        ctx.strokeStyle = n.id === state.selectedId || n.instanceOf === state.selectedId ? ACCENT : "#7fb0f0";
+      if (isSel(n) || n.id === state.hoverId) {
+        ctx.strokeStyle = isSel(n) ? ACCENT : "#7fb0f0";
         ctx.lineWidth = 2.2 / vp.scale;
         ctx.strokeRect(n.x - 3, n.y - 3, n.w + 6, n.h + 6);
       }
@@ -486,8 +485,8 @@ export function render(
           ctx.fillText(text, n.x + n.w / 2, iy + ih * 0.62);
         }
       }
-      if (n.id === state.selectedId || n.instanceOf === state.selectedId || n.id === state.hoverId) {
-        ctx.strokeStyle = n.id === state.selectedId || n.instanceOf === state.selectedId ? ACCENT : "#7fb0f0";
+      if (isSel(n) || n.id === state.hoverId) {
+        ctx.strokeStyle = isSel(n) ? ACCENT : "#7fb0f0";
         ctx.lineWidth = 2.2 / vp.scale;
         ctx.strokeRect(ix - 3, iy - 3, iw + 6, ih + 6);
       }

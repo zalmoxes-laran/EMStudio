@@ -247,6 +247,104 @@ export class DocumentStore {
     this.emit();
   }
 
+  /** Move a node INTO a group (drop-into-group, inverse of removeFromGroup):
+   * re-parent by dropping the OLD primary membership (secondaries stay) and
+   * adding a new membership edge of `edgeType` to `groupId`. */
+  moveToGroup(
+    nodeId: string,
+    groupId: string,
+    edgeType: string,
+    oldContainerId: string | null,
+  ): void {
+    if (groupId === nodeId) return;
+    this.checkpoint();
+    const g = this.doc.graph;
+    if (oldContainerId) {
+      g.edges = g.edges.filter(
+        (e) =>
+          !(
+            e.source === nodeId &&
+            e.target === oldContainerId &&
+            MEMBERSHIP_EDGES.has(e.edge_type ?? "")
+          ),
+      );
+      // drop the stale group-local position so it re-grids in the new box
+      const sp = this.doc.layout?.group_spaces?.[oldContainerId];
+      if (sp) delete sp[nodeId];
+    }
+    const exists = g.edges.some(
+      (e) => e.source === nodeId && e.target === groupId && e.edge_type === edgeType,
+    );
+    if (!exists) {
+      g.edges.push({
+        id: `${nodeId}__${edgeType}__${groupId}`,
+        source: nodeId,
+        target: groupId,
+        edge_type: edgeType,
+      });
+    }
+    this.emit();
+  }
+
+  /** Create a NEW group node of `groupType` and make each of `nodeIds` a
+   * member of it (edge `edgeType`). Used by right-click → Group (D3). */
+  groupNodes(
+    nodeIds: string[],
+    groupType: string,
+    edgeType: string,
+    pos?: LayoutRect,
+  ): EmNode {
+    this.checkpoint();
+    const id = this.newId();
+    const group: EmNode = {
+      id,
+      name: this.freshLabel(groupType),
+      node_type: groupType,
+      description: "",
+    };
+    this.doc.graph.nodes.push(group);
+    for (const nid of nodeIds) {
+      if (nid === id) continue;
+      const dup = this.doc.graph.edges.some(
+        (e) => e.source === nid && e.target === id && e.edge_type === edgeType,
+      );
+      if (!dup)
+        this.doc.graph.edges.push({
+          id: `${nid}__${edgeType}__${id}`,
+          source: nid,
+          target: id,
+          edge_type: edgeType,
+        });
+    }
+    if (pos) {
+      const l = (this.doc.layout ??= {});
+      (l.positions ??= {})[id] = pos;
+    }
+    this.emit();
+    return group;
+  }
+
+  /** Re-assign the FIRST epoch (swimlane) of one or more nodes: drop each
+   * node's existing has_first_epoch edge and point it at `epochId`. Used when
+   * a node/group is dragged into a different lane. */
+  setFirstEpoch(nodeIds: string[], epochId: string): void {
+    this.checkpoint();
+    const g = this.doc.graph;
+    for (const nid of nodeIds) {
+      if (nid === epochId) continue;
+      g.edges = g.edges.filter(
+        (e) => !(e.source === nid && e.edge_type === "has_first_epoch"),
+      );
+      g.edges.push({
+        id: `${nid}__has_first_epoch__${epochId}`,
+        source: nid,
+        target: epochId,
+        edge_type: "has_first_epoch",
+      });
+    }
+    this.emit();
+  }
+
   updateNode(id: string, patch: Partial<EmNode>): void {
     const n = this.node(id);
     if (!n) return;

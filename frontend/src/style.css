@@ -206,6 +206,44 @@ main {
 #canvas.panning {
   cursor: grabbing;
 }
+/* right-click context menu (D3: Group) */
+.ctx-menu {
+  position: fixed;
+  z-index: 1000;
+  background: #fff;
+  border: 1px solid #cfd6e0;
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
+  padding: 4px;
+  min-width: 190px;
+  font-size: 13px;
+}
+.ctx-menu .ctx-header {
+  padding: 4px 8px 6px;
+  color: #6b7688;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.ctx-menu button {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 8px;
+  border: 0;
+  background: transparent;
+  border-radius: 5px;
+  cursor: pointer;
+  color: #1a2230;
+}
+.ctx-menu button:hover {
+  background: #eef3fb;
+}
+.ctx-menu .ctx-disabled {
+  padding: 6px 8px;
+  color: #99a3b3;
+}
+
 /* Space held → pan-always mode: show the grab cursor even over nodes/groups */
 #canvas.space-pan {
   cursor: grab;

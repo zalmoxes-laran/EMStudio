@@ -1,5 +1,5 @@
 import "./style.css";
-import { applyFolding, buildMembership } from "./folding";
+import { applyFolding, buildMembership, MEMBERSHIP_EDGES } from "./folding";
 import { renderInspector } from "./inspector";
 import { DocumentStore } from "./model";
 import { buildNodeList } from "./nodelist";
@@ -158,6 +158,7 @@ function draw(): void {
     {
       hoverId,
       selectedId,
+      selectedIds,
       edgeVisible,
       filterKey: edgeFilter,
       connect,
@@ -167,6 +168,27 @@ function draw(): void {
     h,
   );
   overview.update(s, viewport(), w, h);
+  if (marquee) {
+    const vp = viewport();
+    const dpr = window.devicePixelRatio || 1;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const ax = marquee.x0 * vp.scale + vp.x;
+    const ay = marquee.y0 * vp.scale + vp.y;
+    const bx = marquee.x1 * vp.scale + vp.x;
+    const by = marquee.y1 * vp.scale + vp.y;
+    const rx = Math.min(ax, bx),
+      ry = Math.min(ay, by),
+      rw = Math.abs(bx - ax),
+      rh = Math.abs(by - ay);
+    ctx.save();
+    ctx.fillStyle = "rgba(31,111,235,0.12)";
+    ctx.strokeStyle = "#1F6FEB";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 3]);
+    ctx.fillRect(rx, ry, rw, rh);
+    ctx.strokeRect(rx, ry, rw, rh);
+    ctx.restore();
+  }
 }
 
 function fit(): void {
@@ -191,12 +213,39 @@ function centerOn(nodeId: string): void {
 
 function select(nodeId: string | null): void {
   selectedId = nodeId;
+  selectedIds = new Set(nodeId ? [nodeId] : []);
   refreshInspector();
   nodeList.setSelected(nodeId);
   draw();
   // mirror the selection to a connected peer (Blender), unless this
   // selection just arrived FROM the peer (avoid the echo loop)
   if (!applyingRemoteSelect) sync.sendSelect(nodeId);
+}
+
+/** Shift/Cmd-click: toggle a node in the multi-selection (D3). */
+function toggleSelect(nodeId: string): void {
+  if (selectedIds.has(nodeId)) {
+    selectedIds.delete(nodeId);
+    if (selectedId === nodeId)
+      selectedId = selectedIds.size ? [...selectedIds][selectedIds.size - 1] : null;
+  } else {
+    selectedIds.add(nodeId);
+    selectedId = nodeId;
+  }
+  refreshInspector();
+  nodeList.setSelected(selectedId);
+  draw();
+  if (!applyingRemoteSelect) sync.sendSelect(selectedId);
+}
+
+/** Replace the selection with a set (marquee result). */
+function selectMany(ids: string[]): void {
+  selectedIds = new Set(ids);
+  selectedId = ids.length ? ids[ids.length - 1] : null;
+  refreshInspector();
+  nodeList.setSelected(selectedId);
+  draw();
+  if (!applyingRemoteSelect) sync.sendSelect(selectedId);
 }
 
 function refreshInspector(): void {
@@ -467,6 +516,8 @@ function clearDocument(): void {
   contextScene = null;
   hoverId = null;
   selectedId = null;
+  selectedIds = new Set();
+  marquee = null;
   dropHint.classList.remove("hidden");
   sidePanel.classList.add("hidden");
   info.textContent = "open or drop an .em.json file";
@@ -664,6 +715,77 @@ function placeNode(wx: number, wy: number): void {
   select(id);
   cancelPlacing();
   toast(`${id} created`);
+}
+
+// After a node/group DRAG ends (D2 inverse): landing inside a group box adds/
+// re-parents membership — the innermost (smallest) box of a matryoshka wins;
+// landing in a different epoch lane re-assigns has_first_epoch (a group carries
+// its epoch-placed members along).
+function handleDrop(nodeId: string, wx: number, wy: number): void {
+  if (!store || view !== "matrix" || inContext()) return;
+  const s = scene();
+  if (!s) return;
+  const node = store.node(nodeId);
+  if (!node) return;
+  const mm = buildMembership(store.doc);
+
+  // descendants of nodeId → cannot drop a group into itself or its own child
+  const descendants = new Set<string>();
+  const stk = [nodeId];
+  while (stk.length) {
+    const g = stk.pop()!;
+    for (const c of mm.childrenOf.get(g) ?? []) {
+      if (!descendants.has(c)) {
+        descendants.add(c);
+        stk.push(c);
+      }
+    }
+  }
+
+  // 1) innermost group box (smallest area) containing the drop point
+  const boxes = (s.groups ?? []).filter(
+    (g) =>
+      g.id !== nodeId &&
+      !descendants.has(g.id) &&
+      !g.folded &&
+      wx >= g.x &&
+      wx <= g.x + g.w &&
+      wy >= g.y &&
+      wy <= g.y + g.h,
+  );
+  boxes.sort((a, b) => a.w * a.h - b.w * b.h);
+  const target = boxes[0];
+  const currentPrimary = mm.primaryOf.get(nodeId) ?? null;
+  if (target && target.id !== currentPrimary) {
+    const groupNode = store.node(target.id);
+    const edgeType = allowedEdgeTypes(node.node_type, groupNode?.node_type).find(
+      (t) => MEMBERSHIP_EDGES.has(t),
+    );
+    if (edgeType) {
+      store.moveToGroup(nodeId, target.id, edgeType, currentPrimary);
+      toast(`moved into ${groupNode?.name ?? "group"}`);
+      return;
+    }
+  }
+
+  // 2) not into a group → re-assign the epoch of the lane under the drop point
+  const lane = s.lanes.find((l) => wy >= l.y && wy <= l.y + l.height);
+  if (!lane) return;
+  const cur = store.doc.graph.edges.find(
+    (e) => e.source === nodeId && e.edge_type === "has_first_epoch",
+  );
+  if (cur?.target === lane.id) return; // already there
+  const candidates = isGroupType(node.node_type) ? [nodeId, ...descendants] : [nodeId];
+  const placed = new Set(
+    store.doc.graph.edges
+      .filter((e) => e.edge_type === "has_first_epoch")
+      .map((e) => e.source),
+  );
+  let targets = candidates.filter((id) => placed.has(id));
+  if (!targets.length && isStratigraphicType(node.node_type)) targets = [nodeId];
+  if (!targets.length) return;
+  store.setFirstEpoch(targets, lane.id);
+  toast(`moved to epoch ${lane.label}`);
 }
 
 // ---------- connect (edge drawing with live socket validation) ----------
@@ -1023,8 +1145,12 @@ window.addEventListener("drop", (e) => {
 });
 
 // ---------- canvas interactions ----------
-type DragMode = "none" | "pan" | "node" | "connect";
+type DragMode = "none" | "pan" | "node" | "connect" | "marquee";
 let dragMode: DragMode = "none";
+// multi-selection (D3): the primary stays `selectedId`; the set is all selected
+let selectedIds = new Set<string>();
+// rubber-band marquee rect in WORLD coords while dragging on empty canvas
+let marquee: { x0: number; y0: number; x1: number; y1: number } | null = null;
 let moved = false;
 let lastX = 0;
 let lastY = 0;
@@ -1032,11 +1158,12 @@ let dragNodeId: string | null = null;
 let dragMemberIds: string[] | null = null;
 let dragCheckpointed = false;
 let dragDetachPending = false; // Shift+drag a member → pull it out of its group
+let dragDetachContainer: string | null = null; // the group to detach from
 let spaceHeld = false; // Space → pan-always gesture (see pointerdown)
 let lastClickTime = 0;
 let lastClickId: string | null = null;
 
-function worldPos(e: PointerEvent | WheelEvent): { x: number; y: number } {
+function worldPos(e: MouseEvent): { x: number; y: number } {
   const rect = canvas.getBoundingClientRect();
   return viewport().toWorld(e.clientX - rect.left, e.clientY - rect.top);
 }
@@ -1079,10 +1206,19 @@ canvas.addEventListener("pointerdown", (e) => {
     dragMode = "node";
     dragNodeId = hit.id;
     dragCheckpointed = false;
-    // Shift+drag a member node → detach it from its container (D2). Only in
-    // the matrix projection where containers render as boxes.
-    dragDetachPending =
-      e.shiftKey && !inContext() && (s.memberOf?.has(hit.id) ?? false);
+    // Shift+drag a member node → detach it from its container (D2). Membership
+    // is read from the GRAPH (buildMembership.primaryOf), not the rendered
+    // memberOf map — the latter only covers relocate-type groups, not outline
+    // (is_part_of US/USD/VSF) containers.
+    dragDetachPending = false;
+    dragDetachContainer = null;
+    if (e.shiftKey && !inContext() && store) {
+      const primary = buildMembership(store.doc).primaryOf.get(hit.id);
+      if (primary) {
+        dragDetachPending = true;
+        dragDetachContainer = primary;
+      }
+    }
     // dragging a group container moves the whole group — but only along
     // the PRIMARY containment tree: a shared document whose master lives
     // in another group must NOT follow (its local instance moves with the
@@ -1104,8 +1240,9 @@ canvas.addEventListener("pointerdown", (e) => {
       dragMemberIds = acc;
     }
   } else {
-    dragMode = "pan";
-    canvas.classList.add("panning");
+    // empty canvas → rubber-band marquee selection (pan is middle/Space, D1)
+    dragMode = "marquee";
+    marquee = { x0: w.x, y0: w.y, x1: w.x, y1: w.y };
   }
   canvas.setPointerCapture(e.pointerId);
 });
@@ -1135,6 +1272,15 @@ canvas.addEventListener("pointermove", (e) => {
     }
     return;
   }
+  if (dragMode === "marquee") {
+    if (marquee) {
+      marquee.x1 = w.x;
+      marquee.y1 = w.y;
+      if (Math.abs(e.clientX - lastX) + Math.abs(e.clientY - lastY) > 3) moved = true;
+      draw();
+    }
+    return;
+  }
   if (dragMode === "node" && dragNodeId && store) {
     const dx = e.clientX - lastX;
     const dy = e.clientY - lastY;
@@ -1144,13 +1290,16 @@ canvas.addEventListener("pointermove", (e) => {
       const n = s?.byId.get(dragNodeId);
       // Shift+drag detach (D2): drop the membership edge, free the node at its
       // current canvas position, then let subsequent frames move it normally.
-      if (dragDetachPending && n && s && store) {
-        const cid = s.memberOf?.get(dragNodeId);
-        if (cid) {
-          store.removeFromGroup(dragNodeId, cid, { x: n.x, y: n.y, w: n.w, h: n.h });
-          toast("moved out of group");
-        }
+      if (dragDetachPending && n && store && dragDetachContainer) {
+        store.removeFromGroup(dragNodeId, dragDetachContainer, {
+          x: n.x,
+          y: n.y,
+          w: n.w,
+          h: n.h,
+        });
+        toast("moved out of group");
         dragDetachPending = false;
+        dragDetachContainer = null;
         dragCheckpointed = true;
         lastX = e.clientX;
         lastY = e.clientY;
@@ -1237,6 +1386,7 @@ canvas.addEventListener("pointerup", (e) => {
   const mode = dragMode;
   dragMode = "none";
   dragDetachPending = false;
+  dragDetachContainer = null;
   if (mode === "connect") {
     finishConnect();
     return;
@@ -1246,6 +1396,28 @@ canvas.addEventListener("pointerup", (e) => {
   const w = worldPos(e);
   if (placingType) {
     placeNode(w.x, w.y);
+    return;
+  }
+  if (mode === "marquee") {
+    const m = marquee;
+    marquee = null;
+    if (moved && m) {
+      const x0 = Math.min(m.x0, m.x1),
+        x1 = Math.max(m.x0, m.x1),
+        y0 = Math.min(m.y0, m.y1),
+        y1 = Math.max(m.y0, m.y1);
+      const ids = s.nodes
+        .filter(
+          (n) =>
+            n.x < x1 && n.x + n.w > x0 && n.y < y1 && n.y + n.h > y0,
+        )
+        .map((n) => n.id);
+      selectMany(ids);
+    } else {
+      select(null); // click on empty canvas clears the selection
+    }
+    dragNodeId = null;
+    dragMemberIds = null;
     return;
   }
   if (!moved) {
@@ -1270,8 +1442,14 @@ canvas.addEventListener("pointerup", (e) => {
     }
     lastClickTime = now;
     lastClickId = hit?.id ?? null;
-    // a document instance resolves to its real node (same outliner row)
-    select(hit ? (hit.instanceOf ?? hit.id) : null);
+    // a document instance resolves to its real node (same outliner row);
+    // Shift/Cmd-click toggles it in the multi-selection (D3)
+    if (hit && (e.shiftKey || e.metaKey || e.ctrlKey))
+      toggleSelect(hit.instanceOf ?? hit.id);
+    else select(hit ? (hit.instanceOf ?? hit.id) : null);
+  } else if (mode === "node" && dragNodeId) {
+    // drag ended → route the drop (into a group box, or a different epoch lane)
+    handleDrop(dragNodeId, w.x, w.y);
   }
   dragNodeId = null;
   dragMemberIds = null;
@@ -1300,6 +1478,99 @@ canvas.addEventListener(
   { passive: false },
 );
 
+// ---------- right-click context menu → Group (D3) ----------
+const GROUP_CANDIDATES = [
+  "ParadataNodeGroup",
+  "ActivityNodeGroup",
+  "TimeBranchNodeGroup",
+  "LocationNodeGroup",
+];
+
+// group types whose membership edge is valid (per the datamodel) for EVERY
+// selected node type — so we only ever offer a legal grouping.
+function validGroupTargets(
+  nodeTypes: string[],
+): { groupType: string; edgeType: string }[] {
+  const out: { groupType: string; edgeType: string }[] = [];
+  for (const G of GROUP_CANDIDATES) {
+    let edge: string | null = null;
+    let ok = true;
+    for (const nt of nodeTypes) {
+      const m = allowedEdgeTypes(nt, G).find((t) => MEMBERSHIP_EDGES.has(t));
+      if (!m) {
+        ok = false;
+        break;
+      }
+      edge = m;
+    }
+    if (ok && edge) out.push({ groupType: G, edgeType: edge });
+  }
+  return out;
+}
+
+let ctxMenuEl: HTMLDivElement | null = null;
+function hideContextMenu(): void {
+  ctxMenuEl?.remove();
+  ctxMenuEl = null;
+}
+function showContextMenu(clientX: number, clientY: number): void {
+  hideContextMenu();
+  if (!store || !selectedIds.size) return;
+  const ids = [...selectedIds];
+  const types = ids.map((id) => store!.node(id)?.node_type ?? "");
+  const targets = validGroupTargets(types);
+  const menu = document.createElement("div");
+  menu.className = "ctx-menu";
+  menu.style.left = Math.min(clientX, innerWidth - 210) + "px";
+  menu.style.top = clientY + "px";
+  const header = document.createElement("div");
+  header.className = "ctx-header";
+  header.textContent = `${ids.length} node${ids.length > 1 ? "s" : ""} selected`;
+  menu.appendChild(header);
+  if (targets.length) {
+    for (const t of targets) {
+      const b = document.createElement("button");
+      b.textContent = `Group into ${t.groupType.replace("NodeGroup", "")} group`;
+      b.onclick = () => {
+        const g = store!.groupNodes(ids, t.groupType, t.edgeType);
+        hideContextMenu();
+        select(g.id);
+        toast(`grouped ${ids.length} into ${g.name}`);
+      };
+      menu.appendChild(b);
+    }
+  } else {
+    const d = document.createElement("div");
+    d.className = "ctx-disabled";
+    d.textContent = "No legal group for this selection";
+    menu.appendChild(d);
+  }
+  document.body.appendChild(menu);
+  ctxMenuEl = menu;
+}
+
+canvas.addEventListener("contextmenu", (e) => {
+  e.preventDefault();
+  const wp = worldPos(e);
+  const s = scene();
+  const hit = s ? hitTest(s, wp.x, wp.y) : null;
+  // right-clicking a node outside the current selection selects it first
+  if (hit && !selectedIds.has(hit.id)) select(hit.instanceOf ?? hit.id);
+  if (!selectedIds.size) {
+    hideContextMenu();
+    return;
+  }
+  showContextMenu(e.clientX, e.clientY);
+});
+// close the menu on any pointerdown outside it
+window.addEventListener(
+  "pointerdown",
+  (e) => {
+    if (ctxMenuEl && !ctxMenuEl.contains(e.target as Node)) hideContextMenu();
+  },
+  true,
+);
+
 window.addEventListener("keydown", (e) => {
   const inField =
     e.target instanceof HTMLInputElement ||
@@ -1326,7 +1597,8 @@ window.addEventListener("keydown", (e) => {
   }
   if (e.key === "0") fit();
   if (e.key === "Escape") {
-    if (placingType) cancelPlacing();
+    if (ctxMenuEl) hideContextMenu();
+    else if (placingType) cancelPlacing();
     else if (!edgeMenu.classList.contains("hidden")) hideEdgeMenu();
     else if (inContext()) {
       contextStack.pop();
