@@ -12,15 +12,21 @@
 // `source` lets a peer ignore its own echo.
 
 import type { GraphOp } from "./model";
+import type { EmDocument } from "./types";
 
 export type SyncMessage =
   | { v: number; type: "select" | "focus"; node_id: string | null; source?: string }
+  | { v: number; type: "request_snapshot"; source?: string }
+  | { v: number; type: "snapshot"; doc: EmDocument; source?: string }
   | ({ v: number; type: "op"; source?: string } & GraphOp);
 
 export interface SyncCallbacks {
   onSelect: (nodeId: string) => void;
   /** a graph mutation arrived from the peer (ADR-002 phase 2 op-log) */
   onOp: (op: GraphOp) => void;
+  /** the host sent its full graph as an .em.json doc (ADR-002 snapshot-READ):
+   * "sync mode = see the host's data". Replaces the local document. */
+  onSnapshot: (doc: EmDocument) => void;
   onStatus: (state: "connecting" | "open" | "closed") => void;
 }
 
@@ -55,7 +61,16 @@ export class SyncClient {
       return;
     }
     this.ws = ws;
-    ws.onopen = () => this.cb?.onStatus("open");
+    ws.onopen = () => {
+      this.cb?.onStatus("open");
+      // ask the host for its current graph — this is what makes "sync mode"
+      // show the host's data (ADR-002 snapshot-READ). No-op if it fails.
+      try {
+        ws.send(JSON.stringify({ v: 1, type: "request_snapshot", source: SOURCE }));
+      } catch {
+        /* dropped */
+      }
+    };
     ws.onclose = () => {
       this.cb?.onStatus("closed");
       if (!this.manualClose) return; // no auto-reconnect for now (phase 1)
@@ -72,6 +87,7 @@ export class SyncClient {
       }
       if (msg.source === SOURCE) return; // ignore our own echo
       if (msg.type === "select" && msg.node_id) this.cb?.onSelect(msg.node_id);
+      else if (msg.type === "snapshot") this.cb?.onSnapshot(msg.doc);
       else if (msg.type === "op") {
         const { type: _t, v: _v, source: _s, ...op } = msg;
         this.cb?.onOp(op as GraphOp);

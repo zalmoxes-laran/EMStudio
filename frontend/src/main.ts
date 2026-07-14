@@ -414,7 +414,22 @@ function loadDocument(
   nodeList.refresh();
   updateToolbar();
   updateBreadcrumb();
-  setView(scenes.matrix ? "matrix" : "graph");
+  if (d.layout) {
+    setView(scenes.matrix ? "matrix" : "graph");
+  } else {
+    // No layout section (e.g. a live snapshot from Blender, which exports
+    // layout=None) → the Matrix view has no positions. Compute a fresh layout
+    // via em-core so it renders, then show Matrix instead of falling to Graph.
+    void runLayout(true)
+      .then(() => {
+        setView("matrix");
+        fit();
+      })
+      .catch((e) => {
+        info.textContent = `auto-layout failed: ${e instanceof Error ? e.message : e}`;
+        setView(scenes.matrix ? "matrix" : "graph");
+      });
+  }
 }
 
 function loadFile(file: File): void {
@@ -803,6 +818,12 @@ btnSync.addEventListener("click", () => {
       // (DocumentStore.applyRemoteOp suppresses re-emission, no echo)
       store?.applyRemoteOp(op);
     },
+    onSnapshot: (doc) => {
+      // the host sent its full graph on connect → become a live view of it
+      // (ADR-002: "sync mode = see the host's data"). Replaces the document.
+      loadDocument(doc, "Blender (sync)");
+      info.textContent = "sync: loaded Blender's graph";
+    },
     onStatus: (state) => {
       btnSync.classList.toggle("active", state === "open");
       btnSync.textContent = state === "open" ? "Sync ●" : "Sync";
@@ -887,17 +908,25 @@ const btnLayout = document.getElementById("btn-layout") as HTMLButtonElement;
 btnLayout.title =
   "Recompute the layout (em-core). Keeps your manual arrangement (From " +
   "Sketch); Alt-click for a fresh layout from scratch.";
+// Compute a layout via em-core and apply it to the store. `fresh` ignores the
+// existing sketch. Shared by the Layout button and the auto-layout on loading
+// a layout-less document (e.g. a live snapshot).
+async function runLayout(fresh: boolean): Promise<void> {
+  if (!store) return;
+  const { computeLayout } = await import("./emcore");
+  const layout = await computeLayout(
+    store.doc.graph,
+    fresh ? undefined : store.doc.layout,
+  );
+  store.setLayout(layout);
+}
+
 btnLayout.addEventListener("click", async (ev) => {
   if (!store) return;
   btnLayout.disabled = true;
   try {
-    const { computeLayout } = await import("./emcore");
     const fresh = (ev as MouseEvent).altKey;
-    const layout = await computeLayout(
-      store.doc.graph,
-      fresh ? undefined : store.doc.layout,
-    );
-    store.setLayout(layout);
+    await runLayout(fresh);
     if (view !== "matrix" && !inContext()) setView("matrix");
     fit();
     toast(fresh ? "Fresh layout (em-core)" : "Layout from sketch (em-core)");
