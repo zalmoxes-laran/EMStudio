@@ -747,30 +747,34 @@ function placeNode(wx: number, wy: number): void {
 // its epoch-placed members along).
 function handleDrop(nodeId: string, wx: number, wy: number): void {
   if (!store || view !== "matrix" || inContext()) return;
+  const st = store; // non-null capture (narrowing is lost inside callbacks)
   const s = scene();
   if (!s) return;
-  const node = store.node(nodeId);
-  if (!node) return;
+  // act on the WHOLE selection when the dragged node is part of a multi-selection
+  const ids =
+    selectedIds.has(nodeId) && selectedIds.size > 1 ? [...selectedIds] : [nodeId];
   const mm = buildMembership(store.doc);
 
-  // descendants of nodeId → cannot drop a group into itself or its own child
-  const descendants = new Set<string>();
-  const stk = [nodeId];
-  while (stk.length) {
-    const g = stk.pop()!;
-    for (const c of mm.childrenOf.get(g) ?? []) {
-      if (!descendants.has(c)) {
-        descendants.add(c);
-        stk.push(c);
+  // forbid dropping a group into itself or its own descendants
+  const forbidden = new Set<string>(ids);
+  for (const id of ids) {
+    const stk = [id];
+    while (stk.length) {
+      const g = stk.pop()!;
+      for (const c of mm.childrenOf.get(g) ?? []) {
+        if (!forbidden.has(c)) {
+          forbidden.add(c);
+          stk.push(c);
+        }
       }
     }
   }
 
-  // 1) innermost group box (smallest area) containing the drop point
+  // 1) innermost group box (smallest area) at the drop point → move the whole
+  //    selection into it (each node only if the datamodel allows a membership)
   const boxes = (s.groups ?? []).filter(
     (g) =>
-      g.id !== nodeId &&
-      !descendants.has(g.id) &&
+      !forbidden.has(g.id) &&
       !g.folded &&
       wx >= g.x &&
       wx <= g.x + g.w &&
@@ -779,37 +783,60 @@ function handleDrop(nodeId: string, wx: number, wy: number): void {
   );
   boxes.sort((a, b) => a.w * a.h - b.w * b.h);
   const target = boxes[0];
-  const currentPrimary = mm.primaryOf.get(nodeId) ?? null;
-  if (target && target.id !== currentPrimary) {
+  if (target) {
     const groupNode = store.node(target.id);
-    const edgeType = allowedEdgeTypes(node.node_type, groupNode?.node_type).find(
-      (t) => MEMBERSHIP_EDGES.has(t),
-    );
-    if (edgeType) {
-      store.moveToGroup(nodeId, target.id, edgeType, currentPrimary);
-      toast(`moved into ${groupNode?.name ?? "group"}`);
+    let moved = 0;
+    for (const id of ids) {
+      if (id === target.id) continue;
+      const primary = mm.primaryOf.get(id) ?? null;
+      if (primary === target.id) continue; // already primarily in it
+      const edgeType = allowedEdgeTypes(
+        store.node(id)?.node_type,
+        groupNode?.node_type,
+      ).find((t) => MEMBERSHIP_EDGES.has(t));
+      if (edgeType) {
+        store.moveToGroup(id, target.id, edgeType, primary);
+        moved++;
+      }
+    }
+    if (moved) {
+      toast(`moved ${moved} into ${groupNode?.name ?? "group"}`);
       return;
     }
   }
 
-  // 2) not into a group → re-assign the epoch of the lane under the drop point
+  // 2) not into a group → re-assign the epoch of the lane at the drop point.
+  //    A dragged group carries its epoch-placed members along.
   const lane = s.lanes.find((l) => wy >= l.y && wy <= l.y + l.height);
   if (!lane) return;
-  const cur = store.doc.graph.edges.find(
-    (e) => e.source === nodeId && e.edge_type === "has_first_epoch",
-  );
-  if (cur?.target === lane.id) return; // already there
-  const candidates = isGroupType(node.node_type) ? [nodeId, ...descendants] : [nodeId];
+  const candidates = new Set<string>(ids);
+  for (const id of ids) {
+    if (isGroupType(store.node(id)?.node_type)) {
+      const stk = [id];
+      while (stk.length) {
+        const g = stk.pop()!;
+        for (const c of mm.childrenOf.get(g) ?? []) {
+          if (!candidates.has(c)) {
+            candidates.add(c);
+            stk.push(c);
+          }
+        }
+      }
+    }
+  }
   const placed = new Set(
     store.doc.graph.edges
       .filter((e) => e.edge_type === "has_first_epoch")
       .map((e) => e.source),
   );
-  let targets = candidates.filter((id) => placed.has(id));
-  if (!targets.length && isStratigraphicType(node.node_type)) targets = [nodeId];
+  let targets = [...candidates].filter((id) => placed.has(id));
+  if (!targets.length)
+    targets = ids.filter((id) =>
+      isStratigraphicType(st.node(id)?.node_type),
+    );
   if (!targets.length) return;
-  store.setFirstEpoch(targets, lane.id);
-  toast(`moved to epoch ${lane.label}`);
+  st.setFirstEpoch(targets, lane.id);
+  toast(`moved ${targets.length} to epoch ${lane.label}`);
 }
 
 // ---------- connect (edge drawing with live socket validation) ----------
@@ -918,6 +945,24 @@ function hideEdgeMenu(): void {
 }
 
 // ---------- toolbar wiring ----------
+// header dropdown menus (File / Export): toggle on click, close on outside
+// click, close after picking an item (the item's own handler still fires).
+function closeAllDropdowns(): void {
+  document.querySelectorAll(".dd-menu").forEach((m) => m.classList.add("hidden"));
+}
+document.querySelectorAll<HTMLElement>(".dropdown").forEach((dd) => {
+  const toggle = dd.querySelector<HTMLButtonElement>(".dd-toggle")!;
+  const menu = dd.querySelector<HTMLElement>(".dd-menu")!;
+  toggle.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const willOpen = menu.classList.contains("hidden");
+    closeAllDropdowns();
+    if (willOpen) menu.classList.remove("hidden");
+  });
+  menu.addEventListener("click", () => menu.classList.add("hidden"));
+});
+document.addEventListener("click", closeAllDropdowns);
+
 const fileInput = document.getElementById("file-input") as HTMLInputElement;
 document
   .getElementById("btn-new")!

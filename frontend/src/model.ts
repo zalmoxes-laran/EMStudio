@@ -8,11 +8,12 @@ import { MEMBERSHIP_EDGES } from "./folding";
 
 /** A structured graph mutation for the live op-log bridge (ADR-002 phase 2).
  * Kept small and additive; more variants (add/delete node/edge) land next. */
-export type GraphOp = {
-  op: "update_node";
-  node_id: string;
-  patch: Partial<EmNode>;
-};
+export type GraphOp =
+  | { op: "update_node"; node_id: string; patch: Partial<EmNode> }
+  | { op: "add_node"; node: EmNode }
+  | { op: "delete_node"; node_id: string }
+  | { op: "add_edge"; edge: EmEdge }
+  | { op: "delete_edge"; edge: EmEdge };
 
 interface Snapshot {
   graph: string;
@@ -57,7 +58,26 @@ export class DocumentStore {
   applyRemoteOp(op: GraphOp): void {
     this.suppressOp = true;
     try {
-      if (op.op === "update_node") this.updateNode(op.node_id, op.patch);
+      switch (op.op) {
+        case "update_node":
+          this.updateNode(op.node_id, op.patch);
+          break;
+        case "add_node":
+          if (!this.node(op.node.id)) this.addNode(op.node);
+          break;
+        case "delete_node":
+          this.deleteNode(op.node_id);
+          break;
+        case "add_edge":
+          if (!this.doc.graph.edges.some((e) => e.id === op.edge.id)) {
+            this.doc.graph.edges.push(op.edge);
+            this.emit();
+          }
+          break;
+        case "delete_edge":
+          this.deleteEdge(op.edge);
+          break;
+      }
     } finally {
       this.suppressOp = false;
     }
@@ -146,6 +166,7 @@ export class DocumentStore {
       (layout.positions ??= {})[node.id] = pos;
     }
     this.emit();
+    this.emitOp({ op: "add_node", node });
     return node;
   }
 
@@ -171,6 +192,7 @@ export class DocumentStore {
     lanes.push(lane);
     (layout.positions ??= {})[id] = pos ?? { x: 0, y, w: 140, h: 30 };
     this.emit();
+    this.emitOp({ op: "add_node", node }); // swimlane is layout; the EpochNode is the graph part
     return node;
   }
 
@@ -183,6 +205,7 @@ export class DocumentStore {
     const edge: EmEdge = { id, source, target, edge_type: edgeType };
     this.doc.graph.edges.push(edge);
     this.emit();
+    this.emitOp({ op: "add_edge", edge });
     return edge;
   }
 
@@ -210,6 +233,7 @@ export class DocumentStore {
       }
     }
     this.emit();
+    this.emitOp({ op: "delete_node", node_id: id });
   }
 
   deleteEdge(edge: EmEdge): void {
@@ -222,8 +246,13 @@ export class DocumentStore {
           e.target === edge.target &&
           e.edge_type === edge.edge_type),
     );
-    if (ix >= 0) g.edges.splice(ix, 1);
+    let removed: EmEdge | null = null;
+    if (ix >= 0) {
+      removed = g.edges[ix];
+      g.edges.splice(ix, 1);
+    }
     this.emit();
+    if (removed) this.emitOp({ op: "delete_edge", edge: removed });
   }
 
   /** Remove a node from a container/group: drop the membership edge(s) from
@@ -232,19 +261,21 @@ export class DocumentStore {
   removeFromGroup(nodeId: string, containerId: string, pos?: LayoutRect): void {
     this.checkpoint();
     const g = this.doc.graph;
-    g.edges = g.edges.filter(
-      (e) =>
-        !(
-          e.source === nodeId &&
-          e.target === containerId &&
-          MEMBERSHIP_EDGES.has(e.edge_type ?? "")
-        ),
-    );
+    const removed: EmEdge[] = [];
+    g.edges = g.edges.filter((e) => {
+      const drop =
+        e.source === nodeId &&
+        e.target === containerId &&
+        MEMBERSHIP_EDGES.has(e.edge_type ?? "");
+      if (drop) removed.push(e);
+      return !drop;
+    });
     if (pos) {
       const layout = (this.doc.layout ??= {});
       (layout.positions ??= {})[nodeId] = pos;
     }
     this.emit();
+    for (const e of removed) this.emitOp({ op: "delete_edge", edge: e });
   }
 
   /** Move a node INTO a group (drop-into-group, inverse of removeFromGroup):
@@ -259,15 +290,16 @@ export class DocumentStore {
     if (groupId === nodeId) return;
     this.checkpoint();
     const g = this.doc.graph;
+    const removed: EmEdge[] = [];
     if (oldContainerId) {
-      g.edges = g.edges.filter(
-        (e) =>
-          !(
-            e.source === nodeId &&
-            e.target === oldContainerId &&
-            MEMBERSHIP_EDGES.has(e.edge_type ?? "")
-          ),
-      );
+      g.edges = g.edges.filter((e) => {
+        const drop =
+          e.source === nodeId &&
+          e.target === oldContainerId &&
+          MEMBERSHIP_EDGES.has(e.edge_type ?? "");
+        if (drop) removed.push(e);
+        return !drop;
+      });
       // drop the stale group-local position so it re-grids in the new box
       const sp = this.doc.layout?.group_spaces?.[oldContainerId];
       if (sp) delete sp[nodeId];
@@ -275,15 +307,19 @@ export class DocumentStore {
     const exists = g.edges.some(
       (e) => e.source === nodeId && e.target === groupId && e.edge_type === edgeType,
     );
+    let addedEdge: EmEdge | null = null;
     if (!exists) {
-      g.edges.push({
+      addedEdge = {
         id: `${nodeId}__${edgeType}__${groupId}`,
         source: nodeId,
         target: groupId,
         edge_type: edgeType,
-      });
+      };
+      g.edges.push(addedEdge);
     }
     this.emit();
+    for (const e of removed) this.emitOp({ op: "delete_edge", edge: e });
+    if (addedEdge) this.emitOp({ op: "add_edge", edge: addedEdge });
   }
 
   /** Create a NEW group node of `groupType` and make each of `nodeIds` a
@@ -303,24 +339,30 @@ export class DocumentStore {
       description: "",
     };
     this.doc.graph.nodes.push(group);
+    const added: EmEdge[] = [];
     for (const nid of nodeIds) {
       if (nid === id) continue;
       const dup = this.doc.graph.edges.some(
         (e) => e.source === nid && e.target === id && e.edge_type === edgeType,
       );
-      if (!dup)
-        this.doc.graph.edges.push({
+      if (!dup) {
+        const edge: EmEdge = {
           id: `${nid}__${edgeType}__${id}`,
           source: nid,
           target: id,
           edge_type: edgeType,
-        });
+        };
+        this.doc.graph.edges.push(edge);
+        added.push(edge);
+      }
     }
     if (pos) {
       const l = (this.doc.layout ??= {});
       (l.positions ??= {})[id] = pos;
     }
     this.emit();
+    this.emitOp({ op: "add_node", node: group });
+    for (const edge of added) this.emitOp({ op: "add_edge", edge });
     return group;
   }
 
@@ -330,19 +372,27 @@ export class DocumentStore {
   setFirstEpoch(nodeIds: string[], epochId: string): void {
     this.checkpoint();
     const g = this.doc.graph;
+    const removed: EmEdge[] = [];
+    const added: EmEdge[] = [];
     for (const nid of nodeIds) {
       if (nid === epochId) continue;
-      g.edges = g.edges.filter(
-        (e) => !(e.source === nid && e.edge_type === "has_first_epoch"),
-      );
-      g.edges.push({
+      g.edges = g.edges.filter((e) => {
+        const drop = e.source === nid && e.edge_type === "has_first_epoch";
+        if (drop) removed.push(e);
+        return !drop;
+      });
+      const edge: EmEdge = {
         id: `${nid}__has_first_epoch__${epochId}`,
         source: nid,
         target: epochId,
         edge_type: "has_first_epoch",
-      });
+      };
+      g.edges.push(edge);
+      added.push(edge);
     }
     this.emit();
+    for (const e of removed) this.emitOp({ op: "delete_edge", edge: e });
+    for (const e of added) this.emitOp({ op: "add_edge", edge: e });
   }
 
   updateNode(id: string, patch: Partial<EmNode>): void {
