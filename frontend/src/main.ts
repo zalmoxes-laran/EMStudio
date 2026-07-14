@@ -243,7 +243,7 @@ function select(nodeId: string | null): void {
   draw();
   // mirror the selection to a connected peer (Blender), unless this
   // selection just arrived FROM the peer (avoid the echo loop)
-  if (!applyingRemoteSelect) sync.sendSelect(nodeId);
+  if (!applyingRemoteSelect) sync.sendSelect(nodeId, [...selectedIds]);
 }
 
 /** Shift/Cmd-click: toggle a node in the multi-selection (D3). */
@@ -259,7 +259,7 @@ function toggleSelect(nodeId: string): void {
   refreshInspector();
   nodeList.setSelected(selectedId);
   draw();
-  if (!applyingRemoteSelect) sync.sendSelect(selectedId);
+  if (!applyingRemoteSelect) sync.sendSelect(selectedId, [...selectedIds]);
 }
 
 /** Replace the selection with a set (marquee result). */
@@ -269,7 +269,7 @@ function selectMany(ids: string[]): void {
   refreshInspector();
   nodeList.setSelected(selectedId);
   draw();
-  if (!applyingRemoteSelect) sync.sendSelect(selectedId);
+  if (!applyingRemoteSelect) sync.sendSelect(selectedId, [...selectedIds]);
 }
 
 function refreshInspector(): void {
@@ -1050,11 +1050,17 @@ btnSync.addEventListener("click", () => {
     return;
   }
   sync.connect(SYNC_URL, {
-    onSelect: (id) => {
+    onSelect: (id, ids) => {
       // selection arrived from the peer → reflect it without echoing back
       applyingRemoteSelect = true;
-      select(id);
-      centerOn(id);
+      if (ids && ids.length > 1) {
+        // multi-selection: keep the peer's active node as the primary (last)
+        const others = ids.filter((x) => x !== id);
+        selectMany(id ? [...others, id] : others);
+      } else {
+        select(id || null);
+      }
+      if (id) centerOn(id);
       applyingRemoteSelect = false;
     },
     onOp: (op) => {

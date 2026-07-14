@@ -15,13 +15,20 @@ import type { GraphOp } from "./model";
 import type { EmDocument } from "./types";
 
 export type SyncMessage =
-  | { v: number; type: "select" | "focus"; node_id: string | null; source?: string }
+  | {
+      v: number;
+      type: "select" | "focus";
+      node_id: string | null;
+      /** full multi-selection (active + others); node_id is the active one */
+      node_ids?: string[];
+      source?: string;
+    }
   | { v: number; type: "request_snapshot"; source?: string }
   | { v: number; type: "snapshot"; doc: EmDocument; source?: string }
   | ({ v: number; type: "op"; source?: string } & GraphOp);
 
 export interface SyncCallbacks {
-  onSelect: (nodeId: string) => void;
+  onSelect: (nodeId: string, nodeIds?: string[]) => void;
   /** a graph mutation arrived from the peer (ADR-002 phase 2 op-log) */
   onOp: (op: GraphOp) => void;
   /** the host sent its full graph as an .em.json doc (ADR-002 snapshot-READ):
@@ -86,7 +93,8 @@ export class SyncClient {
         return;
       }
       if (msg.source === SOURCE) return; // ignore our own echo
-      if (msg.type === "select" && msg.node_id) this.cb?.onSelect(msg.node_id);
+      if (msg.type === "select" && (msg.node_id || msg.node_ids?.length))
+        this.cb?.onSelect(msg.node_id ?? "", msg.node_ids);
       else if (msg.type === "snapshot") this.cb?.onSnapshot(msg.doc);
       else if (msg.type === "op") {
         const { type: _t, v: _v, source: _s, ...op } = msg;
@@ -95,10 +103,17 @@ export class SyncClient {
     };
   }
 
-  /** Announce a local selection to the peer (no-op when disconnected). */
-  sendSelect(nodeId: string | null): void {
-    if (!this.connected || !nodeId) return;
-    const msg: SyncMessage = { v: 1, type: "select", node_id: nodeId, source: SOURCE };
+  /** Announce a local selection to the peer (no-op when disconnected).
+   * `nodeId` is the active node; `nodeIds` the full multi-selection. */
+  sendSelect(nodeId: string | null, nodeIds?: string[]): void {
+    if (!this.connected || (!nodeId && !nodeIds?.length)) return;
+    const msg: SyncMessage = {
+      v: 1,
+      type: "select",
+      node_id: nodeId,
+      source: SOURCE,
+    };
+    if (nodeIds && nodeIds.length > 1) msg.node_ids = nodeIds;
     try {
       this.ws!.send(JSON.stringify(msg));
     } catch {
