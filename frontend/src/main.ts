@@ -168,6 +168,30 @@ function draw(): void {
     h,
   );
   overview.update(s, viewport(), w, h);
+  // selection overlay (screen space): a translucent wash + ring so the whole
+  // multi-selection is unmistakable regardless of node colour. Active node is
+  // bolder than the other selected ones (two-tier feedback).
+  if (selectedIds.size) {
+    const vp = viewport();
+    const dpr = window.devicePixelRatio || 1;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.save();
+    for (const id of selectedIds) {
+      const sn = s.byId.get(id);
+      if (!sn) continue;
+      const x = sn.x * vp.scale + vp.x - 3;
+      const y = sn.y * vp.scale + vp.y - 3;
+      const bw = sn.w * vp.scale + 6;
+      const bh = sn.h * vp.scale + 6;
+      const active = id === selectedId;
+      ctx.fillStyle = active ? "rgba(31,111,235,0.22)" : "rgba(91,155,240,0.15)";
+      ctx.strokeStyle = active ? "#1F6FEB" : "#5b9bf0";
+      ctx.lineWidth = active ? 3 : 2;
+      ctx.fillRect(x, y, bw, bh);
+      ctx.strokeRect(x, y, bw, bh);
+    }
+    ctx.restore();
+  }
   if (marquee) {
     const vp = viewport();
     const dpr = window.devicePixelRatio || 1;
@@ -1158,7 +1182,8 @@ let dragNodeId: string | null = null;
 let dragMemberIds: string[] | null = null;
 let dragCheckpointed = false;
 let dragDetachPending = false; // Shift+drag a member → pull it out of its group
-let dragDetachContainer: string | null = null; // the group to detach from
+// nodes to pull out of their groups on shift+drag (whole selection if multi)
+let dragDetachSet: { id: string; container: string }[] = [];
 let spaceHeld = false; // Space → pan-always gesture (see pointerdown)
 let lastClickTime = 0;
 let lastClickId: string | null = null;
@@ -1211,13 +1236,17 @@ canvas.addEventListener("pointerdown", (e) => {
     // memberOf map — the latter only covers relocate-type groups, not outline
     // (is_part_of US/USD/VSF) containers.
     dragDetachPending = false;
-    dragDetachContainer = null;
+    dragDetachSet = [];
     if (e.shiftKey && !inContext() && store) {
-      const primary = buildMembership(store.doc).primaryOf.get(hit.id);
-      if (primary) {
-        dragDetachPending = true;
-        dragDetachContainer = primary;
+      const mm = buildMembership(store.doc);
+      // shift+drag detaches the WHOLE selection when dragging a selected node
+      const multi = selectedIds.has(hit.id) && selectedIds.size > 1;
+      const targets = multi ? [...selectedIds] : [hit.id];
+      for (const id of targets) {
+        const c = mm.primaryOf.get(id);
+        if (c) dragDetachSet.push({ id, container: c });
       }
+      dragDetachPending = dragDetachSet.length > 0;
     }
     // dragging a group container moves the whole group — but only along
     // the PRIMARY containment tree: a shared document whose master lives
@@ -1238,6 +1267,10 @@ canvas.addEventListener("pointerdown", (e) => {
         }
       }
       dragMemberIds = acc;
+    }
+    // multi-selection: dragging any selected node moves the WHOLE selection
+    if (!dragMemberIds && selectedIds.has(hit.id) && selectedIds.size > 1) {
+      dragMemberIds = [...selectedIds].filter((id) => id !== hit.id);
     }
   } else {
     // empty canvas → rubber-band marquee selection (pan is middle/Space, D1)
@@ -1290,16 +1323,22 @@ canvas.addEventListener("pointermove", (e) => {
       const n = s?.byId.get(dragNodeId);
       // Shift+drag detach (D2): drop the membership edge, free the node at its
       // current canvas position, then let subsequent frames move it normally.
-      if (dragDetachPending && n && store && dragDetachContainer) {
-        store.removeFromGroup(dragNodeId, dragDetachContainer, {
-          x: n.x,
-          y: n.y,
-          w: n.w,
-          h: n.h,
-        });
-        toast("moved out of group");
+      if (dragDetachPending && n && s && store && dragDetachSet.length) {
+        for (const d of dragDetachSet) {
+          const dn = s.byId.get(d.id);
+          store.removeFromGroup(
+            d.id,
+            d.container,
+            dn ? { x: dn.x, y: dn.y, w: dn.w, h: dn.h } : undefined,
+          );
+        }
+        toast(
+          dragDetachSet.length > 1
+            ? `moved ${dragDetachSet.length} out of group`
+            : "moved out of group",
+        );
         dragDetachPending = false;
-        dragDetachContainer = null;
+        dragDetachSet = [];
         dragCheckpointed = true;
         lastX = e.clientX;
         lastY = e.clientY;
@@ -1386,7 +1425,7 @@ canvas.addEventListener("pointerup", (e) => {
   const mode = dragMode;
   dragMode = "none";
   dragDetachPending = false;
-  dragDetachContainer = null;
+  dragDetachSet = [];
   if (mode === "connect") {
     finishConnect();
     return;
@@ -1532,7 +1571,22 @@ function showContextMenu(clientX: number, clientY: number): void {
       const b = document.createElement("button");
       b.textContent = `Group into ${t.groupType.replace("NodeGroup", "")} group`;
       b.onclick = () => {
-        const g = store!.groupNodes(ids, t.groupType, t.edgeType);
+        // position the new group at the members' bounding box so the matrix
+        // draws it (nodes without a layout position are skipped)
+        const sc = scene();
+        let minX = Infinity,
+          minY = Infinity;
+        for (const id of ids) {
+          const sn = sc?.byId.get(id);
+          if (sn) {
+            minX = Math.min(minX, sn.x);
+            minY = Math.min(minY, sn.y);
+          }
+        }
+        const pos = Number.isFinite(minX)
+          ? { x: minX - 24, y: minY - 24, w: 200, h: 140 }
+          : undefined;
+        const g = store!.groupNodes(ids, t.groupType, t.edgeType, pos);
         hideContextMenu();
         select(g.id);
         toast(`grouped ${ids.length} into ${g.name}`);

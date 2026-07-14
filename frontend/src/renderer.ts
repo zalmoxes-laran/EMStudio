@@ -326,8 +326,9 @@ export function render(
         drawLabels,
       );
       if (isSel(n) || n.id === state.hoverId) {
-        ctx.strokeStyle = isSel(n) ? ACCENT : "#7fb0f0";
-        ctx.lineWidth = 2.2 / vp.scale;
+        const active = n.id === state.selectedId || n.instanceOf === state.selectedId;
+        ctx.strokeStyle = active ? ACCENT : isSel(n) ? "#5b9bf0" : "#a9c9f5";
+        ctx.lineWidth = (active ? 3.6 : isSel(n) ? 2.6 : 1.6) / vp.scale;
         ctx.strokeRect(n.x - 2, n.y - 2, n.w + 4, n.h + 4);
       }
       continue;
@@ -403,8 +404,9 @@ export function render(
         ctx.fillText(String(n.useCount), bx, by + r * 0.05);
       }
       if (isSel(n) || n.id === state.hoverId) {
-        ctx.strokeStyle = isSel(n) ? ACCENT : "#7fb0f0";
-        ctx.lineWidth = 2.2 / vp.scale;
+        const active = n.id === state.selectedId || n.instanceOf === state.selectedId;
+        ctx.strokeStyle = active ? ACCENT : isSel(n) ? "#5b9bf0" : "#a9c9f5";
+        ctx.lineWidth = (active ? 3.6 : isSel(n) ? 2.6 : 1.6) / vp.scale;
         ctx.strokeRect(x0 - 3, y0 - 3, iw + 6, ih + 6);
       }
       continue;
@@ -440,8 +442,9 @@ export function render(
         ctx.fillText(text, n.x + n.w / 2, n.y + n.h / 2);
       }
       if (isSel(n) || n.id === state.hoverId) {
-        ctx.strokeStyle = isSel(n) ? ACCENT : "#7fb0f0";
-        ctx.lineWidth = 2.2 / vp.scale;
+        const active = n.id === state.selectedId || n.instanceOf === state.selectedId;
+        ctx.strokeStyle = active ? ACCENT : isSel(n) ? "#5b9bf0" : "#a9c9f5";
+        ctx.lineWidth = (active ? 3.6 : isSel(n) ? 2.6 : 1.6) / vp.scale;
         ctx.strokeRect(n.x - 3, n.y - 3, n.w + 6, n.h + 6);
       }
       continue;
@@ -486,8 +489,9 @@ export function render(
         }
       }
       if (isSel(n) || n.id === state.hoverId) {
-        ctx.strokeStyle = isSel(n) ? ACCENT : "#7fb0f0";
-        ctx.lineWidth = 2.2 / vp.scale;
+        const active = n.id === state.selectedId || n.instanceOf === state.selectedId;
+        ctx.strokeStyle = active ? ACCENT : isSel(n) ? "#5b9bf0" : "#a9c9f5";
+        ctx.lineWidth = (active ? 3.6 : isSel(n) ? 2.6 : 1.6) / vp.scale;
         ctx.strokeRect(ix - 3, iy - 3, iw + 6, ih + 6);
       }
       continue;
