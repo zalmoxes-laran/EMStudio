@@ -1231,6 +1231,9 @@ let lastX = 0;
 let lastY = 0;
 let dragNodeId: string | null = null;
 let dragMemberIds: string[] | null = null;
+// true = group-drag (move the group node, members follow); false = multi-select
+// move (move each selected node, respecting its container)
+let dragIsGroupMove = false;
 let dragCheckpointed = false;
 let dragDetachPending = false; // Shift+drag a member → pull it out of its group
 // nodes to pull out of their groups on shift+drag (whole selection if multi)
@@ -1242,6 +1245,49 @@ let lastClickId: string | null = null;
 function worldPos(e: MouseEvent): { x: number; y: number } {
   const rect = canvas.getBoundingClientRect();
   return viewport().toWorld(e.clientX - rect.left, e.clientY - rect.top);
+}
+
+// Move ONE node by a world delta, respecting its container: a member of an
+// open container keeps its group-local position (moveInGroupSpace); a free
+// node moves on the canvas. Used for single-node AND multi-selection drags —
+// the latter needs this so container members actually move (moveNodesBy only
+// touches layout.positions, which the container pass overrides for members).
+function moveOneByDelta(
+  id: string,
+  ddx: number,
+  ddy: number,
+  checkpoint: boolean,
+): void {
+  const s = scene();
+  if (!s || !store) return;
+  const sn = s.byId.get(id);
+  if (!sn) return;
+  const nx = sn.x + ddx;
+  const ny = sn.y + ddy;
+  const containerId = s.memberOf?.get(id);
+  if (inContext()) {
+    store.moveInGroupSpace(
+      contextStack[contextStack.length - 1],
+      id,
+      { x: nx, y: ny, w: sn.w, h: sn.h },
+      checkpoint,
+    );
+  } else if (containerId) {
+    const g = s.groupsById!.get(containerId)!;
+    store.moveInGroupSpace(
+      containerId,
+      id,
+      {
+        x: nx - (g.x + GROUP_PAD),
+        y: ny - (g.y + GROUP_HEADER + GROUP_PAD),
+        w: sn.w,
+        h: sn.h,
+      },
+      checkpoint,
+    );
+  } else {
+    store.moveNode(id, nx, ny, checkpoint);
+  }
 }
 
 canvas.addEventListener("pointerdown", (e) => {
@@ -1304,6 +1350,7 @@ canvas.addEventListener("pointerdown", (e) => {
     // in another group must NOT follow (its local instance moves with the
     // extractors of THIS group anyway)
     dragMemberIds = null;
+    dragIsGroupMove = false;
     if (s.groupsById?.has(hit.id) && store) {
       const mm = buildMembership(store.doc);
       const acc: string[] = [];
@@ -1318,10 +1365,12 @@ canvas.addEventListener("pointerdown", (e) => {
         }
       }
       dragMemberIds = acc;
+      dragIsGroupMove = true; // group node moves; members follow via container pass
     }
     // multi-selection: dragging any selected node moves the WHOLE selection
     if (!dragMemberIds && selectedIds.has(hit.id) && selectedIds.size > 1) {
       dragMemberIds = [...selectedIds].filter((id) => id !== hit.id);
+      dragIsGroupMove = false; // move each node respecting its own container
     }
   } else {
     // empty canvas → rubber-band marquee selection (pan is middle/Space, D1)
@@ -1396,46 +1445,26 @@ canvas.addEventListener("pointermove", (e) => {
         return;
       }
       if (n && s && dragMemberIds && store && !inContext()) {
-        // whole-group drag: shift the group node and every member
-        store.moveNodesBy(
-          [dragNodeId, ...dragMemberIds],
-          dx / vp.scale,
-          dy / vp.scale,
-          !dragCheckpointed,
-        );
+        if (dragIsGroupMove) {
+          // whole-group drag: move the group node; members follow (container pass)
+          store.moveNodesBy(
+            [dragNodeId, ...dragMemberIds],
+            dx / vp.scale,
+            dy / vp.scale,
+            !dragCheckpointed,
+          );
+        } else {
+          // multi-selection move: shift EACH node respecting its own container
+          for (const id of [dragNodeId, ...dragMemberIds])
+            moveOneByDelta(id, dx / vp.scale, dy / vp.scale, !dragCheckpointed);
+        }
         dragCheckpointed = true;
         lastX = e.clientX;
         lastY = e.clientY;
         return;
       }
       if (n && s) {
-        const nx = n.x + dx / vp.scale;
-        const ny = n.y + dy / vp.scale;
-        const containerId = s.memberOf?.get(dragNodeId);
-        if (inContext()) {
-          store.moveInGroupSpace(
-            contextStack[contextStack.length - 1],
-            dragNodeId,
-            { x: nx, y: ny, w: n.w, h: n.h },
-            !dragCheckpointed,
-          );
-        } else if (containerId) {
-          // member of an open container: persist the local position
-          const g = s.groupsById!.get(containerId)!;
-          store.moveInGroupSpace(
-            containerId,
-            dragNodeId,
-            {
-              x: nx - (g.x + GROUP_PAD),
-              y: ny - (g.y + GROUP_HEADER + GROUP_PAD),
-              w: n.w,
-              h: n.h,
-            },
-            !dragCheckpointed,
-          );
-        } else {
-          store.moveNode(dragNodeId, nx, ny, !dragCheckpointed);
-        }
+        moveOneByDelta(dragNodeId, dx / vp.scale, dy / vp.scale, !dragCheckpointed);
         dragCheckpointed = true;
       }
       lastX = e.clientX;
