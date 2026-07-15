@@ -60,8 +60,15 @@ const ACCENT = "#1F6FEB";
 const GROUP_HEADER_FILL = "#F6D7A4"; // yEd folder tab (paradata groups)
 const GROUP_BODY_FILL = "rgba(190,196,204,0.25)";
 
-/** header tint from the group type's own colour (em_visual_rules border) */
-function headerFillFor(nodeType: string, border: string): string {
+/** group title-tab colour: the canonical `label_background` from
+ *  em_visual_rules when present (Activity cyan / Paradata peach / TimeBranch
+ *  green / Location grey), else a legacy fallback tint from the border. */
+function headerFillFor(
+  nodeType: string,
+  border: string,
+  labelBg?: string,
+): string {
+  if (labelBg) return labelBg;
   if (nodeType === "ParadataNodeGroup") return GROUP_HEADER_FILL;
   const h = border.replace("#", "");
   if (h.length < 6) return GROUP_HEADER_FILL;
@@ -320,7 +327,7 @@ export function render(
         ctx,
         group,
         st.border,
-        headerFillFor(n.node.node_type, st.border),
+        headerFillFor(n.node.node_type, st.border, st.labelBackground),
         vp.scale,
         n.badge,
         drawLabels,
@@ -554,20 +561,23 @@ export function render(
     }
   }
 
-  // connect handle on hovered/selected node + elastic edge while dragging
-  if (state.editable) {
-    const handleOn = state.connect
-      ? null
-      : (state.hoverId ?? state.selectedId);
-    const hn = handleOn ? scene.byId.get(handleOn) : null;
-    if (hn) {
-      const r = 5.5 / Math.sqrt(vp.scale);
+  // connect handles: a bullet on the right edge of EVERY node (drag it to
+  // draw an edge, or drop in the void to create a target node). Shown on all
+  // nodes once zoomed in enough to be legible; only the hovered/selected node
+  // keeps its accent bullet at low zoom so the overview stays uncluttered.
+  if (state.editable && !state.connect) {
+    const active = state.hoverId ?? state.selectedId;
+    const showAll = vp.scale > 0.5;
+    for (const n of scene.nodes) {
+      const isActive = n.id === active;
+      if (!isActive && !showAll) continue;
+      const r = (isActive ? 5.5 : 4) / Math.sqrt(vp.scale);
       ctx.beginPath();
-      ctx.arc(hn.x + hn.w, hn.y + hn.h / 2, r, 0, Math.PI * 2);
+      ctx.arc(n.x + n.w, n.y + n.h / 2, r, 0, Math.PI * 2);
       ctx.fillStyle = "#fff";
       ctx.fill();
-      ctx.strokeStyle = ACCENT;
-      ctx.lineWidth = 2 / Math.sqrt(vp.scale);
+      ctx.strokeStyle = isActive ? ACCENT : "#9aa7b5";
+      ctx.lineWidth = (isActive ? 2 : 1.3) / Math.sqrt(vp.scale);
       ctx.stroke();
     }
   }

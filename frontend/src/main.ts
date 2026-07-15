@@ -5,7 +5,7 @@ import { DocumentStore } from "./model";
 import { buildNodeList } from "./nodelist";
 import { buildOverview } from "./overview";
 import { edgeStyle, SEQUENCE_EDGES } from "./palette";
-import { buildPalette } from "./palette-ui";
+import { buildPalette, SECTIONS } from "./palette-ui";
 import { render, type ConnectDrag } from "./renderer";
 import {
   allowedEdgeTypes,
@@ -15,6 +15,7 @@ import {
   GENERIC_EDGE,
   isGroupType,
   isStratigraphicType,
+  typeDescription,
 } from "./rules";
 import { sceneToSvg } from "./svg-export";
 import {
@@ -26,6 +27,21 @@ import {
   baseName,
 } from "./tauri";
 import { SyncClient } from "./sync";
+import {
+  getSettings,
+  getSyncUrl,
+  saveSettings,
+  SYNC_TOOLS,
+  type Settings,
+} from "./settings";
+import {
+  CIRCLES,
+  type CircleKey,
+  defaultVisibleCircles,
+  edgeCircle,
+  nodeCircle,
+} from "./filters";
+import { type Qualia, vocabularyFor } from "./vocab";
 import {
   hitGroupToggle,
   hitHandle,
@@ -58,7 +74,8 @@ const sync = new SyncClient();
 // True while applying a selection that ARRIVED from the peer, so we don't
 // echo it straight back (loop guard).
 let applyingRemoteSelect = false;
-const SYNC_URL = "ws://localhost:8788";
+// Sync endpoint is configured in Settings (see settings.ts); resolved fresh
+// on each connect so a settings change takes effect on the next connect.
 let view: ViewKind = "matrix";
 const scenes: Partial<Record<ViewKind, Scene | null>> = {};
 const viewports: Record<ViewKind, Viewport> = {
@@ -71,8 +88,45 @@ let edgeFilter: "all" | "sequence" | "none" = "all";
 let placingType: string | null = null;
 let connect: ConnectDrag | null = null;
 /** graph-view "liquid" filters: hidden node / edge types */
+// hidden type sets are DERIVED from the visible circles of the CURRENT view
+// (recomputeHiddenFromCircles); they are what buildScenes applies.
 const hiddenNodeTypes = new Set<string>();
 const hiddenEdgeTypes = new Set<string>();
+// "circles of detail" — which detail rings are visible, per view. Matrix and
+// Graph keep independent visibility so each view has its own default depth.
+const circleState: Record<ViewKind, Set<CircleKey>> = {
+  matrix: defaultVisibleCircles("matrix"),
+  graph: defaultVisibleCircles("graph"),
+};
+// Recompute the hidden type sets from the current view's visible circles.
+function recomputeHiddenFromCircles(): void {
+  hiddenNodeTypes.clear();
+  hiddenEdgeTypes.clear();
+  if (!store) return;
+  const visible = circleState[view];
+  for (const n of store.doc.graph.nodes) {
+    const c = nodeCircle(n.node_type);
+    if (c && !visible.has(c)) hiddenNodeTypes.add(n.node_type);
+  }
+  for (const e of store.doc.graph.edges) {
+    const t = e.edge_type ?? "";
+    const c = edgeCircle(t);
+    if (c && !visible.has(c)) hiddenEdgeTypes.add(t);
+  }
+}
+// If a freshly-created node's detail ring is hidden in the current view, turn
+// it back on — otherwise you "create" a node you can't see.
+function ensureCircleVisibleFor(nodeType: string | undefined): void {
+  const c = nodeCircle(nodeType);
+  if (!c || circleState[view].has(c)) return;
+  circleState[view].add(c);
+  recomputeHiddenFromCircles();
+  buildScenes();
+  draw();
+  if (filterPanelOpen()) renderCirclesPanel();
+  const label = CIRCLES.find((x) => x.key === c)?.label ?? c;
+  toast(`Filter: showing “${label}” (new node was hidden)`);
+}
 /** group-context navigation stack; empty = full canvas */
 let contextStack: string[] = [];
 let contextScene: Scene | null = null;
@@ -408,31 +462,54 @@ function buildScenes(): void {
   const foldedView = folded.size
     ? applyFolding(doc, buildMembership(doc), folded)
     : undefined;
-  scenes.matrix = buildMatrixScene(doc, foldedView);
-  // graph view: apply the liquid type filters on top of the folding
-  let gNodes = foldedView?.nodes ?? doc.graph.nodes;
-  let gEdges = foldedView?.edges ?? doc.graph.edges;
+  // Contextual "circles of detail" filter: hide the node/edge types whose
+  // circle is off in the current view. Applied to BOTH projections via a
+  // single filtered view (Matrix honours view.nodes; Graph re-layouts on the
+  // subset). Structural nodes/edges (containers, epoch, membership) are never
+  // filtered — see filters.ts.
+  let vNodes = foldedView?.nodes ?? doc.graph.nodes;
+  let vEdges = foldedView?.edges ?? doc.graph.edges;
   if (hiddenNodeTypes.size || hiddenEdgeTypes.size) {
-    gNodes = gNodes.filter((n) => !hiddenNodeTypes.has(n.node_type));
-    const present = new Set(gNodes.map((n) => n.id));
-    gEdges = gEdges.filter(
+    vNodes = vNodes.filter((n) => !hiddenNodeTypes.has(n.node_type));
+    // drop group containers left with NO visible member — else hiding a ring
+    // (e.g. paradata nodes in Matrix) leaves hollow, full-size group boxes.
+    // Keep genuinely-empty authored groups.
+    const mm = buildMembership(doc);
+    let vis = new Set(vNodes.map((n) => n.id));
+    vNodes = vNodes.filter((n) => {
+      if (!isGroupType(n.node_type)) return true;
+      const kids = [...(mm.childrenOf.get(n.id) ?? [])];
+      return kids.length === 0 || kids.some((c) => vis.has(c));
+    });
+    vis = new Set(vNodes.map((n) => n.id));
+    vEdges = vEdges.filter(
       (e) =>
         !hiddenEdgeTypes.has(e.edge_type ?? "") &&
-        present.has(e.source) &&
-        present.has(e.target),
+        vis.has(e.source) &&
+        vis.has(e.target),
     );
   }
-  scenes.graph = buildGraphScene(doc, {
-    nodes: gNodes,
-    edges: gEdges,
-    badges: foldedView?.badges ?? new Map(),
-  });
+  const fview = {
+    nodes: vNodes,
+    edges: vEdges,
+    badges: foldedView?.badges ?? new Map<string, number>(),
+  };
+  scenes.matrix = buildMatrixScene(doc, fview);
+  scenes.graph = buildGraphScene(doc, fview);
 }
 
 function setView(v: ViewKind): void {
+  const changed = view !== v;
   view = v;
   btnMatrix.classList.toggle("active", v === "matrix");
   btnGraph.classList.toggle("active", v === "graph");
+  // each view keeps its own "circles of detail" depth → re-derive the hidden
+  // sets and rebuild when the active view changes.
+  if (changed && store) {
+    recomputeHiddenFromCircles();
+    buildScenes();
+    if (filterPanelOpen()) renderCirclesPanel();
+  }
   if (contextStack.length) {
     contextStack = [];
     rebuildContext();
@@ -459,7 +536,9 @@ function loadDocument(
   currentFilePath = path; // desktop: enables in-place Save; null in browser
   store = new DocumentStore(d);
   store.onChange(() => {
+    recomputeHiddenFromCircles(); // keep hidden sets in sync with new types
     buildScenes();
+    if (filterPanelOpen()) renderCirclesPanel(); // refresh circle counts
     if (inContext()) {
       contextScene = buildGroupScene(
         store!.doc,
@@ -480,6 +559,7 @@ function loadDocument(
   contextScene = null;
   hoverId = null;
   selectedId = null;
+  recomputeHiddenFromCircles(); // derive hidden types for the current view
   buildScenes();
   select(null);
   dropHint.classList.add("hidden");
@@ -736,7 +816,9 @@ function placeNode(wx: number, wy: number): void {
       if (lane) store.addEdge(id, lane.id, "has_first_epoch");
     }
   }
+  ensureCircleVisibleFor(placingType); // reveal its ring if the filter hid it
   select(id);
+  if (vocabularyFor(placingType)) openQualiaPicker(id, wx, wy); // pick its label
   cancelPlacing();
   toast(`${id} created`);
 }
@@ -864,13 +946,21 @@ function updateConnect(wx: number, wy: number): void {
   draw();
 }
 
-function finishConnect(): void {
+function finishConnect(forceCreate = false): void {
   if (!connect || !store) return;
-  const { fromId, targetId, validity } = connect;
+  const { fromId, targetId, validity, x, y } = connect;
   connect = null;
   canvas.classList.remove("connecting");
   draw();
-  if (!targetId || !validity) return;
+  // Dropped in the void → offer to CREATE a target node. Hold Shift/Alt to
+  // FORCE this even when the drop lands on a node or (often) inside a
+  // container box that hitTest would otherwise treat as the target — handy
+  // when containers cover all the empty space (e.g. a node inside a PD group).
+  if (forceCreate || !targetId) {
+    showCreateNodeMenu(fromId, x, y);
+    return;
+  }
+  if (!validity) return;
   const src = store.node(fromId)?.node_type;
   const tgt = store.node(targetId)?.node_type;
   if (validity === "invalid") {
@@ -942,6 +1032,271 @@ function showEdgeMenu(
 function hideEdgeMenu(): void {
   edgeMenu.classList.add("hidden");
   edgeMenu.innerHTML = "";
+}
+
+// ---------- create a node at a point (shared by placeNode & connect-create) ----------
+function createNodeAt(type: string, wx: number, wy: number): string | null {
+  if (!store) return null;
+  if (type === "EpochNode") {
+    const w = 140,
+      h = 30;
+    return store.addEpoch(undefined, { x: wx - w / 2, y: wy - h / 2, w, h }).id;
+  }
+  const id = store.newId();
+  const name = store.freshLabel(type);
+  const w = isGroupType(type) ? 120 : 90;
+  const h = 30;
+  const node = { id, name, node_type: type, description: "" };
+  if (inContext()) {
+    const gid = contextStack[contextStack.length - 1];
+    store.addNode(node);
+    store.moveInGroupSpace(gid, id, { x: wx - w / 2, y: wy - h / 2, w, h }, false);
+    const membership = allowedEdgeTypes(type, store.node(gid)?.node_type).find(
+      (t) => t.startsWith("is_in_"),
+    );
+    if (membership) store.addEdge(id, gid, membership);
+  } else {
+    store.addNode(node, { x: wx - w / 2, y: wy - h / 2, w, h });
+    if (view === "matrix" && isStratigraphicType(type)) {
+      const lane = scenes.matrix?.lanes.find(
+        (l) => wy >= l.y && wy <= l.y + l.height,
+      );
+      if (lane) store.addEdge(id, lane.id, "has_first_epoch");
+    }
+  }
+  return id;
+}
+
+// ---------- connect-drag dropped in the void → create a target node ----------
+// Menu is datamodel-driven: only node types the EM rules allow as the target
+// of an edge from the source, grouped by the palette taxonomy, with search.
+let createMenuEl: HTMLDivElement | null = null;
+function hideCreateMenu(): void {
+  if (createMenuEl) {
+    createMenuEl.remove();
+    createMenuEl = null;
+    document.removeEventListener("pointerdown", onCreateMenuOutside, true);
+    document.removeEventListener("keydown", onCreateMenuKey, true);
+  }
+}
+function onCreateMenuOutside(e: PointerEvent): void {
+  if (createMenuEl && !createMenuEl.contains(e.target as Node)) hideCreateMenu();
+}
+function onCreateMenuKey(e: KeyboardEvent): void {
+  if (e.key === "Escape") {
+    e.stopPropagation();
+    hideCreateMenu();
+  }
+}
+function onPickCreate(
+  fromId: string,
+  type: string,
+  wx: number,
+  wy: number,
+): void {
+  if (!store) return;
+  hideCreateMenu();
+  const srcType = store.node(fromId)?.node_type;
+  const newId = createNodeAt(type, wx, wy);
+  if (!newId) return;
+  const eTypes = allowedEdgeTypes(srcType, type);
+  if (eTypes.length > 1) showEdgeMenu(fromId, newId, eTypes);
+  else createEdge(fromId, newId, eTypes[0] ?? GENERIC_EDGE);
+  ensureCircleVisibleFor(type); // reveal its ring if the filter hid it
+  select(newId);
+  if (vocabularyFor(type)) openQualiaPicker(newId, wx, wy); // pick its label
+}
+function showCreateNodeMenu(fromId: string, wx: number, wy: number): void {
+  if (!store) return;
+  const srcType = store.node(fromId)?.node_type;
+  // group the datamodel-allowed target types by the palette taxonomy
+  const groups: { label: string; types: string[] }[] = [];
+  for (const sec of SECTIONS) {
+    const allowed = sec.types.filter(
+      (t) => connectValidity(srcType, t) === "valid",
+    );
+    if (allowed.length) groups.push({ label: sec.label, types: allowed });
+  }
+  hideCreateMenu();
+  const menu = document.createElement("div");
+  menu.className = "connect-menu";
+  const title = document.createElement("div");
+  title.className = "cm-title";
+  title.textContent = `New node from ${store.node(fromId)?.name || srcType}`;
+  menu.appendChild(title);
+  if (!groups.length) {
+    const empty = document.createElement("div");
+    empty.className = "cm-empty";
+    empty.textContent = "No node type is a valid edge target from here.";
+    menu.appendChild(empty);
+  } else {
+    const search = document.createElement("input");
+    search.className = "cm-search";
+    search.type = "search";
+    search.placeholder = "Search node types…";
+    menu.appendChild(search);
+    const list = document.createElement("div");
+    list.className = "cm-list";
+    menu.appendChild(list);
+    const renderList = (q: string): void => {
+      list.innerHTML = "";
+      const ql = q.trim().toLowerCase();
+      for (const g of groups) {
+        const hits = g.types.filter(
+          (t) =>
+            !ql ||
+            t.toLowerCase().includes(ql) ||
+            (typeDescription(t) || "").toLowerCase().includes(ql),
+        );
+        if (!hits.length) continue;
+        const h = document.createElement("div");
+        h.className = "cm-sect";
+        h.textContent = g.label;
+        list.appendChild(h);
+        for (const t of hits) {
+          const b = document.createElement("button");
+          b.className = "cm-item";
+          b.textContent = t;
+          b.title = typeDescription(t) || t;
+          b.addEventListener("click", () => onPickCreate(fromId, t, wx, wy));
+          list.appendChild(b);
+        }
+      }
+    };
+    search.addEventListener("input", () => renderList(search.value));
+    renderList("");
+    setTimeout(() => search.focus(), 0);
+  }
+  const vp = viewport();
+  const sx = Math.min(wx * vp.scale + vp.x, wrap.clientWidth - 244);
+  const sy = Math.min(wy * vp.scale + vp.y, wrap.clientHeight - 280);
+  menu.style.left = Math.max(4, sx) + "px";
+  menu.style.top = Math.max(4, sy) + "px";
+  wrap.appendChild(menu);
+  createMenuEl = menu;
+  document.addEventListener("pointerdown", onCreateMenuOutside, true);
+  document.addEventListener("keydown", onCreateMenuKey, true);
+}
+
+// ---------- controlled-vocabulary picker (PropertyNode → qualia label) ----------
+let vocabMenuEl: HTMLDivElement | null = null;
+function hideVocabMenu(): void {
+  if (vocabMenuEl) {
+    vocabMenuEl.remove();
+    vocabMenuEl = null;
+    document.removeEventListener("pointerdown", onVocabOutside, true);
+    document.removeEventListener("keydown", onVocabKey, true);
+  }
+}
+function onVocabOutside(e: PointerEvent): void {
+  if (vocabMenuEl && !vocabMenuEl.contains(e.target as Node)) hideVocabMenu();
+}
+function onVocabKey(e: KeyboardEvent): void {
+  if (e.key === "Escape") {
+    e.stopPropagation();
+    hideVocabMenu();
+  }
+}
+// Open the qualia catalogue on a just-created (or selected) PropertyNode so its
+// label is picked from the controlled vocabulary; each term shows its
+// rationale + example. Cancelling leaves the default label.
+function openQualiaPicker(nodeId: string, wx: number, wy: number): void {
+  if (!store) return;
+  const vocab = vocabularyFor(store.node(nodeId)?.node_type);
+  if (!vocab) return;
+  hideVocabMenu();
+  const menu = document.createElement("div");
+  menu.className = "connect-menu vocab-menu";
+  const title = document.createElement("div");
+  title.className = "cm-title";
+  title.textContent = "Property — pick a vocabulary term";
+  menu.appendChild(title);
+  const search = document.createElement("input");
+  search.className = "cm-search";
+  search.type = "search";
+  search.placeholder = "Search qualia…";
+  menu.appendChild(search);
+  const listEl = document.createElement("div");
+  listEl.className = "cm-list";
+  menu.appendChild(listEl);
+  const detail = document.createElement("div");
+  detail.className = "vocab-detail";
+  menu.appendChild(detail);
+  const showDetail = (q: Qualia): void => {
+    const bits: string[] = [];
+    if (q.rationale) bits.push(`<b>Why</b> ${q.rationale}`);
+    if (q.example) bits.push(`<b>e.g.</b> ${q.example}`);
+    if (!bits.length && q.description) bits.push(q.description);
+    detail.innerHTML =
+      bits.join("<br>") || "<i>no rationale in the vocabulary yet</i>";
+  };
+  const pick = (q: Qualia): void => {
+    hideVocabMenu();
+    const prev = (store!.node(nodeId)?.data ?? {}) as Record<string, unknown>;
+    store!.updateNode(nodeId, {
+      name: q.name,
+      data: {
+        ...prev,
+        property_type: q.id,
+        ...(q.dataType ? { data_type: q.dataType } : {}),
+      },
+    });
+    select(nodeId);
+    toast(`property → ${q.name}`);
+  };
+  const render = (query: string): void => {
+    listEl.innerHTML = "";
+    const ql = query.trim().toLowerCase();
+    const match = (q: Qualia): boolean =>
+      !ql ||
+      [q.name, q.id, q.description, q.rationale, q.categoryLabel, q.subcategoryLabel].some(
+        (s) => (s ?? "").toLowerCase().includes(ql),
+      );
+    let lastCat = "",
+      lastSub = "";
+    let first: Qualia | null = null;
+    for (const q of vocab) {
+      if (!match(q)) continue;
+      if (!first) first = q;
+      if (q.category !== lastCat) {
+        lastCat = q.category;
+        lastSub = "";
+        const h = document.createElement("div");
+        h.className = "cm-sect";
+        h.textContent = q.categoryLabel;
+        listEl.appendChild(h);
+      }
+      if (q.subcategory !== lastSub) {
+        lastSub = q.subcategory;
+        const sh = document.createElement("div");
+        sh.className = "cm-subsect";
+        sh.textContent = q.subcategoryLabel;
+        listEl.appendChild(sh);
+      }
+      const b = document.createElement("button");
+      b.className = "cm-item";
+      b.textContent = q.name;
+      b.title = q.rationale || q.description || q.name;
+      b.addEventListener("mouseenter", () => showDetail(q));
+      b.addEventListener("focus", () => showDetail(q));
+      b.addEventListener("click", () => pick(q));
+      listEl.appendChild(b);
+    }
+    if (first) showDetail(first);
+    else detail.textContent = "no match";
+  };
+  search.addEventListener("input", () => render(search.value));
+  render("");
+  const vp = viewport();
+  const sx = Math.min(wx * vp.scale + vp.x, wrap.clientWidth - 264);
+  const sy = Math.min(wy * vp.scale + vp.y, wrap.clientHeight - 340);
+  menu.style.left = Math.max(4, sx) + "px";
+  menu.style.top = Math.max(4, sy) + "px";
+  wrap.appendChild(menu);
+  vocabMenuEl = menu;
+  setTimeout(() => search.focus(), 0);
+  document.addEventListener("pointerdown", onVocabOutside, true);
+  document.addEventListener("keydown", onVocabKey, true);
 }
 
 // ---------- toolbar wiring ----------
@@ -1049,7 +1404,8 @@ btnSync.addEventListener("click", () => {
     clearDocument(); // the synced graph is the host's — don't leave it lingering
     return;
   }
-  sync.connect(SYNC_URL, {
+  const syncUrl = getSyncUrl();
+  sync.connect(syncUrl, {
     onSelect: (id, ids) => {
       // selection arrived from the peer → reflect it without echoing back
       applyingRemoteSelect = true;
@@ -1079,64 +1435,171 @@ btnSync.addEventListener("click", () => {
       // clear, high-visibility signal that we are in live-sync mode
       document.body.classList.toggle("sync-active", state === "open");
       btnSync.textContent = state === "open" ? "Sync ●" : "Sync";
-      if (state === "open") info.textContent = `sync: connected to ${SYNC_URL}`;
+      if (state === "open") info.textContent = `sync: connected to ${syncUrl}`;
       else if (state === "closed")
         info.textContent = "sync: disconnected (is Blender's server running?)";
     },
   });
 });
 
-// liquid filters panel (graph view): include/exclude node & edge types
+// ---------- Settings modal (sync target, …) ----------
+const settingsModal = document.getElementById("settings-modal")!;
+const setToolSel = document.getElementById("set-sync-tool") as HTMLSelectElement;
+const setProtoSel = document.getElementById(
+  "set-sync-protocol",
+) as HTMLSelectElement;
+const setHostInp = document.getElementById("set-sync-host") as HTMLInputElement;
+const setPortInp = document.getElementById("set-sync-port") as HTMLInputElement;
+const setUrlOut = document.getElementById("set-sync-url")!;
+
+for (const t of SYNC_TOOLS) {
+  const o = document.createElement("option");
+  o.value = t.value;
+  o.textContent = t.label;
+  o.disabled = !t.enabled;
+  setToolSel.appendChild(o);
+}
+
+function refreshSyncUrlPreview(): void {
+  const proto = setProtoSel.value;
+  const host = setHostInp.value.trim() || "localhost";
+  const port = setPortInp.value.trim() || "8788";
+  setUrlOut.textContent = `${proto}://${host}:${port}`;
+}
+function openSettings(): void {
+  const s = getSettings();
+  setToolSel.value = s.sync.tool;
+  setProtoSel.value = s.sync.protocol;
+  setHostInp.value = s.sync.host;
+  setPortInp.value = String(s.sync.port);
+  refreshSyncUrlPreview();
+  settingsModal.classList.remove("hidden");
+}
+function closeSettings(): void {
+  settingsModal.classList.add("hidden");
+}
+for (const el of [setProtoSel, setHostInp, setPortInp])
+  el.addEventListener("input", refreshSyncUrlPreview);
+(document.getElementById("btn-settings") as HTMLButtonElement).addEventListener(
+  "click",
+  openSettings,
+);
+(document.getElementById("settings-close") as HTMLButtonElement).addEventListener(
+  "click",
+  closeSettings,
+);
+(
+  document.getElementById("settings-cancel") as HTMLButtonElement
+).addEventListener("click", closeSettings);
+settingsModal.addEventListener("click", (e) => {
+  if (e.target === settingsModal) closeSettings(); // click on the backdrop
+});
+(
+  document.getElementById("settings-save") as HTMLButtonElement
+).addEventListener("click", () => {
+  const port = Math.min(
+    65535,
+    Math.max(1, parseInt(setPortInp.value, 10) || 8788),
+  );
+  const next: Settings = {
+    sync: {
+      tool: setToolSel.value,
+      protocol: setProtoSel.value === "wss" ? "wss" : "ws",
+      host: setHostInp.value.trim() || "localhost",
+      port,
+    },
+  };
+  saveSettings(next);
+  closeSettings();
+  toast(
+    sync.connected
+      ? "Sync settings saved — reconnect to apply"
+      : `Sync target: ${getSyncUrl()}`,
+  );
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !settingsModal.classList.contains("hidden")) {
+    e.stopPropagation();
+    closeSettings();
+  }
+});
+
+// "Circles of detail" panel — progressive disclosure, per view. Each ring
+// bundles node/edge types (filters.ts); toggling a ring re-derives the hidden
+// sets and rebuilds. Applies to BOTH views (matrix hides paradata by default;
+// each view keeps its own visible-ring set in circleState).
 const filterPanel = document.getElementById("filter-panel")!;
-function rebuildFilterPanel(): void {
+function filterPanelOpen(): boolean {
+  return !filterPanel.classList.contains("hidden");
+}
+function renderCirclesPanel(): void {
   filterPanel.innerHTML = "";
   if (!store) return;
-  const nodeCounts = new Map<string, number>();
-  for (const n of store.doc.graph.nodes)
-    nodeCounts.set(n.node_type, (nodeCounts.get(n.node_type) ?? 0) + 1);
-  const edgeCounts = new Map<string, number>();
-  for (const e of store.doc.graph.edges)
-    edgeCounts.set(e.edge_type ?? "?", (edgeCounts.get(e.edge_type ?? "?") ?? 0) + 1);
+  // per-circle present counts, for the current document
+  const nodeCount = new Map<CircleKey, number>();
+  for (const n of store.doc.graph.nodes) {
+    const c = nodeCircle(n.node_type);
+    if (c) nodeCount.set(c, (nodeCount.get(c) ?? 0) + 1);
+  }
+  const edgeCount = new Map<CircleKey, number>();
+  for (const e of store.doc.graph.edges) {
+    const c = edgeCircle(e.edge_type ?? "");
+    if (c) edgeCount.set(c, (edgeCount.get(c) ?? 0) + 1);
+  }
+  const visible = circleState[view];
 
-  const section = (
-    title: string,
-    counts: Map<string, number>,
-    hiddenSet: Set<string>,
-  ): void => {
+  const hint = document.createElement("div");
+  hint.className = "fp-hint";
+  hint.textContent = `Detail level — ${view === "matrix" ? "Matrix" : "Graph"} view`;
+  filterPanel.appendChild(hint);
+
+  const addSection = (title: string, kind: "node" | "edge"): void => {
     const h = document.createElement("div");
     h.className = "fp-sect";
     h.textContent = title;
     filterPanel.appendChild(h);
-    for (const [t, c] of [...counts.entries()].sort()) {
+    for (const circle of CIRCLES.filter((c) => c.kind === kind)) {
+      const count =
+        (kind === "node" ? nodeCount : edgeCount).get(circle.key) ?? 0;
       const row = document.createElement("label");
       row.className = "fp-row";
+      if (!count) row.style.opacity = "0.45";
       const cb = document.createElement("input");
       cb.type = "checkbox";
-      cb.checked = !hiddenSet.has(t);
+      cb.checked = visible.has(circle.key);
       cb.addEventListener("change", () => {
-        if (cb.checked) hiddenSet.delete(t);
-        else hiddenSet.add(t);
+        if (cb.checked) visible.add(circle.key);
+        else visible.delete(circle.key);
+        recomputeHiddenFromCircles();
         buildScenes();
         updateLegend();
         draw();
       });
       row.appendChild(cb);
-      row.appendChild(document.createTextNode(` ${t} (${c})`));
+      row.appendChild(document.createTextNode(` ${circle.label} (${count})`));
       filterPanel.appendChild(row);
     }
   };
-  const hint = document.createElement("div");
-  hint.className = "fp-hint";
-  hint.textContent = "Filters apply to the graph view";
-  filterPanel.appendChild(hint);
-  section("Node types", nodeCounts, hiddenNodeTypes);
-  section("Edge types", edgeCounts, hiddenEdgeTypes);
+  addSection("Nodes", "node");
+  addSection("Edges", "edge");
+
+  const reset = document.createElement("button");
+  reset.className = "fp-reset";
+  reset.textContent = "Reset this view";
+  reset.addEventListener("click", () => {
+    circleState[view] = defaultVisibleCircles(view);
+    recomputeHiddenFromCircles();
+    buildScenes();
+    updateLegend();
+    draw();
+    renderCirclesPanel();
+  });
+  filterPanel.appendChild(reset);
 }
 document.getElementById("btn-filters")!.addEventListener("click", () => {
   if (filterPanel.classList.contains("hidden")) {
-    rebuildFilterPanel();
+    renderCirclesPanel();
     filterPanel.classList.remove("hidden");
-    if (view !== "graph" && !inContext()) setView("graph");
   } else {
     filterPanel.classList.add("hidden");
   }
@@ -1158,8 +1621,9 @@ btnGraph.addEventListener("click", () => setView("graph"));
 document.getElementById("btn-fit")!.addEventListener("click", fit);
 const btnLayout = document.getElementById("btn-layout") as HTMLButtonElement;
 btnLayout.title =
-  "Recompute the layout (em-core). Keeps your manual arrangement (From " +
-  "Sketch); Alt-click for a fresh layout from scratch.";
+  "Recompute the layout of the CURRENT view (Matrix = em-core swimlanes, " +
+  "Graph = graph layout). Does not switch view or auto-fit. In Matrix, " +
+  "keeps your manual arrangement (From Sketch); Alt-click = fresh layout.";
 // Compute a layout via em-core and apply it to the store. `fresh` ignores the
 // existing sketch. Shared by the Layout button and the auto-layout on loading
 // a layout-less document (e.g. a live snapshot).
@@ -1177,11 +1641,20 @@ btnLayout.addEventListener("click", async (ev) => {
   if (!store) return;
   btnLayout.disabled = true;
   try {
-    const fresh = (ev as MouseEvent).altKey;
-    await runLayout(fresh);
-    if (view !== "matrix" && !inContext()) setView("matrix");
-    fit();
-    toast(fresh ? "Fresh layout (em-core)" : "Layout from sketch (em-core)");
+    // Layout is VIEW-AWARE: recompute the layout of the CURRENT view, never
+    // force a switch to Matrix. And do NOT auto-fit afterwards — the user
+    // re-fits manually (Fit / "0") so the recompute keeps the current zoom.
+    if (view === "graph" && !inContext()) {
+      // Graph has its own client-side layout (views/graph.ts); rebuild the
+      // scenes in place (onChange isn't triggered — no store mutation).
+      buildScenes();
+      draw();
+      toast("Graph layout recomputed");
+    } else {
+      const fresh = (ev as MouseEvent).altKey;
+      await runLayout(fresh); // store.setLayout → onChange → buildScenes + draw
+      toast(fresh ? "Fresh layout (em-core)" : "Layout from sketch (em-core)");
+    }
   } catch (e) {
     toast(`layout failed: ${e instanceof Error ? e.message : e}`);
   } finally {
@@ -1313,12 +1786,25 @@ canvas.addEventListener("pointerdown", (e) => {
     dragMode = "none";
     return; // click placement handled on pointerup
   }
-  // connect handle?
+  // connect handle? The bullet shows on the hovered/selected node always, and
+  // on EVERY node when zoomed in (renderer) — so allow starting a connect from
+  // any node's right-edge handle there, not only the focused one (the handle
+  // sits just outside the body, where hover is otherwise lost).
   const focus = hoverId ?? selectedId;
   const fn = focus ? s.byId.get(focus) : null;
-  if (fn && hitHandle(fn, w.x, w.y, viewport().scale)) {
+  let handleNode =
+    fn && hitHandle(fn, w.x, w.y, viewport().scale) ? fn : null;
+  if (!handleNode && viewport().scale > 0.5) {
+    for (const n of s.nodes) {
+      if (hitHandle(n, w.x, w.y, viewport().scale)) {
+        handleNode = n;
+        break;
+      }
+    }
+  }
+  if (handleNode) {
     dragMode = "connect";
-    beginConnect(fn.id);
+    beginConnect(handleNode.id);
     updateConnect(w.x, w.y);
     canvas.setPointerCapture(e.pointerId);
     return;
@@ -1507,7 +1993,7 @@ canvas.addEventListener("pointerup", (e) => {
   dragDetachPending = false;
   dragDetachSet = [];
   if (mode === "connect") {
-    finishConnect();
+    finishConnect(e.shiftKey || e.altKey); // Shift/Alt = force "create node"
     return;
   }
   const s = scene();

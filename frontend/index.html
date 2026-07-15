@@ -4,6 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>EMStudio</title>
+    <!-- Extended Matrix hourglass mark; inline data URI so it also resolves
+         when dist/index.html is opened straight from file:// (single-file build). -->
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="data:image/svg+xml;base64,PD94bWwgdmVyc2lvbj0iMS4wIiBlbmNvZGluZz0iVVRGLTgiIHN0YW5kYWxvbmU9Im5vIj8+CjwhLS0KICBFeHRlbmRlZCBNYXRyaXggZmF2aWNvbiDigJQgc2luZ2xlIGhvdXJnbGFzcyB3aXRoIHNpbnVvdXMgcmlzaW5nIGFycm93LgogIE1pcnJvcnMgc3JjL2Fzc2V0cy9sb2dvX21hcmsuc3ZnLCBzbGlnaHRseSB0aWdodGVuZWQgZm9yIHRhYiByZW5kZXJpbmcuCiAgQnJhbmQgcGFjayBzb3VyY2U6IH4vT25lRHJpdmUvRXh0ZW5kZWQgTWF0cml4L0VNIExPR08gMjAyMi8uCi0tPgo8c3ZnIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIKICAgICB2aWV3Qm94PSIwIDAgMTQwIDI0MCI+CiAgPGcgdHJhbnNmb3JtPSJ0cmFuc2xhdGUoLTU0LjYyNywtNDEuNjEyKSI+CiAgICA8cGF0aAogICAgICBzdHlsZT0iZmlsbDojMWEyODQ1IgogICAgICBkPSJNIDExNC4yNDgwNSA1NS4zMjIyNjYgTCAxMTQuMjQ4MDUgNjcuOTg4MjgxIEwgMjY2LjI0ODA1IDY3Ljk4ODI4MSBMIDQxOC4yNDgwNSA2Ny45ODgyODEgTCA0MTguMjQ4MDUgNTUuMzIyMjY2IEwgMTE0LjI0ODA1IDU1LjMyMjI2NiB6IE0gMTIyLjA0NDkyIDk3LjMyMjI2NiBMIDEyMi41MDM5MSAxMTIuODIyMjcgQyAxMjUuMzU1MjYgMjA4Ljc4NTgxIDE0NS44MTI2NCAyODIuNTgzMjMgMTkwLjQ2Mjg5IDM1Ny45ODgyOCBDIDE5OC4yMzA0OCAzNzEuMTA2MTIgMjA4LjkyMzk4IDM4Ny4xNzg3MSAyMjEuNzY3NTggNDA1LjIwNTA4IEwgMjMwLjEyMzA1IDM5NS4xMjUgQyAyMjMuNDUyMDkgMzg1Ljc1MjA1IDIxNy4zNjYxOCAzNzYuOTg2MTcgMjEzLjQ2NDg0IDM3MC45ODgyOCBDIDE2OC4wODMzNSAzMDEuMjE4ODUgMTQ0LjYwNDE1IDIzMy4zMTg1OCAxMzcuMjc3MzQgMTUwLjY1NjI1IEMgMTM2LjA0MDY4IDEzNi43MDQwOSAxMzQuOTM1MTcgMTE1LjE5NDM1IDEzNC45MjM4MyAxMDQuODIyMjcgTCAxMzQuOTE2MDIgOTcuMzIyMjY2IEwgMTI4LjQ4MDQ3IDk3LjMyMjI2NiBMIDEyMi4wNDQ5MiA5Ny4zMjIyNjYgeiBNIDM5Ny43NzkzIDk3LjMyMjI2NiBMIDM5Ny4zMTQ0NSAxMTIuNDg4MjggQyAzOTQuMTI0MzggMjE2LjgzMTU0IDM2OS41MDQzNSAyOTUuNTY2NCAzMTQuNDM3NSAzNzcuNTI3MzQgQyAzMDIuODM1NTIgMzk0Ljc5NTYzIDI2OC4yNTkyOSA0NDEuNzQ2MyAyNjYuMjEwOTQgNDQzLjAxMTcyIEwgMjU3LjI5MTAyIDQ1My42Njk5MiBMIDI1Ny4yNTk3NyA0NTMuNjUwMzkgQyAyNTcuMzM5MjUgNDU0LjEzODQ0IDI1NS4wNDAzNiA0NTcuNTI2NDEgMjUyLjAzNzExIDQ2MS4zMjIyNyBDIDE5Ni40NjYzNCA1MzEuNTU4ODUgMTY1LjE0MTY2IDU4NC4yNjE5MSAxNDQuOTg2MzMgNjQxLjQyOTY5IEMgMTI4LjM5MDA4IDY4OC41MDI1MyAxMTkuMTc0MzIgNzQxLjYzNDA2IDExNy44MDI3MyA3OTguMTU2MjUgTCAxMTcuMzcxMDkgODE1Ljk4ODI4IEwgMTMwLjI1IDgxNS45ODgyOCBMIDEzMC4yNTc4MSA4MDUuMTU2MjUgQyAxMzAuMjc0NzYgNzcwLjcwNDY1IDEzNS43MTEyNyA3MjQuNjczMTYgMTQzLjg2NzE5IDY4OS44NzMwNSBDIDE1My45ODQ5MSA2NDYuNzAyMzggMTcxLjc3MTY4IDYwMy41MDMyNyAxOTYuNzk2ODggNTYxLjMyMjI3IEMgMjA0LjIxNDkyIDU0OC44MTg4NyAyMjAuMDk0ODggNTI1LjEyMTEyIDIzMi4wODc4OSA1MDguNjU2MjUgQyAyMzkuMDc3MTEgNDk5LjA2MDk0IDI2Mi4wMDU2OCA0NjguODE2MTUgMjY1LjQwODIgNDY0LjY3MzgzIEwgMjc0LjY5OTIyIDQ1My4yNzczNCBDIDI3NC42ODQxIDQ1My4yMDcwNCAyNzQuNjgwMzIgNDUzLjE1NTI0IDI3NC42OTkyMiA0NTMuMTI1IEMgMjc0Ljk3MDk3IDQ1Mi42ODI4NyAyNzguMzQxNzggNDQ4LjI3MjI4IDI4Mi4xODk0NSA0NDMuMzIyMjcgQyAzMTkuMzAzMDkgMzk1LjU3NTg3IDM0NS45ODY3NyAzNTQuNDg2MTkgMzYzLjAwOTc3IDMxOC44NzEwOSBDIDM5My4yMzU0NCAyNTUuNjMzNjYgNDA3LjQyMzA1IDE5Mi45ODgyNiA0MDkuOTc0NjEgMTExLjQ4ODI4IEwgNDEwLjQxNzk3IDk3LjMyMjI2NiBMIDM5Ny43NzkzIDk3LjMyMjI2NiB6IE0gMjk1LjU3MDMxIDQ4Mi4yNjk1MyBMIDI4Ni4xMzg2NyA0OTAuOTA2MjUgQyAyOTMuNzQxMjcgNTAxLjE3MzUzIDMwMS42MDY2OSA1MTEuOTQ5MjYgMzA2LjA3NjE3IDUxOC4zMjIyNyBDIDM2Ny41NTQgNjA1Ljk4MzI3IDM5NC4wODExNCA2ODYuNjcwODQgMzk3LjMxNDQ1IDc5NS44NDU3IEwgMzk3Ljc3MzQ0IDgxMS4zNjkxNCBMIDQwOS45MTQwNiA4MTAuOTg4MjggTCA0MDkuNzQyMTkgNzk2Ljk4ODI4IEMgNDA5LjMyODI5IDc2My4zMTIwMSA0MDUuNjgzNzUgNzI5LjI3MzYyIDM5OC44MjAzMSA2OTQuOTg4MjggQyAzOTAuNjgxOTMgNjU0LjMzNDIxIDM3NS4xNTU4NiA2MTEuMzQwOTYgMzU0Ljc2MTcyIDU3Mi45ODgyOCBDIDM0Ni43MDQ0OCA1NTcuODM2MDggMzI3Ljc4NzMyIDUyNi42MDYxNSAzMTYuMzIwMzEgNTEwLjg1MTU2IEMgMzA3LjIyMjMxIDQ5OC4zNTE3NiAzMDQuNTQ1OTcgNDk0LjMyMzA1IDI5NS41NzAzMSA0ODIuMjY5NTMgeiBNIDExMS41ODAwOCA4MzMuOTg4MjggTCAxMTEuNTgwMDggODQ2LjY1NjI1IEwgMjYzLjU4MDA4IDg0Ni42NTYyNSBMIDQxNS41ODAwOCA4NDYuNjU2MjUgTCA0MTUuNTgwMDggODMzLjk4ODI4IEwgMTExLjU4MDA4IDgzMy45ODgyOCB6IgogICAgICB0cmFuc2Zvcm09Im1hdHJpeCgwLjI2NDU4MzMzLDAsMCwwLjI2NDU4MzMzLDU0LjYyNzM5NSw0MS42MTE1NDgpIiAvPgogICAgPHBhdGgKICAgICAgc3R5bGU9ImZpbGw6I2I4ODkzYSIKICAgICAgZD0ibSA3Ni43NDA4OTksMjUxLjQ3ODQ2IGMgMC42NDM1NCwtMjQuODA4NDQgNi41NTA4NiwtNDQuMTQzMjcgMTguNDk4OTEsLTY0LjQxMzk5IDQuMzU0NDcsLTcuMzg3NjUgOC44OTcwMzEsLTEzLjk1NjY3IDE4LjQ1NTQ2MSwtMjYuNjg4NDggMi42OTA4MiwtMy41ODQxNyA1LjI2ODg0LC03LjAzMTI2IDUuNzI4OTIsLTcuNjYwMTggMi4xNDU2LC0yLjkzMzAyIDMuNTMxMDcsLTQuODAwMDMgNC42NTYzLC02LjM2NTQ0IDEuMTI1MjIsLTEuNTY1NDEgMS45ODYyLC0yLjgzMTc4IDMuMDk0ODQsLTQuNTU1OCA1Ljk5NjA4LC05LjMyNDM2IDEwLjEwNDAyLC0xNS41OTQ1NiAxMy40MjQyNywtMjQuNjU0NTQgMy4zMDc4NiwtOS4wMjYxOSA0Ljg0Njc1LC0xNy41NzYzMTUgNS43OTA3NiwtMjYuOTMxMTQzIDAuNTI4MTUsLTUuMjMzODI0IDAuOTg3NDQsLTQuNzY2NTkzIC0xLjA4MDA3LC00Ljc5OTY3NSAtMC45NTI1NywtMC4wMTUyNSAtMi4zNzM5NCwtMC4xMDE0MjEgLTMuMTU4NjEsLTAuMTkxNTA1IGwgLTEuNDI2NjksLTAuMTYzNzkyIDQuNzU1NjgsLTEwLjkzNjM3IGMgMy41MDE2MiwtOC4wNTI0NjggNC44MDg0NiwtMTAuODEzMTAyIDQuOTU1ODcsLTEwLjQ2ODkxMyAwLjExMDEsMC4yNTcxMDIgMS41ODg0NSw1LjEyMTAxNyAzLjI4NTIxLDEwLjgwODcwMSAxLjY5Njc2LDUuNjg3NjgzIDMuMTk0NjIsMTAuNjY2ODg1IDMuMzI4NTcsMTEuMDY0ODkgMC4yNDI3OSwwLjcyMTQzMyAwLjI0MDYxLDAuNzIzMjIzIC0wLjcxMjgyLDAuNTg1NDQyIC0wLjUyNiwtMC4wNzYwMSAtMi4wNDcwNCwtMC4xNzE4NTEgLTMuMzgwMSwtMC4yMTI5NjkgbCAtMi40MjM3NCwtMC4wNzQ3NiAtMC40NDg1OCwyLjk2NjExNiBjIC0xLjExNTczLDcuMzc3NDkzIC0xLjk3MDU2LDE0LjUxMDMzOCAtMy41MTYwNSwyMC41MjEyNzggLTEuNDkzNjQsNS44MDkyNiAtNC4zMTEzNywxMy41NDE1MSAtNi41MzMxNiwxNy4zNjkzOSAtNS43NTYyMiw5LjkxNzI3IC0xMC44MTQ0NCwxOC44NTExMiAtMjIuOTc5NjEsMzQuOTgxNDggLTEyLjc0MjQ0LDE2Ljg5NTgyIC0xNy45MzM5NzEsMjQuNzMwODYgLTIzLjA5NDI2MSwzNC44NTM4MyAtNi45NTgxOSwxMy42NDk5IC0xMS4xMjI0MiwyNy43ODIyNyAtMTIuOTQxNDYsNDMuOTIwMTcgLTAuNTg1NDgsNS4xOTQyMSAtMS4wMjE1OSwxMC41MTIwMSAtMS4wMjE1OSwxNC40NTc4NCB2IDIuNjUyNzMgaCAtMS43MDc2OCAtMS43MDc2OCB6IiAvPgogIDwvZz4KPC9zdmc+Cg=="
+    />
   </head>
   <body>
     <header id="toolbar">
@@ -26,6 +33,7 @@
         </div>
       </div>
       <button id="btn-sync" title="Connect to Blender/EMtools for live selection sync (ADR-002)">Sync</button>
+      <button id="btn-settings" title="Settings (sync target, …)" aria-label="Settings">⚙</button>
       <span id="dirty-dot" class="hidden" title="unsaved changes">●</span>
       <span class="tb-sep"></span>
       <button id="btn-undo" title="Undo (⌘Z)" disabled>↺</button>
@@ -40,7 +48,7 @@
         <option value="sequence">Stratigraphic only</option>
         <option value="none">No edges</option>
       </select>
-      <button id="btn-filters" title="Filter node and edge types (graph view)">Filters</button>
+      <button id="btn-filters" title="Detail level — show/hide rings of nodes & edges (per view)">Detail</button>
       <button id="btn-fit" title="Fit to view (0)">Fit</button>
       <button id="btn-layout" title="Recompute the swimlane layout (em-core, same engine as the CLI)">Layout</button>
       <input type="file" id="file-input" accept=".json,.em.json" hidden />
@@ -71,10 +79,83 @@
       </aside>
     </main>
     <footer id="statusbar">
+      <span id="footer-brand" title="Extended Matrix — EMStudio">
+        <!-- Extended Matrix hourglass mark; frame uses currentColor so it
+             stays legible on both the light footer and the dark sync footer. -->
+        <svg
+          class="em-mark"
+          viewBox="0 0 140 240"
+          aria-label="Extended Matrix"
+          role="img"
+        >
+          <g transform="translate(-54.627,-41.612)">
+            <path
+              style="fill: currentColor"
+              d="M 114.24805 55.322266 L 114.24805 67.988281 L 266.24805 67.988281 L 418.24805 67.988281 L 418.24805 55.322266 L 114.24805 55.322266 z M 122.04492 97.322266 L 122.50391 112.82227 C 125.35526 208.78581 145.81264 282.58323 190.46289 357.98828 C 198.23048 371.10612 208.92398 387.17871 221.76758 405.20508 L 230.12305 395.125 C 223.45209 385.75205 217.36618 376.98617 213.46484 370.98828 C 168.08335 301.21885 144.60415 233.31858 137.27734 150.65625 C 136.04068 136.70409 134.93517 115.19435 134.92383 104.82227 L 134.91602 97.322266 L 128.48047 97.322266 L 122.04492 97.322266 z M 397.7793 97.322266 L 397.31445 112.48828 C 394.12438 216.83154 369.50435 295.5664 314.4375 377.52734 C 302.83552 394.79563 268.25929 441.7463 266.21094 443.01172 L 257.29102 453.66992 L 257.25977 453.65039 C 257.33925 454.13844 255.04036 457.52641 252.03711 461.32227 C 196.46634 531.55885 165.14166 584.26191 144.98633 641.42969 C 128.39008 688.50253 119.17432 741.63406 117.80273 798.15625 L 117.37109 815.98828 L 130.25 815.98828 L 130.25781 805.15625 C 130.27476 770.70465 135.71127 724.67316 143.86719 689.87305 C 153.98491 646.70238 171.77168 603.50327 196.79688 561.32227 C 204.21492 548.81887 220.09488 525.12112 232.08789 508.65625 C 239.07711 499.06094 262.00568 468.81615 265.4082 464.67383 L 274.69922 453.27734 C 274.6841 453.20704 274.68032 453.15524 274.69922 453.125 C 274.97097 452.68287 278.34178 448.27228 282.18945 443.32227 C 319.30309 395.57587 345.98677 354.48619 363.00977 318.87109 C 393.23544 255.63366 407.42305 192.98826 409.97461 111.48828 L 410.41797 97.322266 L 397.7793 97.322266 z M 295.57031 482.26953 L 286.13867 490.90625 C 293.74127 501.17353 301.60669 511.94926 306.07617 518.32227 C 367.554 605.98327 394.08114 686.67084 397.31445 795.8457 L 397.77344 811.36914 L 409.91406 810.98828 L 409.74219 796.98828 C 409.32829 763.31201 405.68375 729.27362 398.82031 694.98828 C 390.68193 654.33421 375.15586 611.34096 354.76172 572.98828 C 346.70448 557.83608 327.78732 526.60615 316.32031 510.85156 C 307.22231 498.35176 304.54597 494.32305 295.57031 482.26953 z M 111.58008 833.98828 L 111.58008 846.65625 L 263.58008 846.65625 L 415.58008 846.65625 L 415.58008 833.98828 L 111.58008 833.98828 z"
+              transform="matrix(0.26458333,0,0,0.26458333,54.627395,41.611548)"
+            />
+            <path
+              style="fill: #bd8e00"
+              d="m 76.740899,251.47846 c 0.64354,-24.80844 6.55086,-44.14327 18.49891,-64.41399 4.35447,-7.38765 8.897031,-13.95667 18.455461,-26.68848 2.69082,-3.58417 5.26884,-7.03126 5.72892,-7.66018 2.1456,-2.93302 3.53107,-4.80003 4.6563,-6.36544 1.12522,-1.56541 1.9862,-2.83178 3.09484,-4.5558 5.99608,-9.32436 10.10402,-15.59456 13.42427,-24.65454 3.30786,-9.02619 4.84675,-17.576315 5.79076,-26.931143 0.52815,-5.233824 0.98744,-4.766593 -1.08007,-4.799675 -0.95257,-0.01525 -2.37394,-0.101421 -3.15861,-0.191505 l -1.42669,-0.163792 4.75568,-10.93637 c 3.50162,-8.052468 4.80846,-10.813102 4.95587,-10.468913 0.1101,0.257102 1.58845,5.121017 3.28521,10.808701 1.69676,5.687683 3.19462,10.666885 3.32857,11.06489 0.24279,0.721433 0.24061,0.723223 -0.71282,0.585442 -0.526,-0.07601 -2.04704,-0.171851 -3.3801,-0.212969 l -2.42374,-0.07476 -0.44858,2.966116 c -1.11573,7.377493 -1.97056,14.510338 -3.51605,20.521278 -1.49364,5.80926 -4.31137,13.54151 -6.53316,17.36939 -5.75622,9.91727 -10.81444,18.85112 -22.97961,34.98148 -12.74244,16.89582 -17.933971,24.73086 -23.094261,34.85383 -6.95819,13.6499 -11.12242,27.78227 -12.94146,43.92017 -0.58548,5.19421 -1.02159,10.51201 -1.02159,14.45784 v 2.65273 h -1.70768 -1.70768 z"
+            />
+          </g>
+        </svg>
+        <b>EMStudio</b>
+      </span>
       <div id="breadcrumb" class="hidden"></div>
       <span id="info">open or drop an .em.json file</span>
     </footer>
     <div id="tooltip" class="hidden"></div>
+    <div id="settings-modal" class="modal hidden">
+      <div class="modal-card">
+        <div class="modal-head">
+          <span>Settings</span>
+          <button id="settings-close" class="modal-x" title="Close">✕</button>
+        </div>
+        <div class="modal-body">
+          <section class="settings-sect">
+            <h4>Live sync</h4>
+            <p class="settings-hint">
+              Where EMStudio connects for live sync (ADR-002). The chosen tool
+              is the <b>host</b> and runs the WebSocket server; EMStudio is the
+              client.
+            </p>
+            <label
+              >Sync with
+              <select id="set-sync-tool"></select>
+            </label>
+            <label
+              >Protocol
+              <select id="set-sync-protocol">
+                <option value="ws">ws:// (local)</option>
+                <option value="wss">wss:// (secure)</option>
+              </select>
+            </label>
+            <label
+              >Host / IP
+              <input id="set-sync-host" type="text" placeholder="localhost" />
+            </label>
+            <label
+              >Port
+              <input
+                id="set-sync-port"
+                type="number"
+                min="1"
+                max="65535"
+                placeholder="8788"
+              />
+            </label>
+            <p class="settings-url">
+              Endpoint: <code id="set-sync-url"></code>
+            </p>
+          </section>
+        </div>
+        <div class="modal-foot">
+          <button id="settings-cancel">Cancel</button>
+          <button id="settings-save" class="primary">Save</button>
+        </div>
+      </div>
+    </div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

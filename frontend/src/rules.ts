@@ -139,3 +139,31 @@ export function isGroupType(nodeType: string | undefined): boolean {
 export function isStratigraphicType(nodeType: string | undefined): boolean {
   return ancestorsOf(nodeType).includes("StratigraphicNode");
 }
+
+/** Reasoning-chain (paradata) node: property / extractor / combiner / document. */
+export function isParadataType(nodeType: string | undefined): boolean {
+  return ancestorsOf(nodeType).includes("ParadataNode");
+}
+
+/** Continuity node (BR) — the boundary marker of a unit's life-span. */
+export function isContinuityType(nodeType: string | undefined): boolean {
+  return ancestorsOf(nodeType).includes("ContinuityNode");
+}
+
+/** Virtual stratigraphic unit — detected from the datamodel class names
+ *  (VirtualStratigraphicUnit / …VirtualSpecialFindUnit / SeriesOf…Virtual…),
+ *  so it also covers VSF and the virtual series, not just USVn/USVs. */
+export function isVirtualType(nodeType: string | undefined): boolean {
+  return ancestorsOf(nodeType).some((c) => c.includes("Virtual"));
+}
+
+/** Union of the node classes (with ancestry) an edge type may connect —
+ *  from the datamodel `allowed_connections`. Used to categorise edges
+ *  (epoch / paradata / stratigraphic) without hardcoding edge names. */
+export function edgeEndpointClasses(edgeType: string | undefined): Set<string> {
+  const ac = EDGE_TYPES[edgeType ?? ""]?.allowed_connections;
+  const out = new Set<string>();
+  for (const c of [...(ac?.source ?? []), ...(ac?.target ?? [])])
+    for (const a of classAncestors(c)) out.add(a);
+  return out;
+}

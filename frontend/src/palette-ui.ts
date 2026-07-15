@@ -3,18 +3,19 @@
 // Icons are the official s3Dgraphy 2D assets (JSON_config/src/2D), inlined
 // at build time; types without an official icon fall back to a drawn swatch.
 import { nodeStyle } from "./palette";
-import { typeDescription } from "./rules";
+import { isGroupType, typeDescription } from "./rules";
 
 import { iconUrlFor } from "./icons";
 
-interface Section {
+export interface Section {
   label: string;
   types: string[];
 }
 
 // Authoring surface, EM 1.5/1.6: stratigraphic units first, then series,
-// paradata chain, groups, context/metadata nodes.
-const SECTIONS: Section[] = [
+// paradata chain, groups, context/metadata nodes. Exported so the
+// drag-to-connect "create node" menu offers the same taxonomy.
+export const SECTIONS: Section[] = [
   {
     label: "Stratigraphic",
     types: ["US", "USVn", "USVs", "USD", "TSU", "USN", "SE", "BR"],
@@ -111,6 +112,52 @@ function swatch(nodeType: string): HTMLCanvasElement {
   return c;
 }
 
+// NodeGroups (Activity/Paradata/TimeBranch/Location) are CONTAINERS, not
+// node shapes — the generic swatch drew them as anonymous rectangles. Draw
+// them as the canonical EM/yEd group box: a dashed coloured container with a
+// title tab in the top-left corner. Colours come straight from the visual
+// rules (never hardcoded): Activity=purple, Paradata/TimeBranch=grey,
+// Location=black/light.
+function groupSwatch(nodeType: string): HTMLCanvasElement {
+  const c = document.createElement("canvas");
+  const dpr = window.devicePixelRatio || 1;
+  c.width = 26 * dpr;
+  c.height = 16 * dpr;
+  c.style.width = "26px";
+  c.style.height = "16px";
+  const ctx = c.getContext("2d")!;
+  ctx.scale(dpr, dpr);
+  const st = nodeStyle(nodeType);
+  const x = 1.5,
+    y = 2.5,
+    w = 23,
+    h = 12,
+    r = 2.5;
+  // container body
+  ctx.beginPath();
+  ctx.roundRect(x, y, w, h, r);
+  ctx.fillStyle = st.fill;
+  ctx.fill();
+  ctx.strokeStyle = st.border;
+  ctx.lineWidth = 1.4;
+  ctx.setLineDash(st.borderStyle === "dotted" ? [1.5, 1.5] : [3, 2]);
+  ctx.stroke();
+  // title tab → the canonical group colour (em_visual_rules label_background:
+  // Activity cyan, Paradata peach, TimeBranch green, Location light-grey);
+  // falls back to the border colour if a group has no tab colour.
+  ctx.setLineDash([]);
+  ctx.beginPath();
+  ctx.roundRect(x, y, 13, 4.5, [r, r, 0, 0]);
+  ctx.fillStyle = st.labelBackground ?? st.border;
+  ctx.fill();
+  // thin outline on the tab so pale tabs stay visible on the white body
+  ctx.lineWidth = 0.8;
+  ctx.setLineDash([]);
+  ctx.strokeStyle = st.border;
+  ctx.stroke();
+  return c;
+}
+
 export function buildPalette(
   root: HTMLElement,
   onPick: (nodeType: string) => void,
@@ -126,15 +173,20 @@ export function buildPalette(
       const b = document.createElement("button");
       b.className = "pal-item";
       b.title = typeDescription(t) || t;
-      const icon = iconUrlFor(t);
-      if (icon) {
-        const img = document.createElement("img");
-        img.src = icon;
-        img.className = "pal-icon";
-        img.alt = t;
-        b.appendChild(img);
+      if (isGroupType(t)) {
+        // groups render as canonical coloured container boxes, not swatches
+        b.appendChild(groupSwatch(t));
       } else {
-        b.appendChild(swatch(t));
+        const icon = iconUrlFor(t);
+        if (icon) {
+          const img = document.createElement("img");
+          img.src = icon;
+          img.className = "pal-icon";
+          img.alt = t;
+          b.appendChild(img);
+        } else {
+          b.appendChild(swatch(t));
+        }
       }
       const span = document.createElement("span");
       span.textContent = t;

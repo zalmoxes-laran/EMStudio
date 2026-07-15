@@ -11,6 +11,9 @@ export interface NodeStyle {
   borderStyle: "solid" | "dashed" | "dotted";
   /** stroke width (px, world units) — thick coloured frame like the EM icons */
   borderWidth: number;
+  /** group title-tab / header colour (em_visual_rules `label_background`);
+   *  undefined for non-group nodes */
+  labelBackground?: string;
   textColor: string;
   /** label placement from the visual rules: "over" | "top_left" | "center" */
   labelPosition: string;
@@ -31,6 +34,7 @@ interface RawNodeStyle {
     border_style?: string;
     border_width?: number;
     shape?: string;
+    label_background?: string;
   };
 }
 
@@ -48,9 +52,9 @@ const NODE_ALIAS: Record<string, string> = {
   document: "DOC",
   EpochNode: "EP",
   epoch: "EP",
-  ActivityNodeGroup: "ANG",
-  ParadataNodeGroup: "GRAPH",
-  TimeBranchNodeGroup: "GRAPH",
+  // group containers resolve to their own runtime-name keys (em_visual_rules
+  // now carries canonical grey-box + coloured title-tab styles for each);
+  // the legacy ANG/GRAPH aliases stay only for other consumers.
   author: "AUTH",
   author_ai: "AUTH_AI",
   link: "LINK",
@@ -103,6 +107,7 @@ export function nodeStyle(nodeType?: string): NodeStyle {
     // thick coloured frame like the historical EM icons; from the visual
     // rules when present, else a bold default ("tanto per iniziare").
     borderWidth: s.border_width ?? 2.6,
+    labelBackground: s.label_background,
     textColor: luminance(fill) > 0.45 ? "#1a1a1a" : "#f5f5f5",
     labelPosition: raw?.label_position ?? "over",
   };

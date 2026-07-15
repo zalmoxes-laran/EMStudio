@@ -18,6 +18,15 @@ July 2026; this file is the handoff map — read it before touching anything.
    The class hierarchy lives in `s3Dgraphy_node_datamodel.json`
    (`node_types` entries with `parent`/`node_type`), kept in sync with the
    Python classes by `python -m s3dgraphy.tools.sync_node_datamodel`.
+   **The whole UI is data-driven from the JSON config — as much as
+   possible.** Not only node types/colours, but the palette, allowed
+   connections, the "circles of detail" filters, the create-node menus and
+   their taxonomic submenus, and controlled vocabularies (e.g.
+   `em_qualia_types.json` for property labels) all derive from the vendored
+   `frontend/src/assets/*` datamodels. Adding a node/edge type, a rule, or a
+   vocabulary term happens in s3Dgraphy + `sync-datamodels.sh`, never in
+   hand-written UI code. When you build UI that enumerates EM concepts,
+   read the datamodel, don't hardcode a list.
 2. **No JavaScript port of s3dgraphy.** Runtime semantics live in em-core
    (Rust), delivered to the web as WASM (`crates/em-wasm`, rebuilt with
    `frontend/scripts/build-wasm.sh`). Batch interop (GraphML import/export,

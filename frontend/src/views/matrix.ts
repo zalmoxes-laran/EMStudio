@@ -249,6 +249,7 @@ export function buildMatrixScene(
   };
   outlineNodes.sort((a, b) => groupDepth(b.id) - groupDepth(a.id));
   const outlineMemberOf = new Map<string, string>();
+  const emptyOutline = new Set<string>(); // childless groups drawn as small boxes
   for (const g of outlineNodes) {
     if (folded.has(g.id)) {
       g.w = CLOSED_W;
@@ -260,7 +261,15 @@ export function buildMatrixScene(
     );
     // document instances drawn inside this group count as members
     for (const inst of instancesByGroup.get(g.id) ?? []) memberIds.push(inst.id);
-    if (!memberIds.length) continue; // no visible members → plain node
+    if (!memberIds.length) {
+      // a freshly-created / childless group still renders as a small EMPTY
+      // container box (dashed outline + coloured header) so it reads as a
+      // group, not a stray node.
+      g.w = Math.max(g.w, 150);
+      g.h = GROUP_HEADER + 30;
+      emptyOutline.add(g.id);
+      continue;
+    }
     let mx = Infinity,
       my = Infinity,
       Mx = -Infinity,
@@ -318,7 +327,8 @@ export function buildMatrixScene(
     if (
       OUTLINE_TYPES.has(g.node.node_type) &&
       !folded.has(g.id) &&
-      ![...outlineMemberOf.values()].includes(g.id)
+      ![...outlineMemberOf.values()].includes(g.id) &&
+      !emptyOutline.has(g.id)
     )
       continue; // outline group without visible members: plain node
     const sg: SceneGroup = {
