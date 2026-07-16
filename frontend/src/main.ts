@@ -83,6 +83,10 @@ let view: ViewKind = "matrix";
 // cleared on a fresh Layout, an algorithm change, or a new/loaded document.
 let graphAlgorithm: GraphAlgorithm = "layered";
 const graphOverrides = new Map<string, { x: number; y: number }>();
+// Matrix VIEW layout: an em-core layout of the FILTERED subgraph, so the Matrix
+// recompacts (no gaps) when detail-rings hide nodes. null = use the archival
+// doc.layout. Recomputed on filter change / view→matrix (see refreshMatrixViewLayout).
+let matrixViewLayout: import("./types").EmLayout | null = null;
 const scenes: Partial<Record<ViewKind, Scene | null>> = {};
 const viewports: Record<ViewKind, Viewport> = {
   matrix: new Viewport(),
@@ -527,25 +531,25 @@ function updateInfo(): void {
     (lanes ? `, ${lanes} epochs` : "");
 }
 
-function buildScenes(): void {
-  if (!store) return;
-  const doc = store.doc;
+// The visible subgraph after folding + the "circles of detail" filter — one
+// filtered view shared by both projections. Structural nodes/edges (containers,
+// epoch, membership) are never filtered (see filters.ts).
+function filteredView(): {
+  nodes: EmDocument["graph"]["nodes"];
+  edges: EmDocument["graph"]["edges"];
+  badges: Map<string, number>;
+} {
+  const doc = store!.doc;
   const folded = new Set(doc.layout?.folded_groups ?? []);
   const foldedView = folded.size
     ? applyFolding(doc, buildMembership(doc), folded)
     : undefined;
-  // Contextual "circles of detail" filter: hide the node/edge types whose
-  // circle is off in the current view. Applied to BOTH projections via a
-  // single filtered view (Matrix honours view.nodes; Graph re-layouts on the
-  // subset). Structural nodes/edges (containers, epoch, membership) are never
-  // filtered — see filters.ts.
   let vNodes = foldedView?.nodes ?? doc.graph.nodes;
   let vEdges = foldedView?.edges ?? doc.graph.edges;
   if (hiddenNodeTypes.size || hiddenEdgeTypes.size) {
     vNodes = vNodes.filter((n) => !hiddenNodeTypes.has(n.node_type));
-    // drop group containers left with NO visible member — else hiding a ring
-    // (e.g. paradata nodes in Matrix) leaves hollow, full-size group boxes.
-    // Keep genuinely-empty authored groups.
+    // drop group containers left with NO visible member (else hollow boxes);
+    // keep genuinely-empty authored groups.
     const mm = buildMembership(doc);
     let vis = new Set(vNodes.map((n) => n.id));
     vNodes = vNodes.filter((n) => {
@@ -561,16 +565,62 @@ function buildScenes(): void {
         vis.has(e.target),
     );
   }
-  const fview = {
+  return {
     nodes: vNodes,
     edges: vEdges,
     badges: foldedView?.badges ?? new Map<string, number>(),
   };
-  scenes.matrix = buildMatrixScene(doc, fview);
+}
+
+function buildScenes(): void {
+  if (!store) return;
+  const doc = store.doc;
+  const fview = filteredView();
+  scenes.matrix = buildMatrixScene(doc, fview, matrixViewLayout ?? undefined);
   scenes.graph = buildGraphScene(doc, fview, {
     algorithm: graphAlgorithm,
     overrides: graphOverrides,
   });
+}
+
+// Recompute the Matrix VIEW layout (em-core on the visible subgraph) so the
+// Matrix recompacts under a filter; clears it when nothing is hidden. Async
+// (WASM); rebuilds + redraws when done. Matrix-only.
+// True when the Matrix filter is TIGHTER than its per-view default (the user
+// actively hid a ring that's on by default) — only then do we recompact, so
+// the default Matrix keeps the archival em-core layout and pays no WASM cost.
+function matrixTighterThanDefault(): boolean {
+  const def = defaultVisibleCircles("matrix");
+  const cur = circleState.matrix;
+  return [...def].some((k) => !cur.has(k));
+}
+async function refreshMatrixViewLayout(): Promise<void> {
+  if (!store) return;
+  const filtered = matrixTighterThanDefault();
+  if (!filtered) {
+    if (matrixViewLayout !== null) {
+      matrixViewLayout = null;
+      buildScenes();
+      draw();
+    }
+    return;
+  }
+  const v = filteredView();
+  const doc = store.doc;
+  try {
+    const { computeLayout } = await import("./emcore");
+    const subGraph = {
+      ...doc.graph,
+      nodes: v.nodes,
+      edges: v.edges,
+    } as EmDocument["graph"];
+    // seed with the archival layout (From-Sketch) so kept nodes barely move
+    matrixViewLayout = await computeLayout(subGraph, doc.layout ?? undefined);
+  } catch {
+    matrixViewLayout = null; // fall back to archival on failure
+  }
+  buildScenes();
+  draw();
 }
 
 function setView(v: ViewKind): void {
@@ -590,6 +640,9 @@ function setView(v: ViewKind): void {
     recomputeHiddenFromCircles();
     buildScenes();
     if (filterPanelOpen()) renderCirclesPanel();
+    // entering Matrix under a filter → recompact via the em-core view layout
+    if (v === "matrix") void refreshMatrixViewLayout();
+    else matrixViewLayout = null;
   }
   if (contextStack.length) {
     contextStack = [];
@@ -642,6 +695,7 @@ function loadDocument(
   selectedId = null;
   recomputeHiddenFromCircles(); // derive hidden types for the current view
   graphOverrides.clear(); // graph-view drags don't carry across documents
+  matrixViewLayout = null; // stale for the new document
   buildScenes();
   select(null);
   dropHint.classList.add("hidden");
@@ -1805,6 +1859,10 @@ function renderCirclesPanel(): void {
         buildScenes();
         updateLegend();
         draw();
+        // Matrix recompacts on the filtered subgraph (em-core view layout);
+        // in Graph the layout already reflows, so just invalidate for later.
+        if (view === "matrix") void refreshMatrixViewLayout();
+        else matrixViewLayout = null;
       });
       row.appendChild(cb);
       row.appendChild(document.createTextNode(` ${circle.label} (${count})`));
@@ -1824,6 +1882,8 @@ function renderCirclesPanel(): void {
     updateLegend();
     draw();
     renderCirclesPanel();
+    if (view === "matrix") void refreshMatrixViewLayout();
+    else matrixViewLayout = null;
   });
   filterPanel.appendChild(reset);
 }
@@ -1882,6 +1942,11 @@ btnLayout.addEventListener("click", async (ev) => {
       buildScenes();
       draw();
       toast(`Graph layout: ${graphAlgorithm}`);
+    } else if (matrixTighterThanDefault()) {
+      // Matrix filtered beyond its default → recompute the VIEW layout on the
+      // visible subgraph (recompact), leaving the archival layout untouched.
+      await refreshMatrixViewLayout();
+      toast("Layout (filtered subgraph)");
     } else {
       const fresh = (ev as MouseEvent).altKey;
       await runLayout(fresh); // store.setLayout → onChange → buildScenes + draw

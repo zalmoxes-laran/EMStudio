@@ -38,8 +38,15 @@ export const OUTLINE_TYPES = new Set([
 export function buildMatrixScene(
   doc: EmDocument,
   view?: FoldedView,
+  layoutOverride?: EmDocument["layout"],
 ): Scene | null {
-  const layout = doc.layout;
+  // A layoutOverride (a VIEW layout computed by em-core on the filtered
+  // subgraph) recompacts the Matrix when detail-rings hide nodes, so hidden
+  // nodes leave no gaps — the archival doc.layout is untouched (folding carried
+  // over from it).
+  const layout = layoutOverride
+    ? { ...layoutOverride, folded_groups: doc.layout?.folded_groups }
+    : doc.layout;
   const positions = layout?.positions;
   if (!layout || !positions || !Object.keys(positions).length) return null;
 
