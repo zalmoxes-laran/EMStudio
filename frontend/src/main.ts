@@ -801,6 +801,13 @@ function loadDocument(
     return;
   }
   currentFilePath = path; // desktop: enables in-place Save; null in browser
+  // Does the INCOMING doc already carry node positions? Capture this BEFORE
+  // ensureAllEpochParadata (which adds positions for the boxes it creates) —
+  // otherwise those few positions make the doc look "already laid out" and we
+  // skip the em-core auto-layout, leaving every position-less node (e.g. a
+  // whole Blender sync snapshot) unrendered. Only the boxes would show.
+  const hadStoredPositions =
+    Object.keys(d.layout?.positions ?? {}).length > 0;
   store = new DocumentStore(d);
   // every epoch always carries its temporal ParadataNodeGroup — ensure it now,
   // silently (before the change/op listeners are wired) so it neither pushes to
@@ -844,9 +851,7 @@ function loadDocument(
   // NO usable positions — a fresh graph, or a Blender sync snapshot (its emjson
   // layout has no matrix coordinates). In that case DON'T fall back to Graph:
   // compute a fresh layout via em-core so the Matrix renders, then show it.
-  const hasPositions =
-    Object.keys(d.layout?.positions ?? {}).length > 0;
-  if (hasPositions) {
+  if (hadStoredPositions) {
     setView(scenes.matrix ? "matrix" : "graph");
   } else {
     void runLayout(true)
