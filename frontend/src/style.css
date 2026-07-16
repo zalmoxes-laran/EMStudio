@@ -289,6 +289,17 @@ body.sync-active #footer-brand {
   color: #5a6675;
   font-size: 12px;
 }
+.settings-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: #2b3646;
+  cursor: pointer;
+}
+.settings-check input {
+  width: auto;
+}
 .settings-url code {
   background: #eef1f5;
   padding: 2px 6px;
@@ -526,6 +537,12 @@ body.sync-active #footer-brand {
   color: #6b7682;
   margin: 8px 0 2px;
 }
+.insp-hint {
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: #8a939e;
+  margin: 3px 0 2px;
+}
 .insp-id-input {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
@@ -618,6 +635,21 @@ body.sync-active #footer-brand {
 }
 
 .nl-sect-groups span {
+  flex: 1;
+}
+
+/* per-nodegroup-type sub-header with its own fold/unfold-all */
+.nl-gtype {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin: 4px 2px 2px;
+  text-transform: none;
+  letter-spacing: 0;
+  color: #55606c;
+  font-weight: 600;
+}
+.nl-gtype span {
   flex: 1;
 }
 
@@ -823,13 +855,58 @@ body.sync-active #footer-brand {
 }
 
 /* ---------- misc ---------- */
-#em-version {
+#toolbar #em-version {
   font-size: 10.5px;
   font-weight: 700;
+  color: #14310a;
   background: #88b04b;
+  border: none;
   border-radius: 8px;
-  padding: 1px 7px;
+  padding: 2px 7px;
   margin-left: -6px;
+  cursor: pointer;
+}
+#toolbar #em-version:hover {
+  background: #98c25b;
+}
+/* ---------- version breakdown popover ---------- */
+.ver-pop {
+  position: fixed;
+  z-index: 1200;
+  width: 300px;
+  max-height: 70vh;
+  overflow-y: auto;
+  background: #fff;
+  color: #1f2733;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.28);
+  padding: 12px 14px;
+  font-size: 12px;
+}
+.ver-pop h4 {
+  margin: 0 0 2px;
+  font-size: 13px;
+}
+.ver-pop .ver-sect {
+  margin: 10px 0 3px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #99a3ad;
+}
+.ver-pop .ver-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 1.5px 0;
+}
+.ver-pop .ver-row b {
+  color: #1f6feb;
+  font-variant-numeric: tabular-nums;
+}
+.ver-pop .ver-row span {
+  color: #46505c;
 }
 
 .pal-icon {

@@ -11,14 +11,21 @@ export interface SyncSettings {
   tool: string;
 }
 
+export interface DeveloperSettings {
+  /** show node UUIDs (inspector, …) — noise for most users, off by default */
+  showNodeIds: boolean;
+}
+
 export interface Settings {
   sync: SyncSettings;
+  developer: DeveloperSettings;
 }
 
 const KEY = "emstudio.settings";
 
 const DEFAULTS: Settings = {
   sync: { protocol: "ws", host: "localhost", port: 8788, tool: "blender" },
+  developer: { showNodeIds: false },
 };
 
 /** Sync targets. `enabled:false` entries render disabled — the host role is a
@@ -32,7 +39,7 @@ export const SYNC_TOOLS: { value: string; label: string; enabled: boolean }[] =
   ];
 
 function clone(s: Settings): Settings {
-  return { sync: { ...s.sync } };
+  return { sync: { ...s.sync }, developer: { ...s.developer } };
 }
 
 function load(): Settings {
@@ -41,7 +48,10 @@ function load(): Settings {
     if (!raw) return clone(DEFAULTS);
     const parsed = JSON.parse(raw) as Partial<Settings>;
     // merge onto defaults so a missing/renamed field never breaks startup
-    return { sync: { ...DEFAULTS.sync, ...(parsed.sync ?? {}) } };
+    return {
+      sync: { ...DEFAULTS.sync, ...(parsed.sync ?? {}) },
+      developer: { ...DEFAULTS.developer, ...(parsed.developer ?? {}) },
+    };
   } catch {
     return clone(DEFAULTS);
   }

@@ -42,11 +42,11 @@ export const CIRCLES: Circle[] = [
   { key: "real", label: "Real stratigraphic units", kind: "node", matrix: true, graph: true },
   { key: "virtual", label: "Virtual stratigraphic units", kind: "node", matrix: true, graph: true },
   { key: "continuity", label: "Continuity (BR)", kind: "node", matrix: true, graph: true },
-  { key: "paradata_nodes", label: "Paradata nodes", kind: "node", matrix: false, graph: true },
+  { key: "paradata_nodes", label: "Paradata nodes", kind: "node", matrix: true, graph: true },
   { key: "other_nodes", label: "Other nodes (links, authors, license…)", kind: "node", matrix: false, graph: true },
   { key: "edges_strat", label: "Stratigraphic / temporal edges", kind: "edge", matrix: true, graph: true },
   { key: "edges_epoch", label: "Epoch edges", kind: "edge", matrix: true, graph: true },
-  { key: "edges_paradata", label: "Paradata edges", kind: "edge", matrix: false, graph: true },
+  { key: "edges_paradata", label: "Paradata edges", kind: "edge", matrix: true, graph: true },
   { key: "edges_other", label: "Other edges", kind: "edge", matrix: false, graph: true },
 ];
 

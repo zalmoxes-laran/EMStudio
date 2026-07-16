@@ -25,6 +25,7 @@ export type SyncMessage =
     }
   | { v: number; type: "request_snapshot"; source?: string }
   | { v: number; type: "snapshot"; doc: EmDocument; source?: string }
+  | { v: number; type: "request_save"; source?: string }
   | ({ v: number; type: "op"; source?: string } & GraphOp);
 
 export interface SyncCallbacks {
@@ -126,6 +127,19 @@ export class SyncClient {
     if (!this.connected) return;
     try {
       this.ws!.send(JSON.stringify({ v: 1, type: "op", source: SOURCE, ...op }));
+    } catch {
+      /* dropped */
+    }
+  }
+
+  /** Ask the host (EMtools) to persist its em.json before we leave Sidecar
+   *  mode — the host owns the canonical file (ADR-002 §4). Fire-and-forget. */
+  sendRequestSave(): void {
+    if (!this.connected) return;
+    try {
+      this.ws!.send(
+        JSON.stringify({ v: 1, type: "request_save", source: SOURCE }),
+      );
     } catch {
       /* dropped */
     }

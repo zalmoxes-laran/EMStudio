@@ -14,8 +14,8 @@ export interface NodeListCallbacks {
   isFolded: (id: string) => boolean;
   onToggleFold: (id: string) => void;
   onExplode: (id: string) => void;
-  /** fold/unfold every paradata node group at once (single undo step) */
-  onFoldAll: (folded: boolean) => void;
+  /** fold/unfold the given group ids in one undo step (used per nodegroup type) */
+  onFoldGroups: (ids: string[], folded: boolean) => void;
   /** true when the node physically contains others (is_part_of members) */
   isContainer: (id: string) => boolean;
 }
@@ -67,54 +67,72 @@ export function buildNodeList(
       )
       .sort((a, b) => String(a.name || a.id).localeCompare(String(b.name || b.id)));
     if (groups.length) {
-      const h = document.createElement("div");
-      h.className = "nl-sect nl-sect-groups";
-      const label = document.createElement("span");
-      label.textContent = `Groups (${groups.length})`;
-      h.appendChild(label);
-      const foldAll = document.createElement("button");
-      foldAll.className = "nl-icon";
-      foldAll.textContent = "⊟";
-      foldAll.title = "Fold all paradata node groups";
-      foldAll.addEventListener("click", () => groupCb.onFoldAll(true));
-      h.appendChild(foldAll);
-      const unfoldAll = document.createElement("button");
-      unfoldAll.className = "nl-icon";
-      unfoldAll.textContent = "⊞";
-      unfoldAll.title = "Unfold all paradata node groups";
-      unfoldAll.addEventListener("click", () => groupCb.onFoldAll(false));
-      h.appendChild(unfoldAll);
-      listEl.appendChild(h);
+      // bucket by node_type so fold/unfold-all acts on each nodegroup TYPE in
+      // unison (was paradata-only). Containers (is_part_of) bucket by their
+      // stratigraphic type. Friendly label: drop the "NodeGroup" suffix.
+      const label = (t: string): string =>
+        t.endsWith("NodeGroup") ? t.slice(0, -"NodeGroup".length) : t;
+      const buckets = new Map<string, typeof groups>();
       for (const g of groups) {
-        const row = document.createElement("div");
-        row.className = "nl-grow";
-        const fold = document.createElement("button");
-        fold.className = "nl-icon";
-        const folded = groupCb.isFolded(g.id);
-        fold.textContent = folded ? "▸" : "▾";
-        fold.title = folded ? "Unfold group" : "Fold group";
-        fold.addEventListener("click", (ev) => {
-          ev.stopPropagation();
-          groupCb.onToggleFold(g.id);
-        });
-        row.appendChild(fold);
-        const name = document.createElement("button");
-        name.className = "nl-gname";
-        name.textContent = String(g.name || g.id);
-        name.title = `${g.id} [${g.node_type}]`;
-        name.addEventListener("click", () => onPick(g.id));
-        row.appendChild(name);
-        const explode = document.createElement("button");
-        explode.className = "nl-icon";
-        explode.textContent = "⤢";
-        explode.title = "Explode: isolate the group contents";
-        explode.addEventListener("click", (ev) => {
-          ev.stopPropagation();
-          groupCb.onExplode(g.id);
-        });
-        row.appendChild(explode);
-        listEl.appendChild(row);
-        rows.set(g.id, row);
+        const arr = buckets.get(g.node_type) ?? [];
+        arr.push(g);
+        buckets.set(g.node_type, arr);
+      }
+      const top = document.createElement("div");
+      top.className = "nl-sect nl-sect-groups";
+      top.textContent = `Groups (${groups.length})`;
+      listEl.appendChild(top);
+      for (const [type, gs] of [...buckets.entries()].sort()) {
+        const ids = gs.map((g) => g.id);
+        const th = document.createElement("div");
+        th.className = "nl-sect nl-gtype";
+        const lbl = document.createElement("span");
+        lbl.textContent = `${label(type)} (${gs.length})`;
+        th.appendChild(lbl);
+        const foldAll = document.createElement("button");
+        foldAll.className = "nl-icon";
+        foldAll.textContent = "⊟";
+        foldAll.title = `Fold all ${label(type)} groups`;
+        foldAll.addEventListener("click", () => groupCb.onFoldGroups(ids, true));
+        th.appendChild(foldAll);
+        const unfoldAll = document.createElement("button");
+        unfoldAll.className = "nl-icon";
+        unfoldAll.textContent = "⊞";
+        unfoldAll.title = `Unfold all ${label(type)} groups`;
+        unfoldAll.addEventListener("click", () => groupCb.onFoldGroups(ids, false));
+        th.appendChild(unfoldAll);
+        listEl.appendChild(th);
+        for (const g of gs) {
+          const row = document.createElement("div");
+          row.className = "nl-grow";
+          const fold = document.createElement("button");
+          fold.className = "nl-icon";
+          const folded = groupCb.isFolded(g.id);
+          fold.textContent = folded ? "▸" : "▾";
+          fold.title = folded ? "Unfold group" : "Fold group";
+          fold.addEventListener("click", (ev) => {
+            ev.stopPropagation();
+            groupCb.onToggleFold(g.id);
+          });
+          row.appendChild(fold);
+          const name = document.createElement("button");
+          name.className = "nl-gname";
+          name.textContent = String(g.name || g.id);
+          name.title = `${g.id} [${g.node_type}]`;
+          name.addEventListener("click", () => onPick(g.id));
+          row.appendChild(name);
+          const explode = document.createElement("button");
+          explode.className = "nl-icon";
+          explode.textContent = "⤢";
+          explode.title = "Explode: isolate the group contents";
+          explode.addEventListener("click", (ev) => {
+            ev.stopPropagation();
+            groupCb.onExplode(g.id);
+          });
+          row.appendChild(explode);
+          listEl.appendChild(row);
+          rows.set(g.id, row);
+        }
       }
       const h2 = document.createElement("div");
       h2.className = "nl-sect";

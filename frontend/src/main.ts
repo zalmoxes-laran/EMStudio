@@ -42,6 +42,7 @@ import {
   nodeCircle,
 } from "./filters";
 import { type Qualia, vocabularyFor } from "./vocab";
+import { versionBreakdown } from "./versions";
 import {
   hitGroupToggle,
   hitHandle,
@@ -54,7 +55,7 @@ import { GROUP_HEADER, GROUP_PAD } from "./views/matrix";
 import { setupSearch } from "./search";
 import type { EmDocument, ViewKind } from "./types";
 import { buildGroupScene } from "./views/context";
-import { buildGraphScene } from "./views/graph";
+import { buildGraphScene, type GraphAlgorithm } from "./views/graph";
 import { buildMatrixScene } from "./views/matrix";
 
 declare global {
@@ -77,6 +78,11 @@ let applyingRemoteSelect = false;
 // Sync endpoint is configured in Settings (see settings.ts); resolved fresh
 // on each connect so a settings change takes effect on the next connect.
 let view: ViewKind = "matrix";
+// Graph-view layout: chosen algorithm + manual position overrides (drags /
+// liquid clustering). Overrides persist across rebuilds in-session and are
+// cleared on a fresh Layout, an algorithm change, or a new/loaded document.
+let graphAlgorithm: GraphAlgorithm = "layered";
+const graphOverrides = new Map<string, { x: number; y: number }>();
 const scenes: Partial<Record<ViewKind, Scene | null>> = {};
 const viewports: Record<ViewKind, Viewport> = {
   matrix: new Viewport(),
@@ -155,7 +161,68 @@ const tabInspector = document.getElementById("tab-inspector") as HTMLButtonEleme
 const tabNodes = document.getElementById("tab-nodes") as HTMLButtonElement;
 const nodelistEl = document.getElementById("nodelist")!;
 
-document.getElementById("em-version")!.textContent = `EM ${EM_VERSION}`;
+// EM-version pill → click for the version breakdown (config files + ontologies)
+const verBtn = document.getElementById("em-version")!;
+verBtn.textContent = `EM ${EM_VERSION}`;
+let verPop: HTMLDivElement | null = null;
+function closeVerPop(): void {
+  verPop?.remove();
+  verPop = null;
+  document.removeEventListener("pointerdown", onVerOutside, true);
+  document.removeEventListener("keydown", onVerKey, true);
+}
+function onVerOutside(e: PointerEvent): void {
+  if (verPop && !verPop.contains(e.target as Node) && e.target !== verBtn)
+    closeVerPop();
+}
+function onVerKey(e: KeyboardEvent): void {
+  if (e.key === "Escape") {
+    e.stopPropagation();
+    closeVerPop();
+  }
+}
+verBtn.addEventListener("click", () => {
+  if (verPop) {
+    closeVerPop();
+    return;
+  }
+  const b = versionBreakdown();
+  const pop = document.createElement("div");
+  pop.className = "ver-pop";
+  const title = document.createElement("h4");
+  title.textContent = `Extended Matrix ${b.emLanguage}`;
+  pop.appendChild(title);
+  const sect = (t: string): void => {
+    const d = document.createElement("div");
+    d.className = "ver-sect";
+    d.textContent = t;
+    pop.appendChild(d);
+  };
+  const row = (label: string, ver: string, srcTitle?: string): void => {
+    const r = document.createElement("div");
+    r.className = "ver-row";
+    if (srcTitle) r.title = srcTitle;
+    const s = document.createElement("span");
+    s.textContent = label;
+    const v = document.createElement("b");
+    v.textContent = ver;
+    r.append(s, v);
+    pop.appendChild(r);
+  };
+  sect("JSON config files");
+  for (const c of b.configs) row(c.label, c.version);
+  sect("Reference ontologies");
+  for (const o of b.ontologies) row(o.name, o.version, o.source);
+  document.body.appendChild(pop);
+  const rect = verBtn.getBoundingClientRect();
+  pop.style.left = Math.min(rect.left, window.innerWidth - 316) + "px";
+  pop.style.top = rect.bottom + 6 + "px";
+  verPop = pop;
+  setTimeout(() => {
+    document.addEventListener("pointerdown", onVerOutside, true);
+    document.addEventListener("keydown", onVerKey, true);
+  }, 0);
+});
 
 let toastTimer: number | undefined;
 function toast(msg: string): void {
@@ -166,7 +233,11 @@ function toast(msg: string): void {
 }
 
 function viewSize(): { w: number; h: number } {
-  return { w: wrap.clientWidth, h: wrap.clientHeight };
+  // Fall back through canvas → window if the wrapper reports 0 (transient
+  // relayout) so fit() never collapses the viewport to the min-scale.
+  const w = wrap.clientWidth || canvas.clientWidth || window.innerWidth || 800;
+  const h = wrap.clientHeight || canvas.clientHeight || window.innerHeight || 600;
+  return { w, h };
 }
 
 function resizeCanvas(): void {
@@ -341,6 +412,7 @@ function refreshInspector(): void {
     onDeleteEdge: (edge) => store!.deleteEdge(edge),
     onToggleFold: (gid) => store!.setFolded(gid, !store!.isFolded(gid)),
     onEnterGroup: enterGroup,
+    onEpochAddProperty: addEpochParadataProperty,
   });
 }
 
@@ -495,7 +567,10 @@ function buildScenes(): void {
     badges: foldedView?.badges ?? new Map<string, number>(),
   };
   scenes.matrix = buildMatrixScene(doc, fview);
-  scenes.graph = buildGraphScene(doc, fview);
+  scenes.graph = buildGraphScene(doc, fview, {
+    algorithm: graphAlgorithm,
+    overrides: graphOverrides,
+  });
 }
 
 function setView(v: ViewKind): void {
@@ -503,6 +578,12 @@ function setView(v: ViewKind): void {
   view = v;
   btnMatrix.classList.toggle("active", v === "matrix");
   btnGraph.classList.toggle("active", v === "graph");
+  // Layout controls are per-view: Matrix uses the "Layout" button (em-core
+  // swimlanes); Graph uses the algorithm dropdown (layered/radial/force). Show
+  // only the relevant one so they don't look redundant.
+  const graphLayoutSel = document.getElementById("graph-layout");
+  if (graphLayoutSel) graphLayoutSel.style.display = v === "graph" ? "" : "none";
+  btnLayout.style.display = v === "graph" ? "none" : "";
   // each view keeps its own "circles of detail" depth → re-derive the hidden
   // sets and rebuild when the active view changes.
   if (changed && store) {
@@ -560,6 +641,7 @@ function loadDocument(
   hoverId = null;
   selectedId = null;
   recomputeHiddenFromCircles(); // derive hidden types for the current view
+  graphOverrides.clear(); // graph-view drags don't carry across documents
   buildScenes();
   select(null);
   dropHint.classList.add("hidden");
@@ -585,11 +667,75 @@ function loadDocument(
   }
 }
 
-function loadFile(file: File): void {
-  file
-    .text()
-    .then((t) => loadDocument(JSON.parse(t) as EmDocument, file.name))
-    .catch((e) => (info.textContent = `parse error: ${e}`));
+// Sidecar (sync) ↔ Standalone. Opening/importing a file replaces the live view,
+// so if we are in Sidecar mode warn first and offer to ask the host to persist
+// its em.json (the host owns the canonical data — ADR-002 §4).
+function syncToolLabel(): string {
+  const t = getSettings().sync.tool;
+  return SYNC_TOOLS.find((x) => x.value === t)?.label ?? t;
+}
+function confirmLeaveSidecar(action: string): Promise<boolean> {
+  if (!sync.connected) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const modal = document.createElement("div");
+    modal.className = "modal";
+    const card = document.createElement("div");
+    card.className = "modal-card";
+    card.innerHTML =
+      `<div class="modal-head"><span>Leave Sidecar mode?</span></div>` +
+      `<div class="modal-body">` +
+      `<p>EMStudio is in <b>Sidecar</b> (sync) mode with <b>${syncToolLabel()}</b>. ` +
+      `${action} disconnects and switches to a <b>Standalone</b> document.</p>` +
+      `<p class="settings-hint">The synced graph lives in the host, not here — ` +
+      `disconnecting does not save it. You can ask the host to write its ` +
+      `<code>.em.json</code> first.</p>` +
+      `</div>` +
+      `<div class="modal-foot">` +
+      `<button data-a="cancel">Cancel</button>` +
+      `<button data-a="leave">Disconnect &amp; continue</button>` +
+      `<button data-a="save" class="primary">Ask host to save &amp; continue</button>` +
+      `</div>`;
+    modal.appendChild(card);
+    const finish = (proceed: boolean, save: boolean): void => {
+      modal.remove();
+      document.removeEventListener("keydown", onKey, true);
+      if (proceed) {
+        if (save) {
+          sync.sendRequestSave();
+          toast("Asked the host (EMtools) to save its em.json");
+        }
+        sync.disconnect(); // → Standalone; the new document replaces the view
+      }
+      resolve(proceed);
+    };
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        finish(false, false);
+      }
+    };
+    (card.querySelector('[data-a="cancel"]') as HTMLButtonElement).onclick = () =>
+      finish(false, false);
+    (card.querySelector('[data-a="leave"]') as HTMLButtonElement).onclick = () =>
+      finish(true, false);
+    (card.querySelector('[data-a="save"]') as HTMLButtonElement).onclick = () =>
+      finish(true, true);
+    modal.addEventListener("click", (e) => {
+      if (e.target === modal) finish(false, false);
+    });
+    document.addEventListener("keydown", onKey, true);
+    document.body.appendChild(modal);
+  });
+}
+
+async function loadFile(file: File): Promise<void> {
+  if (!(await confirmLeaveSidecar("Opening a file"))) return;
+  try {
+    const t = await file.text();
+    loadDocument(JSON.parse(t) as EmDocument, file.name);
+  } catch (e) {
+    info.textContent = `parse error: ${e}`;
+  }
 }
 
 // Create a fresh, empty .em.json document. New nodes minted in the GUI get a
@@ -696,6 +842,7 @@ async function openDocument(): Promise<void> {
     try {
       const res = await openEmJson();
       if (!res) return; // cancelled
+      if (!(await confirmLeaveSidecar("Opening a file"))) return;
       loadDocument(
         JSON.parse(res.text) as EmDocument,
         baseName(res.path),
@@ -752,13 +899,7 @@ const nodeList = buildNodeList(
       contextStack = [];
       enterGroup(id);
     },
-    onFoldAll: (folded) => {
-      if (!store) return;
-      const ids = store.doc.graph.nodes
-        .filter((n) => n.node_type === "ParadataNodeGroup")
-        .map((n) => n.id);
-      store.setFoldedMany(ids, folded);
-    },
+    onFoldGroups: (ids, folded) => store?.setFoldedMany(ids, folded),
     isContainer: (id) => {
       if (!store) return false;
       const mm = buildMembership(store.doc);
@@ -1299,6 +1440,49 @@ function openQualiaPicker(nodeId: string, wx: number, wy: number): void {
   document.addEventListener("keydown", onVocabKey, true);
 }
 
+// Add a temporal PropertyNode to an epoch's ParadataNodeGroup, creating the
+// group + has_paradata_nodegroup edge on first use (datamodel 1.6.1 lets an
+// EpochNode own a paradata group), then open the qualia picker to label it
+// (start/end…). Realises the epoch-paradata paradigm.
+function addEpochParadataProperty(epochId: string): void {
+  if (!store) return;
+  const st = store;
+  const vc = viewport().toWorld(wrap.clientWidth / 2, wrap.clientHeight / 2);
+  let pdgId: string | null = null;
+  for (const e of st.doc.graph.edges)
+    if (e.source === epochId && e.edge_type === "has_paradata_nodegroup") {
+      pdgId = e.target;
+      break;
+    }
+  if (!pdgId) {
+    pdgId = st.newId();
+    st.addNode(
+      {
+        id: pdgId,
+        name: `${st.node(epochId)?.name ?? "Epoch"} · paradata`,
+        node_type: "ParadataNodeGroup",
+        description: "",
+      },
+      { x: vc.x - 90, y: vc.y - 50, w: 180, h: 100 },
+    );
+    st.addEdge(epochId, pdgId, "has_paradata_nodegroup");
+  }
+  const propId = st.newId();
+  st.addNode(
+    {
+      id: propId,
+      name: st.freshLabel("property"),
+      node_type: "property",
+      description: "",
+    },
+    { x: vc.x, y: vc.y, w: 90, h: 30 },
+  );
+  st.addEdge(propId, pdgId, "is_in_paradata_nodegroup");
+  ensureCircleVisibleFor("property");
+  select(propId);
+  openQualiaPicker(propId, vc.x, vc.y);
+}
+
 // ---------- toolbar wiring ----------
 // header dropdown menus (File / Export): toggle on click, close on outside
 // click, close after picking an item (the item's own handler still fires).
@@ -1396,6 +1580,49 @@ document.getElementById("btn-graphml")!.addEventListener("click", async () => {
   }
 });
 
+// Import a yEd GraphML file → em.json via the dev bridge (s3Dgraphy importer),
+// then load it. Same bridge/constraint as export (invariant 2).
+document
+  .getElementById("btn-import-graphml")!
+  .addEventListener("click", () => {
+    const inp = document.createElement("input");
+    inp.type = "file";
+    inp.accept = ".graphml,.xml";
+    inp.addEventListener("change", async () => {
+      const file = inp.files?.[0];
+      if (!file) return;
+      if (!(await confirmLeaveSidecar("Importing GraphML"))) return;
+      toast("Importing GraphML…");
+      try {
+        const text = await file.text();
+        const res = await fetch(`${BRIDGE_URL}/import-graphml`, {
+          method: "POST",
+          headers: { "Content-Type": "application/xml" },
+          body: text,
+        });
+        if (!res.ok) {
+          let msg = `bridge error ${res.status}`;
+          try {
+            const j = await res.json();
+            if (j?.error) msg = j.error;
+          } catch {
+            /* non-JSON error body */
+          }
+          toast(`GraphML import failed: ${msg}`);
+          return;
+        }
+        const doc = (await res.json()) as EmDocument;
+        loadDocument(doc, file.name); // no layout → auto fresh-layout on load
+        toast(`Imported ${file.name}`);
+      } catch {
+        toast(
+          "GraphML bridge not reachable — start it with ./dev.sh (or python3 tools/em_bridge.py)",
+        );
+      }
+    });
+    inp.click();
+  });
+
 // Sync toggle: connect/disconnect the live selection bridge (ADR-002).
 const btnSync = document.getElementById("btn-sync") as HTMLButtonElement;
 btnSync.addEventListener("click", () => {
@@ -1451,6 +1678,7 @@ const setProtoSel = document.getElementById(
 const setHostInp = document.getElementById("set-sync-host") as HTMLInputElement;
 const setPortInp = document.getElementById("set-sync-port") as HTMLInputElement;
 const setUrlOut = document.getElementById("set-sync-url")!;
+const setDevUuid = document.getElementById("set-dev-uuid") as HTMLInputElement;
 
 for (const t of SYNC_TOOLS) {
   const o = document.createElement("option");
@@ -1472,6 +1700,7 @@ function openSettings(): void {
   setProtoSel.value = s.sync.protocol;
   setHostInp.value = s.sync.host;
   setPortInp.value = String(s.sync.port);
+  setDevUuid.checked = s.developer.showNodeIds;
   refreshSyncUrlPreview();
   settingsModal.classList.remove("hidden");
 }
@@ -1508,9 +1737,11 @@ settingsModal.addEventListener("click", (e) => {
       host: setHostInp.value.trim() || "localhost",
       port,
     },
+    developer: { showNodeIds: setDevUuid.checked },
   };
   saveSettings(next);
   closeSettings();
+  refreshInspector(); // reflect the UUID-visibility toggle immediately
   toast(
     sync.connected
       ? "Sync settings saved — reconnect to apply"
@@ -1645,11 +1876,12 @@ btnLayout.addEventListener("click", async (ev) => {
     // force a switch to Matrix. And do NOT auto-fit afterwards — the user
     // re-fits manually (Fit / "0") so the recompute keeps the current zoom.
     if (view === "graph" && !inContext()) {
-      // Graph has its own client-side layout (views/graph.ts); rebuild the
-      // scenes in place (onChange isn't triggered — no store mutation).
+      // Graph has its own client-side layout (views/graph.ts). "Layout" = a
+      // fresh arrangement in the chosen algorithm → drop manual drags.
+      graphOverrides.clear();
       buildScenes();
       draw();
-      toast("Graph layout recomputed");
+      toast(`Graph layout: ${graphAlgorithm}`);
     } else {
       const fresh = (ev as MouseEvent).altKey;
       await runLayout(fresh); // store.setLayout → onChange → buildScenes + draw
@@ -1667,6 +1899,21 @@ btnLayout.addEventListener("click", async (ev) => {
     edgeFilter = (ev.target as HTMLSelectElement).value as typeof edgeFilter;
     updateLegend();
     draw();
+  },
+);
+(document.getElementById("graph-layout") as HTMLSelectElement).addEventListener(
+  "change",
+  (ev) => {
+    graphAlgorithm = (ev.target as HTMLSelectElement).value as GraphAlgorithm;
+    graphOverrides.clear(); // new algorithm = fresh arrangement
+    if (view === "graph" && !inContext()) {
+      buildScenes();
+      draw();
+      fit(); // new coordinate space (radial/force centre on origin) → frame it
+    } else {
+      setView("graph"); // show the effect (setView rebuilds + fits)
+    }
+    toast(`Graph layout: ${graphAlgorithm}`);
   },
 );
 
@@ -1693,7 +1940,13 @@ window.addEventListener("drop", (e) => {
 });
 
 // ---------- canvas interactions ----------
-type DragMode = "none" | "pan" | "node" | "connect" | "marquee";
+type DragMode =
+  | "none"
+  | "pan"
+  | "node"
+  | "graphnode"
+  | "connect"
+  | "marquee";
 let dragMode: DragMode = "none";
 // multi-selection (D3): the primary stays `selectedId`; the set is all selected
 let selectedIds = new Set<string>();
@@ -1703,6 +1956,7 @@ let moved = false;
 let lastX = 0;
 let lastY = 0;
 let dragNodeId: string | null = null;
+let graphLiquid = false; // Shift held at graph-drag start → drag the cluster
 let dragMemberIds: string[] | null = null;
 // true = group-drag (move the group node, members follow); false = multi-select
 // move (move each selected node, respecting its container)
@@ -1858,7 +2112,30 @@ canvas.addEventListener("pointerdown", (e) => {
       dragMemberIds = [...selectedIds].filter((id) => id !== hit.id);
       dragIsGroupMove = false; // move each node respecting its own container
     }
+  } else if (hit && view === "graph" && !inContext()) {
+    // Graph view: drag a node to place it (persisted as a graphOverride).
+    // Shift = LIQUID — the connected 1-hop cluster follows, for manual grouping.
+    dragMode = "graphnode";
+    dragNodeId = hit.id;
+    graphLiquid = e.shiftKey;
   } else {
+    // Matrix: a click in the left swimlane-label strip selects that epoch, so
+    // the Inspector exposes reorder + start/end (T7). Otherwise → marquee.
+    const rect = canvas.getBoundingClientRect();
+    const sxScreen = e.clientX - rect.left;
+    const syScreen = e.clientY - rect.top;
+    const vp2 = viewport();
+    const lane =
+      view === "matrix" && !inContext() && sxScreen < 160
+        ? scene()?.lanes.find((l) => {
+            const ly = l.y * vp2.scale + vp2.y;
+            return syScreen >= ly && syScreen <= ly + l.height * vp2.scale;
+          })
+        : undefined;
+    if (lane) {
+      dragMode = "none"; // prevent marquee; the select happens on pointerup
+      return;
+    }
     // empty canvas → rubber-band marquee selection (pan is middle/Space, D1)
     dragMode = "marquee";
     marquee = { x0: w.x, y0: w.y, x1: w.x, y1: w.y };
@@ -1896,6 +2173,32 @@ canvas.addEventListener("pointermove", (e) => {
       marquee.x1 = w.x;
       marquee.y1 = w.y;
       if (Math.abs(e.clientX - lastX) + Math.abs(e.clientY - lastY) > 3) moved = true;
+      draw();
+    }
+    return;
+  }
+  if (dragMode === "graphnode" && dragNodeId && store) {
+    if (Math.abs(e.clientX - lastX) + Math.abs(e.clientY - lastY) > 3)
+      moved = true;
+    if (moved) {
+      const ddx = (e.clientX - lastX) / vp.scale;
+      const ddy = (e.clientY - lastY) / vp.scale;
+      const s = scene();
+      const targets = new Set<string>([dragNodeId]);
+      if (graphLiquid) {
+        for (const ed of store.doc.graph.edges) {
+          if (ed.source === dragNodeId) targets.add(ed.target);
+          else if (ed.target === dragNodeId) targets.add(ed.source);
+        }
+      }
+      for (const id of targets) {
+        const sn = s?.byId.get(id);
+        const base = graphOverrides.get(id) ?? (sn ? { x: sn.x, y: sn.y } : null);
+        if (base) graphOverrides.set(id, { x: base.x + ddx, y: base.y + ddy });
+      }
+      lastX = e.clientX;
+      lastY = e.clientY;
+      buildScenes();
       draw();
     }
     return;
@@ -1996,6 +2299,12 @@ canvas.addEventListener("pointerup", (e) => {
     finishConnect(e.shiftKey || e.altKey); // Shift/Alt = force "create node"
     return;
   }
+  if (mode === "graphnode") {
+    if (!moved && dragNodeId) select(dragNodeId); // click (no drag) = select
+    dragNodeId = null;
+    graphLiquid = false;
+    return;
+  }
   const s = scene();
   if (!s) return;
   const w = worldPos(e);
@@ -2026,6 +2335,21 @@ canvas.addEventListener("pointerup", (e) => {
     return;
   }
   if (!moved) {
+    // matrix: click in the left swimlane-label strip → select that epoch (T7)
+    const rect2 = canvas.getBoundingClientRect();
+    const sxS = e.clientX - rect2.left;
+    const syS = e.clientY - rect2.top;
+    if (view === "matrix" && !inContext() && sxS < 160) {
+      const vp2 = viewport();
+      const lane = s.lanes.find((l) => {
+        const ly = l.y * vp2.scale + vp2.y;
+        return syS >= ly && syS <= ly + l.height * vp2.scale;
+      });
+      if (lane) {
+        select(lane.id);
+        return;
+      }
+    }
     // group container ± toggle
     const toggle = hitGroupToggle(s, w.x, w.y);
     if (toggle && store) {

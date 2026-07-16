@@ -8,7 +8,8 @@ returns the yEd GraphML for download. Dev-only, single-user, no auth.
 
 Endpoints (CORS open for http://localhost:*):
     GET  /health           → {"ok": true, ...}
-    POST /graphml          ← em.json body  → GraphML (text/xml), downloadable
+    POST /graphml          ← em.json body   → GraphML (text/xml), downloadable
+    POST /import-graphml   ← GraphML (XML)  → em.json dict (application/json)
 
 Run it via ``dev.sh``, or standalone:
     python3 tools/em_bridge.py --port 8765 --s3dgraphy ~/GitHub/s3Dgraphy/src
@@ -34,10 +35,13 @@ def _load_s3dgraphy(s3dgraphy_src: "pathlib.Path | None"):
             sys.path.insert(0, str(sibling))
     from s3dgraphy.exporter.graphml.graphml_exporter import GraphMLExporter
     from s3dgraphy.importer.emjson_importer import parse_emjson
-    return parse_emjson, GraphMLExporter
+    from s3dgraphy.importer.import_graphml import GraphMLImporter
+    from s3dgraphy.exporter.emjson_exporter import build_emjson
+    from s3dgraphy.graph import Graph
+    return parse_emjson, GraphMLExporter, GraphMLImporter, build_emjson, Graph
 
 
-def make_handler(parse_emjson, GraphMLExporter):
+def make_handler(parse_emjson, GraphMLExporter, GraphMLImporter, build_emjson, Graph):
     class Handler(BaseHTTPRequestHandler):
         # Quieter, dev-friendly logging.
         def log_message(self, fmt, *args):
@@ -66,11 +70,18 @@ def make_handler(parse_emjson, GraphMLExporter):
                 self.send_error(404, "unknown endpoint")
 
         def do_POST(self):
-            if self.path.rstrip("/") != "/graphml":
-                self.send_error(404, "unknown endpoint")
-                return
+            route = self.path.rstrip("/")
             length = int(self.headers.get("Content-Length", 0))
             raw = self.rfile.read(length) if length else b""
+            if route == "/graphml":
+                self._export_graphml(raw)
+            elif route == "/import-graphml":
+                self._import_graphml(raw)
+            else:
+                self.send_error(404, "unknown endpoint")
+
+        # em.json (JSON body) → GraphML (yEd), downloadable
+        def _export_graphml(self, raw):
             try:
                 doc = json.loads(raw.decode("utf-8"))
             except Exception as exc:
@@ -105,6 +116,34 @@ def make_handler(parse_emjson, GraphMLExporter):
             self.end_headers()
             self.wfile.write(graphml)
 
+        # GraphML (yEd XML body) → em.json dict, returned as JSON for loadDocument
+        def _import_graphml(self, raw):
+            try:
+                # GraphMLImporter reads a filepath (and may write UUIDs back),
+                # so stage the uploaded XML in a temp file.
+                with tempfile.NamedTemporaryFile(
+                    suffix=".graphml", delete=False
+                ) as tmp:
+                    tmp.write(raw)
+                    tmp_path = pathlib.Path(tmp.name)
+                graph = GraphMLImporter(
+                    str(tmp_path), Graph(graph_id="imported_graph")
+                ).parse()
+                tmp_path.unlink(missing_ok=True)
+                doc = build_emjson(graph)  # layout=None → EMStudio re-lays-out
+            except Exception as exc:  # pragma: no cover — surface to the UI
+                import traceback
+                traceback.print_exc()
+                self._fail(500, f"import failed: {exc}")
+                return
+            body = json.dumps(doc).encode("utf-8")
+            self.send_response(200)
+            self._cors()
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
         def _fail(self, code, msg):
             body = json.dumps({"ok": False, "error": msg}).encode()
             self.send_response(code)
@@ -126,7 +165,8 @@ def main() -> int:
     args = ap.parse_args()
 
     try:
-        parse_emjson, GraphMLExporter = _load_s3dgraphy(args.s3dgraphy)
+        (parse_emjson, GraphMLExporter, GraphMLImporter, build_emjson,
+         Graph) = _load_s3dgraphy(args.s3dgraphy)
     except ImportError as exc:
         print(
             f"error: cannot import s3dgraphy ({exc}).\n"
@@ -137,10 +177,11 @@ def main() -> int:
         )
         return 1
 
-    handler = make_handler(parse_emjson, GraphMLExporter)
+    handler = make_handler(
+        parse_emjson, GraphMLExporter, GraphMLImporter, build_emjson, Graph)
     httpd = ThreadingHTTPServer((args.host, args.port), handler)
     print(f"em_bridge listening on http://{args.host}:{args.port} "
-          f"(POST /graphml, GET /health) — Ctrl-C to stop")
+          f"(POST /graphml, POST /import-graphml, GET /health) — Ctrl-C to stop")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

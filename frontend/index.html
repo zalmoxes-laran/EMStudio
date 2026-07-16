@@ -15,12 +15,18 @@
   <body>
     <header id="toolbar">
       <span id="brand">EMStudio</span>
-      <span id="em-version" title="EM language version (from the s3Dgraphy datamodels)"></span>
+      <button id="em-version" title="Version breakdown (config files + CIDOC-CRM)"></button>
       <div class="dropdown" id="dd-file">
         <button class="dd-toggle" title="File operations">File ▾</button>
         <div class="dd-menu hidden">
           <button id="btn-new" title="New empty .em.json">New</button>
           <button id="btn-open" title="Open an .em.json file">Open…</button>
+          <button
+            id="btn-import-graphml"
+            title="Import a yEd GraphML file (needs the local dev bridge — see dev.sh)"
+          >
+            Import GraphML…
+          </button>
           <button id="btn-save" title="Save .em.json (⌘S)">Save</button>
           <button id="btn-save-as" title="Save .em.json to a new file (⇧⌘S)">Save As…</button>
         </div>
@@ -49,6 +55,15 @@
         <option value="none">No edges</option>
       </select>
       <button id="btn-filters" title="Detail level — show/hide rings of nodes & edges (per view)">Detail</button>
+      <select
+        id="graph-layout"
+        title="Graph-view layout algorithm (Graph view only)"
+        style="display: none"
+      >
+        <option value="layered">Layered</option>
+        <option value="radial">Radial</option>
+        <option value="force">Force</option>
+      </select>
       <button id="btn-fit" title="Fit to view (0)">Fit</button>
       <button id="btn-layout" title="Recompute the swimlane layout (em-core, same engine as the CLI)">Layout</button>
       <input type="file" id="file-input" accept=".json,.em.json" hidden />
@@ -100,7 +115,7 @@
             />
           </g>
         </svg>
-        <b>EMStudio</b>
+        <b>Extended Matrix</b>
       </span>
       <div id="breadcrumb" class="hidden"></div>
       <span id="info">open or drop an .em.json file</span>
@@ -148,6 +163,13 @@
             <p class="settings-url">
               Endpoint: <code id="set-sync-url"></code>
             </p>
+          </section>
+          <section class="settings-sect">
+            <h4>Developer</h4>
+            <label class="settings-check">
+              <input id="set-dev-uuid" type="checkbox" />
+              Show node UUIDs (inspector) — off by default
+            </label>
           </section>
         </div>
         <div class="modal-foot">

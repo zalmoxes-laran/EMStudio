@@ -196,6 +196,27 @@ export class DocumentStore {
     return node;
   }
 
+  /** Move an epoch's swimlane one slot up (dir -1) or down (dir +1) in the
+   *  stack, restacking the y of all lanes. Layout-only (no op-log: lane order
+   *  is a visualisation concern; epoch membership stays semantic via edges). */
+  reorderEpoch(epochId: string, dir: -1 | 1): void {
+    const lanes = this.doc.layout?.swimlanes;
+    if (!lanes || lanes.length < 2) return;
+    const sorted = [...lanes].sort((a, b) => a.y - b.y); // current visual order
+    const i = sorted.findIndex((l) => l.epoch_id === epochId);
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= sorted.length) return;
+    this.checkpoint();
+    [sorted[i], sorted[j]] = [sorted[j], sorted[i]];
+    let y = Math.min(...lanes.map((l) => l.y)); // keep the stack's top anchor
+    sorted.forEach((l, idx) => {
+      l.order = idx;
+      l.y = y;
+      y += l.height;
+    });
+    this.emit();
+  }
+
   addEdge(source: string, target: string, edgeType: string): EmEdge {
     this.checkpoint();
     const ids = new Set(this.doc.graph.edges.map((e) => e.id));

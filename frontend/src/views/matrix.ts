@@ -111,6 +111,56 @@ export function buildMatrixScene(
   const containerNodes = relocateIds.map((id) => scene.byId.get(id)!);
   scene.nodes = [...outlineNodes, ...containerNodes, ...normal];
 
+  // ---- epoch paradata: anchor an epoch-owned ParadataNodeGroup to the
+  // BOTTOM-LEFT of its swimlane (E.D.: the epoch's start/end paradata "lives
+  // in the lane corner"). We only place its members; the outline pass below
+  // then wraps the box around them, so it sits in the corner regardless of
+  // any stored position. ParadataNodeGroup ← EpochNode via has_paradata_nodegroup.
+  const epochOfPdg = new Map<string, string>(); // pdgId → epochId
+  for (const e of edges) {
+    if (e.edge_type !== "has_paradata_nodegroup") continue;
+    if (nodeById.get(e.source)?.node_type === "EpochNode")
+      epochOfPdg.set(e.target, e.source);
+  }
+  if (epochOfPdg.size) {
+    const laneById = new Map(scene.lanes.map((l) => [l.id, l]));
+    let contentMinX = Infinity;
+    for (const sn of scene.byId.values())
+      if (!epochOfPdg.has(sn.id)) contentMinX = Math.min(contentMinX, sn.x);
+    if (!Number.isFinite(contentMinX)) contentMinX = 0;
+    for (const [pdgId, epochId] of epochOfPdg) {
+      const g = scene.byId.get(pdgId);
+      const lane = laneById.get(epochId);
+      if (!g || !lane) continue;
+      const memberIds = (membership.childrenOf.get(pdgId) ?? []).filter(
+        (m) => m !== pdgId && scene.byId.has(m),
+      );
+      const cols = Math.max(1, Math.min(4, memberIds.length || 1));
+      let maxW = 90;
+      let maxH = 30;
+      for (const m of memberIds) {
+        const sn = scene.byId.get(m)!;
+        maxW = Math.max(maxW, sn.w);
+        maxH = Math.max(maxH, sn.h);
+      }
+      const rows = Math.max(1, Math.ceil(memberIds.length / cols));
+      const boxH =
+        GROUP_HEADER + GROUP_PAD * 2 + rows * maxH + (rows - 1) * CELL_GAP;
+      const originX = contentMinX + GROUP_PAD;
+      const originY = lane.y + lane.height - boxH + GROUP_HEADER + GROUP_PAD;
+      memberIds.forEach((m, i) => {
+        const sn = scene.byId.get(m)!;
+        sn.x = originX + (i % cols) * (maxW + CELL_GAP);
+        sn.y = originY + Math.floor(i / cols) * (maxH + CELL_GAP);
+      });
+      if (!memberIds.length) {
+        // empty PD group → small box parked in the corner (emptyOutline pass)
+        g.x = contentMinX;
+        g.y = lane.y + lane.height - (GROUP_HEADER + 34) - GROUP_PAD;
+      }
+    }
+  }
+
   // ---- container pass: relocate members inside open boxes ----
   const laneIdxOfY = (cy: number): number => {
     for (let i = 0; i < scene.lanes.length; i++) {

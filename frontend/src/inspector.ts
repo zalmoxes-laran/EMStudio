@@ -2,6 +2,8 @@ import type { DocumentStore } from "./model";
 import { edgeStyle, nodeStyle } from "./palette";
 import { isGroupType } from "./rules";
 import type { EmEdge, EmNode } from "./types";
+import { qualiaList } from "./vocab";
+import { getSettings } from "./settings";
 
 export interface InspectorCallbacks {
   onJump: (nodeId: string) => void;
@@ -10,6 +12,8 @@ export interface InspectorCallbacks {
   onDeleteEdge: (edge: EmEdge) => void;
   onToggleFold: (groupId: string) => void;
   onEnterGroup: (groupId: string) => void;
+  /** add a temporal PropertyNode to this epoch's ParadataNodeGroup (T7) */
+  onEpochAddProperty: (epochId: string) => void;
 }
 
 function el(tag: string, cls?: string, text?: string): HTMLElement {
@@ -88,7 +92,9 @@ export function renderInspector(
     store.updateNode(nodeId, { name: nameInput.value }),
   );
   root.appendChild(nameInput);
-  root.appendChild(el("div", "insp-id", node.id));
+  // node UUID is developer-only noise — hidden unless the Developer setting is on
+  if (getSettings().developer.showNodeIds)
+    root.appendChild(el("div", "insp-id", node.id));
 
   // editable description
   const desc = document.createElement("textarea");
@@ -100,6 +106,63 @@ export function renderInspector(
     store.updateNode(nodeId, { description: desc.value }),
   );
   root.appendChild(desc);
+
+  // epoch controls: reorder its swimlane + temporal bounds (start/end).
+  // Bounds are EpochNode attributes (CIDOC P82a/P82b); the labels borrow the
+  // qualia vocabulary's rationale/example so the meaning is explicit.
+  if (node.node_type === "EpochNode") {
+    const bar = el("div", "insp-actions");
+    const up = el("button", "insp-btn", "▲ Move up") as HTMLButtonElement;
+    up.title = "Move this epoch's swimlane up (newer)";
+    up.addEventListener("click", () => store.reorderEpoch(nodeId, -1));
+    const down = el("button", "insp-btn", "▼ Move down") as HTMLButtonElement;
+    down.title = "Move this epoch's swimlane down (older)";
+    down.addEventListener("click", () => store.reorderEpoch(nodeId, 1));
+    bar.appendChild(up);
+    bar.appendChild(down);
+    root.appendChild(bar);
+
+    root.appendChild(el("h3", "insp-sect", "Temporal bounds"));
+    const qs = qualiaList();
+    const mkField = (label: string, key: string, qid: string): void => {
+      root.appendChild(el("label", "insp-field-label", label));
+      const inp = document.createElement("input");
+      inp.className = "insp-name-input";
+      const cur = ((node as EmNode).data ?? {}) as Record<string, unknown>;
+      inp.value = cur[key] != null ? String(cur[key]) : "";
+      inp.placeholder = "e.g. -27  (negative = BCE)";
+      inp.addEventListener("change", () => {
+        const d = { ...(((store.node(nodeId) as EmNode).data ?? {}) as Record<string, unknown>) };
+        const v = inp.value.trim();
+        if (v === "") delete d[key];
+        else d[key] = v;
+        store.updateNode(nodeId, { data: d });
+      });
+      root.appendChild(inp);
+      const q = qs.find((x) => x.id === qid);
+      if (q?.rationale)
+        root.appendChild(
+          el("div", "insp-hint", q.example ? `${q.rationale} e.g. ${q.example}` : q.rationale),
+        );
+    };
+    mkField("Start", "start_time", "absolute_time_start");
+    mkField("End", "end_time", "absolute_time_end");
+
+    // full-paradigm alternative: a temporal PropertyNode in the epoch's
+    // ParadataNodeGroup (has_paradata_nodegroup — datamodel 1.6.1), with a
+    // qualia label + its own provenance chain.
+    const pbar = el("div", "insp-actions");
+    const addProp = el(
+      "button",
+      "insp-btn",
+      "+ Temporal property (paradata)",
+    ) as HTMLButtonElement;
+    addProp.title =
+      "Create a PropertyNode (start/end… from the qualia vocabulary) inside this epoch's paradata group";
+    addProp.addEventListener("click", () => cb.onEpochAddProperty(nodeId));
+    pbar.appendChild(addProp);
+    root.appendChild(pbar);
+  }
 
   // group actions
   if (isGroupType(node.node_type)) {
