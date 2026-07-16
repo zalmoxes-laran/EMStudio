@@ -12,8 +12,8 @@ export interface InspectorCallbacks {
   onDeleteEdge: (edge: EmEdge) => void;
   onToggleFold: (groupId: string) => void;
   onEnterGroup: (groupId: string) => void;
-  /** add a temporal PropertyNode to this epoch's ParadataNodeGroup (T7) */
-  onEpochAddProperty: (epochId: string) => void;
+  /** create a phase (sub-epoch) inside this epoch */
+  onAddPhase: (epochId: string) => void;
 }
 
 function el(tag: string, cls?: string, text?: string): HTMLElement {
@@ -23,14 +23,62 @@ function el(tag: string, cls?: string, text?: string): HTMLElement {
   return e;
 }
 
+/** Coerce a stored colour to the #rrggbb an <input type=color> requires, or
+ *  null if it isn't a recognisable hex (so the swatch can fall back). */
+function toHexColor(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  const s = v.trim();
+  if (/^#[0-9a-fA-F]{6}$/.test(s)) return s.toLowerCase();
+  if (/^#[0-9a-fA-F]{3}$/.test(s))
+    return (
+      "#" +
+      s
+        .slice(1)
+        .split("")
+        .map((c) => c + c)
+        .join("")
+    ).toLowerCase();
+  return null;
+}
+
 export function renderInspector(
   root: HTMLElement,
   store: DocumentStore,
   nodeId: string | null,
   cb: InspectorCallbacks,
+  selEdge: EmEdge | null = null,
 ): void {
   root.innerHTML = "";
   const node = nodeId ? store.node(nodeId) : undefined;
+  if (selEdge && !nodeId) {
+    // A connector is selected (no node): show its type + endpoints and a
+    // Delete action, mirroring the per-node "Connections" rows.
+    const es = edgeStyle(selEdge.edge_type);
+    const nodeById = new Map(store.doc.graph.nodes.map((n) => [n.id, n]));
+    const showId = getSettings().developer.showNodeIds;
+    const nm = (id: string): string =>
+      String(nodeById.get(id)?.name || (showId ? id : (nodeById.get(id)?.node_type ?? id)));
+    const panel = el("div", "insp-canvas");
+    panel.appendChild(el("div", "insp-section-title", "Connector"));
+    const t = el("div", "insp-group-title", es.label);
+    t.style.color = es.color;
+    panel.appendChild(t);
+    panel.appendChild(el("label", "insp-field-label", "From"));
+    const from = el("button", "insp-link", `→ ${nm(selEdge.source)}`);
+    from.addEventListener("click", () => cb.onJump(selEdge.source));
+    panel.appendChild(from);
+    panel.appendChild(el("label", "insp-field-label", "To"));
+    const to = el("button", "insp-link", `→ ${nm(selEdge.target)}`);
+    to.addEventListener("click", () => cb.onJump(selEdge.target));
+    panel.appendChild(to);
+    root.appendChild(panel);
+    const danger = el("div", "insp-actions");
+    const delE = el("button", "insp-btn danger", "Delete connector");
+    delE.addEventListener("click", () => cb.onDeleteEdge(selEdge));
+    danger.appendChild(delE);
+    root.appendChild(danger);
+    return;
+  }
   if (!nodeId || !node) {
     // No node selected → show the canvas header metadata (name + id),
     // editable. These are what the GraphML/em.json header carries; the
@@ -84,6 +132,7 @@ export function renderInspector(
   root.appendChild(head);
 
   // editable name
+  const nameRow = el("div", "insp-name-row");
   const nameInput = document.createElement("input");
   nameInput.className = "insp-name-input";
   nameInput.value = String(node.name || "");
@@ -91,7 +140,52 @@ export function renderInspector(
   nameInput.addEventListener("change", () =>
     store.updateNode(nodeId, { name: nameInput.value }),
   );
-  root.appendChild(nameInput);
+
+  // Colour swatch next to the name: a round colour-picker + a hex field you can
+  // paste into. Shown for epochs (always) and any node that already carries a
+  // colour (node.data.color — lifted from the s3dgraphy node attributes). Both
+  // controls write node.data.color and stay in sync.
+  const nodeData = (node.data ?? {}) as Record<string, unknown>;
+  const hasColor =
+    node.node_type === "EpochNode" || typeof nodeData.color === "string";
+  if (hasColor) {
+    const stored = typeof nodeData.color === "string" ? nodeData.color : "";
+    const swatch = document.createElement("input");
+    swatch.type = "color";
+    swatch.className = "insp-color-swatch";
+    swatch.value = toHexColor(stored) ?? "#cccccc";
+    swatch.title = "Colour — click to pick";
+    const hex = document.createElement("input");
+    hex.type = "text";
+    hex.className = "insp-color-hex";
+    hex.value = stored;
+    hex.placeholder = "#RRGGBB";
+    hex.title = "Paste or type a hex colour (#RRGGBB)";
+    const apply = (v: string): void => {
+      const d = {
+        ...((store.node(nodeId)?.data ?? {}) as Record<string, unknown>),
+      };
+      const val = v.trim();
+      if (val === "") delete d.color;
+      else d.color = val;
+      store.updateNode(nodeId, { data: d });
+    };
+    swatch.addEventListener("input", () => {
+      hex.value = swatch.value;
+      apply(swatch.value);
+    });
+    hex.addEventListener("change", () => {
+      const nm = toHexColor(hex.value);
+      if (nm) swatch.value = nm;
+      apply(hex.value);
+    });
+    nameRow.appendChild(swatch);
+    nameRow.appendChild(nameInput);
+    nameRow.appendChild(hex);
+  } else {
+    nameRow.appendChild(nameInput);
+  }
+  root.appendChild(nameRow);
   // node UUID is developer-only noise — hidden unless the Developer setting is on
   if (getSettings().developer.showNodeIds)
     root.appendChild(el("div", "insp-id", node.id));
@@ -107,24 +201,72 @@ export function renderInspector(
   );
   root.appendChild(desc);
 
+  // PropertyNode value: the property's measured/asserted value (data.value).
+  // For an epoch's absolute_time_* property this mirrors back to the epoch's
+  // start_time/end_time, so editing it here updates the Temporal bounds.
+  if (node.node_type === "property") {
+    const pdata = (node.data ?? {}) as Record<string, unknown>;
+    root.appendChild(el("label", "insp-field-label", "Value"));
+    const valIn = document.createElement("input");
+    valIn.className = "insp-name-input";
+    valIn.value = pdata.value != null ? String(pdata.value) : "";
+    const ptype = String(pdata.property_type ?? "");
+    valIn.placeholder =
+      ptype.startsWith("absolute_time") ? "e.g. -27  (negative = BCE)" : "value…";
+    valIn.addEventListener("change", () =>
+      store.setPropertyValue(nodeId, valIn.value),
+    );
+    root.appendChild(valIn);
+  }
+
   // epoch controls: reorder its swimlane + temporal bounds (start/end).
   // Bounds are EpochNode attributes (CIDOC P82a/P82b); the labels borrow the
   // qualia vocabulary's rationale/example so the meaning is explicit.
   if (node.node_type === "EpochNode") {
-    const bar = el("div", "insp-actions");
-    const up = el("button", "insp-btn", "▲ Move up") as HTMLButtonElement;
-    up.title = "Move this epoch's swimlane up (newer)";
-    up.addEventListener("click", () => store.reorderEpoch(nodeId, -1));
-    const down = el("button", "insp-btn", "▼ Move down") as HTMLButtonElement;
-    down.title = "Move this epoch's swimlane down (older)";
-    down.addEventListener("click", () => store.reorderEpoch(nodeId, 1));
-    bar.appendChild(up);
-    bar.appendChild(down);
-    root.appendChild(bar);
+    const parentEpoch = store.parentEpoch(nodeId);
+    const isPhase = parentEpoch != null;
+    if (isPhase) {
+      // a phase (sub-epoch) — show its parent, no swimlane reorder
+      root.appendChild(el("div", "insp-field-label", "Phase of"));
+      const row = el("div", "insp-link-row");
+      const pb = el(
+        "button",
+        "insp-link",
+        `→ ${store.node(parentEpoch)?.name || parentEpoch}`,
+      );
+      pb.addEventListener("click", () => cb.onJump(parentEpoch));
+      row.appendChild(pb);
+      root.appendChild(row);
+    } else {
+      // top-level epoch: reorder its swimlane — only allowed while empty (a
+      // populated epoch can't move without risking upward-connection errors)
+      const empty = store.isEpochEmpty(nodeId);
+      const bar = el("div", "insp-actions");
+      const up = el("button", "insp-btn", "▲ Move up") as HTMLButtonElement;
+      const down = el("button", "insp-btn", "▼ Move down") as HTMLButtonElement;
+      for (const [b, dir] of [
+        [up, -1],
+        [down, 1],
+      ] as const) {
+        b.disabled = !empty;
+        b.title = empty
+          ? `Move this epoch's swimlane ${dir < 0 ? "up (newer)" : "down (older)"}`
+          : "Can't reorder a populated epoch (would risk upward connections)";
+        b.addEventListener("click", () => store.reorderEpoch(nodeId, dir));
+      }
+      bar.appendChild(up);
+      bar.appendChild(down);
+      root.appendChild(bar);
+    }
 
     root.appendChild(el("h3", "insp-sect", "Temporal bounds"));
     const qs = qualiaList();
-    const mkField = (label: string, key: string, qid: string): void => {
+    const mkField = (
+      label: string,
+      which: "start" | "end",
+      key: string,
+      qid: string,
+    ): void => {
       root.appendChild(el("label", "insp-field-label", label));
       const inp = document.createElement("input");
       inp.className = "insp-name-input";
@@ -132,11 +274,10 @@ export function renderInspector(
       inp.value = cur[key] != null ? String(cur[key]) : "";
       inp.placeholder = "e.g. -27  (negative = BCE)";
       inp.addEventListener("change", () => {
-        const d = { ...(((store.node(nodeId) as EmNode).data ?? {}) as Record<string, unknown>) };
-        const v = inp.value.trim();
-        if (v === "") delete d[key];
-        else d[key] = v;
-        store.updateNode(nodeId, { data: d });
+        // authoring a bound sets up the temporal paradata so the value also
+        // lives on its absolute_time_* PropertyNode (two-way synced)
+        store.ensureEpochTemporalParadata(nodeId);
+        store.setEpochBound(nodeId, which, inp.value);
       });
       root.appendChild(inp);
       const q = qs.find((x) => x.id === qid);
@@ -145,23 +286,78 @@ export function renderInspector(
           el("div", "insp-hint", q.example ? `${q.rationale} e.g. ${q.example}` : q.rationale),
         );
     };
-    mkField("Start", "start_time", "absolute_time_start");
-    mkField("End", "end_time", "absolute_time_end");
+    mkField("Start", "start", "start_time", "absolute_time_start");
+    mkField("End", "end", "end_time", "absolute_time_end");
 
-    // full-paradigm alternative: a temporal PropertyNode in the epoch's
-    // ParadataNodeGroup (has_paradata_nodegroup — datamodel 1.6.1), with a
-    // qualia label + its own provenance chain.
+    // Temporal paradata: the absolute_time_start / absolute_time_end
+    // PropertyNodes live in the epoch's ParadataNodeGroup (created by default —
+    // ensured on epoch creation / load). Double-click the box in the lane to
+    // open the group and attach a provenance chain to either bound.
+    root.appendChild(el("h3", "insp-sect", "Temporal paradata"));
+    const pdgId = store.epochParadataGroup(nodeId);
+    if (pdgId) {
+      const props = store.doc.graph.edges
+        .filter(
+          (e) => e.edge_type === "is_in_paradata_nodegroup" && e.target === pdgId,
+        )
+        .map((e) => store.node(e.source))
+        .filter((n): n is EmNode => !!n && n.node_type === "property");
+      for (const p of props) {
+        const v = ((p.data ?? {}) as Record<string, unknown>).value;
+        const row = el("div", "insp-link-row");
+        const b = el(
+          "button",
+          "insp-link",
+          `→ ${p.name || p.id}${v != null && v !== "" ? ` = ${v}` : ""}`,
+        );
+        b.addEventListener("click", () => cb.onJump(p.id));
+        row.appendChild(b);
+        root.appendChild(row);
+      }
+      root.appendChild(
+        el("div", "insp-hint", "Double-click the box in the lane to open it."),
+      );
+    }
+
+    // Phases (sub-epochs): split this epoch/phase into ordered sub-periods.
+    // Every epoch (and every phase, recursively) can hold phases.
+    root.appendChild(el("h3", "insp-sect", "Phases"));
+    const phases = store.epochPhases(nodeId);
+    for (const ph of phases) {
+      const pn = store.node(ph);
+      const pd = (pn?.data ?? {}) as Record<string, unknown>;
+      const span =
+        pd.start_time != null || pd.end_time != null
+          ? `  (${pd.start_time ?? "?"}–${pd.end_time ?? "?"})`
+          : "";
+      const row = el("div", "insp-link-row");
+      const b = el("button", "insp-link", `→ ${pn?.name || ph}${span}`);
+      b.addEventListener("click", () => cb.onJump(ph));
+      row.appendChild(b);
+      const col =
+        typeof pd.color === "string" && toHexColor(pd.color) ? pd.color : null;
+      if (col) {
+        const dot = el("span", "insp-phase-dot");
+        (dot as HTMLElement).style.background = col as string;
+        row.insertBefore(dot, b);
+      }
+      root.appendChild(row);
+    }
     const pbar = el("div", "insp-actions");
-    const addProp = el(
-      "button",
-      "insp-btn",
-      "+ Temporal property (paradata)",
-    ) as HTMLButtonElement;
-    addProp.title =
-      "Create a PropertyNode (start/end… from the qualia vocabulary) inside this epoch's paradata group";
-    addProp.addEventListener("click", () => cb.onEpochAddProperty(nodeId));
-    pbar.appendChild(addProp);
+    const addPh = el("button", "insp-btn", "+ Add phase") as HTMLButtonElement;
+    addPh.title = "Create a sub-epoch (phase) inside this epoch";
+    addPh.addEventListener("click", () => cb.onAddPhase(nodeId));
+    pbar.appendChild(addPh);
     root.appendChild(pbar);
+
+    // coherence warnings (start/end order, phases within the parent span, …)
+    const warns = store.epochCoherenceWarnings(nodeId);
+    if (warns.length) {
+      const box = el("div", "insp-warn");
+      box.appendChild(el("div", "insp-warn-title", "⚠ Coherence"));
+      for (const w of warns) box.appendChild(el("div", "insp-warn-item", w));
+      root.appendChild(box);
+    }
   }
 
   // group actions

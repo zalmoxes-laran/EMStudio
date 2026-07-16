@@ -193,19 +193,25 @@ export class DocumentStore {
     (layout.positions ??= {})[id] = pos ?? { x: 0, y, w: 140, h: 30 };
     this.emit();
     this.emitOp({ op: "add_node", node }); // swimlane is layout; the EpochNode is the graph part
+    // a new epoch always gets its temporal paradata scaffold (group + the two
+    // absolute_time_* properties), so the chronology is authorable as paradata
+    this.ensureEpochTemporalParadata(id);
     return node;
   }
 
   /** Move an epoch's swimlane one slot up (dir -1) or down (dir +1) in the
    *  stack, restacking the y of all lanes. Layout-only (no op-log: lane order
    *  is a visualisation concern; epoch membership stays semantic via edges). */
-  reorderEpoch(epochId: string, dir: -1 | 1): void {
+  reorderEpoch(epochId: string, dir: -1 | 1): boolean {
+    // reordering an epoch that already holds units risks upward-connection
+    // errors (arrows point down within the stack) — block it (E.D.'s rule)
+    if (!this.isEpochEmpty(epochId)) return false;
     const lanes = this.doc.layout?.swimlanes;
-    if (!lanes || lanes.length < 2) return;
+    if (!lanes || lanes.length < 2) return false;
     const sorted = [...lanes].sort((a, b) => a.y - b.y); // current visual order
     const i = sorted.findIndex((l) => l.epoch_id === epochId);
     const j = i + dir;
-    if (i < 0 || j < 0 || j >= sorted.length) return;
+    if (i < 0 || j < 0 || j >= sorted.length) return false;
     this.checkpoint();
     [sorted[i], sorted[j]] = [sorted[j], sorted[i]];
     let y = Math.min(...lanes.map((l) => l.y)); // keep the stack's top anchor
@@ -215,6 +221,317 @@ export class DocumentStore {
       y += l.height;
     });
     this.emit();
+    return true;
+  }
+
+  // ---- Epoch temporal paradata (EM 1.6) --------------------------------
+  // An epoch's absolute chronology (start/end) is authored as two PropertyNodes
+  // — absolute_time_start / absolute_time_end — inside the epoch's
+  // ParadataNodeGroup (has_paradata_nodegroup, datamodel 1.6.1). The property
+  // VALUE mirrors the epoch's start_time/end_time attribute (what Matrix reads),
+  // and the property is the anchor for a provenance chain
+  // (combiner → extractor → document). The two views stay in sync via
+  // setEpochBound / setPropertyValue.
+
+  /** The ParadataNodeGroup attached to an epoch, or null. */
+  epochParadataGroup(epochId: string): string | null {
+    for (const e of this.doc.graph.edges)
+      if (e.source === epochId && e.edge_type === "has_paradata_nodegroup")
+        return e.target;
+    return null;
+  }
+
+  /** The PropertyNode of a given property_type inside a paradata group. */
+  private propInGroup(pdgId: string, propType: string): EmNode | undefined {
+    for (const e of this.doc.graph.edges) {
+      if (e.edge_type === "is_in_paradata_nodegroup" && e.target === pdgId) {
+        const n = this.node(e.source);
+        if (
+          n &&
+          n.node_type === "property" &&
+          (n.data as Record<string, unknown> | undefined)?.property_type ===
+            propType
+        )
+          return n;
+      }
+    }
+    return undefined;
+  }
+
+  /** The epoch owning the paradata group a temporal PropertyNode lives in. */
+  epochOfTemporalProperty(propId: string): string | null {
+    let pdgId: string | null = null;
+    for (const e of this.doc.graph.edges)
+      if (e.edge_type === "is_in_paradata_nodegroup" && e.source === propId) {
+        pdgId = e.target;
+        break;
+      }
+    if (!pdgId) return null;
+    for (const e of this.doc.graph.edges)
+      if (e.edge_type === "has_paradata_nodegroup" && e.target === pdgId)
+        return e.source;
+    return null;
+  }
+
+  /** Ensure an epoch has a ParadataNodeGroup holding absolute_time_start /
+   *  absolute_time_end PropertyNodes, seeding each value from the epoch's
+   *  start_time/end_time. Idempotent — returns the group + property ids. */
+  ensureEpochTemporalParadata(
+    epochId: string,
+  ): { pdgId: string; startId: string; endId: string } | null {
+    const epoch = this.node(epochId);
+    if (!epoch || epoch.node_type !== "EpochNode") return null;
+    const ed = (epoch.data ?? {}) as Record<string, unknown>;
+    // A stored position matters: Matrix skips nodes without one, so a
+    // freshly-created group/property would be invisible. Seed positions in the
+    // epoch's lane; the matrix anchoring pass then tucks them bottom-left.
+    const lane = this.doc.layout?.swimlanes?.find((l) => l.epoch_id === epochId);
+    const laneY = lane?.y ?? 0;
+    const laneH = lane?.height ?? 200;
+    const baseY = laneY + Math.max(0, laneH - 46);
+    let pdgId = this.epochParadataGroup(epochId);
+    if (!pdgId) {
+      const g = this.addNode(
+        {
+          id: this.newId(),
+          name: `${epoch.name ?? "Epoch"} · paradata`,
+          node_type: "ParadataNodeGroup",
+          description: "",
+        },
+        { x: 10, y: baseY - 4, w: 200, h: 44 },
+      );
+      pdgId = g.id;
+      this.addEdge(epochId, pdgId, "has_paradata_nodegroup");
+    }
+    let slot = 0;
+    const ensureProp = (propType: string, boundKey: string): string => {
+      const existing = this.propInGroup(pdgId!, propType);
+      if (existing) return existing.id;
+      const seed = ed[boundKey] != null ? String(ed[boundKey]) : "";
+      const p = this.addNode(
+        {
+          id: this.newId(),
+          name: propType,
+          node_type: "property",
+          description: "",
+          data: { property_type: propType, value: seed },
+        },
+        { x: 20 + slot++ * 100, y: baseY, w: 90, h: 30 },
+      );
+      this.addEdge(p.id, pdgId!, "is_in_paradata_nodegroup");
+      return p.id;
+    };
+    const startId = ensureProp("absolute_time_start", "start_time");
+    const endId = ensureProp("absolute_time_end", "end_time");
+    return { pdgId, startId, endId };
+  }
+
+  /** Ensure EVERY epoch has its temporal ParadataNodeGroup — a SILENT
+   *  load-time completion: pushes nodes/edges/positions straight onto the doc,
+   *  with NO checkpoint, NO op emission and NO change event (so it neither
+   *  pollutes undo nor pushes structural additions to a sync host). */
+  ensureAllEpochParadata(): void {
+    const g = this.doc.graph;
+    const layout = (this.doc.layout ??= {});
+    const positions = (layout.positions ??= {});
+    for (const epoch of [...g.nodes]) {
+      if (epoch.node_type !== "EpochNode") continue;
+      // only top-level epochs (they own a swimlane) get the auto box for now;
+      // phases (sub-epochs, no lane) get theirs when phase rendering lands
+      if (!layout.swimlanes?.some((l) => l.epoch_id === epoch.id)) continue;
+      if (this.epochParadataGroup(epoch.id)) continue;
+      const ed = (epoch.data ?? {}) as Record<string, unknown>;
+      const lane = layout.swimlanes?.find((l) => l.epoch_id === epoch.id);
+      const baseY = (lane?.y ?? 0) + Math.max(0, (lane?.height ?? 200) - 46);
+      const pdgId = this.newId();
+      g.nodes.push({
+        id: pdgId,
+        name: `${epoch.name ?? "Epoch"} · paradata`,
+        node_type: "ParadataNodeGroup",
+        description: "",
+      });
+      positions[pdgId] = { x: 10, y: baseY - 4, w: 200, h: 44 };
+      g.edges.push({
+        id: `${epoch.id}__has_paradata_nodegroup__${pdgId}`,
+        source: epoch.id,
+        target: pdgId,
+        edge_type: "has_paradata_nodegroup",
+      });
+      let slot = 0;
+      for (const [pt, bk] of [
+        ["absolute_time_start", "start_time"],
+        ["absolute_time_end", "end_time"],
+      ] as const) {
+        const pid = this.newId();
+        g.nodes.push({
+          id: pid,
+          name: pt,
+          node_type: "property",
+          description: "",
+          data: { property_type: pt, value: ed[bk] != null ? String(ed[bk]) : "" },
+        });
+        positions[pid] = { x: 20 + slot++ * 100, y: baseY, w: 90, h: 30 };
+        g.edges.push({
+          id: `${pid}__is_in_paradata_nodegroup__${pdgId}`,
+          source: pid,
+          target: pdgId,
+          edge_type: "is_in_paradata_nodegroup",
+        });
+      }
+    }
+  }
+
+  // ---- Phases (sub-epochs, EM 1.6 periodisation) -----------------------
+  // A phase is an EpochNode connected to its parent epoch by has_sub_epoch
+  // (reverse is_in_epoch). Phases partition the parent's time-span. Rendering
+  // as lane sub-bands comes later; here we manage the data + coherence.
+
+  /** The sub-epochs (phases) of an epoch, in creation order. */
+  epochPhases(epochId: string): string[] {
+    const out: string[] = [];
+    for (const e of this.doc.graph.edges)
+      if (e.edge_type === "has_sub_epoch" && e.source === epochId)
+        out.push(e.target);
+    return out;
+  }
+
+  /** The parent epoch of a phase (via has_sub_epoch), or null if top-level. */
+  parentEpoch(phaseId: string): string | null {
+    for (const e of this.doc.graph.edges)
+      if (e.edge_type === "has_sub_epoch" && e.target === phaseId)
+        return e.source;
+    return null;
+  }
+
+  /** True if no unit is attributed to this epoch (or its phases) via
+   *  has_first_epoch / survive_in_epoch — i.e. it is safe to reorder without
+   *  risking upward-connection errors. */
+  isEpochEmpty(epochId: string): boolean {
+    const ids = new Set([epochId, ...this.epochPhases(epochId)]);
+    for (const e of this.doc.graph.edges)
+      if (
+        (e.edge_type === "has_first_epoch" ||
+          e.edge_type === "survive_in_epoch") &&
+        ids.has(e.target)
+      )
+        return false;
+    return true;
+  }
+
+  /** Create a phase (sub-epoch) under an epoch: an EpochNode joined by
+   *  has_sub_epoch. No swimlane (rendering as a lane sub-band comes later). */
+  addPhase(epochId: string, name?: string, pos?: LayoutRect): EmNode {
+    this.checkpoint();
+    const id = this.newId();
+    const n = this.epochPhases(epochId).length + 1;
+    const node: EmNode = {
+      id,
+      name: name ?? `Phase ${n}`,
+      node_type: "EpochNode",
+      description: "",
+    };
+    this.doc.graph.nodes.push(node);
+    if (pos) {
+      const layout = (this.doc.layout ??= {});
+      (layout.positions ??= {})[id] = pos;
+    }
+    this.emit();
+    this.emitOp({ op: "add_node", node });
+    this.addEdge(epochId, id, "has_sub_epoch");
+    return node;
+  }
+
+  /** Chronology-coherence warnings for an epoch and its phases: bounds order,
+   *  phases within the parent span, sibling phase overlap. Empty = coherent. */
+  epochCoherenceWarnings(epochId: string): string[] {
+    const warns: string[] = [];
+    const num = (v: unknown): number | null => {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    };
+    const bounds = (
+      id: string,
+    ): { s: number | null; e: number | null; name: string } => {
+      const d = (this.node(id)?.data ?? {}) as Record<string, unknown>;
+      return {
+        s: num(d.start_time),
+        e: num(d.end_time),
+        name: this.node(id)?.name ?? id,
+      };
+    };
+    const ep = bounds(epochId);
+    if (ep.s != null && ep.e != null && ep.s > ep.e)
+      warns.push(`${ep.name}: start (${ep.s}) is after end (${ep.e}).`);
+    const phases = this.epochPhases(epochId).map(bounds);
+    for (const ph of phases) {
+      if (ph.s != null && ph.e != null && ph.s > ph.e)
+        warns.push(`${ph.name}: start (${ph.s}) is after end (${ph.e}).`);
+      if (ep.s != null && ph.s != null && ph.s < ep.s)
+        warns.push(`${ph.name}: starts before its epoch (${ph.s} < ${ep.s}).`);
+      if (ep.e != null && ph.e != null && ph.e > ep.e)
+        warns.push(`${ph.name}: ends after its epoch (${ph.e} > ${ep.e}).`);
+    }
+    const withStart = phases.filter((p) => p.s != null) as {
+      s: number;
+      e: number | null;
+      name: string;
+    }[];
+    withStart.sort((a, b) => a.s - b.s);
+    for (let i = 1; i < withStart.length; i++)
+      if (
+        withStart[i - 1].e != null &&
+        withStart[i].s < (withStart[i - 1].e as number)
+      )
+        warns.push(`${withStart[i].name} overlaps ${withStart[i - 1].name}.`);
+    return warns;
+  }
+
+  /** Set an epoch's start/end bound; mirror the value into its
+   *  absolute_time_* PropertyNode when the paradata group exists. */
+  setEpochBound(epochId: string, which: "start" | "end", value: string): void {
+    const epoch = this.node(epochId);
+    if (!epoch) return;
+    const v = value.trim();
+    const boundKey = which === "start" ? "start_time" : "end_time";
+    const propType =
+      which === "start" ? "absolute_time_start" : "absolute_time_end";
+    const d = { ...((epoch.data ?? {}) as Record<string, unknown>) };
+    if (v === "") delete d[boundKey];
+    else d[boundKey] = v;
+    this.updateNode(epochId, { data: d });
+    const pdgId = this.epochParadataGroup(epochId);
+    if (pdgId) {
+      const p = this.propInGroup(pdgId, propType);
+      if (p) {
+        const pd = { ...((p.data ?? {}) as Record<string, unknown>) };
+        pd.value = v;
+        this.updateNode(p.id, { data: pd });
+      }
+    }
+  }
+
+  /** Set a PropertyNode's value; if it is an epoch temporal property, mirror
+   *  the value back onto the owning epoch's start_time/end_time. */
+  setPropertyValue(propId: string, value: string): void {
+    const p = this.node(propId);
+    if (!p) return;
+    const v = value.trim();
+    const pd = { ...((p.data ?? {}) as Record<string, unknown>) };
+    pd.value = v;
+    this.updateNode(propId, { data: pd });
+    const propType = pd.property_type;
+    if (propType === "absolute_time_start" || propType === "absolute_time_end") {
+      const epochId = this.epochOfTemporalProperty(propId);
+      const epoch = epochId ? this.node(epochId) : undefined;
+      if (epoch) {
+        const boundKey =
+          propType === "absolute_time_start" ? "start_time" : "end_time";
+        const ed = { ...((epoch.data ?? {}) as Record<string, unknown>) };
+        if (v === "") delete ed[boundKey];
+        else ed[boundKey] = v;
+        this.updateNode(epoch.id, { data: ed });
+      }
+    }
   }
 
   addEdge(source: string, target: string, edgeType: string): EmEdge {

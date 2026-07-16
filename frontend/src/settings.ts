@@ -16,9 +16,15 @@ export interface DeveloperSettings {
   showNodeIds: boolean;
 }
 
+export interface InteractionSettings {
+  /** show a tooltip when hovering a connector (edge); on by default */
+  edgeTooltips: boolean;
+}
+
 export interface Settings {
   sync: SyncSettings;
   developer: DeveloperSettings;
+  interaction: InteractionSettings;
 }
 
 const KEY = "emstudio.settings";
@@ -26,6 +32,7 @@ const KEY = "emstudio.settings";
 const DEFAULTS: Settings = {
   sync: { protocol: "ws", host: "localhost", port: 8788, tool: "blender" },
   developer: { showNodeIds: false },
+  interaction: { edgeTooltips: true },
 };
 
 /** Sync targets. `enabled:false` entries render disabled — the host role is a
@@ -39,7 +46,11 @@ export const SYNC_TOOLS: { value: string; label: string; enabled: boolean }[] =
   ];
 
 function clone(s: Settings): Settings {
-  return { sync: { ...s.sync }, developer: { ...s.developer } };
+  return {
+    sync: { ...s.sync },
+    developer: { ...s.developer },
+    interaction: { ...s.interaction },
+  };
 }
 
 function load(): Settings {
@@ -51,6 +62,7 @@ function load(): Settings {
     return {
       sync: { ...DEFAULTS.sync, ...(parsed.sync ?? {}) },
       developer: { ...DEFAULTS.developer, ...(parsed.developer ?? {}) },
+      interaction: { ...DEFAULTS.interaction, ...(parsed.interaction ?? {}) },
     };
   } catch {
     return clone(DEFAULTS);

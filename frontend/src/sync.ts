@@ -14,6 +14,20 @@
 import type { GraphOp } from "./model";
 import type { EmDocument } from "./types";
 
+/** What the connected HOST is editing — surfaced in the footer sidecar badge.
+ *  All fields optional so an older host that never sends `host_info` simply
+ *  shows less. `label` is a free-form status line the host may push. */
+export interface HostInfo {
+  /** the host's self-reported tool id, e.g. "emtools" / "blender" */
+  tool?: string;
+  /** the document the host has open, e.g. "TempluMare.em.json" or a .graphml */
+  file?: string;
+  /** remote database / project name, when the host is DB-backed */
+  database?: string;
+  /** any extra status text the host wants displayed verbatim */
+  label?: string;
+}
+
 export type SyncMessage =
   | {
       v: number;
@@ -24,8 +38,16 @@ export type SyncMessage =
       source?: string;
     }
   | { v: number; type: "request_snapshot"; source?: string }
-  | { v: number; type: "snapshot"; doc: EmDocument; source?: string }
+  | {
+      v: number;
+      type: "snapshot";
+      doc: EmDocument;
+      source?: string;
+      /** optional host metadata piggy-backed on the snapshot */
+      host?: HostInfo;
+    }
   | { v: number; type: "request_save"; source?: string }
+  | ({ v: number; type: "host_info"; source?: string } & HostInfo)
   | ({ v: number; type: "op"; source?: string } & GraphOp);
 
 export interface SyncCallbacks {
@@ -35,6 +57,8 @@ export interface SyncCallbacks {
   /** the host sent its full graph as an .em.json doc (ADR-002 snapshot-READ):
    * "sync mode = see the host's data". Replaces the local document. */
   onSnapshot: (doc: EmDocument) => void;
+  /** the host reported what it is editing (tool / file / database) */
+  onHostInfo?: (info: HostInfo) => void;
   onStatus: (state: "connecting" | "open" | "closed") => void;
 }
 
@@ -96,8 +120,13 @@ export class SyncClient {
       if (msg.source === SOURCE) return; // ignore our own echo
       if (msg.type === "select" && (msg.node_id || msg.node_ids?.length))
         this.cb?.onSelect(msg.node_id ?? "", msg.node_ids);
-      else if (msg.type === "snapshot") this.cb?.onSnapshot(msg.doc);
-      else if (msg.type === "op") {
+      else if (msg.type === "snapshot") {
+        this.cb?.onSnapshot(msg.doc);
+        if (msg.host) this.cb?.onHostInfo?.(msg.host);
+      } else if (msg.type === "host_info") {
+        const { type: _t, v: _v, source: _s, ...info } = msg;
+        this.cb?.onHostInfo?.(info as HostInfo);
+      } else if (msg.type === "op") {
         const { type: _t, v: _v, source: _s, ...op } = msg;
         this.cb?.onOp(op as GraphOp);
       }

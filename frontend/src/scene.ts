@@ -30,6 +30,11 @@ export interface Lane {
   label: string;
   y: number;
   height: number;
+  /** the epoch's own colour (data.color, e.g. #CCFFCC) — tints the swimlane */
+  color?: string;
+  /** epoch temporal bounds (data.start_time / end_time), shown in the label */
+  start?: string;
+  end?: string;
 }
 
 /** yEd-style group container drawn on the canvas (open box or closed tab). */
@@ -42,6 +47,10 @@ export interface SceneGroup {
   headerH: number;
   title: string;
   folded: boolean;
+  /** an epoch's temporal ParadataNodeGroup: rendered as a compact, always-closed
+   *  rounded box with NO ± toggle (double-click to enter) — a custom rule that
+   *  sets it apart from ordinary group containers. */
+  epochParadata?: boolean;
 }
 
 export interface Scene {
@@ -63,6 +72,7 @@ export function hitGroupToggle(
   wy: number,
 ): SceneGroup | null {
   for (const g of scene.groups ?? []) {
+    if (g.epochParadata) continue; // no ± toggle — enter it by double-click only
     if (wx >= g.x + 3 && wx <= g.x + 19 && wy >= g.y + 3 && wy <= g.y + 19)
       return g;
   }

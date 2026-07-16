@@ -4,11 +4,12 @@ import { renderInspector } from "./inspector";
 import { DocumentStore } from "./model";
 import { buildNodeList } from "./nodelist";
 import { buildOverview } from "./overview";
-import { edgeStyle, SEQUENCE_EDGES } from "./palette";
+import { edgeStyle } from "./palette";
 import { buildPalette, SECTIONS } from "./palette-ui";
-import { render, type ConnectDrag } from "./renderer";
+import { edgeAt, render, type ConnectDrag } from "./renderer";
 import {
   allowedEdgeTypes,
+  classOf,
   connectValidity,
   edgeTypeLabel,
   EM_VERSION,
@@ -26,7 +27,7 @@ import {
   setWindowTitle,
   baseName,
 } from "./tauri";
-import { SyncClient } from "./sync";
+import { type HostInfo, SyncClient } from "./sync";
 import {
   getSettings,
   getSyncUrl,
@@ -38,8 +39,10 @@ import {
   CIRCLES,
   type CircleKey,
   defaultVisibleCircles,
+  type DetailTemplate,
   edgeCircle,
   nodeCircle,
+  TEMPLATES,
 } from "./filters";
 import { type Qualia, vocabularyFor } from "./vocab";
 import { versionBreakdown } from "./versions";
@@ -53,7 +56,7 @@ import {
 } from "./scene";
 import { GROUP_HEADER, GROUP_PAD } from "./views/matrix";
 import { setupSearch } from "./search";
-import type { EmDocument, ViewKind } from "./types";
+import type { EmDocument, EmEdge, ViewKind } from "./types";
 import { buildGroupScene } from "./views/context";
 import { buildGraphScene, type GraphAlgorithm } from "./views/graph";
 import { buildMatrixScene } from "./views/matrix";
@@ -94,7 +97,11 @@ const viewports: Record<ViewKind, Viewport> = {
 };
 let hoverId: string | null = null;
 let selectedId: string | null = null;
-let edgeFilter: "all" | "sequence" | "none" = "all";
+// Connector (edge) hover/selection is separate from node selection: the
+// selected edge is stored as the document edge (survives scene rebuilds, and
+// is what Delete removes); hover is a transient index into the current scene.
+let selectedEdge: EmEdge | null = null;
+let hoverEdgeIdx: number | null = null;
 let placingType: string | null = null;
 let connect: ConnectDrag | null = null;
 /** graph-view "liquid" filters: hidden node / edge types */
@@ -167,7 +174,50 @@ const nodelistEl = document.getElementById("nodelist")!;
 
 // EM-version pill → click for the version breakdown (config files + ontologies)
 const verBtn = document.getElementById("em-version")!;
-verBtn.textContent = `EM ${EM_VERSION}`;
+// Sits in the footer right after the "Extended Matrix" wordmark, so it reads
+// "Extended Matrix 1.6" — the version alone, no redundant "EM" prefix.
+verBtn.textContent = EM_VERSION;
+
+// Footer word for the current authoring mode (ADR-002): Standalone = editing a
+// local .em.json; Sidecar = live-synced to a host. Driven by the sync socket.
+const modeIndicator = document.getElementById("mode-indicator")!;
+const sidecarDetail = document.getElementById("sidecar-detail")!;
+// What the connected host is editing (tool / file / database / endpoint). Tool
+// + endpoint are known locally from settings; file/database arrive from the
+// host's `host_info` (or a snapshot's `host`). Reset when we disconnect.
+let hostInfo: HostInfo = {};
+function renderSidecarDetail(): void {
+  const segs: { k: string; v: string }[] = [];
+  const tool = hostInfo.tool || syncToolLabel();
+  if (tool) segs.push({ k: "tool", v: tool });
+  // the host's document (.em.json / .graphml) and remote database are shown as
+  // separate segments; a free-form label stands in if neither is reported
+  if (hostInfo.file) segs.push({ k: "doc", v: hostInfo.file });
+  if (hostInfo.database) segs.push({ k: "db", v: hostInfo.database });
+  if (!hostInfo.file && !hostInfo.database && hostInfo.label)
+    segs.push({ k: "doc", v: hostInfo.label });
+  segs.push({ k: "at", v: getSyncUrl().replace(/^wss?:\/\//, "") });
+  sidecarDetail.innerHTML = "";
+  for (const s of segs) {
+    const seg = document.createElement("span");
+    seg.className = "sd-seg";
+    const k = document.createElement("span");
+    k.className = "sd-k";
+    k.textContent = s.k;
+    seg.append(k, document.createTextNode(s.v));
+    sidecarDetail.appendChild(seg);
+  }
+}
+function setModeIndicator(sidecar: boolean): void {
+  modeIndicator.textContent = sidecar ? "Sidecar mode" : "Standalone mode";
+  sidecarDetail.classList.toggle("hidden", !sidecar);
+  if (sidecar) renderSidecarDetail();
+  else {
+    hostInfo = {};
+    sidecarDetail.innerHTML = "";
+  }
+}
+setModeIndicator(false);
 let verPop: HTMLDivElement | null = null;
 function closeVerPop(): void {
   verPop?.remove();
@@ -220,7 +270,11 @@ verBtn.addEventListener("click", () => {
   document.body.appendChild(pop);
   const rect = verBtn.getBoundingClientRect();
   pop.style.left = Math.min(rect.left, window.innerWidth - 316) + "px";
-  pop.style.top = rect.bottom + 6 + "px";
+  // The trigger now lives in the footer, so prefer opening UPWARD; only drop
+  // below when there is not enough room above (short viewport).
+  const ph = pop.offsetHeight;
+  const openUp = rect.top - ph - 6 >= 0 || rect.top > window.innerHeight - rect.bottom;
+  pop.style.top = (openUp ? Math.max(6, rect.top - ph - 6) : rect.bottom + 6) + "px";
   verPop = pop;
   setTimeout(() => {
     document.addEventListener("pointerdown", onVerOutside, true);
@@ -254,11 +308,9 @@ function resizeCanvas(): void {
   draw();
 }
 
-const edgeVisible = (t: string | undefined): boolean => {
-  if (edgeFilter === "none") return false;
-  if (edgeFilter === "sequence") return SEQUENCE_EDGES.has(t ?? "");
-  return true;
-};
+// Edges are filtered by the detail-rings (buildScenes drops hidden edge types
+// from the scene), so every edge in the scene is meant to be shown.
+const edgeVisible = (_t?: string): boolean => true;
 
 const inContext = (): boolean => contextStack.length > 0;
 
@@ -280,6 +332,9 @@ function draw(): void {
     overview.update(null, viewport(), w, h);
     return;
   }
+  const selectedEdgeIdx = selectedEdge
+    ? s.edges.findIndex((se) => sameEdge(se.edge, selectedEdge!))
+    : -1;
   render(
     ctx,
     s,
@@ -289,7 +344,9 @@ function draw(): void {
       selectedId,
       selectedIds,
       edgeVisible,
-      filterKey: edgeFilter,
+      hoverEdgeIdx,
+      selectedEdgeIdx,
+      filterKey: "all",
       connect,
       editable: true,
     },
@@ -364,15 +421,55 @@ function centerOn(nodeId: string): void {
   draw();
 }
 
+/** Same document edge? Prefer id, else the (source, type, target) triple. */
+function sameEdge(a: EmEdge, b: EmEdge): boolean {
+  if (a.id && b.id) return a.id === b.id;
+  return (
+    a.source === b.source &&
+    a.target === b.target &&
+    a.edge_type === b.edge_type
+  );
+}
+
 function select(nodeId: string | null): void {
   selectedId = nodeId;
   selectedIds = new Set(nodeId ? [nodeId] : []);
+  selectedEdge = null; // node and connector selection are mutually exclusive
   refreshInspector();
   nodeList.setSelected(nodeId);
   draw();
   // mirror the selection to a connected peer (Blender), unless this
   // selection just arrived FROM the peer (avoid the echo loop)
   if (!applyingRemoteSelect) sync.sendSelect(nodeId, [...selectedIds]);
+}
+
+/** Index (into the current scene's edges) of the connector under a world point,
+ *  within a scale-aware grab tolerance; -1 if none. Uses the SAME edgeVisible +
+ *  filter the renderer draws with, so picking matches what is on screen. */
+function pickEdgeAt(wx: number, wy: number): number {
+  const s = scene();
+  if (!s) return -1;
+  const tol = 6 / viewport().scale; // ~6 screen px, easy to grab
+  return edgeAt(
+    s,
+    { hoverId, selectedId, edgeVisible, filterKey: "all" },
+    wx,
+    wy,
+    tol,
+  );
+}
+
+/** Select a connector (edge). Clears any node selection so Delete/Backspace
+ *  and the accent target the edge. Not mirrored to peers (nodes-only channel). */
+function selectEdge(edge: EmEdge | null): void {
+  selectedEdge = edge;
+  if (edge) {
+    selectedId = null;
+    selectedIds = new Set();
+    nodeList.setSelected(null);
+  }
+  refreshInspector();
+  draw();
 }
 
 /** Shift/Cmd-click: toggle a node in the multi-selection (D3). */
@@ -403,37 +500,55 @@ function selectMany(ids: string[]): void {
 
 function refreshInspector(): void {
   if (!store) return;
-  renderInspector(inspector, store, selectedId, {
-    onJump: (id) => {
-      select(id);
-      centerOn(id);
+  renderInspector(
+    inspector,
+    store,
+    selectedId,
+    {
+      onJump: (id) => {
+        select(id);
+        centerOn(id);
+      },
+      onClose: () => select(null),
+      onDeleteNode: (id) => {
+        store!.deleteNode(id);
+        select(null);
+      },
+      onDeleteEdge: (edge) => {
+        // clear first so the store's onChange re-render doesn't paint a panel
+        // for the edge we're removing
+        if (selectedEdge && sameEdge(selectedEdge, edge)) selectedEdge = null;
+        store!.deleteEdge(edge);
+      },
+      onToggleFold: (gid) => store!.setFolded(gid, !store!.isFolded(gid)),
+      onEnterGroup: enterGroup,
+      onAddPhase: (epochId) => {
+        const ph = store!.addPhase(epochId);
+        select(ph.id);
+        toast(`phase ${ph.name} created`);
+      },
     },
-    onClose: () => select(null),
-    onDeleteNode: (id) => {
-      store!.deleteNode(id);
-      select(null);
-    },
-    onDeleteEdge: (edge) => store!.deleteEdge(edge),
-    onToggleFold: (gid) => store!.setFolded(gid, !store!.isFolded(gid)),
-    onEnterGroup: enterGroup,
-    onEpochAddProperty: addEpochParadataProperty,
-  });
+    selectedEdge,
+  );
 }
 
 function updateLegend(): void {
   legend.innerHTML = "";
   const s = scene();
-  if (!s || edgeFilter === "none") {
+  if (!s) {
     legend.classList.add("hidden");
     return;
   }
   const types = new Set<string>();
-  for (const e of s.edges)
-    if (edgeVisible(e.edge.edge_type)) types.add(e.edge.edge_type ?? "edge");
+  for (const e of s.edges) types.add(e.edge.edge_type ?? "edge");
   if (!types.size) {
     legend.classList.add("hidden");
     return;
   }
+  const head = document.createElement("div");
+  head.className = "pal-sect";
+  head.textContent = "Relations";
+  legend.appendChild(head);
   for (const t of [...types].sort()) {
     const st = edgeStyle(t);
     const item = document.createElement("span");
@@ -546,14 +661,32 @@ function filteredView(): {
     : undefined;
   let vNodes = foldedView?.nodes ?? doc.graph.nodes;
   let vEdges = foldedView?.edges ?? doc.graph.edges;
+  // an epoch's temporal ParadataNodeGroup is a structural part of the epoch
+  // (its chronology container), NOT regular paradata clutter — so it is always
+  // visible, exempt from the "Paradata nodes" ring toggle.
+  const byId = new Map(doc.graph.nodes.map((n) => [n.id, n]));
+  const epochPdg = new Set<string>();
+  for (const e of doc.graph.edges)
+    if (
+      e.edge_type === "has_paradata_nodegroup" &&
+      classOf(byId.get(e.source)?.node_type) === "EpochNode"
+    )
+      epochPdg.add(e.target);
   if (hiddenNodeTypes.size || hiddenEdgeTypes.size) {
-    vNodes = vNodes.filter((n) => !hiddenNodeTypes.has(n.node_type));
+    vNodes = vNodes.filter(
+      (n) => epochPdg.has(n.id) || !hiddenNodeTypes.has(n.node_type),
+    );
     // drop group containers left with NO visible member (else hollow boxes);
     // keep genuinely-empty authored groups.
     const mm = buildMembership(doc);
     let vis = new Set(vNodes.map((n) => n.id));
     vNodes = vNodes.filter((n) => {
       if (!isGroupType(n.node_type)) return true;
+      // a FOLDED group intentionally hides its members but must still render as
+      // a closed box, so never drop it as "hollow"
+      if (folded.has(n.id)) return true;
+      // epoch temporal paradata box: always kept (structural, custom-rendered)
+      if (epochPdg.has(n.id)) return true;
       const kids = [...(mm.childrenOf.get(n.id) ?? [])];
       return kids.length === 0 || kids.some((c) => vis.has(c));
     });
@@ -669,6 +802,10 @@ function loadDocument(
   }
   currentFilePath = path; // desktop: enables in-place Save; null in browser
   store = new DocumentStore(d);
+  // every epoch always carries its temporal ParadataNodeGroup — ensure it now,
+  // silently (before the change/op listeners are wired) so it neither pushes to
+  // a sync host nor lands on the undo stack.
+  store.ensureAllEpochParadata();
   store.onChange(() => {
     recomputeHiddenFromCircles(); // keep hidden sets in sync with new types
     buildScenes();
@@ -703,12 +840,15 @@ function loadDocument(
   nodeList.refresh();
   updateToolbar();
   updateBreadcrumb();
-  if (d.layout) {
+  // Matrix needs stored node POSITIONS. A doc may carry a layout object with
+  // NO usable positions — a fresh graph, or a Blender sync snapshot (its emjson
+  // layout has no matrix coordinates). In that case DON'T fall back to Graph:
+  // compute a fresh layout via em-core so the Matrix renders, then show it.
+  const hasPositions =
+    Object.keys(d.layout?.positions ?? {}).length > 0;
+  if (hasPositions) {
     setView(scenes.matrix ? "matrix" : "graph");
   } else {
-    // No layout section (e.g. a live snapshot from Blender, which exports
-    // layout=None) → the Matrix view has no positions. Compute a fresh layout
-    // via em-core so it renders, then show Matrix instead of falling to Graph.
     void runLayout(true)
       .then(() => {
         setView("matrix");
@@ -1494,49 +1634,6 @@ function openQualiaPicker(nodeId: string, wx: number, wy: number): void {
   document.addEventListener("keydown", onVocabKey, true);
 }
 
-// Add a temporal PropertyNode to an epoch's ParadataNodeGroup, creating the
-// group + has_paradata_nodegroup edge on first use (datamodel 1.6.1 lets an
-// EpochNode own a paradata group), then open the qualia picker to label it
-// (start/end…). Realises the epoch-paradata paradigm.
-function addEpochParadataProperty(epochId: string): void {
-  if (!store) return;
-  const st = store;
-  const vc = viewport().toWorld(wrap.clientWidth / 2, wrap.clientHeight / 2);
-  let pdgId: string | null = null;
-  for (const e of st.doc.graph.edges)
-    if (e.source === epochId && e.edge_type === "has_paradata_nodegroup") {
-      pdgId = e.target;
-      break;
-    }
-  if (!pdgId) {
-    pdgId = st.newId();
-    st.addNode(
-      {
-        id: pdgId,
-        name: `${st.node(epochId)?.name ?? "Epoch"} · paradata`,
-        node_type: "ParadataNodeGroup",
-        description: "",
-      },
-      { x: vc.x - 90, y: vc.y - 50, w: 180, h: 100 },
-    );
-    st.addEdge(epochId, pdgId, "has_paradata_nodegroup");
-  }
-  const propId = st.newId();
-  st.addNode(
-    {
-      id: propId,
-      name: st.freshLabel("property"),
-      node_type: "property",
-      description: "",
-    },
-    { x: vc.x, y: vc.y, w: 90, h: 30 },
-  );
-  st.addEdge(propId, pdgId, "is_in_paradata_nodegroup");
-  ensureCircleVisibleFor("property");
-  select(propId);
-  openQualiaPicker(propId, vc.x, vc.y);
-}
-
 // ---------- toolbar wiring ----------
 // header dropdown menus (File / Export): toggle on click, close on outside
 // click, close after picking an item (the item's own handler still fires).
@@ -1710,11 +1807,26 @@ btnSync.addEventListener("click", () => {
       // (ADR-002: "sync mode = see the host's data"). Replaces the document.
       loadDocument(doc, "Blender (sync)");
       info.textContent = "sync: loaded Blender's graph";
+      // provisional document label from the graph name, until the host reports
+      // its actual file/database via host_info
+      if (!hostInfo.file && !hostInfo.database) {
+        const gname = (doc.graph as { name?: string }).name;
+        if (gname) {
+          hostInfo = { ...hostInfo, label: gname };
+          renderSidecarDetail();
+        }
+      }
+    },
+    onHostInfo: (info2) => {
+      // the host told us what it is editing (tool / file / database) → show it
+      hostInfo = { ...hostInfo, ...info2 };
+      renderSidecarDetail();
     },
     onStatus: (state) => {
       btnSync.classList.toggle("active", state === "open");
       // clear, high-visibility signal that we are in live-sync mode
       document.body.classList.toggle("sync-active", state === "open");
+      setModeIndicator(state === "open");
       btnSync.textContent = state === "open" ? "Sync ●" : "Sync";
       if (state === "open") info.textContent = `sync: connected to ${syncUrl}`;
       else if (state === "closed")
@@ -1733,6 +1845,9 @@ const setHostInp = document.getElementById("set-sync-host") as HTMLInputElement;
 const setPortInp = document.getElementById("set-sync-port") as HTMLInputElement;
 const setUrlOut = document.getElementById("set-sync-url")!;
 const setDevUuid = document.getElementById("set-dev-uuid") as HTMLInputElement;
+const setEdgeTips = document.getElementById(
+  "set-edge-tooltips",
+) as HTMLInputElement;
 
 for (const t of SYNC_TOOLS) {
   const o = document.createElement("option");
@@ -1755,6 +1870,7 @@ function openSettings(): void {
   setHostInp.value = s.sync.host;
   setPortInp.value = String(s.sync.port);
   setDevUuid.checked = s.developer.showNodeIds;
+  setEdgeTips.checked = s.interaction.edgeTooltips;
   refreshSyncUrlPreview();
   settingsModal.classList.remove("hidden");
 }
@@ -1792,6 +1908,7 @@ settingsModal.addEventListener("click", (e) => {
       port,
     },
     developer: { showNodeIds: setDevUuid.checked },
+    interaction: { edgeTooltips: setEdgeTips.checked },
   };
   saveSettings(next);
   closeSettings();
@@ -1817,6 +1934,16 @@ const filterPanel = document.getElementById("filter-panel")!;
 function filterPanelOpen(): boolean {
   return !filterPanel.classList.contains("hidden");
 }
+function applyTemplate(t: DetailTemplate): void {
+  circleState[view] = new Set(t.circles);
+  recomputeHiddenFromCircles();
+  buildScenes();
+  updateLegend();
+  draw();
+  renderCirclesPanel();
+  if (view === "matrix") void refreshMatrixViewLayout();
+  else matrixViewLayout = null;
+}
 function renderCirclesPanel(): void {
   filterPanel.innerHTML = "";
   if (!store) return;
@@ -1837,6 +1964,33 @@ function renderCirclesPanel(): void {
   hint.className = "fp-hint";
   hint.textContent = `Detail level — ${view === "matrix" ? "Matrix" : "Graph"} view`;
   filterPanel.appendChild(hint);
+
+  // Templates (at the top): one-click presets that set BOTH node and edge
+  // rings (this replaced the old edge-only "All edges / Stratigraphic / None").
+  const eq = (t: DetailTemplate): boolean =>
+    t.circles.length === visible.size && t.circles.every((k) => visible.has(k));
+  const tmpl = document.createElement("div");
+  tmpl.className = "fp-template";
+  const tlbl = document.createElement("span");
+  tlbl.textContent = "Template";
+  const tsel = document.createElement("select");
+  const ph = document.createElement("option");
+  ph.value = "";
+  ph.textContent = "Custom…";
+  tsel.appendChild(ph);
+  for (const t of TEMPLATES) {
+    const o = document.createElement("option");
+    o.value = t.key;
+    o.textContent = t.label;
+    if (eq(t)) o.selected = true;
+    tsel.appendChild(o);
+  }
+  tsel.addEventListener("change", () => {
+    const t = TEMPLATES.find((x) => x.key === tsel.value);
+    if (t) applyTemplate(t);
+  });
+  tmpl.append(tlbl, tsel);
+  filterPanel.appendChild(tmpl);
 
   const addSection = (title: string, kind: "node" | "edge"): void => {
     const h = document.createElement("div");
@@ -1958,14 +2112,6 @@ btnLayout.addEventListener("click", async (ev) => {
     btnLayout.disabled = false;
   }
 });
-(document.getElementById("edge-filter") as HTMLSelectElement).addEventListener(
-  "change",
-  (ev) => {
-    edgeFilter = (ev.target as HTMLSelectElement).value as typeof edgeFilter;
-    updateLegend();
-    draw();
-  },
-);
 (document.getElementById("graph-layout") as HTMLSelectElement).addEventListener(
   "change",
   (ev) => {
@@ -2031,8 +2177,6 @@ let dragDetachPending = false; // Shift+drag a member → pull it out of its gro
 // nodes to pull out of their groups on shift+drag (whole selection if multi)
 let dragDetachSet: { id: string; container: string }[] = [];
 let spaceHeld = false; // Space → pan-always gesture (see pointerdown)
-let lastClickTime = 0;
-let lastClickId: string | null = null;
 
 function worldPos(e: MouseEvent): { x: number; y: number } {
   const rect = canvas.getBoundingClientRect();
@@ -2330,19 +2474,61 @@ canvas.addEventListener("pointermove", (e) => {
   // hover / tooltip
   const s = scene();
   if (!s) return;
+  const showId = getSettings().developer.showNodeIds;
   const hit = hitTest(s, w.x, w.y);
-  const newHover = hit?.id ?? null;
-  if (newHover !== hoverId) {
+  // A group container's big box shouldn't swallow a connector line running
+  // through its empty interior: over a container we still probe for an edge,
+  // so hover (and thus selection) reach it. Leaf nodes keep priority.
+  const overContainer =
+    !!hit && (s.groupsById?.has(hit.id) || isGroupType(hit.node.node_type));
+  const eiHover =
+    placingType || (hit && !overContainer) ? -1 : pickEdgeAt(w.x, w.y);
+  const newHoverEdge = eiHover >= 0 ? eiHover : null;
+  // when a connector is hovered, don't also accent the node/container under it
+  const newHover = newHoverEdge != null ? null : (hit?.id ?? null);
+  if (newHover !== hoverId || newHoverEdge !== hoverEdgeIdx) {
     hoverId = newHover;
+    hoverEdgeIdx = newHoverEdge;
     draw();
   }
-  if (hit && !placingType) {
+  // don't fight the Space-held pan cursor: leave the inline cursor empty so the
+  // `.space-pan` grab/grabbing CSS wins while the spacebar is down
+  canvas.style.cursor = spaceHeld
+    ? ""
+    : newHoverEdge != null
+      ? "pointer"
+      : "default";
+  if (
+    newHoverEdge != null &&
+    !placingType &&
+    getSettings().interaction.edgeTooltips
+  ) {
+    // connector tooltip: the edge type + its endpoints (endpoint labels follow
+    // the same id-hiding rule as node tooltips)
+    const se = s.edges[newHoverEdge];
+    const endName = (id: string): string => {
+      const n = s.byId.get(id)?.node;
+      return String(n?.name || (showId ? id : (n?.node_type ?? id)));
+    };
+    tooltip.innerHTML = `<b></b> <span class="tt-type"></span><br><span class="tt-desc"></span>`;
+    (tooltip.children[0] as HTMLElement).textContent = "connector";
+    (tooltip.children[1] as HTMLElement).textContent =
+      `[${se.edge.edge_type ?? "edge"}]`;
+    (tooltip.children[3] as HTMLElement).textContent =
+      `${endName(se.source)} → ${endName(se.target)}`;
+    tooltip.style.left = Math.min(e.clientX + 14, innerWidth - 380) + "px";
+    tooltip.style.top = e.clientY + 14 + "px";
+    tooltip.classList.remove("hidden");
+  } else if (hit && !placingType) {
+    // The node id only surfaces when the developer "show node ids" setting is
+    // on — otherwise both the title fallback and the type line stay id-free.
     tooltip.innerHTML = `<b></b> <span class="tt-type"></span><br><span class="tt-desc"></span>`;
     (tooltip.children[0] as HTMLElement).textContent = String(
-      hit.node.name || hit.id,
+      hit.node.name || (showId ? hit.id : hit.node.node_type),
     );
-    (tooltip.children[1] as HTMLElement).textContent =
-      `[${hit.node.node_type}] ${hit.id}`;
+    (tooltip.children[1] as HTMLElement).textContent = showId
+      ? `[${hit.node.node_type}] ${hit.id}`
+      : `[${hit.node.node_type}]`;
     (tooltip.children[3] as HTMLElement).textContent = String(
       hit.node.description ?? "",
     ).slice(0, 220);
@@ -2393,18 +2579,30 @@ canvas.addEventListener("pointerup", (e) => {
         .map((n) => n.id);
       selectMany(ids);
     } else {
-      select(null); // click on empty canvas clears the selection
+      // a click (no drag) on empty canvas: select a connector if one is under
+      // the cursor, otherwise clear the selection
+      const ei = pickEdgeAt(w.x, w.y);
+      if (ei >= 0) selectEdge(s.edges[ei].edge);
+      else select(null);
     }
     dragNodeId = null;
     dragMemberIds = null;
     return;
   }
   if (!moved) {
-    // matrix: click in the left swimlane-label strip → select that epoch (T7)
+    const hit = hitTest(s, w.x, w.y);
+    // group container ± toggle
+    const toggle = hitGroupToggle(s, w.x, w.y);
+    if (toggle && store) {
+      store.setFolded(toggle.id, !store.isFolded(toggle.id));
+      return;
+    }
+    // matrix: click in the left swimlane-label strip → select that epoch (T7),
+    // but only when no node/box is under the cursor there (else the box wins).
     const rect2 = canvas.getBoundingClientRect();
     const sxS = e.clientX - rect2.left;
     const syS = e.clientY - rect2.top;
-    if (view === "matrix" && !inContext() && sxS < 160) {
+    if (view === "matrix" && !inContext() && sxS < 160 && !hit) {
       const vp2 = viewport();
       const lane = s.lanes.find((l) => {
         const ly = l.y * vp2.scale + vp2.y;
@@ -2415,27 +2613,18 @@ canvas.addEventListener("pointerup", (e) => {
         return;
       }
     }
-    // group container ± toggle
-    const toggle = hitGroupToggle(s, w.x, w.y);
-    if (toggle && store) {
-      store.setFolded(toggle.id, !store.isFolded(toggle.id));
-      return;
+    // A connector passing through a group container's empty interior would be
+    // swallowed by the big box — if the click landed on an edge line, select
+    // the connector instead. Leaf nodes still win (only containers defer).
+    if (hit && (s.groupsById?.has(hit.id) || isGroupType(hit.node.node_type))) {
+      const ei = pickEdgeAt(w.x, w.y);
+      if (ei >= 0) {
+        selectEdge(s.edges[ei].edge);
+        dragNodeId = null;
+        dragMemberIds = null;
+        return;
+      }
     }
-    const hit = hitTest(s, w.x, w.y);
-    const now = Date.now();
-    if (
-      hit &&
-      hit.id === lastClickId &&
-      now - lastClickTime < 400 &&
-      isGroupType(hit.node.node_type)
-    ) {
-      // double-click on a group → enter its isolated canvas
-      enterGroup(hit.id);
-      lastClickId = null;
-      return;
-    }
-    lastClickTime = now;
-    lastClickId = hit?.id ?? null;
     // a document instance resolves to its real node (same outliner row);
     // Shift/Cmd-click toggles it in the multi-selection (D3)
     if (hit && (e.shiftKey || e.metaKey || e.ctrlKey))
@@ -2449,10 +2638,27 @@ canvas.addEventListener("pointerup", (e) => {
   dragMemberIds = null;
 });
 
+// Double-click a group container → enter its isolated canvas. Uses the native
+// dblclick event (browser fires it on a genuine double-click) instead of a
+// manual two-pointerup timer — the timer was unreliable because heavy per-click
+// work (buildMembership + a full redraw) could push the gap past its window.
+canvas.addEventListener("dblclick", (e) => {
+  const s = scene();
+  if (!s) return;
+  const w = worldPos(e);
+  const hit = hitTest(s, w.x, w.y);
+  if (hit && isGroupType(hit.node.node_type)) {
+    e.preventDefault();
+    enterGroup(hit.id);
+  }
+});
+
 canvas.addEventListener("pointerleave", () => {
   tooltip.classList.add("hidden");
-  if (hoverId) {
+  canvas.style.cursor = "default";
+  if (hoverId || hoverEdgeIdx != null) {
     hoverId = null;
+    hoverEdgeIdx = null;
     draw();
   }
 });
@@ -2591,11 +2797,18 @@ window.addEventListener("keydown", (e) => {
     return;
   }
   if (inField) return;
-  if (e.code === "Space") {
-    // hold Space → pan-always (grab) gesture; prevent page scroll
+  if (e.code === "Space" && !spaceHeld) {
+    // hold Space → pan-always (grab) gesture; prevent page scroll.
     spaceHeld = true;
     canvas.classList.add("space-pan");
+    // clear the inline cursor NOW (a prior hover left it "default"/"pointer",
+    // which would override the .space-pan grab until the mouse next moves)
+    canvas.style.cursor = "";
     e.preventDefault();
+    return;
+  }
+  if (e.code === "Space") {
+    e.preventDefault(); // swallow auto-repeat without re-running the above
     return;
   }
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
@@ -2619,6 +2832,13 @@ window.addEventListener("keydown", (e) => {
     store.deleteNode(selectedId);
     select(null);
   }
+  if ((e.key === "Delete" || e.key === "Backspace") && selectedEdge && store) {
+    e.preventDefault();
+    const edge = selectedEdge;
+    selectedEdge = null; // clear before the store's onChange re-render
+    store.deleteEdge(edge);
+    refreshInspector();
+  }
   if (e.key === "+" || e.key === "=") {
     viewport().zoomAt(viewSize().w / 2, viewSize().h / 2, 1.25);
     draw();
@@ -2633,6 +2853,9 @@ window.addEventListener("keyup", (e) => {
   if (e.code === "Space") {
     spaceHeld = false;
     canvas.classList.remove("space-pan");
+    // restore a normal cursor immediately (the inline style was cleared to ""
+    // while Space was held so the .space-pan grab cursor could show)
+    canvas.style.cursor = "default";
   }
 });
 

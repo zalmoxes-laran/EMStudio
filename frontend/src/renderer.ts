@@ -29,6 +29,10 @@ export interface RenderState {
   selectedIds?: Set<string> | null;
   /** edge_type predicate; edges failing it are skipped */
   edgeVisible: (edgeType: string | undefined) => boolean;
+  /** index (into scene.edges) of the hovered connector, if any */
+  hoverEdgeIdx?: number | null;
+  /** index (into scene.edges) of the selected connector, if any */
+  selectedEdgeIdx?: number | null;
   /** cache key for the edge filter (routes are recomputed when it changes) */
   filterKey?: string;
   /** live edge-drawing state (phase 4 editing) */
@@ -53,6 +57,51 @@ function routesFor(scene: Scene, state: RenderState): RouteCache {
   const cache = { key, routes: routeScene(scene, visible), visible };
   routeCaches.set(scene, cache);
   return cache;
+}
+
+/** Squared distance from a point to a segment (world space). */
+function distSqToSeg(
+  px: number,
+  py: number,
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+): number {
+  const vx = b.x - a.x,
+    vy = b.y - a.y;
+  const len2 = vx * vx + vy * vy;
+  let t = len2 ? ((px - a.x) * vx + (py - a.y) * vy) / len2 : 0;
+  t = Math.max(0, Math.min(1, t));
+  const dx = px - (a.x + t * vx),
+    dy = py - (a.y + t * vy);
+  return dx * dx + dy * dy;
+}
+
+/** Index into `scene.edges` of the closest VISIBLE connector whose routed
+ *  polyline passes within `tol` world units of (wx,wy); -1 if none. Uses the
+ *  same cached routes the renderer draws, so picking matches the drawing. */
+export function edgeAt(
+  scene: Scene,
+  state: RenderState,
+  wx: number,
+  wy: number,
+  tol: number,
+): number {
+  const { routes, visible } = routesFor(scene, state);
+  const tol2 = tol * tol;
+  let best = -1;
+  let bestD = tol2;
+  for (let i = 0; i < routes.length; i++) {
+    if (!visible[i]) continue;
+    const pts = routes[i].pts;
+    for (let s = 0; s < pts.length - 1; s++) {
+      const d = distSqToSeg(wx, wy, pts[s], pts[s + 1]);
+      if (d < bestD) {
+        bestD = d;
+        best = i;
+      }
+    }
+  }
+  return best;
 }
 
 const LANE_COLORS = ["#EDF3FA", "#F7FAFD"];
@@ -87,6 +136,33 @@ function drawGroupContainer(
   badge: number | undefined,
   drawLabels: boolean,
 ): void {
+  // custom rule: an epoch's temporal paradata is a compact, always-closed
+  // rounded box with NO ± toggle (double-click to enter) — visually distinct
+  // from ordinary dashed containers with a header band + toggle.
+  if (g.epochParadata) {
+    ctx.beginPath();
+    ctx.roundRect(g.x, g.y, g.w, g.h, 8);
+    ctx.fillStyle = headerFill;
+    ctx.fill();
+    ctx.strokeStyle = borderColor;
+    ctx.lineWidth = 1.4 / Math.sqrt(scale);
+    ctx.stroke();
+    if (drawLabels) {
+      ctx.font = `600 ${Math.min(10, g.h * 0.5)}px system-ui, sans-serif`;
+      ctx.fillStyle = "#4a3317";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      let t = g.title.replace(/^.*·\s*/, "") || g.title; // drop "<epoch> · "
+      const maxW = g.w - 10;
+      if (ctx.measureText(t).width > maxW) {
+        while (t.length > 2 && ctx.measureText(t + "…").width > maxW)
+          t = t.slice(0, -1);
+        t += "…";
+      }
+      ctx.fillText(t, g.x + g.w / 2, g.y + g.h / 2 + 0.5);
+    }
+    return;
+  }
   // body
   ctx.beginPath();
   ctx.roundRect(g.x, g.y, g.w, g.h, 5);
@@ -263,6 +339,16 @@ export function render(
   scene.lanes.forEach((lane, i) => {
     ctx.fillStyle = LANE_COLORS[i % 2];
     ctx.fillRect(worldLeft, lane.y, worldRight - worldLeft, lane.height);
+    // tint the whole lane with the epoch's own colour (data.color) at a very
+    // low alpha — a 5%-visible wash; the strong colour lives in the left rail
+    // + the label circle (drawn screen-space below)
+    if (lane.color) {
+      ctx.save();
+      ctx.globalAlpha = 0.05;
+      ctx.fillStyle = lane.color;
+      ctx.fillRect(worldLeft, lane.y, worldRight - worldLeft, lane.height);
+      ctx.restore();
+    }
     ctx.strokeStyle = "#D5E0EC";
     ctx.lineWidth = 1 / vp.scale;
     ctx.beginPath();
@@ -312,6 +398,32 @@ export function render(
   }
   ctx.globalAlpha = 1;
   ctx.setLineDash([]);
+
+  // picked connector (hover / selection): a blue halo + a bold solid stroke so
+  // one edge stands out for inspection or deletion. Selection beats hover.
+  const pickEdge = (idx: number | null | undefined, sel: boolean): void => {
+    if (idx == null || idx < 0 || !visible[idx]) return;
+    const e = scene.edges[idx];
+    const base = edgeStyle(e.edge.edge_type).width;
+    ctx.lineCap = "round";
+    ctx.globalAlpha = sel ? 0.28 : 0.16;
+    ctx.strokeStyle = ACCENT;
+    ctx.lineWidth = (base + (sel ? 9 : 7)) / Math.sqrt(vp.scale);
+    ctx.beginPath();
+    traceRoute(ctx, routes[idx], bridgeR);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    ctx.lineWidth = (base + (sel ? 2.4 : 1.4)) / Math.sqrt(vp.scale);
+    ctx.beginPath();
+    traceRoute(ctx, routes[idx], bridgeR);
+    ctx.stroke();
+    ctx.lineCap = "butt";
+    if (!SYMMETRIC_EDGES.has(e.edge.edge_type ?? ""))
+      drawArrowhead(ctx, routes[idx], arrowSize * 1.4, ACCENT);
+  };
+  pickEdge(state.hoverEdgeIdx, false);
+  pickEdge(state.selectedEdgeIdx, true);
+  ctx.globalAlpha = 1;
 
   // nodes
   const drawLabels = vp.scale > 0.35;
@@ -612,21 +724,64 @@ export function render(
     }
   }
 
-  // lane labels pinned to the left edge (screen space)
+  // lane colour rail + label chip, pinned to the left edge (screen space)
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.font = "12px system-ui, sans-serif";
   ctx.textAlign = "left";
   ctx.textBaseline = "top";
+  const RAIL = 6; // strong colour rail width (px) on the first pixels of a lane
   for (const lane of scene.lanes) {
     const sy = lane.y * vp.scale + vp.y;
     const sh = lane.height * vp.scale;
     if (sy + sh < 0 || sy > viewH) continue;
-    if (sh < 18) continue; // lane too thin on screen — labels would overlap
+    // strong epoch colour on the left edge of the lane
+    if (lane.color) {
+      const y0 = Math.max(sy, 0);
+      const y1 = Math.min(sy + sh, viewH);
+      ctx.fillStyle = lane.color;
+      ctx.fillRect(0, y0, RAIL, y1 - y0);
+    }
+    if (sh < 18) continue; // lane too thin on screen — the chip would overlap
     const ty = Math.max(sy + 4, 4);
-    const tw = ctx.measureText(lane.label).width;
-    ctx.fillStyle = "rgba(255,255,255,0.82)";
-    ctx.fillRect(6, ty - 2, tw + 10, 18);
+    // start–end collapses out when the lane is too short to fit two lines
+    const boundsText =
+      lane.start || lane.end ? `${lane.start ?? "?"} – ${lane.end ?? "?"}` : "";
+    const showBounds = !!boundsText && sh > 36;
+    const dot = lane.color ? 12 : 0;
+    ctx.font = "600 12px system-ui, sans-serif";
+    const nameW = ctx.measureText(lane.label).width;
+    ctx.font = "10px system-ui, sans-serif";
+    const boundsW = showBounds ? ctx.measureText(boundsText).width : 0;
+    const gap = dot ? 6 : 0;
+    const chipX = RAIL + 4;
+    const chipW = 8 + dot + gap + Math.max(nameW, boundsW) + 8;
+    const chipH = showBounds ? 32 : 18;
+    ctx.fillStyle = "rgba(255,255,255,0.86)";
+    if (typeof ctx.roundRect === "function") {
+      ctx.beginPath();
+      ctx.roundRect(chipX, ty - 2, chipW, chipH, 5);
+      ctx.fill();
+    } else {
+      ctx.fillRect(chipX, ty - 2, chipW, chipH);
+    }
+    const textX = chipX + 8 + dot + gap;
+    if (dot) {
+      const cx = chipX + 8 + dot / 2;
+      const cy = ty - 2 + (showBounds ? 10 : 9);
+      ctx.beginPath();
+      ctx.arc(cx, cy, dot / 2, 0, Math.PI * 2);
+      ctx.fillStyle = lane.color!;
+      ctx.fill();
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = "rgba(0,0,0,0.28)";
+      ctx.stroke();
+    }
     ctx.fillStyle = "#2c4a6e";
-    ctx.fillText(lane.label, 11, ty);
+    ctx.font = "600 12px system-ui, sans-serif";
+    ctx.fillText(lane.label, textX, ty);
+    if (showBounds) {
+      ctx.fillStyle = "#6b7785";
+      ctx.font = "10px system-ui, sans-serif";
+      ctx.fillText(boundsText, textX, ty + 15);
+    }
   }
 }
