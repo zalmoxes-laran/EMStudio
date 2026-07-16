@@ -47,10 +47,6 @@ export interface SceneGroup {
   headerH: number;
   title: string;
   folded: boolean;
-  /** an epoch's temporal ParadataNodeGroup: rendered as a compact, always-closed
-   *  rounded box with NO ± toggle (double-click to enter) — a custom rule that
-   *  sets it apart from ordinary group containers. */
-  epochParadata?: boolean;
 }
 
 export interface Scene {
@@ -72,7 +68,6 @@ export function hitGroupToggle(
   wy: number,
 ): SceneGroup | null {
   for (const g of scene.groups ?? []) {
-    if (g.epochParadata) continue; // no ± toggle — enter it by double-click only
     if (wx >= g.x + 3 && wx <= g.x + 19 && wy >= g.y + 3 && wy <= g.y + 19)
       return g;
   }

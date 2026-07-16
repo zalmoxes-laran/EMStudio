@@ -19,10 +19,6 @@ const CELL_GAP = 14;
 const LANE_PAD = 14;
 const CLOSED_W = 150;
 const CLOSED_H = 40;
-// an epoch's temporal ParadataNodeGroup renders as a tiny always-closed box
-// tucked under the epoch name — really contained, so it barely grows the lane
-const EPOCH_PDG_W = 86;
-const EPOCH_PDG_H = 24;
 
 /**
  * Groups whose members are RELOCATED into the box (grid). Empty since the
@@ -94,6 +90,17 @@ export function buildMatrixScene(
     });
   }
 
+  // lane index of a world-y (used by the epoch-paradata anchoring below AND the
+  // container/expansion passes), plus the node→lane map the expansion reads.
+  const laneIdxOfY = (cy: number): number => {
+    for (let i = 0; i < scene.lanes.length; i++) {
+      const l = scene.lanes[i];
+      if (cy >= l.y && cy < l.y + l.height) return i;
+    }
+    return scene.lanes.length - 1;
+  };
+  const laneOf = new Map<string, number>(); // node id → lane index
+
   // base placement from the stored layout
   const relocateIds: string[] = [];
   const outlineIds: string[] = [];
@@ -136,10 +143,13 @@ export function buildMatrixScene(
   const containerNodes = relocateIds.map((id) => scene.byId.get(id)!);
   scene.nodes = [...outlineNodes, ...containerNodes, ...normal];
 
-  // ---- epoch paradata: an epoch-owned ParadataNodeGroup gets a CUSTOM rule —
-  // a tiny, always-closed rounded box tucked under the epoch name (top-left of
-  // the swimlane), with NO ± toggle: double-click enters it. Its members live
-  // only in the group's isolated canvas, so it barely grows the lane.
+  // ---- epoch paradata anchoring ----
+  // An epoch-owned ParadataNodeGroup renders as a NORMAL outline container, but
+  // its position is pinned to the lane's BOTTOM-LEFT: its members are placed
+  // just below the lane's current content (so the outline box wraps them at the
+  // bottom margin), X-aligned to the leftmost node (contentMinX). We pre-assign
+  // the box + members to the epoch's lane so the swimlane expansion below GROWS
+  // the lane to hold them (rather than mis-growing the next lane).
   // ParadataNodeGroup ← EpochNode via has_paradata_nodegroup.
   const epochOfPdg = new Map<string, string>(); // pdgId → epochId
   for (const e of edges) {
@@ -147,47 +157,43 @@ export function buildMatrixScene(
     if (nodeById.get(e.source)?.node_type === "EpochNode")
       epochOfPdg.set(e.target, e.source);
   }
-  const epochPdgIds = new Set<string>();
   if (epochOfPdg.size) {
-    const laneById = new Map(scene.lanes.map((l) => [l.id, l]));
+    const laneById = new Map(scene.lanes.map((l, i) => [l.id, { l, i }]));
     let contentMinX = Infinity;
     for (const sn of scene.byId.values())
       if (!epochOfPdg.has(sn.id)) contentMinX = Math.min(contentMinX, sn.x);
     if (!Number.isFinite(contentMinX)) contentMinX = 0;
-    const removed = new Set<string>();
     for (const [pdgId, epochId] of epochOfPdg) {
       const g = scene.byId.get(pdgId);
-      const lane = laneById.get(epochId);
-      if (!g || !lane) continue;
-      epochPdgIds.add(pdgId);
-      // closed: drop its members from the main scene (they render only inside
-      // the group's isolated canvas)
-      for (const m of membership.childrenOf.get(pdgId) ?? [])
-        if (m !== pdgId && scene.byId.has(m)) removed.add(m);
-      // compact box anchored to the lane's BOTTOM-LEFT edge; the dynamic
-      // swimlane expansion below grows the lane so both the (top) epoch label
-      // and this box fit without spilling out
-      g.w = EPOCH_PDG_W;
-      g.h = EPOCH_PDG_H;
-      g.x = contentMinX;
-      g.y = lane.y + lane.height - EPOCH_PDG_H - 2;
-    }
-    if (removed.size) {
-      for (const id of removed) scene.byId.delete(id);
-      scene.nodes = scene.nodes.filter((n) => !removed.has(n.id));
+      const laneRec = laneById.get(epochId);
+      if (!g || !laneRec) continue;
+      const { l: lane, i: laneIdx } = laneRec;
+      const memberIds = (membership.childrenOf.get(pdgId) ?? []).filter(
+        (m) => m !== pdgId && scene.byId.has(m),
+      );
+      // place members in a compact grid at the leftmost column, just BELOW the
+      // lane's current bottom — the box wraps them there and the lane expands
+      const cols = Math.max(1, Math.min(4, memberIds.length || 1));
+      let maxW = 60;
+      let maxH = 24;
+      for (const m of memberIds) {
+        const sn = scene.byId.get(m)!;
+        maxW = Math.max(maxW, sn.w);
+        maxH = Math.max(maxH, sn.h);
+      }
+      const originX = contentMinX + GROUP_PAD;
+      const originY = lane.y + lane.height + GROUP_HEADER + GROUP_PAD;
+      memberIds.forEach((m, k) => {
+        const sn = scene.byId.get(m)!;
+        sn.x = originX + (k % cols) * (maxW + CELL_GAP);
+        sn.y = originY + Math.floor(k / cols) * (maxH + CELL_GAP);
+        laneOf.set(m, laneIdx); // keep it in the epoch's lane for expansion
+      });
+      laneOf.set(pdgId, laneIdx);
     }
   }
 
   // ---- container pass: relocate members inside open boxes ----
-  const laneIdxOfY = (cy: number): number => {
-    for (let i = 0; i < scene.lanes.length; i++) {
-      const l = scene.lanes[i];
-      if (cy >= l.y && cy < l.y + l.height) return i;
-    }
-    return scene.lanes.length - 1;
-  };
-  const laneOf = new Map<string, number>(); // node id → lane index
-
   for (const g of containerNodes) {
     if (folded.has(g.id)) {
       g.w = CLOSED_W;
@@ -318,12 +324,6 @@ export function buildMatrixScene(
   const outlineMemberOf = new Map<string, string>();
   const emptyOutline = new Set<string>(); // childless groups drawn as small boxes
   for (const g of outlineNodes) {
-    if (epochPdgIds.has(g.id)) {
-      // custom epoch-paradata box: keep the compact size/pos set above, just
-      // register it so the descriptor loop emits a SceneGroup for it
-      emptyOutline.add(g.id);
-      continue;
-    }
     if (folded.has(g.id)) {
       g.w = CLOSED_W;
       g.h = CLOSED_H;
@@ -413,7 +413,6 @@ export function buildMatrixScene(
       headerH: GROUP_HEADER,
       title: String(g.node.name || g.id),
       folded: folded.has(g.id),
-      epochParadata: epochPdgIds.has(g.id),
     };
     scene.groups!.push(sg);
     scene.groupsById!.set(g.id, sg);

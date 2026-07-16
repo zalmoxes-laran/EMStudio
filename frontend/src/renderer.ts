@@ -136,33 +136,6 @@ function drawGroupContainer(
   badge: number | undefined,
   drawLabels: boolean,
 ): void {
-  // custom rule: an epoch's temporal paradata is a compact, always-closed
-  // rounded box with NO ± toggle (double-click to enter) — visually distinct
-  // from ordinary dashed containers with a header band + toggle.
-  if (g.epochParadata) {
-    ctx.beginPath();
-    ctx.roundRect(g.x, g.y, g.w, g.h, 8);
-    ctx.fillStyle = headerFill;
-    ctx.fill();
-    ctx.strokeStyle = borderColor;
-    ctx.lineWidth = 1.4 / Math.sqrt(scale);
-    ctx.stroke();
-    if (drawLabels) {
-      ctx.font = `600 ${Math.min(10, g.h * 0.5)}px system-ui, sans-serif`;
-      ctx.fillStyle = "#4a3317";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      let t = g.title.replace(/^.*·\s*/, "") || g.title; // drop "<epoch> · "
-      const maxW = g.w - 10;
-      if (ctx.measureText(t).width > maxW) {
-        while (t.length > 2 && ctx.measureText(t + "…").width > maxW)
-          t = t.slice(0, -1);
-        t += "…";
-      }
-      ctx.fillText(t, g.x + g.w / 2, g.y + g.h / 2 + 0.5);
-    }
-    return;
-  }
   // body
   ctx.beginPath();
   ctx.roundRect(g.x, g.y, g.w, g.h, 5);

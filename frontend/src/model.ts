@@ -334,11 +334,16 @@ export class DocumentStore {
     const g = this.doc.graph;
     const layout = (this.doc.layout ??= {});
     const positions = (layout.positions ??= {});
+    // sub-epochs (phases) don't get an auto box yet — skip has_sub_epoch targets
+    const phaseIds = new Set<string>();
+    for (const e of g.edges)
+      if (e.edge_type === "has_sub_epoch") phaseIds.add(e.target);
     for (const epoch of [...g.nodes]) {
       if (epoch.node_type !== "EpochNode") continue;
-      // only top-level epochs (they own a swimlane) get the auto box for now;
-      // phases (sub-epochs, no lane) get theirs when phase rendering lands
-      if (!layout.swimlanes?.some((l) => l.epoch_id === epoch.id)) continue;
+      // top-level epochs only (phases excluded). NOTE: do NOT gate on having a
+      // swimlane — a Blender sync snapshot has NO swimlanes at load (em-core
+      // computes them after), yet those epochs still need their default box.
+      if (phaseIds.has(epoch.id)) continue;
       if (this.epochParadataGroup(epoch.id)) continue;
       const ed = (epoch.data ?? {}) as Record<string, unknown>;
       const lane = layout.swimlanes?.find((l) => l.epoch_id === epoch.id);
