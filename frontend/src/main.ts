@@ -2256,10 +2256,16 @@ btnLayout.title =
 async function runLayout(fresh: boolean): Promise<void> {
   if (!store) return;
   const { computeLayout } = await import("./emcore");
-  const layout = await computeLayout(
-    store.doc.graph,
-    fresh ? undefined : store.doc.layout,
-  );
+  const prev = store.doc.layout;
+  // Pins & anchors are INTENT, not computed geometry — they must survive every
+  // Layout, including a fresh (Alt) one. On fresh we drop the manual position
+  // arrangement but still pass pins/anchors so em-core resolves them (a rule
+  // anchor like the epoch paradata box needs no stored position; a fixed pin
+  // without a frozen position simply releases, which is the point of "fresh").
+  const sketch = fresh
+    ? { pinned: prev?.pinned, anchors: prev?.anchors }
+    : prev;
+  const layout = await computeLayout(store.doc.graph, sketch);
   store.setLayout(layout);
 }
 

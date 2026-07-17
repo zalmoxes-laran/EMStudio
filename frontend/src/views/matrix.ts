@@ -201,24 +201,49 @@ export function buildMatrixScene(
     }
   }
 
-  // ---- epoch paradata: keep the box in the epoch's lane ----
-  // POSITIONING is done by em-core ANCHOR pins (layout.anchors, bottom-left of
-  // the epoch — resolved at layout time, portable to Heriverse). Here we only
-  // pin the PDG box + members to the epoch's lane index so the swimlane
-  // re-stack GROWS that lane to hold them (rather than mis-sizing the next).
-  // Uses the FULL edge list: the Matrix hides paradata edges by default, but
-  // the epoch's structural chronology box is exempt and must stay laned.
-  {
+  // ---- resolve rule anchors (view-side, compact) ----
+  // layout.anchors carries the RULE: a node placed at a CORNER of a container
+  // (epoch lane) + offset. em-core also resolves anchors (for headless/CLI and
+  // portability, e.g. Heriverse), but the VIEW re-resolves against the COMPACT
+  // scene: container content = nodes whose CENTRE falls in the lane's y-band
+  // (position-based), so a node em-core scattered into another lane's rows
+  // (attributed here but edge-pulled elsewhere) does NOT inflate this lane. That
+  // keeps the epoch paradata box tight under its lane's real content instead of
+  // trailing a far-flung outlier. laneOf is set so the re-stack sizes the lane.
+  const anchorList = doc.layout?.anchors ?? [];
+  if (anchorList.length) {
     const laneById = new Map(scene.lanes.map((l, i) => [l.id, i]));
-    for (const e of doc.graph.edges) {
-      if (e.edge_type !== "has_paradata_nodegroup") continue;
-      if (nodeById.get(e.source)?.node_type !== "EpochNode") continue;
-      const laneIdx = laneById.get(e.source);
+    const anchoredIds = new Set(anchorList.map((a) => a.node));
+    for (const a of anchorList) {
+      const laneIdx = laneById.get(a.to);
       if (laneIdx == null) continue;
-      const pdgId = e.target;
-      if (scene.byId.has(pdgId)) laneOf.set(pdgId, laneIdx);
-      for (const m of membership.childrenOf.get(pdgId) ?? [])
-        if (m !== pdgId && scene.byId.has(m)) laneOf.set(m, laneIdx);
+      const node = scene.byId.get(a.node);
+      if (!node) continue;
+      const lane = scene.lanes[laneIdx];
+      let minx = Infinity;
+      let miny = Infinity;
+      let maxx = -Infinity;
+      let maxy = -Infinity;
+      for (const sn of scene.byId.values()) {
+        if (anchoredIds.has(sn.id)) continue;
+        const cy = sn.y + sn.h / 2;
+        if (cy >= lane.y && cy < lane.y + lane.height) {
+          minx = Math.min(minx, sn.x);
+          miny = Math.min(miny, sn.y);
+          maxx = Math.max(maxx, sn.x + sn.w);
+          maxy = Math.max(maxy, sn.y + sn.h);
+        }
+      }
+      if (!Number.isFinite(minx)) {
+        minx = 0;
+        maxx = 0;
+        miny = lane.y;
+        maxy = lane.y;
+      }
+      const corner = a.corner || "bl";
+      node.x = (corner.includes("r") ? maxx : minx) + (a.dx ?? 0);
+      node.y = (corner.includes("t") ? miny : maxy) + (a.dy ?? 0);
+      laneOf.set(a.node, laneIdx);
     }
   }
 

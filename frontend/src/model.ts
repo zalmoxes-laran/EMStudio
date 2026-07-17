@@ -355,7 +355,34 @@ export class DocumentStore {
       // swimlane — a Blender sync snapshot has NO swimlanes at load (em-core
       // computes them after), yet those epochs still need their default box.
       if (phaseIds.has(epoch.id)) continue;
-      if (this.epochParadataGroup(epoch.id)) continue;
+      const existingPdg = this.epochParadataGroup(epoch.id);
+      if (existingPdg) {
+        // PDG already present (e.g. a Blender sync snapshot, or an earlier
+        // session): don't recreate it, but STILL ensure its bottom-left system
+        // anchor exists (setAnchor is idempotent) so a Layout run positions it.
+        const order = ["absolute_time_start", "absolute_time_end"];
+        g.edges
+          .filter(
+            (e) =>
+              e.edge_type === "is_in_paradata_nodegroup" && e.target === existingPdg,
+          )
+          .map((e) => this.node(e.source))
+          .filter(
+            (n): n is EmNode =>
+              !!n &&
+              n.node_type === "property" &&
+              order.includes(
+                String((n.data as Record<string, unknown> | undefined)?.property_type),
+              ),
+          )
+          .sort(
+            (a, b) =>
+              order.indexOf(String((a.data as Record<string, unknown>).property_type)) -
+              order.indexOf(String((b.data as Record<string, unknown>).property_type)),
+          )
+          .forEach((p, s) => this.setAnchor(p.id, epoch.id, "bl", s * 100, 8));
+        continue;
+      }
       const ed = (epoch.data ?? {}) as Record<string, unknown>;
       const lane = layout.swimlanes?.find((l) => l.epoch_id === epoch.id);
       const baseY = (lane?.y ?? 0) + Math.max(0, (lane?.height ?? 200) - 46);
