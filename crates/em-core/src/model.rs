@@ -81,6 +81,32 @@ pub struct Layout {
     pub group_spaces: BTreeMap<String, GroupSpace>,
     #[serde(default)]
     pub edge_routes: BTreeMap<String, Vec<(f64, f64)>>,
+    /// Node ids whose position is pinned (locked by the user, or fixed by the
+    /// system — e.g. an epoch's paradata box). The layout keeps a pinned node
+    /// at its sketch Rect, immovable by the flow, and persists the set across a
+    /// re-layout.
+    #[serde(default)]
+    pub pinned: Vec<String>,
+    /// Rule-based pins: a node is placed at a CORNER of a container (an epoch
+    /// lane or a group) plus an offset, resolved at layout time. Portable
+    /// (survives content growth; reusable across renderers, e.g. Heriverse).
+    #[serde(default)]
+    pub anchors: Vec<Anchor>,
+}
+
+/// A rule pin: `node` is placed at `corner` of container `to` (+ dx,dy).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Anchor {
+    pub node: String,
+    /// container id — an epoch (its lane content) or a group node
+    pub to: String,
+    /// "bl" | "tl" | "br" | "tr" (default "bl" = bottom-left)
+    #[serde(default)]
+    pub corner: String,
+    #[serde(default)]
+    pub dx: f64,
+    #[serde(default)]
+    pub dy: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

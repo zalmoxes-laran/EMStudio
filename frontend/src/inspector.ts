@@ -14,6 +14,17 @@ export interface InspectorCallbacks {
   onEnterGroup: (groupId: string) => void;
   /** create a phase (sub-epoch) inside this epoch */
   onAddPhase: (epochId: string) => void;
+  /** toggle this epoch's phases between hidden (one lane) and shown (sub-bands) */
+  onTogglePhases: (epochId: string) => void;
+  /** whether this epoch's phases are currently shown as lane sub-bands */
+  isPhasesVisible: (epochId: string) => boolean;
+  /** delete a phase, prompting where to re-home its orphaned units */
+  onDeletePhase: (phaseId: string) => void;
+  /** attribute a unit to an epoch or one of its phases (retargets has_first_epoch) */
+  onAssignEpoch: (nodeId: string, epochId: string) => void;
+  /** pin/unpin a node's position (layout engine keeps pinned nodes in place) */
+  onTogglePin: (nodeId: string) => void;
+  isPinned: (nodeId: string) => boolean;
 }
 
 function el(tag: string, cls?: string, text?: string): HTMLElement {
@@ -190,26 +201,31 @@ export function renderInspector(
   if (getSettings().developer.showNodeIds)
     root.appendChild(el("div", "insp-id", node.id));
 
-  // editable description
-  const desc = document.createElement("textarea");
-  desc.className = "insp-desc-input";
-  desc.rows = 3;
-  desc.placeholder = "description…";
-  desc.value = String(node.description ?? "");
-  desc.addEventListener("change", () =>
-    store.updateNode(nodeId, { description: desc.value }),
-  );
-  root.appendChild(desc);
+  // editable description — for a PropertyNode the value IS the description (EM
+  // convention), so we skip the generic box and show a dedicated "Value" field
+  // below instead (avoids two inputs bound to the same field).
+  if (node.node_type !== "property") {
+    const desc = document.createElement("textarea");
+    desc.className = "insp-desc-input";
+    desc.rows = 3;
+    desc.placeholder = "description…";
+    desc.value = String(node.description ?? "");
+    desc.addEventListener("change", () =>
+      store.updateNode(nodeId, { description: desc.value }),
+    );
+    root.appendChild(desc);
+  }
 
-  // PropertyNode value: the property's measured/asserted value (data.value).
-  // For an epoch's absolute_time_* property this mirrors back to the epoch's
-  // start_time/end_time, so editing it here updates the Temporal bounds.
+  // PropertyNode value: the property's measured/asserted value, stored in
+  // `description` (uniform with real EM data). For an epoch's absolute_time_*
+  // property this mirrors back to the epoch's start_time/end_time, so editing
+  // it here updates the Temporal bounds.
   if (node.node_type === "property") {
     const pdata = (node.data ?? {}) as Record<string, unknown>;
     root.appendChild(el("label", "insp-field-label", "Value"));
     const valIn = document.createElement("input");
     valIn.className = "insp-name-input";
-    valIn.value = pdata.value != null ? String(pdata.value) : "";
+    valIn.value = String(node.description ?? "");
     const ptype = String(pdata.property_type ?? "");
     valIn.placeholder =
       ptype.startsWith("absolute_time") ? "e.g. -27  (negative = BCE)" : "value…";
@@ -217,6 +233,23 @@ export function renderInspector(
       store.setPropertyValue(nodeId, valIn.value),
     );
     root.appendChild(valIn);
+  }
+
+  // position lock: pin/unpin so the layout engine can't move this node.
+  {
+    const pinned = cb.isPinned(nodeId);
+    const bar = el("div", "insp-actions");
+    const lock = el(
+      "button",
+      "insp-btn",
+      pinned ? "🔒 Unlock position" : "🔓 Lock position",
+    ) as HTMLButtonElement;
+    lock.title = pinned
+      ? "Let the layout engine move this node again"
+      : "Freeze this node's position (immovable by Layout)";
+    lock.addEventListener("click", () => cb.onTogglePin(nodeId));
+    bar.appendChild(lock);
+    root.appendChild(bar);
   }
 
   // epoch controls: reorder its swimlane + temporal bounds (start/end).
@@ -237,6 +270,12 @@ export function renderInspector(
       pb.addEventListener("click", () => cb.onJump(parentEpoch));
       row.appendChild(pb);
       root.appendChild(row);
+      const delBar = el("div", "insp-actions");
+      const delPh = el("button", "insp-btn danger", "Delete phase") as HTMLButtonElement;
+      delPh.title = "Remove this phase; its units move to a chosen epoch";
+      delPh.addEventListener("click", () => cb.onDeletePhase(nodeId));
+      delBar.appendChild(delPh);
+      root.appendChild(delBar);
     } else {
       // top-level epoch: reorder its swimlane — only allowed while empty (a
       // populated epoch can't move without risking upward-connection errors)
@@ -303,7 +342,7 @@ export function renderInspector(
         .map((e) => store.node(e.source))
         .filter((n): n is EmNode => !!n && n.node_type === "property");
       for (const p of props) {
-        const v = ((p.data ?? {}) as Record<string, unknown>).value;
+        const v = p.description; // property value lives in description
         const row = el("div", "insp-link-row");
         const b = el(
           "button",
@@ -348,6 +387,21 @@ export function renderInspector(
     addPh.title = "Create a sub-epoch (phase) inside this epoch";
     addPh.addEventListener("click", () => cb.onAddPhase(nodeId));
     pbar.appendChild(addPh);
+    // toggle: hidden (units share the one epoch lane) ⇄ shown (units split into
+    // per-phase sub-bands, separated by a dashed line). View-state only.
+    if (phases.length) {
+      const shown = cb.isPhasesVisible(nodeId);
+      const tog = el(
+        "button",
+        "insp-btn",
+        shown ? "▾ Hide phase bands" : "▸ Show phase bands",
+      ) as HTMLButtonElement;
+      tog.title = shown
+        ? "Merge the phases back into a single epoch lane"
+        : "Split this epoch's lane into one sub-band per phase";
+      tog.addEventListener("click", () => cb.onTogglePhases(nodeId));
+      pbar.appendChild(tog);
+    }
     root.appendChild(pbar);
 
     // coherence warnings (start/end order, phases within the parent span, …)
@@ -357,6 +411,37 @@ export function renderInspector(
       box.appendChild(el("div", "insp-warn-title", "⚠ Coherence"));
       for (const w of warns) box.appendChild(el("div", "insp-warn-item", w));
       root.appendChild(box);
+    }
+  }
+
+  // Phase attribution: for a unit whose epoch has phases, offer to move it to a
+  // phase (or back to the epoch itself). Retargets its has_first_epoch. Shown
+  // for any node that carries a has_first_epoch (stratigraphic / representation
+  // units) whose epoch is phased.
+  if (node.node_type !== "EpochNode") {
+    const hfe = store.doc.graph.edges.find(
+      (e) => e.edge_type === "has_first_epoch" && e.source === nodeId,
+    );
+    if (hfe) {
+      const cur = hfe.target;
+      const topEpoch = store.parentEpoch(cur) ?? cur;
+      const phases = store.epochPhases(topEpoch);
+      if (phases.length) {
+        root.appendChild(el("h3", "insp-sect", "Phase"));
+        const bar = el("div", "insp-actions");
+        const mk = (id: string, label: string): void => {
+          const b = el("button", "insp-btn", label) as HTMLButtonElement;
+          if (id === cur) {
+            b.disabled = true;
+            b.textContent = `✓ ${label}`;
+          }
+          b.addEventListener("click", () => cb.onAssignEpoch(nodeId, id));
+          bar.appendChild(b);
+        };
+        mk(topEpoch, `${store.node(topEpoch)?.name ?? "epoch"} (none)`);
+        for (const ph of phases) mk(ph, store.node(ph)?.name ?? ph);
+        root.appendChild(bar);
+      }
     }
   }
 

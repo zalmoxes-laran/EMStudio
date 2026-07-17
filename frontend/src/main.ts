@@ -90,6 +90,10 @@ const graphOverrides = new Map<string, { x: number; y: number }>();
 // recompacts (no gaps) when detail-rings hide nodes. null = use the archival
 // doc.layout. Recomputed on filter change / view→matrix (see refreshMatrixViewLayout).
 let matrixViewLayout: import("./types").EmLayout | null = null;
+// Epochs whose phases (sub-epochs) are shown as lane sub-bands in the Matrix.
+// Pure view state — never persisted to the document. Absent = phases hidden
+// (all the epoch's units share the single lane).
+const phasesVisible = new Set<string>();
 const scenes: Partial<Record<ViewKind, Scene | null>> = {};
 const viewports: Record<ViewKind, Viewport> = {
   matrix: new Viewport(),
@@ -527,9 +531,161 @@ function refreshInspector(): void {
         select(ph.id);
         toast(`phase ${ph.name} created`);
       },
+      onTogglePhases: (epochId) => {
+        if (phasesVisible.has(epochId)) phasesVisible.delete(epochId);
+        else phasesVisible.add(epochId);
+        buildScenes();
+        refreshInspector();
+        draw();
+      },
+      isPhasesVisible: (epochId) => phasesVisible.has(epochId),
+      onDeletePhase: (phaseId) => promptDeletePhase(phaseId),
+      onAssignEpoch: (nodeId, epochId) => {
+        store!.setFirstEpoch([nodeId], epochId);
+        // re-home + reflow are view-side, but a fresh em-core layout gives the
+        // moved unit a clean position inside its new band
+        void runLayout(false).then(() => {
+          select(nodeId);
+          toast(`moved to ${store!.node(epochId)?.name ?? "epoch"}`);
+        });
+      },
+      onTogglePin: (nodeId) => {
+        const pinning = !store!.isPinned(nodeId);
+        // freeze the node's CURRENT scene position so the engine has an exact
+        // Rect to hold, then pin.
+        if (pinning) {
+          const sn = scenes.matrix?.byId.get(nodeId);
+          if (sn) {
+            const layout = (store!.doc.layout ??= {});
+            (layout.positions ??= {})[nodeId] = {
+              x: sn.x,
+              y: sn.y,
+              w: sn.w,
+              h: sn.h,
+            };
+          }
+        }
+        store!.setPinned([nodeId], pinning);
+        toast(pinning ? "position locked" : "position unlocked");
+      },
+      isPinned: (nodeId) => store!.isPinned(nodeId),
     },
     selectedEdge,
   );
+}
+
+// Delete a phase, first asking where to re-home the units attributed to it (and
+// any sub-phases): the parent epoch (un-phase them) or an adjacent sibling
+// phase. When the phase is empty we skip the prompt and delete outright.
+function promptDeletePhase(phaseId: string): void {
+  if (!store) return;
+  const parent = store.parentEpoch(phaseId);
+  const { units, subPhases } = store.phaseOrphans(phaseId);
+  const orphanN = units.length + subPhases.length;
+  const phaseName = store.node(phaseId)?.name || "phase";
+  const finishDelete = (reassignTo: string): void => {
+    store!.deletePhase(phaseId, reassignTo);
+    // a phase deletion is a structural change: regenerate the em-core layout
+    // (from-sketch) so the dropped phase's swimlane is gone and its re-homed
+    // units are laid out under their new epoch, then redraw.
+    void runLayout(false).then(() => {
+      select(parent);
+      toast(`deleted ${phaseName}`);
+    });
+  };
+  // nothing to re-home → delete straight away (parent is the natural fallback)
+  if (orphanN === 0) {
+    finishDelete(parent ?? phaseId);
+    return;
+  }
+  // build the candidate targets: parent epoch + prev/next sibling phase (by time)
+  const startOf = (id: string): number => {
+    const v = Number((store!.node(id)?.data as Record<string, unknown>)?.start_time);
+    return Number.isFinite(v) ? v : Number.POSITIVE_INFINITY;
+  };
+  const targets: { id: string; label: string; hint: string }[] = [];
+  if (parent)
+    targets.push({
+      id: parent,
+      label: `${store.node(parent)?.name || "parent epoch"}`,
+      hint: "un-phase — units go to the epoch itself",
+    });
+  if (parent) {
+    const sibs = store
+      .epochPhases(parent)
+      .filter((s) => s !== phaseId)
+      .sort((a, b) => startOf(a) - startOf(b));
+    const s0 = startOf(phaseId);
+    const prev = [...sibs].reverse().find((s) => startOf(s) <= s0);
+    const next = sibs.find((s) => startOf(s) >= s0);
+    if (prev)
+      targets.push({
+        id: prev,
+        label: store.node(prev)?.name || "previous phase",
+        hint: "previous phase",
+      });
+    if (next && next !== prev)
+      targets.push({
+        id: next,
+        label: store.node(next)?.name || "next phase",
+        hint: "next phase",
+      });
+  }
+  if (!targets.length) {
+    finishDelete(phaseId);
+    return;
+  }
+  const modal = document.createElement("div");
+  modal.className = "modal";
+  const card = document.createElement("div");
+  card.className = "modal-card";
+  const parts = units.length
+    ? `${units.length} unit${units.length > 1 ? "s" : ""}`
+    : "";
+  const parts2 = subPhases.length
+    ? `${subPhases.length} sub-phase${subPhases.length > 1 ? "s" : ""}`
+    : "";
+  const what = [parts, parts2].filter(Boolean).join(" + ");
+  card.innerHTML =
+    `<div class="modal-head"><span>Delete “${phaseName}”</span></div>` +
+    `<div class="modal-body">` +
+    `<p>This phase holds <b>${what}</b>. Where should ${
+      orphanN > 1 ? "they" : "it"
+    } move?</p>` +
+    `</div>` +
+    `<div class="modal-foot"></div>`;
+  const foot = card.querySelector(".modal-foot") as HTMLElement;
+  const close = (): void => {
+    modal.remove();
+    document.removeEventListener("keydown", onKey, true);
+  };
+  const onKey = (e: KeyboardEvent): void => {
+    if (e.key === "Escape") {
+      e.stopPropagation();
+      close();
+    }
+  };
+  const cancel = document.createElement("button");
+  cancel.textContent = "Cancel";
+  cancel.onclick = close;
+  foot.appendChild(cancel);
+  targets.forEach((t, i) => {
+    const b = document.createElement("button");
+    if (i === 0) b.className = "primary";
+    b.textContent = `→ ${t.label}`;
+    b.title = t.hint;
+    b.onclick = () => {
+      close();
+      finishDelete(t.id);
+    };
+    foot.appendChild(b);
+  });
+  modal.appendChild(card);
+  modal.addEventListener("click", (e) => {
+    if (e.target === modal) close();
+  });
+  document.addEventListener("keydown", onKey, true);
+  document.body.appendChild(modal);
 }
 
 function updateLegend(): void {
@@ -709,7 +865,12 @@ function buildScenes(): void {
   if (!store) return;
   const doc = store.doc;
   const fview = filteredView();
-  scenes.matrix = buildMatrixScene(doc, fview, matrixViewLayout ?? undefined);
+  scenes.matrix = buildMatrixScene(
+    doc,
+    fview,
+    matrixViewLayout ?? undefined,
+    phasesVisible,
+  );
   scenes.graph = buildGraphScene(doc, fview, {
     algorithm: graphAlgorithm,
     overrides: graphOverrides,
@@ -1257,8 +1418,23 @@ function handleDrop(nodeId: string, wx: number, wy: number): void {
       isStratigraphicType(st.node(id)?.node_type),
     );
   if (!targets.length) return;
-  st.setFirstEpoch(targets, lane.id);
-  toast(`moved ${targets.length} to epoch ${lane.label}`);
+  // if the lane is showing phase sub-bands, resolve which band the drop landed
+  // in and attribute to that phase (the residual band's phaseId is the epoch
+  // itself → un-phased). Otherwise attribute to the epoch lane.
+  let targetEpoch = lane.id;
+  let targetLabel = lane.label;
+  const bandsHere = (s.subBands ?? [])
+    .filter((b) => b.laneId === lane.id)
+    .sort((a, b) => a.y - b.y);
+  if (bandsHere.length) {
+    let chosen = bandsHere[0];
+    for (const b of bandsHere) if (wy >= b.y - 13) chosen = b; // gaps → band below
+    targetEpoch = chosen.phaseId;
+    targetLabel = chosen.residual ? `${lane.label} (unphased)` : chosen.label;
+  }
+  st.setFirstEpoch(targets, targetEpoch);
+  toast(`moved ${targets.length} to ${targetLabel}`);
+  if (bandsHere.length) void runLayout(false); // clean placement in the new band
 }
 
 // ---------- connect (edge drawing with live socket validation) ----------

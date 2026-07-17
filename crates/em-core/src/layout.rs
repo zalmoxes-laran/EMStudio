@@ -889,6 +889,67 @@ pub fn compute_with_sketch(
         }
     }
 
+    // Pinned nodes are immovable: after the flow has placed everything, snap
+    // each pinned node back to its sketch Rect so a re-layout never shifts it.
+    // (Empty unless the document pins nodes, so the layout contract is intact.)
+    if let Some(s) = sketch {
+        for id in &s.pinned {
+            if let Some(r) = s.positions.get(id) {
+                positions.insert(id.clone(), r.clone());
+            }
+        }
+    }
+
+    // Anchor (rule) pins: place a node at a CORNER of its container (an epoch
+    // lane's content, resolved here) + offset. Evaluated after the flow so the
+    // container's bounds exist. Reusable/portable (the rule, not a coordinate).
+    if let Some(s) = sketch {
+        if !s.anchors.is_empty() {
+            let ix_of: std::collections::HashMap<&str, usize> = graph
+                .nodes
+                .iter()
+                .enumerate()
+                .map(|(i, n)| (n.id.as_str(), i))
+                .collect();
+            let anchored: std::collections::BTreeSet<&str> =
+                s.anchors.iter().map(|a| a.node.as_str()).collect();
+            for a in &s.anchors {
+                let Some(&to_ix) = ix_of.get(a.to.as_str()) else { continue };
+                let Some(&lane_idx) = lane_of_epoch.get(&to_ix) else { continue };
+                // content bbox of the container's lane (skip epochs + anchored)
+                let (mut minx, mut miny, mut maxx, mut maxy) =
+                    (f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY);
+                for (i, n) in graph.nodes.iter().enumerate() {
+                    if is_epoch[i] || anchored.contains(n.id.as_str()) {
+                        continue;
+                    }
+                    if lane[i] != lane_idx {
+                        continue;
+                    }
+                    if let Some(r) = positions.get(&n.id) {
+                        minx = minx.min(r.x);
+                        miny = miny.min(r.y);
+                        maxx = maxx.max(r.x + r.w);
+                        maxy = maxy.max(r.y + r.h);
+                    }
+                }
+                if !minx.is_finite() {
+                    continue; // empty container — nothing to anchor against
+                }
+                let (cx, cy) = match a.corner.as_str() {
+                    "tl" => (minx, miny),
+                    "tr" => (maxx, miny),
+                    "br" => (maxx, maxy),
+                    _ => (minx, maxy), // "bl" (default): bottom-left
+                };
+                if let Some(r) = positions.get_mut(&a.node) {
+                    r.x = cx + a.dx;
+                    r.y = cy + a.dy;
+                }
+            }
+        }
+    }
+
     let swimlanes: Vec<Swimlane> = epochs
         .iter()
         .enumerate()
@@ -917,6 +978,8 @@ pub fn compute_with_sketch(
         folded_groups: Vec::new(),
         group_spaces: std::collections::BTreeMap::new(),
         edge_routes: sketch.map(|s| s.edge_routes.clone()).unwrap_or_default(),
+        pinned: sketch.map(|s| s.pinned.clone()).unwrap_or_default(),
+        anchors: sketch.map(|s| s.anchors.clone()).unwrap_or_default(),
     }
 }
 
@@ -1123,6 +1186,74 @@ mod tests {
             resketched.positions["B"].x < resketched.positions["A"].x,
             "from-sketch must preserve the manual left-right order"
         );
+    }
+
+    #[test]
+    fn pinned_node_is_immovable_across_relayout() {
+        // a pinned node keeps its EXACT sketch Rect, wherever the flow would
+        // otherwise place it; the set persists on the output too.
+        let g = Graph {
+            graph_id: "g".into(),
+            name: None,
+            description: None,
+            nodes: vec![epoch("EP1", 100.0), node("A", "US"), node("B", "US")],
+            edges: vec![
+                edge("e1", "has_first_epoch", "A", "EP1"),
+                edge("e2", "has_first_epoch", "B", "EP1"),
+            ],
+            data: std::collections::BTreeMap::new(),
+        };
+        let mut opts = LayoutOptions::default();
+        let mut sketch = compute(&g, &opts);
+        // park B far away and pin it there
+        sketch.positions.get_mut("B").unwrap().x = -777.0;
+        sketch.positions.get_mut("B").unwrap().y = -555.0;
+        sketch.pinned = vec!["B".into()];
+        opts.use_sketch = true;
+        let out = compute_with_sketch(&g, &opts, Some(&sketch));
+        assert_eq!(out.positions["B"].x, -777.0, "pinned x is kept exactly");
+        assert_eq!(out.positions["B"].y, -555.0, "pinned y is kept exactly");
+        assert_eq!(out.pinned, vec!["B".to_string()], "pinned set persists");
+    }
+
+    #[test]
+    fn anchor_places_node_at_container_corner() {
+        // P is anchored to EP1's bottom-left: it lands at (min content x,
+        // max content y) of the epoch's other content (A, B).
+        let g = Graph {
+            graph_id: "g".into(),
+            name: None,
+            description: None,
+            nodes: vec![
+                epoch("EP1", 100.0),
+                node("A", "US"),
+                node("B", "US"),
+                node("P", "property"),
+            ],
+            edges: vec![
+                edge("e1", "has_first_epoch", "A", "EP1"),
+                edge("e2", "has_first_epoch", "B", "EP1"),
+                edge("e3", "has_first_epoch", "P", "EP1"),
+            ],
+            data: std::collections::BTreeMap::new(),
+        };
+        let mut opts = LayoutOptions::default();
+        let mut sketch = compute(&g, &opts);
+        sketch.anchors = vec![crate::model::Anchor {
+            node: "P".into(),
+            to: "EP1".into(),
+            corner: "bl".into(),
+            dx: 0.0,
+            dy: 0.0,
+        }];
+        opts.use_sketch = true;
+        let out = compute_with_sketch(&g, &opts, Some(&sketch));
+        let (a, b) = (&out.positions["A"], &out.positions["B"]);
+        let minx = a.x.min(b.x);
+        let maxy = (a.y + a.h).max(b.y + b.h);
+        assert_eq!(out.positions["P"].x, minx, "anchored to content left edge");
+        assert_eq!(out.positions["P"].y, maxy, "anchored to content bottom edge");
+        assert_eq!(out.anchors.len(), 1, "anchors persist across re-layout");
     }
 
     #[test]

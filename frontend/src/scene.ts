@@ -17,6 +17,8 @@ export interface SceneNode {
   instanceOf?: string;
   /** how many times this document is used in the scene (corner decorator) */
   useCount?: number;
+  /** position is pinned (locked) — the renderer shows a small lock badge */
+  pinned?: boolean;
 }
 
 export interface SceneEdge {
@@ -37,6 +39,30 @@ export interface Lane {
   end?: string;
 }
 
+/**
+ * A phase (sub-epoch) sub-band inside an epoch swimlane. Emitted only when the
+ * epoch's phases are toggled visible; the renderer draws a dashed separator at
+ * the band's top edge (except the first) plus a small phase label. Geometry is
+ * view-only — the document is untouched.
+ */
+export interface SubBand {
+  /** parent epoch lane id */
+  laneId: string;
+  /** the phase EpochNode id, or the parent epoch id for the residual band */
+  phaseId: string;
+  label: string;
+  color?: string;
+  /** world-space top of the band */
+  y: number;
+  height: number;
+  /** true for the epoch's own (un-phased) residual band */
+  residual?: boolean;
+  /** true for the topmost band of a lane (no separator above it) */
+  first?: boolean;
+  /** nesting depth: 0 = a top-level phase / the epoch residual, 1+ = sub-phase */
+  depth?: number;
+}
+
 /** yEd-style group container drawn on the canvas (open box or closed tab). */
 export interface SceneGroup {
   id: string;
@@ -54,6 +80,8 @@ export interface Scene {
   byId: Map<string, SceneNode>;
   edges: SceneEdge[];
   lanes: Lane[];
+  /** phase sub-bands inside epoch lanes (matrix view; when phases are shown) */
+  subBands?: SubBand[];
   /** container groups (matrix view); the group node itself stays in nodes */
   groups?: SceneGroup[];
   groupsById?: Map<string, SceneGroup>;

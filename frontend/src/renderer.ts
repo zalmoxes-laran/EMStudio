@@ -330,6 +330,32 @@ export function render(
     ctx.stroke();
   });
 
+  // phase sub-bands: a faint per-phase colour wash + a dashed separator at the
+  // top edge of every band below the first (the first band's top is the lane
+  // border already drawn above)
+  if (scene.subBands?.length) {
+    for (const sb of scene.subBands) {
+      if (sb.color) {
+        ctx.save();
+        ctx.globalAlpha = 0.06;
+        ctx.fillStyle = sb.color;
+        ctx.fillRect(worldLeft, sb.y, worldRight - worldLeft, sb.height);
+        ctx.restore();
+      }
+      if (sb.first) continue; // topmost band: the lane border is its top edge
+      ctx.save();
+      ctx.strokeStyle = sb.color || "#94a3b8";
+      ctx.globalAlpha = 0.85;
+      ctx.lineWidth = 1.5 / vp.scale;
+      ctx.setLineDash([9 / vp.scale, 6 / vp.scale]);
+      ctx.beginPath();
+      ctx.moveTo(worldLeft, sb.y - 13); // centre the line in the inter-band gap
+      ctx.lineTo(worldRight, sb.y - 13);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
   // edges (below nodes); incident edges of hover/selection get an accent pass
   const focusId = state.hoverId ?? state.selectedId;
   const { routes, visible } = routesFor(scene, state);
@@ -666,6 +692,16 @@ export function render(
       ctx.stroke();
     }
   }
+  // pinned badge: a small lock at the top-right corner of every locked node
+  for (const n of scene.nodes) {
+    if (!n.pinned) continue;
+    const s = 12 / vp.scale;
+    ctx.font = `${s}px system-ui, sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("🔒", n.x + n.w - s * 0.35, n.y + s * 0.35);
+  }
+
   if (state.connect) {
     const from = scene.byId.get(state.connect.fromId);
     if (from) {
@@ -755,6 +791,47 @@ export function render(
       ctx.fillStyle = "#6b7785";
       ctx.font = "10px system-ui, sans-serif";
       ctx.fillText(boundsText, textX, ty + 15);
+    }
+  }
+
+  // phase sub-band labels: a small indented chip (colour dot + name) at each
+  // band's top-left; the band flush with the lane top is pushed below the lane
+  // chip so the two don't collide
+  if (scene.subBands?.length) {
+    ctx.font = "600 10px system-ui, sans-serif";
+    for (const sb of scene.subBands) {
+      const sy = sb.y * vp.scale + vp.y;
+      const sh = sb.height * vp.scale;
+      if (sy + sh < 0 || sy > viewH || sh < 14) continue;
+      // the topmost band sits under the lane chip — push its label below it
+      const ty = Math.max(sy + 3, 4) + (sb.first ? 38 : 0);
+      const dot = 9;
+      const nameW = ctx.measureText(sb.label).width;
+      // indent deeper (sub-phase) bands so the hierarchy reads at a glance
+      const chipX = RAIL + 14 + (sb.depth ?? 0) * 16;
+      const chipW = 7 + dot + 5 + nameW + 8;
+      ctx.fillStyle = "rgba(255,255,255,0.82)";
+      if (typeof ctx.roundRect === "function") {
+        ctx.beginPath();
+        ctx.roundRect(chipX, ty - 1, chipW, 16, 4);
+        ctx.fill();
+      } else {
+        ctx.fillRect(chipX, ty - 1, chipW, 16);
+      }
+      const cx = chipX + 7 + dot / 2;
+      const cy = ty - 1 + 8;
+      ctx.beginPath();
+      ctx.arc(cx, cy, dot / 2, 0, Math.PI * 2);
+      ctx.fillStyle = sb.color || "#94a3b8";
+      ctx.fill();
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = "rgba(0,0,0,0.24)";
+      ctx.stroke();
+      ctx.fillStyle = sb.residual ? "#6b7785" : "#2c4a6e";
+      ctx.font = sb.residual
+        ? "italic 10px system-ui, sans-serif"
+        : "600 10px system-ui, sans-serif";
+      ctx.fillText(sb.label, chipX + 7 + dot + 5, ty);
     }
   }
 }

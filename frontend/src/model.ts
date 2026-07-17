@@ -306,19 +306,30 @@ export class DocumentStore {
     let slot = 0;
     const ensureProp = (propType: string, boundKey: string): string => {
       const existing = this.propInGroup(pdgId!, propType);
-      if (existing) return existing.id;
+      if (existing) {
+        // keep its system anchor current even for a pre-existing prop
+        this.setAnchor(existing.id, epochId, "bl", slot++ * 100, 8);
+        return existing.id;
+      }
       const seed = ed[boundKey] != null ? String(ed[boundKey]) : "";
+      // A PropertyNode's VALUE lives in `description` (the EM convention: real
+      // graphml-imported properties carry the value there, `value` stays null).
+      // property_type is the only thing we keep in data.
+      const s = slot++;
       const p = this.addNode(
         {
           id: this.newId(),
           name: propType,
           node_type: "property",
-          description: "",
-          data: { property_type: propType, value: seed },
+          description: seed,
+          data: { property_type: propType },
         },
-        { x: 20 + slot++ * 100, y: baseY, w: 90, h: 30 },
+        { x: 20 + s * 100, y: baseY, w: 90, h: 30 },
       );
       this.addEdge(p.id, pdgId!, "is_in_paradata_nodegroup");
+      // system anchor: the box sits bottom-left of the epoch (rule pin, so a
+      // Layout run keeps it there — resolved by em-core, portable to Heriverse)
+      this.setAnchor(p.id, epochId, "bl", s * 100, 8);
       return p.id;
     };
     const startId = ensureProp("absolute_time_start", "start_time");
@@ -372,15 +383,25 @@ export class DocumentStore {
           id: pid,
           name: pt,
           node_type: "property",
-          description: "",
-          data: { property_type: pt, value: ed[bk] != null ? String(ed[bk]) : "" },
+          // value lives in description (uniform with real EM property data)
+          description: ed[bk] != null ? String(ed[bk]) : "",
+          data: { property_type: pt },
         });
-        positions[pid] = { x: 20 + slot++ * 100, y: baseY, w: 90, h: 30 };
+        const s = slot++;
+        positions[pid] = { x: 20 + s * 100, y: baseY, w: 90, h: 30 };
         g.edges.push({
           id: `${pid}__is_in_paradata_nodegroup__${pdgId}`,
           source: pid,
           target: pdgId,
           edge_type: "is_in_paradata_nodegroup",
+        });
+        // system anchor: epoch bottom-left (resolved by em-core on layout)
+        (layout.anchors ??= []).push({
+          node: pid,
+          to: epoch.id,
+          corner: "bl",
+          dx: s * 100,
+          dy: 8,
         });
       }
     }
@@ -507,11 +528,7 @@ export class DocumentStore {
     const pdgId = this.epochParadataGroup(epochId);
     if (pdgId) {
       const p = this.propInGroup(pdgId, propType);
-      if (p) {
-        const pd = { ...((p.data ?? {}) as Record<string, unknown>) };
-        pd.value = v;
-        this.updateNode(p.id, { data: pd });
-      }
+      if (p) this.updateNode(p.id, { description: v }); // value = description
     }
   }
 
@@ -521,10 +538,9 @@ export class DocumentStore {
     const p = this.node(propId);
     if (!p) return;
     const v = value.trim();
-    const pd = { ...((p.data ?? {}) as Record<string, unknown>) };
-    pd.value = v;
-    this.updateNode(propId, { data: pd });
-    const propType = pd.property_type;
+    // the value lives in `description` (uniform with real EM property data)
+    this.updateNode(propId, { description: v });
+    const propType = ((p.data ?? {}) as Record<string, unknown>).property_type;
     if (propType === "absolute_time_start" || propType === "absolute_time_end") {
       const epochId = this.epochOfTemporalProperty(propId);
       const epoch = epochId ? this.node(epochId) : undefined;
@@ -738,6 +754,75 @@ export class DocumentStore {
     for (const e of added) this.emitOp({ op: "add_edge", edge: e });
   }
 
+  /** Units attributed to a phase (has_first_epoch / survive_in_epoch) plus its
+   *  own sub-phases — the nodes orphaned if the phase is deleted. */
+  phaseOrphans(phaseId: string): { units: string[]; subPhases: string[] } {
+    const units: string[] = [];
+    const subPhases: string[] = [];
+    for (const e of this.doc.graph.edges) {
+      if (
+        e.target === phaseId &&
+        (e.edge_type === "has_first_epoch" || e.edge_type === "survive_in_epoch")
+      )
+        units.push(e.source);
+      if (e.source === phaseId && e.edge_type === "has_sub_epoch")
+        subPhases.push(e.target);
+    }
+    return { units, subPhases };
+  }
+
+  /** Delete a phase (sub-epoch), re-homing the units attributed to it — and any
+   *  sub-phases it holds — onto `reassignTo` (typically the parent epoch, to
+   *  un-phase the units, or an adjacent sibling phase). Emits granular edge ops
+   *  so a synced host replays the same retargeting, then drops the phase node. */
+  deletePhase(phaseId: string, reassignTo: string): void {
+    this.checkpoint();
+    const g = this.doc.graph;
+    const removed: EmEdge[] = [];
+    const added: EmEdge[] = [];
+    const kept: EmEdge[] = [];
+    for (const e of g.edges) {
+      if (
+        e.target === phaseId &&
+        (e.edge_type === "has_first_epoch" || e.edge_type === "survive_in_epoch")
+      ) {
+        removed.push(e);
+        const ne: EmEdge = {
+          id: `${e.source}__${e.edge_type}__${reassignTo}`,
+          source: e.source,
+          target: reassignTo,
+          edge_type: e.edge_type,
+        };
+        added.push(ne);
+        kept.push(ne);
+      } else if (e.source === phaseId && e.edge_type === "has_sub_epoch") {
+        // reparent this sub-phase under the new home
+        removed.push(e);
+        const ne: EmEdge = {
+          id: `${reassignTo}__has_sub_epoch__${e.target}`,
+          source: reassignTo,
+          target: e.target,
+          edge_type: "has_sub_epoch",
+        };
+        added.push(ne);
+        kept.push(ne);
+      } else if (e.source === phaseId || e.target === phaseId) {
+        // the parent→phase link (and any other stray edge on the phase) is gone
+        removed.push(e);
+      } else {
+        kept.push(e);
+      }
+    }
+    g.edges = kept;
+    g.nodes = g.nodes.filter((n) => n.id !== phaseId);
+    const layout = this.doc.layout;
+    if (layout?.positions) delete layout.positions[phaseId];
+    this.emit();
+    for (const e of removed) this.emitOp({ op: "delete_edge", edge: e });
+    for (const e of added) this.emitOp({ op: "add_edge", edge: e });
+    this.emitOp({ op: "delete_node", node_id: phaseId });
+  }
+
   updateNode(id: string, patch: Partial<EmNode>): void {
     const n = this.node(id);
     if (!n) return;
@@ -837,6 +922,46 @@ export class DocumentStore {
     else set.delete(groupId);
     layout.folded_groups = [...set].sort();
     this.emit();
+  }
+
+  // ---- Node pinning (position lock) ------------------------------------
+  // A pinned node keeps its exact Rect through a re-layout (em-core honours
+  // layout.pinned). Pins are set by the user (a lock) or by the system.
+
+  isPinned(nodeId: string): boolean {
+    return this.doc.layout?.pinned?.includes(nodeId) ?? false;
+  }
+
+  /** Add/replace a rule pin: place `node` at `corner` of container `to` (+dx,dy).
+   *  Deduped by node id. Written straight onto the layout (no checkpoint) — used
+   *  by system anchoring (e.g. the epoch paradata box). */
+  setAnchor(
+    node: string,
+    to: string,
+    corner = "bl",
+    dx = 0,
+    dy = 0,
+  ): void {
+    const layout = (this.doc.layout ??= {});
+    const list = (layout.anchors ??= []);
+    const i = list.findIndex((a) => a.node === node);
+    const anchor = { node, to, corner, dx, dy };
+    if (i >= 0) list[i] = anchor;
+    else list.push(anchor);
+  }
+
+  /** Pin/unpin one or more nodes. When pinning, the node's CURRENT position is
+   *  frozen into layout.positions so the engine has an exact Rect to keep. */
+  setPinned(nodeIds: string[], pinned: boolean, checkpoint = true): void {
+    if (checkpoint) this.checkpoint();
+    const layout = (this.doc.layout ??= {});
+    const set = new Set(layout.pinned ?? []);
+    for (const id of nodeIds) {
+      if (pinned) set.add(id);
+      else set.delete(id);
+    }
+    layout.pinned = [...set].sort();
+    if (checkpoint) this.emit();
   }
 
   toJSON(): string {

@@ -10,7 +10,7 @@
 //    contiguous band (layout v3), the box is drawn AROUND them without
 //    moving anything.
 import { buildMembership, type FoldedView } from "../folding";
-import type { Scene, SceneGroup, SceneNode } from "../scene";
+import type { Scene, SceneGroup, SceneNode, SubBand } from "../scene";
 import type { EmDocument } from "../types";
 
 export const GROUP_HEADER = 20;
@@ -39,6 +39,10 @@ export function buildMatrixScene(
   doc: EmDocument,
   view?: FoldedView,
   layoutOverride?: EmDocument["layout"],
+  /** epochs whose phases (sub-epochs) are shown as lane sub-bands. When an
+   *  epoch is absent, its phases are hidden and all its units render in the
+   *  single epoch lane. View-state only — never touches the document. */
+  phasesVisible?: Set<string>,
 ): Scene | null {
   // A layoutOverride (a VIEW layout computed by em-core on the filtered
   // subgraph) recompacts the Matrix when detail-rings hide nodes, so hidden
@@ -54,6 +58,7 @@ export function buildMatrixScene(
   const edges = view?.edges ?? doc.graph.edges;
   const nodeById = new Map(doc.graph.nodes.map((n) => [n.id, n]));
   const folded = new Set(layout.folded_groups ?? []);
+  const pinnedSet = new Set(doc.layout?.pinned ?? []);
   const membership = buildMembership(doc);
 
   const scene: Scene = {
@@ -119,6 +124,7 @@ export function buildMatrixScene(
       h: r.h,
       node,
       badge: view?.badges.get(node.id),
+      pinned: pinnedSet.has(node.id),
     };
     scene.byId.set(node.id, sn);
     // outline containers: group-type nodes AND any stratigraphic node that
@@ -143,53 +149,76 @@ export function buildMatrixScene(
   const containerNodes = relocateIds.map((id) => scene.byId.get(id)!);
   scene.nodes = [...outlineNodes, ...containerNodes, ...normal];
 
-  // ---- epoch paradata anchoring ----
-  // An epoch-owned ParadataNodeGroup renders as a NORMAL outline container, but
-  // its position is pinned to the lane's BOTTOM-LEFT: its members are placed
-  // just below the lane's current content (so the outline box wraps them at the
-  // bottom margin), X-aligned to the leftmost node (contentMinX). We pre-assign
-  // the box + members to the epoch's lane so the swimlane expansion below GROWS
-  // the lane to hold them (rather than mis-growing the next lane).
-  // ParadataNodeGroup ← EpochNode via has_paradata_nodegroup.
-  const epochOfPdg = new Map<string, string>(); // pdgId → epochId
-  for (const e of edges) {
-    if (e.edge_type !== "has_paradata_nodegroup") continue;
-    if (nodeById.get(e.source)?.node_type === "EpochNode")
-      epochOfPdg.set(e.target, e.source);
+  // ---- phase (sub-epoch) re-homing --------------------------------------
+  // Phase lanes were dropped above (they never show as top-level lanes), but
+  // their member units must still render inside the PARENT epoch's lane. We
+  // assign those nodes the parent lane so the swimlane-expansion pass grows it
+  // to hold them. Two sources, both robust to em-core's flat epoch ordering:
+  //   1. EM attribution edges (has_first_epoch / survive_in_epoch) → phase;
+  //   2. a geometric catch-all for anything em-core placed inside a dropped
+  //      phase lane's rect (e.g. paradata that inherited the phase's lane).
+  // `phasesVisible` (view state) will later split the lane into sub-bands
+  // (Step B); when an epoch is hidden its units simply share the one lane.
+  const showPhases = phasesVisible ?? new Set<string>();
+  const laneIndexOf = new Map<string, number>();
+  scene.lanes.forEach((l, i) => laneIndexOf.set(l.id, i));
+  const parentOfPhase = new Map<string, string>(); // phase → immediate parent
+  for (const e of doc.graph.edges)
+    if (e.edge_type === "has_sub_epoch") parentOfPhase.set(e.target, e.source);
+  const topEpochOf = (id: string): string => {
+    let cur = id;
+    const seen = new Set<string>();
+    while (parentOfPhase.has(cur) && !seen.has(cur)) {
+      seen.add(cur);
+      cur = parentOfPhase.get(cur)!;
+    }
+    return cur;
+  };
+  if (phaseIds.size) {
+    // 1. membership-based
+    for (const e of doc.graph.edges) {
+      if (e.edge_type !== "has_first_epoch" && e.edge_type !== "survive_in_epoch")
+        continue;
+      if (!phaseIds.has(e.target)) continue;
+      const li = laneIndexOf.get(topEpochOf(e.target));
+      if (li != null && scene.byId.has(e.source)) laneOf.set(e.source, li);
+    }
+    // 2. geometric catch-all: nodes inside a dropped phase lane's rect
+    const droppedPhaseRects: { y: number; h: number; li: number }[] = [];
+    for (const lane of layout.swimlanes ?? []) {
+      if (!phaseIds.has(lane.epoch_id)) continue;
+      const li = laneIndexOf.get(topEpochOf(lane.epoch_id));
+      if (li != null) droppedPhaseRects.push({ y: lane.y, h: lane.height, li });
+    }
+    for (const sn of scene.byId.values()) {
+      if (laneOf.has(sn.id)) continue;
+      const cy = sn.y + sn.h / 2;
+      for (const r of droppedPhaseRects)
+        if (cy >= r.y && cy < r.y + r.h) {
+          laneOf.set(sn.id, r.li);
+          break;
+        }
+    }
   }
-  if (epochOfPdg.size) {
-    const laneById = new Map(scene.lanes.map((l, i) => [l.id, { l, i }]));
-    let contentMinX = Infinity;
-    for (const sn of scene.byId.values())
-      if (!epochOfPdg.has(sn.id)) contentMinX = Math.min(contentMinX, sn.x);
-    if (!Number.isFinite(contentMinX)) contentMinX = 0;
-    for (const [pdgId, epochId] of epochOfPdg) {
-      const g = scene.byId.get(pdgId);
-      const laneRec = laneById.get(epochId);
-      if (!g || !laneRec) continue;
-      const { l: lane, i: laneIdx } = laneRec;
-      const memberIds = (membership.childrenOf.get(pdgId) ?? []).filter(
-        (m) => m !== pdgId && scene.byId.has(m),
-      );
-      // place members in a compact grid at the leftmost column, just BELOW the
-      // lane's current bottom — the box wraps them there and the lane expands
-      const cols = Math.max(1, Math.min(4, memberIds.length || 1));
-      let maxW = 60;
-      let maxH = 24;
-      for (const m of memberIds) {
-        const sn = scene.byId.get(m)!;
-        maxW = Math.max(maxW, sn.w);
-        maxH = Math.max(maxH, sn.h);
-      }
-      const originX = contentMinX + GROUP_PAD;
-      const originY = lane.y + lane.height + GROUP_HEADER + GROUP_PAD;
-      memberIds.forEach((m, k) => {
-        const sn = scene.byId.get(m)!;
-        sn.x = originX + (k % cols) * (maxW + CELL_GAP);
-        sn.y = originY + Math.floor(k / cols) * (maxH + CELL_GAP);
-        laneOf.set(m, laneIdx); // keep it in the epoch's lane for expansion
-      });
-      laneOf.set(pdgId, laneIdx);
+
+  // ---- epoch paradata: keep the box in the epoch's lane ----
+  // POSITIONING is done by em-core ANCHOR pins (layout.anchors, bottom-left of
+  // the epoch — resolved at layout time, portable to Heriverse). Here we only
+  // pin the PDG box + members to the epoch's lane index so the swimlane
+  // re-stack GROWS that lane to hold them (rather than mis-sizing the next).
+  // Uses the FULL edge list: the Matrix hides paradata edges by default, but
+  // the epoch's structural chronology box is exempt and must stay laned.
+  {
+    const laneById = new Map(scene.lanes.map((l, i) => [l.id, i]));
+    for (const e of doc.graph.edges) {
+      if (e.edge_type !== "has_paradata_nodegroup") continue;
+      if (nodeById.get(e.source)?.node_type !== "EpochNode") continue;
+      const laneIdx = laneById.get(e.source);
+      if (laneIdx == null) continue;
+      const pdgId = e.target;
+      if (scene.byId.has(pdgId)) laneOf.set(pdgId, laneIdx);
+      for (const m of membership.childrenOf.get(pdgId) ?? [])
+        if (m !== pdgId && scene.byId.has(m)) laneOf.set(m, laneIdx);
     }
   }
 
@@ -361,37 +390,191 @@ export function buildMatrixScene(
     g.h = My - g.y + GROUP_PAD;
   }
 
-  // ---- dynamic swimlane expansion ----
+  // ---- phase sub-band reflow ----
+  // For each epoch whose phases are toggled visible, split its lane into
+  // stacked sub-bands: one per phase (newest start on top), then the epoch's
+  // own residual band at the bottom (only if it holds units). Each band is
+  // translated as a RIGID unit — every node keeps its relative position, so
+  // group containers stay intact and only cross-band edges stretch. A node's
+  // band is the phase it (or its group root) is attributed to; unattributed
+  // roots fall in the residual band.
+  const subBands: SubBand[] = [];
+  if (phaseIds.size && showPhases.size) {
+    const laneOfNode = (sn: SceneNode): number =>
+      laneOf.get(sn.id) ?? laneIdxOfY(sn.y + sn.h / 2);
+    // node → the phase it is attributed to (first has_first_epoch / survive)
+    const phaseOfNode = new Map<string, string>();
+    for (const e of doc.graph.edges) {
+      if (e.edge_type !== "has_first_epoch" && e.edge_type !== "survive_in_epoch")
+        continue;
+      if (phaseIds.has(e.target) && !phaseOfNode.has(e.source))
+        phaseOfNode.set(e.source, e.target);
+    }
+    const rootOf = (id: string): string => {
+      let cur = id;
+      const seen = new Set<string>();
+      while (membership.primaryOf.has(cur) && !seen.has(cur)) {
+        seen.add(cur);
+        const p = membership.primaryOf.get(cur)!;
+        if (!scene.byId.has(p)) break;
+        cur = p;
+      }
+      return cur;
+    };
+    const num = (v: unknown): number => {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : -Infinity;
+    };
+    const BAND_GAP = 26;
+    for (let li = 0; li < scene.lanes.length; li++) {
+      const lane = scene.lanes[li];
+      if (!showPhases.has(lane.id)) continue;
+      // build the band order over the WHOLE phase subtree (phases can nest):
+      // depth-first, each level newest start_time on top, a node's own
+      // (direct-member) band placed AFTER its sub-phases, and the epoch's
+      // residual band last — so finer/newer periods sit above coarser ones.
+      const childPhases = new Map<string, string[]>();
+      for (const [ph, par] of parentOfPhase) {
+        if (!childPhases.has(par)) childPhases.set(par, []);
+        childPhases.get(par)!.push(ph);
+      }
+      const bandOrder: string[] = [];
+      const bandDepth = new Map<string, number>();
+      const collect = (id: string, depth: number): void => {
+        const subs = (childPhases.get(id) ?? [])
+          .slice()
+          .sort(
+            (a, b) =>
+              num(nodeById.get(b)?.data?.start_time) -
+              num(nodeById.get(a)?.data?.start_time),
+          );
+        for (const s of subs) collect(s, depth + 1);
+        bandOrder.push(id);
+        bandDepth.set(id, depth);
+      };
+      collect(lane.id, 0);
+      if (bandOrder.length <= 1) continue; // epoch has no phases
+      const bandIndex = new Map(bandOrder.map((k, i) => [k, i]));
+      // which sub-tree phase, if any, does a node resolve to?
+      const phaseFor = (id: string): string | undefined => {
+        // direct attribution wins
+        const direct = phaseOfNode.get(id);
+        if (direct && topEpochOf(direct) === lane.id) return direct;
+        return undefined;
+      };
+      // gather this lane's nodes, grouped by root block
+      const rootBand = new Map<string, number>(); // root id → band index
+      const rootKids = new Map<string, SceneNode[]>();
+      for (const sn of scene.nodes) {
+        if (laneOfNode(sn) !== li) continue;
+        const root = rootOf(sn.id);
+        if (!rootKids.has(root)) rootKids.set(root, []);
+        rootKids.get(root)!.push(sn);
+      }
+      // assign each root a band = majority phase among its subtree, else residual
+      for (const [root, kids] of rootKids) {
+        const tally = new Map<string, number>();
+        for (const k of kids) {
+          const ph = phaseFor(k.id);
+          if (ph) tally.set(ph, (tally.get(ph) ?? 0) + 1);
+        }
+        let best: string | undefined;
+        let bestN = 0;
+        for (const [ph, n] of tally)
+          if (n > bestN) {
+            best = ph;
+            bestN = n;
+          }
+        rootBand.set(root, bandIndex.get(best ?? lane.id) ?? bandOrder.length - 1);
+      }
+      // per-band bbox (over all member nodes) at current positions
+      const bMinY = bandOrder.map(() => Infinity);
+      const bMaxY = bandOrder.map(() => -Infinity);
+      const nodeBand = new Map<string, number>();
+      for (const [root, kids] of rootKids) {
+        const bi = rootBand.get(root)!;
+        for (const sn of kids) {
+          nodeBand.set(sn.id, bi);
+          bMinY[bi] = Math.min(bMinY[bi], sn.y);
+          bMaxY[bi] = Math.max(bMaxY[bi], sn.y + sn.h);
+        }
+      }
+      // stack the non-empty bands from the lane's top, translating each rigidly
+      let cursor = lane.y;
+      let firstBand = true;
+      for (let bi = 0; bi < bandOrder.length; bi++) {
+        if (!Number.isFinite(bMinY[bi])) continue; // empty band → skip
+        const h = bMaxY[bi] - bMinY[bi];
+        const delta = cursor - bMinY[bi];
+        for (const [id, b] of nodeBand)
+          if (b === bi) {
+            const sn = scene.byId.get(id);
+            if (sn) sn.y += delta;
+          }
+        const key = bandOrder[bi];
+        const isResidual = key === lane.id;
+        subBands.push({
+          laneId: lane.id,
+          phaseId: key,
+          label: isResidual
+            ? `${lane.label} (unphased)`
+            : (nodeById.get(key)?.name ?? key),
+          color:
+            typeof nodeById.get(key)?.data?.color === "string"
+              ? (nodeById.get(key)!.data!.color as string)
+              : lane.color,
+          y: cursor,
+          height: h,
+          residual: isResidual,
+          first: firstBand,
+          depth: bandDepth.get(key) ?? 0,
+        });
+        firstBand = false;
+        cursor += h + BAND_GAP;
+      }
+    }
+  }
+  if (subBands.length) scene.subBands = subBands;
+
+  // ---- dynamic swimlane re-stack ----
+  // Re-flow the top-level lanes into a contiguous vertical stack. This both
+  //  (a) grows a lane to fit content that overflows its em-core rect (group
+  //      headers poking above, boxes / re-homed phase units below), and
+  //  (b) closes the gaps left where phase lanes were dropped (a phase's
+  //      em-core swimlane leaves an empty slot between top-level lanes).
+  // Every node moves by a single constant delta for its lane, so intra-lane
+  // layout and edge geometry are preserved.
   if (scene.lanes.length) {
     for (const sn of scene.nodes) {
       if (!laneOf.has(sn.id)) laneOf.set(sn.id, laneIdxOfY(sn.y + sn.h / 2));
     }
-    // both directions: content may exceed the lane bottom (bottom delta)
-    // AND poke above the lane top (group headers) — the lane grows both
-    // ways so boxes never spill outside their swimlane
+    const origY = scene.lanes.map((l) => l.y);
+    const origH = scene.lanes.map((l) => l.height);
+    // content overflow beyond each lane's original rect, both directions
     const bottom = scene.lanes.map(() => 0);
     const top = scene.lanes.map(() => 0);
     for (const sn of scene.nodes) {
       const li = laneOf.get(sn.id)!;
-      const lane = scene.lanes[li];
-      const over = sn.y + sn.h + LANE_PAD - (lane.y + lane.height);
+      const over = sn.y + sn.h + LANE_PAD - (origY[li] + origH[li]);
       if (over > 0) bottom[li] = Math.max(bottom[li], over);
-      const above = lane.y + 8 - sn.y;
+      const above = origY[li] + 8 - sn.y;
       if (above > 0) top[li] = Math.max(top[li], above);
     }
-    let shift = 0;
-    const prefix: number[] = [];
+    let cursor = origY[0] - top[0]; // keep the first lane roughly anchored
+    const nodeShift = scene.lanes.map(() => 0);
     for (let i = 0; i < scene.lanes.length; i++) {
-      prefix.push(shift);
-      scene.lanes[i].y += shift;
-      scene.lanes[i].height += top[i] + bottom[i];
-      shift += top[i] + bottom[i];
+      const newY = cursor;
+      const newH = origH[i] + top[i] + bottom[i];
+      nodeShift[i] = newY + top[i] - origY[i];
+      scene.lanes[i].y = newY;
+      scene.lanes[i].height = newH;
+      cursor = newY + newH;
     }
-    if (shift > 0 || top.some((t) => t > 0)) {
-      for (const sn of scene.nodes) {
-        const li = laneOf.get(sn.id)!;
-        sn.y += prefix[li] + top[li];
-      }
+    for (const sn of scene.nodes) sn.y += nodeShift[laneOf.get(sn.id)!];
+    // keep sub-band separators aligned with the nodes they bracket
+    for (const sb of subBands) {
+      const bi = laneIndexOf.get(sb.laneId);
+      if (bi != null) sb.y += nodeShift[bi];
     }
   }
 
