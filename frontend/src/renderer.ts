@@ -350,6 +350,14 @@ export function render(
       ctx.fillRect(worldLeft, lane.y, worldRight - worldLeft, lane.height);
       ctx.restore();
     }
+    // selected epoch → a faint accent wash over the whole lane (visual feedback)
+    if (lane.id === state.selectedId) {
+      ctx.save();
+      ctx.globalAlpha = 0.1;
+      ctx.fillStyle = ACCENT;
+      ctx.fillRect(worldLeft, lane.y, worldRight - worldLeft, lane.height);
+      ctx.restore();
+    }
     ctx.strokeStyle = "#D5E0EC";
     ctx.lineWidth = 1 / vp.scale;
     ctx.beginPath();
@@ -824,13 +832,24 @@ export function render(
     const chipX = RAIL + 4;
     const chipW = 8 + dot + gap + Math.max(nameW, boundsW) + tagSpace + 8;
     const chipH = showBounds ? 32 : 18;
+    const selectedLane = lane.id === state.selectedId;
     ctx.fillStyle = "rgba(255,255,255,0.86)";
     if (typeof ctx.roundRect === "function") {
       ctx.beginPath();
       ctx.roundRect(chipX, ty - 2, chipW, chipH, 5);
       ctx.fill();
+      if (selectedLane) {
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = ACCENT;
+        ctx.stroke();
+      }
     } else {
       ctx.fillRect(chipX, ty - 2, chipW, chipH);
+      if (selectedLane) {
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = ACCENT;
+        ctx.strokeRect(chipX, ty - 2, chipW, chipH);
+      }
     }
     const textX = chipX + 8 + dot + gap;
     if (dot) {
