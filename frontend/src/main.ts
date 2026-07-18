@@ -2407,6 +2407,10 @@ let spaceHeld = false; // Space → pan-always gesture (see pointerdown)
 let pdTagPending: string | null = null; // PD tag pressed → enter on click (pointerup)
 let bandSelectPending: string | null = null; // phase band label pressed → select on click
 let addPhasePending: string | null = null; // epoch "+" button pressed → add phase on click
+// a single-node drag moves the SCENE node directly (no per-frame rebuild) so it
+// tracks the cursor smoothly even inside phase sub-bands; the drop is committed
+// on pointerup (reassign via handleDrop, else the scene resets on rebuild).
+let dragSceneDirty = false;
 
 function worldPos(e: MouseEvent): { x: number; y: number } {
   const rect = canvas.getBoundingClientRect();
@@ -2540,6 +2544,7 @@ canvas.addEventListener("pointerdown", (e) => {
     dragMode = "node";
     dragNodeId = hit.id;
     dragCheckpointed = false;
+    dragSceneDirty = false;
     // Shift+drag a member node → detach it from its container (D2). Membership
     // is read from the GRAPH (buildMembership.primaryOf), not the rendered
     // memberOf map — the latter only covers relocate-type groups, not outline
@@ -2725,8 +2730,13 @@ canvas.addEventListener("pointermove", (e) => {
         return;
       }
       if (n && s) {
-        moveOneByDelta(dragNodeId, dx / vp.scale, dy / vp.scale, !dragCheckpointed);
-        dragCheckpointed = true;
+        // single-node drag: move the SCENE node directly so it follows the
+        // cursor (a per-frame store rebuild would let the phase sub-band reflow
+        // snap it back / jump). Committed on pointerup by handleDrop or reset.
+        n.x += dx / vp.scale;
+        n.y += dy / vp.scale;
+        dragSceneDirty = true;
+        draw();
       }
       lastX = e.clientX;
       lastY = e.clientY;
@@ -2921,7 +2931,14 @@ canvas.addEventListener("pointerup", (e) => {
   } else if (mode === "node" && dragNodeId) {
     // drag ended → route the drop (into a group box, or a different epoch lane)
     handleDrop(dragNodeId, w.x, w.y);
+    // a single-node drag moved the SCENE directly; rebuild so the node settles
+    // into its committed spot (reassigned band/lane) or snaps back if no target
+    if (dragSceneDirty) {
+      buildScenes();
+      draw();
+    }
   }
+  dragSceneDirty = false;
   dragNodeId = null;
   dragMemberIds = null;
 });

@@ -494,6 +494,11 @@ export class DocumentStore {
    *  has_sub_epoch. No swimlane (rendering as a lane sub-band comes later). */
   addPhase(epochId: string, name?: string, pos?: LayoutRect): EmNode {
     this.checkpoint();
+    // the FIRST phase of a top-level epoch absorbs all the epoch's directly
+    // attributed units, so there is no confusing "unphased" residual; the user
+    // then adds more phases and repartitions (E.D., 2026-07).
+    const isFirstPhase =
+      this.parentEpoch(epochId) == null && this.epochPhases(epochId).length === 0;
     const id = this.newId();
     const n = this.epochPhases(epochId).length + 1;
     const node: EmNode = {
@@ -514,6 +519,31 @@ export class DocumentStore {
     // epochs). The has_sub_epoch edge is in place, so ensureEpochTemporalParadata
     // sees it as a phase and skips the em-core anchor (view-side placement).
     this.ensureEpochTemporalParadata(id);
+    // absorb the epoch's units into this first phase (re-target has_first_epoch /
+    // survive_in_epoch that pointed at the epoch to the new phase)
+    if (isFirstPhase) {
+      const g = this.doc.graph;
+      const removed = g.edges.filter(
+        (e) =>
+          (e.edge_type === "has_first_epoch" ||
+            e.edge_type === "survive_in_epoch") &&
+          e.target === epochId,
+      );
+      if (removed.length) {
+        const rset = new Set(removed);
+        g.edges = g.edges.filter((e) => !rset.has(e));
+        const added: EmEdge[] = removed.map((e) => ({
+          id: `${e.source}__${e.edge_type}__${id}`,
+          source: e.source,
+          target: id,
+          edge_type: e.edge_type,
+        }));
+        g.edges.push(...added);
+        this.emit();
+        for (const e of removed) this.emitOp({ op: "delete_edge", edge: e });
+        for (const e of added) this.emitOp({ op: "add_edge", edge: e });
+      }
+    }
     return node;
   }
 
@@ -535,6 +565,33 @@ export class DocumentStore {
         name: this.node(id)?.name ?? id,
       };
     };
+    // If this is a PHASE, report ITS conflicts (vs the parent span + siblings)
+    // so the same warnings show at phase level, not only on the parent epoch.
+    const parentId = this.parentEpoch(epochId);
+    if (parentId != null) {
+      const par = bounds(parentId);
+      const ph = bounds(epochId);
+      if (ph.s != null && ph.e != null && ph.s > ph.e)
+        warns.push(`${ph.name}: start (${ph.s}) is after end (${ph.e}).`);
+      if (par.s != null && ph.s != null && ph.s < par.s)
+        warns.push(`${ph.name}: starts before its epoch (${ph.s} < ${par.s}).`);
+      if (par.e != null && ph.e != null && ph.e > par.e)
+        warns.push(`${ph.name}: ends after its epoch (${ph.e} > ${par.e}).`);
+      for (const sid of this.epochPhases(parentId)) {
+        if (sid === epochId) continue;
+        const sib = bounds(sid);
+        if (
+          ph.s != null &&
+          ph.e != null &&
+          sib.s != null &&
+          sib.e != null &&
+          ph.s < sib.e &&
+          sib.s < ph.e
+        )
+          warns.push(`${ph.name} overlaps ${sib.name}.`);
+      }
+      return warns;
+    }
     const ep = bounds(epochId);
     if (ep.s != null && ep.e != null && ep.s > ep.e)
       warns.push(`${ep.name}: start (${ep.s}) is after end (${ep.e}).`);
