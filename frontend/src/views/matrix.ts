@@ -216,13 +216,30 @@ export function buildMatrixScene(
   const laneIndexOf = new Map<string, number>();
   scene.lanes.forEach((l, i) => laneIndexOf.set(l.id, i));
   if (phaseIds.size) {
-    // 1. membership-based
+    // em-core swimlane rect per top-level epoch (compact allocation)
+    const swimOf = new Map(
+      (layout.swimlanes ?? []).map((l) => [l.epoch_id, l]),
+    );
+    // 1. membership-based re-homing of phase members to the parent epoch's lane —
+    // but ONLY when the member actually sits within the parent's compact swimlane
+    // band. em-core can scatter a unit far into another epoch's rows (a
+    // conflicting is_after → laid out below its older predecessor); such an
+    // outlier stays where it is (as it did pre-phase), instead of being pulled
+    // into the parent lane and ballooning it into a giant mostly-empty band.
     for (const e of doc.graph.edges) {
       if (e.edge_type !== "has_first_epoch" && e.edge_type !== "survive_in_epoch")
         continue;
       if (!phaseIds.has(e.target)) continue;
-      const li = laneIndexOf.get(topEpochOf(e.target));
-      if (li != null && scene.byId.has(e.source)) laneOf.set(e.source, li);
+      const top = topEpochOf(e.target);
+      const li = laneIndexOf.get(top);
+      const sn = scene.byId.get(e.source);
+      if (li == null || !sn) continue;
+      const sw = swimOf.get(top);
+      if (sw) {
+        const cy = sn.y + sn.h / 2;
+        if (cy < sw.y || cy >= sw.y + sw.height) continue; // scattered → leave put
+      }
+      laneOf.set(e.source, li);
     }
     // 2. geometric catch-all: nodes inside a dropped phase lane's rect
     const droppedPhaseRects: { y: number; h: number; li: number }[] = [];
