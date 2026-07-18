@@ -1567,11 +1567,15 @@ function placeNode(wx: number, wy: number): void {
 // re-parents membership — the innermost (smallest) box of a matryoshka wins;
 // landing in a different epoch lane re-assigns has_first_epoch (a group carries
 // its epoch-placed members along).
-function handleDrop(nodeId: string, wx: number, wy: number): void {
-  if (!store || view !== "matrix" || inContext()) return;
+// Returns true if the drop RE-ASSIGNED the node (into a group, or to a different
+// epoch/phase band); false if it landed in the same place — the caller then
+// persists the freely-dragged position instead of letting the rebuild snap it
+// back.
+function handleDrop(nodeId: string, wx: number, wy: number): boolean {
+  if (!store || view !== "matrix" || inContext()) return false;
   const st = store; // non-null capture (narrowing is lost inside callbacks)
   const s = scene();
-  if (!s) return;
+  if (!s) return false;
   // act on the WHOLE selection when the dragged node is part of a multi-selection
   const ids =
     selectedIds.has(nodeId) && selectedIds.size > 1 ? [...selectedIds] : [nodeId];
@@ -1623,14 +1627,14 @@ function handleDrop(nodeId: string, wx: number, wy: number): void {
     }
     if (moved) {
       toast(`moved ${moved} into ${groupNode?.name ?? "group"}`);
-      return;
+      return true;
     }
   }
 
   // 2) not into a group → re-assign the epoch of the lane at the drop point.
   //    A dragged group carries its epoch-placed members along.
   const lane = s.lanes.find((l) => wy >= l.y && wy <= l.y + l.height);
-  if (!lane) return;
+  if (!lane) return false;
   const candidates = new Set<string>(ids);
   for (const id of ids) {
     if (isGroupType(store.node(id)?.node_type)) {
@@ -1656,7 +1660,7 @@ function handleDrop(nodeId: string, wx: number, wy: number): void {
     targets = ids.filter((id) =>
       isStratigraphicType(st.node(id)?.node_type),
     );
-  if (!targets.length) return;
+  if (!targets.length) return false;
   // if the lane is showing phase sub-bands, resolve which band the drop landed
   // in and attribute to that phase (the residual band's phaseId is the epoch
   // itself → un-phased). Otherwise attribute to the epoch lane.
@@ -1671,9 +1675,21 @@ function handleDrop(nodeId: string, wx: number, wy: number): void {
     targetEpoch = chosen.phaseId;
     targetLabel = chosen.residual ? `${lane.label} (unphased)` : chosen.label;
   }
+  // dropped back in the SAME epoch/band → not a reassignment; let the caller keep
+  // the freely-dragged position (a single node dropped where it already belongs)
+  if (ids.length === 1) {
+    const cur = st.doc.graph.edges.find(
+      (e) =>
+        (e.edge_type === "has_first_epoch" ||
+          e.edge_type === "survive_in_epoch") &&
+        e.source === ids[0],
+    )?.target;
+    if (cur === targetEpoch) return false;
+  }
   st.setFirstEpoch(targets, targetEpoch);
   toast(`moved ${targets.length} to ${targetLabel}`);
   if (bandsHere.length) void runLayout(false); // clean placement in the new band
+  return true;
 }
 
 // ---------- connect (edge drawing with live socket validation) ----------
@@ -2593,6 +2609,10 @@ let moved = false;
 let lastX = 0;
 let lastY = 0;
 let dragNodeId: string | null = null;
+// scene position of a single dragged node at drag start, so pointerup can persist
+// the net delta to layout.positions (a single-node drag moves the scene node
+// directly for smoothness; without this it would snap back on rebuild)
+let dragStartScene: { x: number; y: number } | null = null;
 let graphLiquid = false; // Shift held at graph-drag start → drag the cluster
 let dragMemberIds: string[] | null = null;
 // true = group-drag (move the group node, members follow); false = multi-select
@@ -2799,6 +2819,7 @@ canvas.addEventListener("pointerdown", (e) => {
   if (hit && (view === "matrix" || inContext())) {
     dragMode = "node";
     dragNodeId = hit.id;
+    dragStartScene = { x: hit.x, y: hit.y };
     dragCheckpointed = false;
     dragSceneDirty = false;
     // Shift+drag a member node → detach it from its container (D2). Membership
@@ -3210,9 +3231,23 @@ canvas.addEventListener("pointerup", (e) => {
     else select(hit ? (hit.instanceOf ?? hit.id) : null);
   } else if (mode === "node" && dragNodeId) {
     // drag ended → route the drop (into a group box, or a different epoch lane)
-    handleDrop(dragNodeId, w.x, w.y);
-    // a single-node drag moved the SCENE directly; rebuild so the node settles
-    // into its committed spot (reassigned band/lane) or snaps back if no target
+    const reassigned = handleDrop(dragNodeId, w.x, w.y);
+    // a single-node drag moved the SCENE node directly. If the drop did NOT
+    // reassign it (dropped where it already belongs), PERSIST the freely-dragged
+    // position to layout.positions — otherwise the rebuild snaps it back. Use the
+    // net delta (not the absolute scene y, which bakes in the view-side lane
+    // re-stack / sub-band shift and would make the node run away — cf. 203c6c8).
+    if (dragSceneDirty && !reassigned && dragStartScene) {
+      const sn = scene()?.byId.get(dragNodeId);
+      if (sn) {
+        const ddx = sn.x - dragStartScene.x;
+        const ddy = sn.y - dragStartScene.y;
+        if (Math.abs(ddx) + Math.abs(ddy) > 0.5)
+          moveOneByDelta(dragNodeId, ddx, ddy, true);
+      }
+    }
+    // rebuild so the node settles into its committed spot (persisted position,
+    // or reassigned band/lane)
     if (dragSceneDirty) {
       buildScenes();
       draw();
@@ -3220,6 +3255,7 @@ canvas.addEventListener("pointerup", (e) => {
   }
   dragSceneDirty = false;
   dragNodeId = null;
+  dragStartScene = null;
   dragMemberIds = null;
 });
 
