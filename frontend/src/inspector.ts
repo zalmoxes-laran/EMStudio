@@ -20,6 +20,8 @@ export interface InspectorCallbacks {
   isPhasesVisible: (epochId: string) => boolean;
   /** delete a phase, prompting where to re-home its orphaned units */
   onDeletePhase: (phaseId: string) => void;
+  /** move an (empty) epoch's swimlane up (-1) / down (+1), then relayout */
+  onReorderEpoch: (epochId: string, dir: -1 | 1) => void;
   /** attribute a unit to an epoch or one of its phases (retargets has_first_epoch) */
   onAssignEpoch: (nodeId: string, epochId: string) => void;
   /** pin/unpin a node's position (layout engine keeps pinned nodes in place) */
@@ -291,7 +293,7 @@ export function renderInspector(
         b.title = empty
           ? `Move this epoch's swimlane ${dir < 0 ? "up (newer)" : "down (older)"}`
           : "Can't reorder a populated epoch (would risk upward connections)";
-        b.addEventListener("click", () => store.reorderEpoch(nodeId, dir));
+        b.addEventListener("click", () => cb.onReorderEpoch(nodeId, dir));
       }
       bar.appendChild(up);
       bar.appendChild(down);

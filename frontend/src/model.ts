@@ -213,14 +213,11 @@ export class DocumentStore {
     const j = i + dir;
     if (i < 0 || j < 0 || j >= sorted.length) return false;
     this.checkpoint();
-    // remember each lane's OLD band so member nodes move WITH their lane —
-    // otherwise the lanes swap y but the nodes stay put and the Matrix (which
-    // assigns nodes to lanes by geometry) engulfs foreign nodes into the moved lane
-    const oldBands = lanes.map((l) => ({
-      epoch: l.epoch_id,
-      y: l.y,
-      h: l.height,
-    }));
+    // Set the new lane order + y. The caller then runs a FROM-SKETCH relayout,
+    // which reads this swimlane order (em-core `compute_with_sketch`) and re-lays
+    // out every node into its lane semantically — so nodes follow their lane and
+    // lane heights are recomputed (a phased lane with sub-bands stays correct),
+    // instead of a geometric node-shift that broke on phased/taller lanes.
     [sorted[i], sorted[j]] = [sorted[j], sorted[i]];
     let y = Math.min(...lanes.map((l) => l.y)); // keep the stack's top anchor
     sorted.forEach((l, idx) => {
@@ -228,16 +225,6 @@ export class DocumentStore {
       l.y = y;
       y += l.height;
     });
-    // shift each node by the delta of the lane whose OLD band contained it
-    const deltaByEpoch = new Map(
-      lanes.map((l) => [l.epoch_id, l.y - (oldBands.find((b) => b.epoch === l.epoch_id)?.y ?? l.y)]),
-    );
-    const positions = this.doc.layout?.positions ?? {};
-    for (const r of Object.values(positions)) {
-      const cy = r.y + r.h / 2;
-      const band = oldBands.find((b) => cy >= b.y && cy < b.y + b.h);
-      if (band) r.y += deltaByEpoch.get(band.epoch) ?? 0;
-    }
     this.emit();
     return true;
   }

@@ -549,6 +549,12 @@ function refreshInspector(): void {
       },
       isPhasesVisible: (epochId) => !phasesCollapsed.has(epochId),
       onDeletePhase: (phaseId) => promptDeletePhase(phaseId),
+      onReorderEpoch: (epochId, dir) => {
+        // set the new lane order, then a from-sketch relayout re-lays out every
+        // node into its lane (semantic) so phased lanes don't malform
+        if (store!.reorderEpoch(epochId, dir))
+          void runLayout(false).then(() => select(epochId));
+      },
       onAssignEpoch: (nodeId, epochId) => {
         store!.setFirstEpoch([nodeId], epochId);
         // re-home + reflow are view-side, but a fresh em-core layout gives the
