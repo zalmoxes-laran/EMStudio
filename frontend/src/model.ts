@@ -202,8 +202,10 @@ export class DocumentStore {
   /** Create an epoch and insert its swimlane at a given position in the
    *  top-level lane stack (index 0 = top/newest). Optional numeric start/end
    *  seed the chronology (used by the spatial insert to interpolate between
-   *  neighbours). Layout-only for the ordering — the caller runs a from-sketch
-   *  relayout so em-core re-lays nodes into the new lane order. */
+   *  neighbours). INCREMENTAL — no em-core relayout: a DEFAULT_H gap is opened
+   *  at the insertion point and only the lanes + nodes BELOW it slide down, so
+   *  the existing arrangement is untouched (the layout is recomputed only on the
+   *  explicit Layout action). */
   addEpochAt(index: number, name?: string, start?: number, end?: number): EmNode {
     this.checkpoint();
     const id = this.newId();
@@ -223,21 +225,31 @@ export class DocumentStore {
     const layout = (this.doc.layout ??= {});
     const lanes = (layout.swimlanes ??= []);
     const DEFAULT_H = 200;
-    const tops = lanes.filter((l) => this.parentEpoch(l.epoch_id) == null);
-    const lane: Swimlane = { epoch_id: id, y: 0, height: DEFAULT_H, order: 0 };
-    lanes.push(lane);
-    // splice the new lane into the top-level order, then re-flow y/order so the
-    // stack stays contiguous with the new lane at `index`.
+    const tops = lanes
+      .filter((l) => this.parentEpoch(l.epoch_id) == null)
+      .sort((a, b) => a.y - b.y);
     const clamped = Math.max(0, Math.min(index, tops.length));
-    const ordered = [...tops];
-    ordered.splice(clamped, 0, lane);
-    let y = tops.length ? Math.min(...tops.map((l) => l.y)) : 0;
-    ordered.forEach((l, i) => {
-      l.order = i;
-      l.y = y;
-      y += l.height;
-    });
-    (layout.positions ??= {})[id] = { x: 0, y: lane.y, w: 140, h: 30 };
+    // y at which the new lane opens: the top of the lane currently at `clamped`,
+    // or the bottom of the whole stack when appended.
+    const insertionY =
+      clamped < tops.length
+        ? tops[clamped].y
+        : tops.length
+          ? Math.max(...tops.map((l) => l.y + l.height))
+          : 0;
+    // open a gap: everything at/below insertionY slides down by DEFAULT_H
+    // (lanes AND node positions) — a rigid shift, not a re-layout.
+    for (const l of lanes) if (l.y >= insertionY) l.y += DEFAULT_H;
+    const positions = (layout.positions ??= {});
+    for (const p of Object.values(positions))
+      if (p && typeof p.y === "number" && p.y >= insertionY) p.y += DEFAULT_H;
+    lanes.push({ epoch_id: id, y: insertionY, height: DEFAULT_H, order: clamped });
+    // renumber top-level order top→bottom
+    lanes
+      .filter((l) => this.parentEpoch(l.epoch_id) == null)
+      .sort((a, b) => a.y - b.y)
+      .forEach((l, i) => (l.order = i));
+    positions[id] = { x: 0, y: insertionY, w: 140, h: 30 };
     this.emit();
     this.emitOp({ op: "add_node", node });
     this.ensureEpochTemporalParadata(id);

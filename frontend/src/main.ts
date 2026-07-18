@@ -1458,25 +1458,27 @@ function cancelPlacing(): void {
   hintBar.classList.add("hidden");
 }
 
-// EM-mode add-epoch: create a lane at `index` in the top-level stack (default
-// top = newest), relayout, select it for dating. Optional start/end are passed
-// by the spatial insert to interpolate a slot between two neighbours.
+// EM-mode add-epoch: insert a lane at `index` in the top-level stack (default
+// top = newest) and select it for dating. INCREMENTAL — addEpochAt opens a gap
+// and slides only the lanes/nodes below it; NO em-core relayout (the layout is
+// recomputed only on the explicit Layout action), so existing nodes don't
+// reshuffle. Optional start/end are the interpolated slot from a spatial insert.
 function addEpochEmMode(index = 0, start?: number, end?: number): void {
   if (!store) {
     toast("Open a document first");
     return;
   }
   const node = store.addEpochAt(index, undefined, start, end);
-  void runLayout(false).then(() => {
-    buildScenes();
-    select(node.id);
-    centerOn(node.id);
-    toast(
-      start != null || end != null
-        ? "Nuova epoca inserita — controlla start/end"
-        : "Nuova epoca — imposta start/end nell'inspector",
-    );
-  });
+  // addEpochAt emitted → onChange already rebuilt the scene; just select it.
+  select(node.id);
+  // date-driven add (top, undated) scrolls to the new lane so the user can date
+  // it; a spatial insert happens at a boundary the user is already looking at.
+  if (start == null && end == null) centerOn(node.id);
+  toast(
+    start != null || end != null
+      ? "Nuova epoca inserita — controlla start/end"
+      : "Nuova epoca — imposta start/end nell'inspector",
+  );
 }
 
 // ---------- accessory views ----------
