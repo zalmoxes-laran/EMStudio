@@ -117,6 +117,22 @@ pub fn compute_with_sketch(
     // Epoch order: descending by numeric `start_time` in node.data when
     // available (EM convention: most recent epoch on top), otherwise stable
     // by declaration order.
+    // In "from sketch" mode, preserve the sketched lane order (top→bottom by y)
+    // so a manual Move up/down survives re-layout (invariant 8); epochs absent
+    // from the sketch fall back to start_time. A FRESH layout (no sketch) always
+    // orders by start_time.
+    let sketch_lane_order: Option<HashMap<&str, usize>> = if opts.use_sketch {
+        sketch.map(|s| {
+            let mut ls: Vec<&Swimlane> = s.swimlanes.iter().collect();
+            ls.sort_by(|a, b| a.y.partial_cmp(&b.y).unwrap_or(std::cmp::Ordering::Equal));
+            ls.iter()
+                .enumerate()
+                .map(|(i, l)| (l.epoch_id.as_str(), i))
+                .collect()
+        })
+    } else {
+        None
+    };
     let mut epochs: Vec<(usize, f64)> = graph
         .nodes
         .iter()
@@ -131,7 +147,19 @@ pub fn compute_with_sketch(
             (i, start)
         })
         .collect();
-    epochs.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    epochs.sort_by(|a, b| {
+        if let Some(map) = &sketch_lane_order {
+            let ia = map.get(graph.nodes[a.0].id.as_str());
+            let ib = map.get(graph.nodes[b.0].id.as_str());
+            match (ia, ib) {
+                (Some(x), Some(y)) => return x.cmp(y), // both sketched → sketch order
+                (Some(_), None) => return std::cmp::Ordering::Less, // sketched before unseen
+                (None, Some(_)) => return std::cmp::Ordering::Greater,
+                (None, None) => {} // neither sketched → fall through to start_time
+            }
+        }
+        b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
+    });
     let lane_of_epoch: HashMap<usize, usize> = epochs
         .iter()
         .enumerate()
