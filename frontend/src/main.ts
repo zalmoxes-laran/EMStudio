@@ -362,6 +362,7 @@ function draw(): void {
       filterKey: "all",
       connect,
       editable: true,
+      insertBoundary: view === "matrix" ? hoverInsertBoundary : null,
     },
     w,
     h,
@@ -1364,6 +1365,15 @@ const paletteUi = buildPalette(document.getElementById("palette")!, (t) => {
     toast("Open a document first");
     return;
   }
+  // Epochs are swimlanes in Matrix, not free-dropped nodes — clicking the
+  // EpochNode palette entry adds a lane at the top (newest) and selects it for
+  // dating (the chronology, not an xy click, decides its final position; the
+  // "Ordina lane per data" banner sorts it in). Graph view keeps free-drop.
+  if (t === "EpochNode" && view === "matrix") {
+    if (placingType) cancelPlacing();
+    addEpochEmMode();
+    return;
+  }
   placingType = placingType === t ? null : t;
   paletteUi.setActive(placingType);
   canvas.classList.toggle("placing", !!placingType);
@@ -1380,6 +1390,27 @@ function cancelPlacing(): void {
   paletteUi.setActive(null);
   canvas.classList.remove("placing");
   hintBar.classList.add("hidden");
+}
+
+// EM-mode add-epoch: create a lane at `index` in the top-level stack (default
+// top = newest), relayout, select it for dating. Optional start/end are passed
+// by the spatial insert to interpolate a slot between two neighbours.
+function addEpochEmMode(index = 0, start?: number, end?: number): void {
+  if (!store) {
+    toast("Open a document first");
+    return;
+  }
+  const node = store.addEpochAt(index, undefined, start, end);
+  void runLayout(false).then(() => {
+    buildScenes();
+    select(node.id);
+    centerOn(node.id);
+    toast(
+      start != null || end != null
+        ? "Nuova epoca inserita — controlla start/end"
+        : "Nuova epoca — imposta start/end nell'inspector",
+    );
+  });
 }
 
 // ---------- accessory views ----------
@@ -2509,6 +2540,55 @@ let spaceHeld = false; // Space → pan-always gesture (see pointerdown)
 let pdTagPending: string | null = null; // PD tag pressed → enter on click (pointerup)
 let bandSelectPending: string | null = null; // phase band label pressed → select on click
 let addPhasePending: string | null = null; // epoch "+" button pressed → add phase on click
+let hoverInsertBoundary: number | null = null; // EM-mode insert-epoch: hovered lane boundary
+let insertPending: number | null = null; // insert boundary pressed → add epoch on click
+
+// Which top-level lane boundary (0 = above the top lane … lanes.length = below
+// the last) is the cursor near? Only in Matrix, in the left strip, when idle —
+// drives the "insert epoch here" affordance (hover indicator + click).
+function insertBoundaryAt(sx: number, sy: number): number | null {
+  if (view !== "matrix" || !store || placingType || dragMode !== "none")
+    return null;
+  const s = scenes.matrix;
+  if (!s || !s.lanes.length) return null;
+  if (sx > 150) return null; // left strip only — clear of content and node drags
+  const vp = viewport();
+  const TOL = 6;
+  let best: number | null = null;
+  let bestD = TOL + 1;
+  for (let i = 0; i <= s.lanes.length; i++) {
+    const worldY =
+      i < s.lanes.length
+        ? s.lanes[i].y
+        : s.lanes[i - 1].y + s.lanes[i - 1].height;
+    const by = worldY * vp.scale + vp.y;
+    const d = Math.abs(sy - by);
+    if (d <= TOL && d < bestD) {
+      best = i;
+      bestD = d;
+    }
+  }
+  return best;
+}
+
+// Interpolate a chronological slot for an epoch inserted at boundary `bi`: fill
+// the gap between the newer neighbour above and the older neighbour below.
+function insertSlotDates(bi: number): { start?: number; end?: number } {
+  const s = scenes.matrix;
+  if (!s) return {};
+  const num = (v: unknown): number | undefined => {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : undefined;
+  };
+  const boundOf = (laneId: string, which: "start_time" | "end_time") =>
+    num((store!.node(laneId)?.data as Record<string, unknown>)?.[which]);
+  const upper = bi > 0 ? s.lanes[bi - 1] : null; // newer neighbour (above)
+  const lower = bi < s.lanes.length ? s.lanes[bi] : null; // older neighbour (below)
+  // start_time = older bound, end_time = newer bound; lanes sort by start desc.
+  const start = lower ? boundOf(lower.id, "end_time") : undefined;
+  const end = upper ? boundOf(upper.id, "start_time") : undefined;
+  return { start, end };
+}
 // a single-node drag moves the SCENE node directly (no per-frame rebuild) so it
 // tracks the cursor smoothly even inside phase sub-bands; the drop is committed
 // on pointerup (reassign via handleDrop, else the scene resets on rebuild).
@@ -2589,6 +2669,14 @@ canvas.addEventListener("pointerdown", (e) => {
     const rect = canvas.getBoundingClientRect();
     const lx = e.clientX - rect.left;
     const ly = e.clientY - rect.top;
+    // EM-mode "insert epoch" boundary (left strip) takes priority over the
+    // epoch-label select that also lives in the left strip.
+    const ib = insertBoundaryAt(lx, ly);
+    if (ib != null) {
+      insertPending = ib;
+      dragMode = "none";
+      return;
+    }
     // PD tag first (it sits inside the band chip): click it to ENTER the group
     const pd = hitPdTag(lx, ly);
     if (pd) {
@@ -2728,6 +2816,18 @@ canvas.addEventListener("pointermove", (e) => {
   const sy = e.clientY - rect.top;
   const vp = viewport();
   const w = vp.toWorld(sx, sy);
+
+  // EM-mode insert-epoch hover indicator (idle only; cleared during any drag)
+  if (dragMode === "none") {
+    const ib = insertBoundaryAt(sx, sy);
+    if (ib !== hoverInsertBoundary) {
+      hoverInsertBoundary = ib;
+      canvas.style.cursor = ib != null ? "copy" : "";
+      draw();
+    }
+  } else if (hoverInsertBoundary !== null) {
+    hoverInsertBoundary = null;
+  }
 
   if (dragMode === "connect") {
     updateConnect(w.x, w.y);
@@ -2943,6 +3043,18 @@ canvas.addEventListener("pointerup", (e) => {
       const ph = store.addPhase(epochId);
       select(ph.id);
       toast(`phase ${ph.name} created`);
+    }
+    return;
+  }
+  // lane-boundary "+" click → insert an epoch at that chronological slot, with
+  // start/end interpolated to fill the gap between the two neighbours
+  if (insertPending != null) {
+    const bi = insertPending;
+    insertPending = null;
+    hoverInsertBoundary = null;
+    if (!moved) {
+      const { start, end } = insertSlotDates(bi);
+      addEpochEmMode(bi, start, end);
     }
     return;
   }

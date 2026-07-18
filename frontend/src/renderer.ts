@@ -40,6 +40,10 @@ export interface RenderState {
   connect?: ConnectDrag | null;
   /** show the connect handle on the hovered/selected node */
   editable?: boolean;
+  /** EM-mode "insert epoch" hover: index of the lane boundary the cursor is
+   *  near (0 = above the top lane … lanes.length = below the last). Draws a
+   *  dashed insertion line + a "+" badge; the click is resolved in main.ts. */
+  insertBoundary?: number | null;
 }
 
 // per-scene route cache (scenes are rebuilt on every document mutation)
@@ -979,6 +983,42 @@ export function render(
     ctx.lineTo(addCx, addCy + 3.2);
     ctx.stroke();
     addPhaseHits.push({ id: lane.id, cx: addCx, cy: addCy, r: addR + 2 });
+  }
+
+  // EM-mode "insert epoch" indicator at the hovered lane boundary (main.ts
+  // computes which boundary from the same geometry and resolves the click).
+  if (state.insertBoundary != null && scene.lanes.length) {
+    const bi = state.insertBoundary;
+    const worldY =
+      bi < scene.lanes.length
+        ? scene.lanes[bi].y
+        : scene.lanes[bi - 1].y + scene.lanes[bi - 1].height;
+    const by = worldY * vp.scale + vp.y;
+    ctx.save();
+    ctx.strokeStyle = ACCENT;
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 4]);
+    ctx.beginPath();
+    ctx.moveTo(RAIL, by);
+    ctx.lineTo(viewW, by);
+    ctx.stroke();
+    ctx.setLineDash([]);
+    const bx = RAIL + 12;
+    ctx.beginPath();
+    ctx.arc(bx, by, 8, 0, Math.PI * 2);
+    ctx.fillStyle = ACCENT;
+    ctx.fill();
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = "#fff";
+    ctx.stroke();
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(bx - 3.5, by);
+    ctx.lineTo(bx + 3.5, by);
+    ctx.moveTo(bx, by - 3.5);
+    ctx.lineTo(bx, by + 3.5);
+    ctx.stroke();
+    ctx.restore();
   }
 
   // phase sub-band labels: a small indented chip (colour dot + name) at each

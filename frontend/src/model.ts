@@ -199,6 +199,51 @@ export class DocumentStore {
     return node;
   }
 
+  /** Create an epoch and insert its swimlane at a given position in the
+   *  top-level lane stack (index 0 = top/newest). Optional numeric start/end
+   *  seed the chronology (used by the spatial insert to interpolate between
+   *  neighbours). Layout-only for the ordering — the caller runs a from-sketch
+   *  relayout so em-core re-lays nodes into the new lane order. */
+  addEpochAt(index: number, name?: string, start?: number, end?: number): EmNode {
+    this.checkpoint();
+    const id = this.newId();
+    const node: EmNode = {
+      id,
+      name: name ?? this.freshLabel("Epoch"),
+      node_type: "EpochNode",
+      description: "",
+    };
+    if (start != null || end != null) {
+      const d: Record<string, unknown> = {};
+      if (start != null) d.start_time = start;
+      if (end != null) d.end_time = end;
+      node.data = d;
+    }
+    this.doc.graph.nodes.push(node);
+    const layout = (this.doc.layout ??= {});
+    const lanes = (layout.swimlanes ??= []);
+    const DEFAULT_H = 200;
+    const tops = lanes.filter((l) => this.parentEpoch(l.epoch_id) == null);
+    const lane: Swimlane = { epoch_id: id, y: 0, height: DEFAULT_H, order: 0 };
+    lanes.push(lane);
+    // splice the new lane into the top-level order, then re-flow y/order so the
+    // stack stays contiguous with the new lane at `index`.
+    const clamped = Math.max(0, Math.min(index, tops.length));
+    const ordered = [...tops];
+    ordered.splice(clamped, 0, lane);
+    let y = tops.length ? Math.min(...tops.map((l) => l.y)) : 0;
+    ordered.forEach((l, i) => {
+      l.order = i;
+      l.y = y;
+      y += l.height;
+    });
+    (layout.positions ??= {})[id] = { x: 0, y: lane.y, w: 140, h: 30 };
+    this.emit();
+    this.emitOp({ op: "add_node", node });
+    this.ensureEpochTemporalParadata(id);
+    return node;
+  }
+
   /** Move an epoch's swimlane one slot up (dir -1) or down (dir +1) in the
    *  stack, restacking the y of all lanes. Layout-only (no op-log: lane order
    *  is a visualisation concern; epoch membership stays semantic via edges). */
