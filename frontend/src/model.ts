@@ -565,12 +565,28 @@ export class DocumentStore {
         name: this.node(id)?.name ?? id,
       };
     };
+    // A bound that was typed but doesn't parse as a number is silently ignored
+    // by the ordering/coherence maths — flag it so the user knows their date
+    // won't sort the lane.
+    const nonNumericWarn = (id: string): void => {
+      const d = (this.node(id)?.data ?? {}) as Record<string, unknown>;
+      const name = this.node(id)?.name ?? id;
+      for (const [k, lbl] of [
+        ["start_time", "start"],
+        ["end_time", "end"],
+      ] as const) {
+        const raw = d[k];
+        if (raw != null && String(raw).trim() !== "" && num(raw) == null)
+          warns.push(`${name}: ${lbl} "${raw}" is not a number.`);
+      }
+    };
     // If this is a PHASE, report ITS conflicts (vs the parent span + siblings)
     // so the same warnings show at phase level, not only on the parent epoch.
     const parentId = this.parentEpoch(epochId);
     if (parentId != null) {
       const par = bounds(parentId);
       const ph = bounds(epochId);
+      nonNumericWarn(epochId);
       if (ph.s != null && ph.e != null && ph.s > ph.e)
         warns.push(`${ph.name}: start (${ph.s}) is after end (${ph.e}).`);
       if (par.s != null && ph.s != null && ph.s < par.s)
@@ -593,6 +609,8 @@ export class DocumentStore {
       return warns;
     }
     const ep = bounds(epochId);
+    nonNumericWarn(epochId);
+    for (const pid of this.epochPhases(epochId)) nonNumericWarn(pid);
     if (ep.s != null && ep.e != null && ep.s > ep.e)
       warns.push(`${ep.name}: start (${ep.s}) is after end (${ep.e}).`);
     const phases = this.epochPhases(epochId).map(bounds);
@@ -619,6 +637,105 @@ export class DocumentStore {
     return warns;
   }
 
+  // ---- chronology ordering & cross-epoch validation (item 10) ----------
+
+  /** Numeric start_time of an epoch/phase, or null if unset/non-numeric. */
+  private startOf(id: string): number | null {
+    const n = Number((this.node(id)?.data as { start_time?: unknown })?.start_time);
+    return Number.isFinite(n) ? n : null;
+  }
+  private endOf(id: string): number | null {
+    const n = Number((this.node(id)?.data as { end_time?: unknown })?.end_time);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  /** Ids of the top-level epochs (EpochNodes that are not a phase). */
+  topEpochIds(): string[] {
+    return this.doc.graph.nodes
+      .filter(
+        (n) =>
+          (n.node_type === "EpochNode" || n.node_type === "epoch") &&
+          this.parentEpoch(n.id) == null,
+      )
+      .map((n) => n.id);
+  }
+
+  /** Does the current lane stack (top→bottom) follow newest-first chronology?
+   *  Undated epochs are skipped (can't judge). True when there's nothing to
+   *  order or dates agree with the visual order. */
+  lanesMatchDateOrder(): boolean {
+    const lanes = this.doc.layout?.swimlanes;
+    if (!lanes || lanes.length < 2) return true;
+    const order = lanes
+      .filter((l) => this.parentEpoch(l.epoch_id) == null)
+      .slice()
+      .sort((a, b) => a.y - b.y)
+      .map((l) => l.epoch_id);
+    let prev: number | null = null;
+    for (const id of order) {
+      const s = this.startOf(id);
+      if (s == null) continue;
+      if (prev != null && s > prev) return false; // a lower lane is NEWER
+      prev = s;
+    }
+    return true;
+  }
+
+  /** Reorder the top-level swimlanes newest-first by start_time (undated → tail,
+   *  stable). Layout-only, like reorderEpoch — NOT gated by isEpochEmpty because
+   *  this is canonicalisation, not an arbitrary move; the caller runs a
+   *  from-sketch relayout so em-core re-lays nodes into the new lane order. */
+  sortLanesByDate(): void {
+    const lanes = this.doc.layout?.swimlanes;
+    if (!lanes || lanes.length < 2) return;
+    const tops = lanes.filter((l) => this.parentEpoch(l.epoch_id) == null);
+    if (tops.length < 2) return;
+    this.checkpoint();
+    const idx = new Map(tops.map((l, i) => [l, i]));
+    const sorted = [...tops].sort((a, b) => {
+      const sa = this.startOf(a.epoch_id);
+      const sb = this.startOf(b.epoch_id);
+      if (sa == null && sb == null) return idx.get(a)! - idx.get(b)!;
+      if (sa == null) return 1;
+      if (sb == null) return -1;
+      if (sb !== sa) return sb - sa; // newest (larger start) on top
+      return idx.get(a)! - idx.get(b)!;
+    });
+    let y = Math.min(...tops.map((l) => l.y));
+    sorted.forEach((l, i) => {
+      l.order = i;
+      l.y = y;
+      y += l.height;
+    });
+    this.emit();
+  }
+
+  /** Overlaps between the date spans of top-level epochs (a real chronology
+   *  conflict — two epochs claiming the same absolute time). Gaps are NOT
+   *  reported: a hiatus between epochs is legitimate in archaeology. */
+  crossEpochWarnings(): string[] {
+    const out: string[] = [];
+    const tops = this.topEpochIds()
+      .map((id) => ({
+        name: this.node(id)?.name ?? id,
+        s: this.startOf(id),
+        e: this.endOf(id),
+      }))
+      .filter((x) => x.s != null && x.e != null) as {
+      name: string;
+      s: number;
+      e: number;
+    }[];
+    tops.sort((a, b) => a.s - b.s); // oldest first
+    for (let i = 1; i < tops.length; i++) {
+      const prev = tops[i - 1];
+      const cur = tops[i];
+      if (cur.s < prev.e)
+        out.push(`${cur.name} overlaps ${prev.name} (${cur.s} < ${prev.e}).`);
+    }
+    return out;
+  }
+
   /** Set an epoch's start/end bound; mirror the value into its
    *  absolute_time_* PropertyNode when the paradata group exists. */
   setEpochBound(epochId: string, which: "start" | "end", value: string): void {
@@ -629,8 +746,15 @@ export class DocumentStore {
     const propType =
       which === "start" ? "absolute_time_start" : "absolute_time_end";
     const d = { ...((epoch.data ?? {}) as Record<string, unknown>) };
+    // Store the bound as a NUMBER when it parses (canonical sort key — em-core
+    // reads it with as_f64 to order the lanes, and a JSON string there sorts to
+    // f64::MIN). A non-numeric entry is kept as-is (surfaced by
+    // epochCoherenceWarnings) so nothing the user typed is silently dropped.
     if (v === "") delete d[boundKey];
-    else d[boundKey] = v;
+    else {
+      const n = Number(v);
+      d[boundKey] = Number.isFinite(n) && v !== "" ? n : v;
+    }
     this.updateNode(epochId, { data: d });
     const pdgId = this.epochParadataGroup(epochId);
     if (pdgId) {

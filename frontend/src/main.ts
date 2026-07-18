@@ -174,6 +174,7 @@ const inspector = document.getElementById("inspector")!;
 const breadcrumb = document.getElementById("breadcrumb")!;
 const edgeMenu = document.getElementById("edge-menu")!;
 const toastEl = document.getElementById("toast")!;
+const chronoBanner = document.getElementById("chrono-banner")!;
 const btnMatrix = document.getElementById("btn-matrix") as HTMLButtonElement;
 const btnGraph = document.getElementById("btn-graph") as HTMLButtonElement;
 const btnUndo = document.getElementById("btn-undo") as HTMLButtonElement;
@@ -924,6 +925,65 @@ function buildScenes(): void {
     algorithm: graphAlgorithm,
     overrides: graphOverrides,
   });
+  updateChronoBanner();
+}
+
+// ---- chronology validation banner (item 10) ----
+// A dismissible strip above the canvas, shown in Matrix view when the lane
+// stack doesn't follow newest-first chronology (offers a one-click sort) or
+// adjacent epochs overlap / leave gaps (advisory). Document state, not
+// selection state — so it lives above the canvas, not in the inspector.
+let chronoBannerDismissed = false;
+
+function updateChronoBanner(): void {
+  if (!store || view !== "matrix") {
+    chronoBanner.classList.add("hidden");
+    return;
+  }
+  const orderOk = store.lanesMatchDateOrder();
+  const cross = store.crossEpochWarnings();
+  if (chronoBannerDismissed || (orderOk && cross.length === 0)) {
+    chronoBanner.classList.add("hidden");
+    return;
+  }
+  chronoBanner.replaceChildren();
+  const msg = document.createElement("span");
+  msg.className = "cb-msg";
+  msg.append("⚠ ");
+  if (!orderOk) {
+    const b = document.createElement("b");
+    b.textContent = "Lane fuori ordine cronologico. ";
+    msg.appendChild(b);
+  }
+  if (cross.length) {
+    const extra = cross.length > 3 ? ` (+${cross.length - 3})` : "";
+    msg.append(cross.slice(0, 3).join(" ") + extra);
+  }
+  chronoBanner.appendChild(msg);
+  if (!orderOk) {
+    const sort = document.createElement("button");
+    sort.className = "cb-sort";
+    sort.textContent = "Ordina lane per data";
+    sort.title = "Riordina le epoche newest-first per start_time";
+    sort.addEventListener("click", () => {
+      store!.sortLanesByDate();
+      void runLayout(false).then(() => {
+        buildScenes();
+        fit();
+      });
+    });
+    chronoBanner.appendChild(sort);
+  }
+  const close = document.createElement("button");
+  close.className = "cb-close";
+  close.textContent = "✕";
+  close.title = "Nascondi";
+  close.addEventListener("click", () => {
+    chronoBannerDismissed = true;
+    chronoBanner.classList.add("hidden");
+  });
+  chronoBanner.appendChild(close);
+  chronoBanner.classList.remove("hidden");
 }
 
 // Recompute the Matrix VIEW layout (em-core on the visible subgraph) so the
@@ -1047,6 +1107,7 @@ function loadDocument(
   contextScene = null;
   hoverId = null;
   selectedId = null;
+  chronoBannerDismissed = false; // re-evaluate chronology for the new document
   recomputeHiddenFromCircles(); // derive hidden types for the current view
   graphOverrides.clear(); // graph-view drags don't carry across documents
   matrixViewLayout = null; // stale for the new document
