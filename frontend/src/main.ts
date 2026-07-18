@@ -934,6 +934,7 @@ function buildScenes(): void {
 // adjacent epochs overlap / leave gaps (advisory). Document state, not
 // selection state — so it lives above the canvas, not in the inspector.
 let chronoBannerDismissed = false;
+let chronoBannerExpanded = false;
 
 function updateChronoBanner(): void {
   if (!store || view !== "matrix") {
@@ -941,25 +942,42 @@ function updateChronoBanner(): void {
     return;
   }
   const orderOk = store.lanesMatchDateOrder();
-  const cross = store.crossEpochWarnings();
-  if (chronoBannerDismissed || (orderOk && cross.length === 0)) {
+  const issues = store.chronologyIssues();
+  if (chronoBannerDismissed || (orderOk && issues.length === 0)) {
     chronoBanner.classList.add("hidden");
     return;
   }
   chronoBanner.replaceChildren();
+
+  const row = document.createElement("div");
+  row.className = "cb-row";
+
   const msg = document.createElement("span");
   msg.className = "cb-msg";
   msg.append("⚠ ");
   if (!orderOk) {
     const b = document.createElement("b");
-    b.textContent = "Lane fuori ordine cronologico. ";
+    b.textContent = "Lane fuori ordine cronologico.";
     msg.appendChild(b);
+  } else if (issues.length) {
+    msg.append("Problemi di coerenza cronologica.");
   }
-  if (cross.length) {
-    const extra = cross.length > 3 ? ` (+${cross.length - 3})` : "";
-    msg.append(cross.slice(0, 3).join(" ") + extra);
+  row.appendChild(msg);
+
+  if (issues.length) {
+    const n = issues.length;
+    const toggle = document.createElement("button");
+    toggle.className = "cb-toggle";
+    toggle.textContent = `${chronoBannerExpanded ? "▾" : "▸"} ${n} problem${
+      n === 1 ? "a" : "i"
+    }`;
+    toggle.addEventListener("click", () => {
+      chronoBannerExpanded = !chronoBannerExpanded;
+      updateChronoBanner();
+    });
+    row.appendChild(toggle);
   }
-  chronoBanner.appendChild(msg);
+
   if (!orderOk) {
     const sort = document.createElement("button");
     sort.className = "cb-sort";
@@ -972,8 +990,9 @@ function updateChronoBanner(): void {
         fit();
       });
     });
-    chronoBanner.appendChild(sort);
+    row.appendChild(sort);
   }
+
   const close = document.createElement("button");
   close.className = "cb-close";
   close.textContent = "✕";
@@ -982,7 +1001,20 @@ function updateChronoBanner(): void {
     chronoBannerDismissed = true;
     chronoBanner.classList.add("hidden");
   });
-  chronoBanner.appendChild(close);
+  row.appendChild(close);
+  chronoBanner.appendChild(row);
+
+  if (issues.length && chronoBannerExpanded) {
+    const list = document.createElement("ul");
+    list.className = "cb-details";
+    for (const w of issues) {
+      const li = document.createElement("li");
+      li.textContent = w;
+      list.appendChild(li);
+    }
+    chronoBanner.appendChild(list);
+  }
+
   chronoBanner.classList.remove("hidden");
 }
 

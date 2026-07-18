@@ -1249,8 +1249,8 @@ body.sync-active #footer-brand #em-version {
   left: 12px;
   right: 12px;
   display: flex;
-  align-items: center;
-  gap: 10px;
+  flex-direction: column;
+  gap: 6px;
   background: #fff8e6;
   border: 1px solid #f0c36d;
   color: #7a5b12;
@@ -1259,10 +1259,36 @@ body.sync-active #footer-brand #em-version {
   padding: 7px 12px;
   z-index: 22;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
+  max-height: 45%;
+  overflow: auto;
+}
+#chrono-banner .cb-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 #chrono-banner .cb-msg {
   flex: 1;
   line-height: 1.35;
+}
+#chrono-banner .cb-toggle {
+  border: none;
+  background: transparent;
+  color: #7a5b12;
+  cursor: pointer;
+  font-size: 12px;
+  text-decoration: underline;
+  padding: 0;
+  white-space: nowrap;
+}
+#chrono-banner .cb-details {
+  margin: 0;
+  padding: 4px 0 2px 20px;
+  line-height: 1.45;
+  border-top: 1px solid #f0d9a6;
+}
+#chrono-banner .cb-details li {
+  margin: 1px 0;
 }
 #chrono-banner .cb-msg b {
   color: #5c440d;

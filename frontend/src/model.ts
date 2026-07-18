@@ -736,6 +736,27 @@ export class DocumentStore {
     return out;
   }
 
+  /** All chronology problems across the document: cross-epoch span overlaps +
+   *  every top-level epoch's coherence warnings (start>end, phases outside the
+   *  parent span, sibling-phase overlaps, non-numeric bounds — the per-epoch
+   *  call already covers that epoch's phases). Deduped, for the ingestion /
+   *  banner report. Lane ordering (lanesMatchDateOrder) is reported separately
+   *  because it has a one-click fix. */
+  chronologyIssues(): string[] {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    const add = (w: string) => {
+      if (!seen.has(w)) {
+        seen.add(w);
+        out.push(w);
+      }
+    };
+    for (const w of this.crossEpochWarnings()) add(w);
+    for (const id of this.topEpochIds())
+      for (const w of this.epochCoherenceWarnings(id)) add(w);
+    return out;
+  }
+
   /** Set an epoch's start/end bound; mirror the value into its
    *  absolute_time_* PropertyNode when the paradata group exists. */
   setEpochBound(epochId: string, which: "start" | "end", value: string): void {
