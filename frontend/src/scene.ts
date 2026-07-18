@@ -72,6 +72,9 @@ export interface SubBand {
   /** the phase's temporal ParadataNodeGroup id, if any — drawn as a small "PD"
    *  tag in the band label chip (click to enter) instead of a box */
   paradataGroupId?: string;
+  /** phase temporal bounds (data.start_time / end_time), shown under the name */
+  start?: string;
+  end?: string;
 }
 
 /** yEd-style group container drawn on the canvas (open box or closed tab). */

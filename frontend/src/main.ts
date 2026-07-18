@@ -6,7 +6,13 @@ import { buildNodeList } from "./nodelist";
 import { buildOverview } from "./overview";
 import { edgeStyle } from "./palette";
 import { buildPalette, SECTIONS } from "./palette-ui";
-import { edgeAt, hitPdTag, render, type ConnectDrag } from "./renderer";
+import {
+  edgeAt,
+  hitBandLabel,
+  hitPdTag,
+  render,
+  type ConnectDrag,
+} from "./renderer";
 import {
   allowedEdgeTypes,
   classOf,
@@ -2392,6 +2398,7 @@ let dragDetachPending = false; // Shift+drag a member → pull it out of its gro
 let dragDetachSet: { id: string; container: string }[] = [];
 let spaceHeld = false; // Space → pan-always gesture (see pointerdown)
 let pdTagPending: string | null = null; // PD tag pressed → enter on click (pointerup)
+let bandSelectPending: string | null = null; // phase band label pressed → select on click
 
 function worldPos(e: MouseEvent): { x: number; y: number } {
   const rect = canvas.getBoundingClientRect();
@@ -2466,9 +2473,19 @@ canvas.addEventListener("pointerdown", (e) => {
   // (same as double-clicking the old box). Resolved on pointerup as a click.
   if (!placingType) {
     const rect = canvas.getBoundingClientRect();
-    const pd = hitPdTag(e.clientX - rect.left, e.clientY - rect.top);
+    const lx = e.clientX - rect.left;
+    const ly = e.clientY - rect.top;
+    // PD tag first (it sits inside the band chip): click it to ENTER the group
+    const pd = hitPdTag(lx, ly);
     if (pd) {
       pdTagPending = pd;
+      dragMode = "none";
+      return;
+    }
+    // elsewhere on a phase band label chip: click to SELECT the phase
+    const bl = hitBandLabel(lx, ly);
+    if (bl) {
+      bandSelectPending = bl;
       dragMode = "none";
       return;
     }
@@ -2782,6 +2799,13 @@ canvas.addEventListener("pointerup", (e) => {
     const pd = pdTagPending;
     pdTagPending = null;
     if (!moved) enterGroup(pd);
+    return;
+  }
+  // phase band label click → select that phase (residual → the epoch)
+  if (bandSelectPending) {
+    const id = bandSelectPending;
+    bandSelectPending = null;
+    if (!moved) select(id);
     return;
   }
   if (mode === "connect") {

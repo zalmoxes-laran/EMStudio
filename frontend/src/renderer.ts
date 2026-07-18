@@ -121,6 +121,16 @@ export function hitPdTag(sx: number, sy: number): string | null {
   return null;
 }
 
+// Screen-space hit rects for phase sub-band label chips → the id to select on
+// click (the phase id, or the epoch id for the residual band). Rebuilt each draw.
+let bandLabelHits: { id: string; x: number; y: number; w: number; h: number }[] = [];
+export function hitBandLabel(sx: number, sy: number): string | null {
+  for (const t of bandLabelHits)
+    if (sx >= t.x && sx <= t.x + t.w && sy >= t.y && sy <= t.y + t.h)
+      return t.id;
+  return null;
+}
+
 /** group title-tab colour: the canonical `label_background` from
  *  em_visual_rules when present (Activity cyan / Paradata peach / TimeBranch
  *  green / Location grey), else a legacy fallback tint from the border. */
@@ -850,7 +860,7 @@ export function render(
   // band's top-left; the band flush with the lane top is pushed below the lane
   // chip so the two don't collide
   if (scene.subBands?.length) {
-    ctx.font = "600 10px system-ui, sans-serif";
+    bandLabelHits = [];
     for (const sb of scene.subBands) {
       const sy = sb.y * vp.scale + vp.y;
       const sh = sb.height * vp.scale;
@@ -871,22 +881,29 @@ export function render(
           ctx.restore();
         }
       }
-      // the topmost band sits under the lane chip — push its label below it
-      const ty = Math.max(sy + 3, 4) + (sb.first ? 38 : 0);
+      const ty = Math.max(sy + 3, 4);
       const dot = 9;
+      // a phase band shows its start–end under the name (like the lane chip);
+      // the residual band never does (it's the epoch, already on the lane chip)
+      const hasBounds = !sb.residual && (sb.start != null || sb.end != null);
+      const boundsText = hasBounds ? `${sb.start ?? "?"} – ${sb.end ?? "?"}` : "";
+      ctx.font = "600 10px system-ui, sans-serif";
       const nameW = ctx.measureText(sb.label).width;
+      ctx.font = "9px system-ui, sans-serif";
+      const boundsW = hasBounds ? ctx.measureText(boundsText).width : 0;
       // indent deeper (sub-phase) bands so the hierarchy reads at a glance
       const chipX = RAIL + 14 + (sb.depth ?? 0) * 16;
       const hasPd = !!sb.paradataGroupId;
       const tagSpace = hasPd ? PD_TAG_W + 5 : 0;
-      const chipW = 7 + dot + 5 + nameW + tagSpace + 8;
+      const chipW = 7 + dot + 5 + Math.max(nameW, boundsW) + tagSpace + 8;
+      const chipH = hasBounds ? 28 : 16;
       ctx.fillStyle = "rgba(255,255,255,0.82)";
       if (typeof ctx.roundRect === "function") {
         ctx.beginPath();
-        ctx.roundRect(chipX, ty - 1, chipW, 16, 4);
+        ctx.roundRect(chipX, ty - 1, chipW, chipH, 4);
         ctx.fill();
       } else {
-        ctx.fillRect(chipX, ty - 1, chipW, 16);
+        ctx.fillRect(chipX, ty - 1, chipW, chipH);
       }
       const cx = chipX + 7 + dot / 2;
       const cy = ty - 1 + 8;
@@ -902,8 +919,15 @@ export function render(
         ? "italic 10px system-ui, sans-serif"
         : "600 10px system-ui, sans-serif";
       ctx.fillText(sb.label, chipX + 7 + dot + 5, ty);
+      if (hasBounds) {
+        ctx.fillStyle = "#6b7785";
+        ctx.font = "9px system-ui, sans-serif";
+        ctx.fillText(boundsText, chipX + 7 + dot + 5, ty + 13);
+      }
       if (hasPd)
         drawPdTag(chipX + chipW - PD_TAG_W - 5, ty - 1, sb.paradataGroupId!);
+      // the chip is a click target → select the phase (residual → the epoch)
+      bandLabelHits.push({ id: sb.phaseId, x: chipX, y: ty - 1, w: chipW, h: chipH });
     }
   }
 }

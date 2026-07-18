@@ -358,59 +358,40 @@ export function renderInspector(
       );
     }
 
-    // Phases (sub-epochs): split this epoch/phase into ordered sub-periods.
-    // Every epoch (and every phase, recursively) can hold phases.
-    root.appendChild(el("h3", "insp-sect", "Phases"));
-    const phases = store.epochPhases(nodeId);
-    for (const ph of phases) {
-      const pn = store.node(ph);
-      const pd = (pn?.data ?? {}) as Record<string, unknown>;
-      const span =
-        pd.start_time != null || pd.end_time != null
-          ? `  (${pd.start_time ?? "?"}–${pd.end_time ?? "?"})`
-          : "";
-      const row = el("div", "insp-link-row");
-      const b = el("button", "insp-link", `→ ${pn?.name || ph}${span}`);
-      b.addEventListener("click", () => cb.onJump(ph));
-      row.appendChild(b);
-      const col =
-        typeof pd.color === "string" && toHexColor(pd.color) ? pd.color : null;
-      if (col) {
-        const dot = el("span", "insp-phase-dot");
-        (dot as HTMLElement).style.background = col as string;
-        row.insertBefore(dot, b);
+    // Phases (sub-epochs): ONLY a top-level epoch manages phases. A phase gets
+    // no sub-epochs (E.D.: keep periodisation one level deep for now) — so the
+    // whole section (list + "Add phase") is hidden on a phase; "Delete phase"
+    // (above) stays.
+    if (!isPhase) {
+      root.appendChild(el("h3", "insp-sect", "Phases"));
+      const phases = store.epochPhases(nodeId);
+      for (const ph of phases) {
+        const pn = store.node(ph);
+        const pd = (pn?.data ?? {}) as Record<string, unknown>;
+        const span =
+          pd.start_time != null || pd.end_time != null
+            ? `  (${pd.start_time ?? "?"}–${pd.end_time ?? "?"})`
+            : "";
+        const row = el("div", "insp-link-row");
+        const b = el("button", "insp-link", `→ ${pn?.name || ph}${span}`);
+        b.addEventListener("click", () => cb.onJump(ph));
+        row.appendChild(b);
+        const col =
+          typeof pd.color === "string" && toHexColor(pd.color) ? pd.color : null;
+        if (col) {
+          const dot = el("span", "insp-phase-dot");
+          (dot as HTMLElement).style.background = col as string;
+          row.insertBefore(dot, b);
+        }
+        root.appendChild(row);
       }
-      root.appendChild(row);
+      const pbar = el("div", "insp-actions");
+      const addPh = el("button", "insp-btn", "+ Add phase") as HTMLButtonElement;
+      addPh.title = "Create a phase (sub-epoch) inside this epoch";
+      addPh.addEventListener("click", () => cb.onAddPhase(nodeId));
+      pbar.appendChild(addPh);
+      root.appendChild(pbar);
     }
-    const pbar = el("div", "insp-actions");
-    const addPh = el("button", "insp-btn", "+ Add phase") as HTMLButtonElement;
-    addPh.title = "Create a sub-epoch (phase) inside this epoch";
-    addPh.addEventListener("click", () => cb.onAddPhase(nodeId));
-    pbar.appendChild(addPh);
-    // Phase-bands toggle: bands show by DEFAULT (opt-out). The toggle is
-    // available from the epoch OR any of its phases / sub-phases, and always
-    // targets the TOP-level epoch (the lane) so one click collapses/expands the
-    // whole hierarchy's bands at once. View-state only.
-    let topEpoch = nodeId;
-    const seenTop = new Set<string>();
-    while (store.parentEpoch(topEpoch) && !seenTop.has(topEpoch)) {
-      seenTop.add(topEpoch);
-      topEpoch = store.parentEpoch(topEpoch)!;
-    }
-    if (store.epochPhases(topEpoch).length) {
-      const shown = cb.isPhasesVisible(topEpoch);
-      const tog = el(
-        "button",
-        "insp-btn",
-        shown ? "▾ Hide phase bands" : "▸ Show phase bands",
-      ) as HTMLButtonElement;
-      tog.title = shown
-        ? "Collapse all phases back into a single epoch lane"
-        : "Split the epoch's lane into one sub-band per phase";
-      tog.addEventListener("click", () => cb.onTogglePhases(topEpoch));
-      pbar.appendChild(tog);
-    }
-    root.appendChild(pbar);
 
     // coherence warnings (start/end order, phases within the parent span, …)
     const warns = store.epochCoherenceWarnings(nodeId);
@@ -419,6 +400,33 @@ export function renderInspector(
       box.appendChild(el("div", "insp-warn-title", "⚠ Coherence"));
       for (const w of warns) box.appendChild(el("div", "insp-warn-item", w));
       root.appendChild(box);
+    }
+
+    // Phase bands (view state): its own section at the end. Bands show by
+    // DEFAULT; this collapses/expands ALL of THIS epoch's phases at once, and
+    // is reachable from the epoch OR any of its phases (always targets the
+    // top-level epoch = the lane).
+    let topEpoch = nodeId;
+    const seenTop = new Set<string>();
+    while (store.parentEpoch(topEpoch) && !seenTop.has(topEpoch)) {
+      seenTop.add(topEpoch);
+      topEpoch = store.parentEpoch(topEpoch)!;
+    }
+    if (store.epochPhases(topEpoch).length) {
+      root.appendChild(el("h3", "insp-sect", "Phase bands"));
+      const shown = cb.isPhasesVisible(topEpoch);
+      const tog = el(
+        "button",
+        "insp-btn",
+        shown ? "▾ Hide phase bands" : "▸ Show phase bands",
+      ) as HTMLButtonElement;
+      tog.title = shown
+        ? "Collapse this epoch's phases back into a single lane"
+        : "Split this epoch's lane into one sub-band per phase";
+      tog.addEventListener("click", () => cb.onTogglePhases(topEpoch));
+      const bar = el("div", "insp-actions");
+      bar.appendChild(tog);
+      root.appendChild(bar);
     }
   }
 

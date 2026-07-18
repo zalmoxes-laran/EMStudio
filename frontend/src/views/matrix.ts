@@ -58,6 +58,8 @@ export function buildMatrixScene(
   const nodes = view?.nodes ?? doc.graph.nodes;
   const edges = view?.edges ?? doc.graph.edges;
   const nodeById = new Map(doc.graph.nodes.map((n) => [n.id, n]));
+  const asStr = (v: unknown): string | undefined =>
+    v != null && v !== "" ? String(v) : undefined;
   const folded = new Set(layout.folded_groups ?? []);
   const pinnedSet = new Set(doc.layout?.pinned ?? []);
   const membership = buildMembership(doc);
@@ -564,7 +566,10 @@ export function buildMatrixScene(
       // "PD" tag + name) so a freshly-created / unit-less phase is visible and
       // can receive dropped units; an empty residual band is skipped.
       const EMPTY_BAND_H = 26;
-      let cursor = lane.y;
+      // reserve space at the lane top for the epoch header chip so the first
+      // band (its label) doesn't overlap it
+      const LANE_TOP_RESERVE = 40;
+      let cursor = lane.y + LANE_TOP_RESERVE;
       let firstBand = true;
       for (let bi = 0; bi < bandOrder.length; bi++) {
         const key = bandOrder[bi];
@@ -596,6 +601,10 @@ export function buildMatrixScene(
           first: firstBand,
           depth: bandDepth.get(key) ?? 0,
           paradataGroupId: isResidual ? undefined : pdgOfPhase.get(key),
+          start: isResidual
+            ? undefined
+            : asStr(nodeById.get(key)?.data?.start_time),
+          end: isResidual ? undefined : asStr(nodeById.get(key)?.data?.end_time),
         });
         firstBand = false;
         cursor += h + BAND_GAP;
