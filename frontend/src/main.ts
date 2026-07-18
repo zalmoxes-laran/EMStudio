@@ -6,7 +6,7 @@ import { buildNodeList } from "./nodelist";
 import { buildOverview } from "./overview";
 import { edgeStyle } from "./palette";
 import { buildPalette, SECTIONS } from "./palette-ui";
-import { edgeAt, render, type ConnectDrag } from "./renderer";
+import { edgeAt, hitPdTag, render, type ConnectDrag } from "./renderer";
 import {
   allowedEdgeTypes,
   classOf,
@@ -2391,6 +2391,7 @@ let dragDetachPending = false; // Shift+drag a member → pull it out of its gro
 // nodes to pull out of their groups on shift+drag (whole selection if multi)
 let dragDetachSet: { id: string; container: string }[] = [];
 let spaceHeld = false; // Space → pan-always gesture (see pointerdown)
+let pdTagPending: string | null = null; // PD tag pressed → enter on click (pointerup)
 
 function worldPos(e: MouseEvent): { x: number; y: number } {
   const rect = canvas.getBoundingClientRect();
@@ -2436,7 +2437,12 @@ function moveOneByDelta(
       checkpoint,
     );
   } else {
-    store.moveNode(id, nx, ny, checkpoint);
+    // Apply the delta straight to layout.positions. Reading the scene's
+    // absolute y here (sn.y + ddy) would bake in the view-side swimlane
+    // re-stack / sub-band shift on every frame — that shift is NOT in
+    // layout.positions, so it compounds and the node runs away (worst on
+    // free nodes like extractor/combiner in a lower, shifted lane).
+    store.moveNodesBy([id], ddx, ddy, checkpoint);
   }
 }
 
@@ -2455,6 +2461,17 @@ canvas.addEventListener("pointerdown", (e) => {
     canvas.setPointerCapture(e.pointerId);
     e.preventDefault();
     return;
+  }
+  // "PD" tag in a lane / band label chip → enter that epoch/phase temporal PDG
+  // (same as double-clicking the old box). Resolved on pointerup as a click.
+  if (!placingType) {
+    const rect = canvas.getBoundingClientRect();
+    const pd = hitPdTag(e.clientX - rect.left, e.clientY - rect.top);
+    if (pd) {
+      pdTagPending = pd;
+      dragMode = "none";
+      return;
+    }
   }
   const s = scene();
   if (!s) return;
@@ -2760,6 +2777,13 @@ canvas.addEventListener("pointerup", (e) => {
   dragMode = "none";
   dragDetachPending = false;
   dragDetachSet = [];
+  // "PD" tag click → enter the epoch/phase temporal PDG (a click, not a drag)
+  if (pdTagPending) {
+    const pd = pdTagPending;
+    pdTagPending = null;
+    if (!moved) enterGroup(pd);
+    return;
+  }
   if (mode === "connect") {
     finishConnect(e.shiftKey || e.altKey); // Shift/Alt = force "create node"
     return;

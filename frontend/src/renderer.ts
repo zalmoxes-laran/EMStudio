@@ -110,6 +110,17 @@ const ACCENT = "#1F6FEB";
 const GROUP_HEADER_FILL = "#F6D7A4"; // yEd folder tab (paradata groups)
 const GROUP_BODY_FILL = "rgba(190,196,204,0.25)";
 
+// Screen-space hit rects for the "PD" tags drawn in lane / band label chips
+// (an epoch's / phase's temporal ParadataNodeGroup, shown as a tag instead of a
+// box). Rebuilt every draw; queried by main.ts on click to enter that group.
+let pdTagHits: { pdgId: string; x: number; y: number; w: number; h: number }[] = [];
+export function hitPdTag(sx: number, sy: number): string | null {
+  for (const t of pdTagHits)
+    if (sx >= t.x && sx <= t.x + t.w && sy >= t.y && sy <= t.y + t.h)
+      return t.pdgId;
+  return null;
+}
+
 /** group title-tab colour: the canonical `label_background` from
  *  em_visual_rules when present (Activity cyan / Paradata peach / TimeBranch
  *  green / Location grey), else a legacy fallback tint from the border. */
@@ -748,6 +759,33 @@ export function render(
   ctx.textAlign = "left";
   ctx.textBaseline = "top";
   const RAIL = 6; // strong colour rail width (px) on the first pixels of a lane
+  // "PD" tag: a small clickable badge for an epoch/phase temporal PDG, drawn in
+  // the label chip instead of a box. Registers its screen rect for click-to-enter.
+  pdTagHits = [];
+  const PD_TAG_W = 22;
+  const PD_TAG_H = 14;
+  const drawPdTag = (x: number, y: number, pdgId: string): void => {
+    ctx.save();
+    ctx.fillStyle = GROUP_HEADER_FILL; // paradata group colour (yEd folder tab)
+    ctx.strokeStyle = "rgba(0,0,0,0.30)";
+    ctx.lineWidth = 1;
+    if (typeof ctx.roundRect === "function") {
+      ctx.beginPath();
+      ctx.roundRect(x, y, PD_TAG_W, PD_TAG_H, 3);
+      ctx.fill();
+      ctx.stroke();
+    } else {
+      ctx.fillRect(x, y, PD_TAG_W, PD_TAG_H);
+      ctx.strokeRect(x, y, PD_TAG_W, PD_TAG_H);
+    }
+    ctx.fillStyle = "#5a4522";
+    ctx.font = "700 9px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("PD", x + PD_TAG_W / 2, y + PD_TAG_H / 2 + 0.5);
+    ctx.restore();
+    pdTagHits.push({ pdgId, x, y, w: PD_TAG_W, h: PD_TAG_H });
+  };
   for (const lane of scene.lanes) {
     const sy = lane.y * vp.scale + vp.y;
     const sh = lane.height * vp.scale;
@@ -771,8 +809,10 @@ export function render(
     ctx.font = "10px system-ui, sans-serif";
     const boundsW = showBounds ? ctx.measureText(boundsText).width : 0;
     const gap = dot ? 6 : 0;
+    const hasPd = !!lane.paradataGroupId;
+    const tagSpace = hasPd ? PD_TAG_W + 6 : 0;
     const chipX = RAIL + 4;
-    const chipW = 8 + dot + gap + Math.max(nameW, boundsW) + 8;
+    const chipW = 8 + dot + gap + Math.max(nameW, boundsW) + tagSpace + 8;
     const chipH = showBounds ? 32 : 18;
     ctx.fillStyle = "rgba(255,255,255,0.86)";
     if (typeof ctx.roundRect === "function") {
@@ -802,6 +842,8 @@ export function render(
       ctx.font = "10px system-ui, sans-serif";
       ctx.fillText(boundsText, textX, ty + 15);
     }
+    if (hasPd)
+      drawPdTag(chipX + chipW - PD_TAG_W - 6, ty - 1, lane.paradataGroupId!);
   }
 
   // phase sub-band labels: a small indented chip (colour dot + name) at each
@@ -835,7 +877,9 @@ export function render(
       const nameW = ctx.measureText(sb.label).width;
       // indent deeper (sub-phase) bands so the hierarchy reads at a glance
       const chipX = RAIL + 14 + (sb.depth ?? 0) * 16;
-      const chipW = 7 + dot + 5 + nameW + 8;
+      const hasPd = !!sb.paradataGroupId;
+      const tagSpace = hasPd ? PD_TAG_W + 5 : 0;
+      const chipW = 7 + dot + 5 + nameW + tagSpace + 8;
       ctx.fillStyle = "rgba(255,255,255,0.82)";
       if (typeof ctx.roundRect === "function") {
         ctx.beginPath();
@@ -858,6 +902,8 @@ export function render(
         ? "italic 10px system-ui, sans-serif"
         : "600 10px system-ui, sans-serif";
       ctx.fillText(sb.label, chipX + 7 + dot + 5, ty);
+      if (hasPd)
+        drawPdTag(chipX + chipW - PD_TAG_W - 5, ty - 1, sb.paradataGroupId!);
     }
   }
 }

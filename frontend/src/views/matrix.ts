@@ -107,12 +107,12 @@ export function buildMatrixScene(
   };
   const laneOf = new Map<string, number>(); // node id → lane index
 
-  // ---- phase (sub-epoch) temporal PDG maps + visibility -------------------
-  // A phase has no swimlane, so its temporal ParadataNodeGroup box lives in the
-  // phase's sub-band and is shown ONLY when the parent epoch's bands are on.
-  // Build the phase→parent walk once (also used by the re-homing + reflow), the
-  // phase-PDG lookups, and the set of phase-PDG nodes to HIDE when bands are off
-  // (they'd otherwise float in the parent lane at their seed position).
+  // ---- epoch / phase temporal PDG → "PD" tag ------------------------------
+  // An epoch's (or phase's) temporal ParadataNodeGroup is NOT drawn as a box on
+  // the canvas; it is represented by a small "PD" tag in the lane / band label
+  // chip (click to enter the group). So build the epoch/phase→PDG lookup (for
+  // the tag + its click target) and HIDE the PDG nodes (group + members) from
+  // the Matrix — they live behind the tag. The Graph view still shows them.
   const parentOfPhase = new Map<string, string>(); // phase → immediate parent
   for (const e of doc.graph.edges)
     if (e.edge_type === "has_sub_epoch") parentOfPhase.set(e.target, e.source);
@@ -125,29 +125,32 @@ export function buildMatrixScene(
     }
     return cur;
   };
-  const pdgOfPhase = new Map<string, string>(); // phase id → its PDG id
+  // any EpochNode (top-level epoch OR phase) → its temporal PDG id
+  const pdgOfEpochNode = new Map<string, string>();
   for (const e of doc.graph.edges)
-    if (e.edge_type === "has_paradata_nodegroup" && phaseIds.has(e.source))
-      pdgOfPhase.set(e.source, e.target);
-  const propsOfPdg = new Map<string, string[]>(); // PDG id → member property ids
+    if (
+      e.edge_type === "has_paradata_nodegroup" &&
+      nodeById.get(e.source)?.node_type === "EpochNode"
+    )
+      pdgOfEpochNode.set(e.source, e.target);
+  const pdgOfPhase = pdgOfEpochNode; // phases are EpochNodes too — same lookup
+  const propsOfPdg = new Map<string, string[]>(); // PDG id → member ids
   for (const e of doc.graph.edges)
     if (e.edge_type === "is_in_paradata_nodegroup") {
       const arr = propsOfPdg.get(e.target);
       if (arr) arr.push(e.source);
       else propsOfPdg.set(e.target, [e.source]);
     }
-  const allPhasePdgNodes = new Set<string>(); // every phase-PDG group + its props
-  for (const [, pdg] of pdgOfPhase) {
-    allPhasePdgNodes.add(pdg);
-    for (const p of propsOfPdg.get(pdg) ?? []) allPhasePdgNodes.add(p);
+  // PDG nodes (group + members) hidden from the Matrix — reached via the tag
+  const hiddenEpochPdg = new Set<string>();
+  for (const [, pdg] of pdgOfEpochNode) {
+    hiddenEpochPdg.add(pdg);
+    for (const p of propsOfPdg.get(pdg) ?? []) hiddenEpochPdg.add(p);
   }
-  const showPhasesInit = phasesVisible ?? new Set<string>();
-  const hiddenPhasePdg = new Set<string>(); // phase-PDG nodes hidden (bands off)
-  for (const [phase, pdg] of pdgOfPhase) {
-    if (showPhasesInit.has(topEpochOf(phase))) continue; // bands on → placed later
-    hiddenPhasePdg.add(pdg);
-    for (const p of propsOfPdg.get(pdg) ?? []) hiddenPhasePdg.add(p);
-  }
+  const allPhasePdgNodes = hiddenEpochPdg; // reflow skip (nodes aren't in scene)
+  // give each lane its epoch's PDG id so the renderer draws the "PD" tag
+  for (const lane of scene.lanes)
+    lane.paradataGroupId = pdgOfEpochNode.get(lane.id);
 
   // base placement from the stored layout
   const relocateIds: string[] = [];
@@ -157,10 +160,9 @@ export function buildMatrixScene(
     // in the swimlane projection the epoch IS the lane — epochs render as
     // nodes only in graph view (E.D., 12 July 2026)
     if (node.node_type === "epoch" || node.node_type === "EpochNode") continue;
-    // a phase's temporal PDG box only exists inside its sub-band — when that
-    // phase's bands are off, drop the box + its props so they don't float in
-    // the parent lane at their seed position (Matrix-only; Graph view keeps them)
-    if (hiddenPhasePdg.has(node.id)) continue;
+    // epoch/phase temporal PDGs are represented by a "PD" tag in the label chip,
+    // not a box — drop the group + its members here (Matrix-only; Graph keeps them)
+    if (hiddenEpochPdg.has(node.id)) continue;
     const r = positions[node.id];
     if (!r) continue;
     const sn: SceneNode = {
@@ -648,6 +650,7 @@ export function buildMatrixScene(
           residual: isResidual,
           first: firstBand,
           depth: bandDepth.get(key) ?? 0,
+          paradataGroupId: isResidual ? undefined : pdgOfPhase.get(key),
         });
         firstBand = false;
         cursor += h + BAND_GAP;

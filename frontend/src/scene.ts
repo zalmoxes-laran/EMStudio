@@ -37,6 +37,9 @@ export interface Lane {
   /** epoch temporal bounds (data.start_time / end_time), shown in the label */
   start?: string;
   end?: string;
+  /** the epoch's temporal ParadataNodeGroup id, if any — drawn as a small "PD"
+   *  tag in the lane label chip (click to enter the group) instead of a box */
+  paradataGroupId?: string;
 }
 
 /** Vertical gap (world units) stacked between adjacent phase sub-bands. The
@@ -66,6 +69,9 @@ export interface SubBand {
   first?: boolean;
   /** nesting depth: 0 = a top-level phase / the epoch residual, 1+ = sub-phase */
   depth?: number;
+  /** the phase's temporal ParadataNodeGroup id, if any — drawn as a small "PD"
+   *  tag in the band label chip (click to enter) instead of a box */
+  paradataGroupId?: string;
 }
 
 /** yEd-style group container drawn on the canvas (open box or closed tab). */
