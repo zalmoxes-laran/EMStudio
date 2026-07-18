@@ -493,6 +493,11 @@ export function buildMatrixScene(
   // band is the phase it (or its group root) is attributed to; unattributed
   // roots fall in the residual band.
   const subBands: SubBand[] = [];
+  // bottom Y reached by each phased lane's stacked sub-bands (incl. empty phase
+  // strips, which carry no nodes) — folded into the swimlane re-stack below so a
+  // lane with many/empty phases grows to contain them instead of spilling into
+  // the next lane.
+  const bandExtentByLane = new Map<string, number>();
   if (phaseIds.size && showPhases.size) {
     const laneOfNode = (sn: SceneNode): number =>
       laneOf.get(sn.id) ?? laneIdxOfY(sn.y + sn.h / 2);
@@ -666,6 +671,7 @@ export function buildMatrixScene(
         firstBand = false;
         cursor += h + BAND_GAP;
       }
+      bandExtentByLane.set(lane.id, cursor);
     }
   }
   if (subBands.length) scene.subBands = subBands;
@@ -693,6 +699,15 @@ export function buildMatrixScene(
       if (over > 0) bottom[li] = Math.max(bottom[li], over);
       const above = origY[li] + 8 - sn.y;
       if (above > 0) top[li] = Math.max(top[li], above);
+    }
+    // Empty phase bands carry no nodes, so the node loop above misses them —
+    // grow the lane to the bottom of its stacked sub-bands too, or a lane with
+    // several (or unit-less) phases spills its bands over the next lane.
+    for (const [laneId, extent] of bandExtentByLane) {
+      const li = laneIndexOf.get(laneId);
+      if (li == null) continue;
+      const over = extent + LANE_PAD - (origY[li] + origH[li]);
+      if (over > 0) bottom[li] = Math.max(bottom[li], over);
     }
     let cursor = origY[0] - top[0]; // keep the first lane roughly anchored
     const nodeShift = scene.lanes.map(() => 0);
