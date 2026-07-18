@@ -536,7 +536,35 @@ export function buildMatrixScene(
         if (!rootKids.has(root)) rootKids.set(root, []);
         rootKids.get(root)!.push(sn);
       }
-      // assign each root a band = majority phase among its subtree, else residual
+      // Does the epoch itself still hold DIRECT (un-phased) units? If not (e.g.
+      // the first phase absorbed them all), there must be NO residual band —
+      // otherwise leftover/inherited nodes (doc instances, paradata) land in a
+      // residual that stacks BELOW the phase and doubles the lane height. So when
+      // there are no direct units, un-voted blocks fall back to the DOMINANT
+      // phase, keeping ALL content in one band (≈ the original layout, no growth).
+      const epochHasDirectUnits = doc.graph.edges.some(
+        (e) =>
+          (e.edge_type === "has_first_epoch" ||
+            e.edge_type === "survive_in_epoch") &&
+          e.target === lane.id,
+      );
+      let fallbackKey = lane.id; // residual
+      if (!epochHasDirectUnits) {
+        const gt = new Map<string, number>();
+        for (const sn of scene.nodes) {
+          const ph = phaseFor(sn.id);
+          if (ph) gt.set(ph, (gt.get(ph) ?? 0) + 1);
+        }
+        let bn = 0;
+        let dom: string | undefined;
+        for (const [ph, n] of gt)
+          if (n > bn) {
+            dom = ph;
+            bn = n;
+          }
+        fallbackKey = dom ?? bandOrder.find((k) => k !== lane.id) ?? lane.id;
+      }
+      // assign each root a band = majority phase among its subtree, else fallback
       for (const [root, kids] of rootKids) {
         const tally = new Map<string, number>();
         for (const k of kids) {
@@ -550,7 +578,10 @@ export function buildMatrixScene(
             best = ph;
             bestN = n;
           }
-        rootBand.set(root, bandIndex.get(best ?? lane.id) ?? bandOrder.length - 1);
+        rootBand.set(
+          root,
+          bandIndex.get(best ?? fallbackKey) ?? bandOrder.length - 1,
+        );
       }
       // per-band bbox (over all member nodes) at current positions
       const bMinY = bandOrder.map(() => Infinity);
