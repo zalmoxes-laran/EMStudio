@@ -281,6 +281,11 @@ export class DocumentStore {
   ): { pdgId: string; startId: string; endId: string } | null {
     const epoch = this.node(epochId);
     if (!epoch || epoch.node_type !== "EpochNode") return null;
+    // A phase (sub-epoch) is an EpochNode too, and gets its own temporal PDG —
+    // but NO em-core anchor: a phase has no swimlane, so its box is placed
+    // view-side at its sub-band's bottom-left (matrix.ts) and hidden when the
+    // phase bands are off. Epochs keep the portable em-core bottom-left anchor.
+    const isPhase = this.parentEpoch(epochId) != null;
     const ed = (epoch.data ?? {}) as Record<string, unknown>;
     // A stored position matters: Matrix skips nodes without one, so a
     // freshly-created group/property would be invisible. Seed positions in the
@@ -307,8 +312,10 @@ export class DocumentStore {
     const ensureProp = (propType: string, boundKey: string): string => {
       const existing = this.propInGroup(pdgId!, propType);
       if (existing) {
-        // keep its system anchor current even for a pre-existing prop
-        this.setAnchor(existing.id, epochId, "bl", slot++ * 100, 8);
+        // keep its system anchor current even for a pre-existing prop (epochs
+        // only — phases are placed view-side against their sub-band)
+        if (!isPhase) this.setAnchor(existing.id, epochId, "bl", slot++ * 100, 8);
+        else slot++;
         return existing.id;
       }
       const seed = ed[boundKey] != null ? String(ed[boundKey]) : "";
@@ -328,8 +335,9 @@ export class DocumentStore {
       );
       this.addEdge(p.id, pdgId!, "is_in_paradata_nodegroup");
       // system anchor: the box sits bottom-left of the epoch (rule pin, so a
-      // Layout run keeps it there — resolved by em-core, portable to Heriverse)
-      this.setAnchor(p.id, epochId, "bl", s * 100, 8);
+      // Layout run keeps it there — resolved by em-core, portable to Heriverse).
+      // Phases get no anchor: they're placed view-side against their sub-band.
+      if (!isPhase) this.setAnchor(p.id, epochId, "bl", s * 100, 8);
       return p.id;
     };
     const startId = ensureProp("absolute_time_start", "start_time");
@@ -345,21 +353,25 @@ export class DocumentStore {
     const g = this.doc.graph;
     const layout = (this.doc.layout ??= {});
     const positions = (layout.positions ??= {});
-    // sub-epochs (phases) don't get an auto box yet — skip has_sub_epoch targets
+    // phases (has_sub_epoch targets) also get their temporal box, but with NO
+    // em-core anchor — they have no swimlane, so matrix.ts places their box at
+    // the phase sub-band's bottom-left and hides it when phase bands are off.
     const phaseIds = new Set<string>();
     for (const e of g.edges)
       if (e.edge_type === "has_sub_epoch") phaseIds.add(e.target);
     for (const epoch of [...g.nodes]) {
       if (epoch.node_type !== "EpochNode") continue;
-      // top-level epochs only (phases excluded). NOTE: do NOT gate on having a
-      // swimlane — a Blender sync snapshot has NO swimlanes at load (em-core
-      // computes them after), yet those epochs still need their default box.
-      if (phaseIds.has(epoch.id)) continue;
+      // every EpochNode (top-level epoch OR phase) gets a box. NOTE: do NOT gate
+      // on having a swimlane — a Blender sync snapshot has NO swimlanes at load
+      // (em-core computes them after), yet those epochs still need their box.
+      const isPhase = phaseIds.has(epoch.id);
       const existingPdg = this.epochParadataGroup(epoch.id);
       if (existingPdg) {
         // PDG already present (e.g. a Blender sync snapshot, or an earlier
-        // session): don't recreate it, but STILL ensure its bottom-left system
-        // anchor exists (setAnchor is idempotent) so a Layout run positions it.
+        // session): don't recreate it. For epochs, STILL ensure the bottom-left
+        // system anchor exists (setAnchor is idempotent) so a Layout run
+        // positions it; phases carry no anchor (placed view-side), so skip.
+        if (isPhase) continue;
         const order = ["absolute_time_start", "absolute_time_end"];
         g.edges
           .filter(
@@ -422,14 +434,16 @@ export class DocumentStore {
           target: pdgId,
           edge_type: "is_in_paradata_nodegroup",
         });
-        // system anchor: epoch bottom-left (resolved by em-core on layout)
-        (layout.anchors ??= []).push({
-          node: pid,
-          to: epoch.id,
-          corner: "bl",
-          dx: s * 100,
-          dy: 8,
-        });
+        // system anchor: epoch bottom-left (resolved by em-core on layout).
+        // Phases carry no anchor — matrix.ts places their box view-side.
+        if (!isPhase)
+          (layout.anchors ??= []).push({
+            node: pid,
+            to: epoch.id,
+            corner: "bl",
+            dx: s * 100,
+            dy: 8,
+          });
       }
     }
   }
@@ -491,6 +505,10 @@ export class DocumentStore {
     this.emit();
     this.emitOp({ op: "add_node", node });
     this.addEdge(epochId, id, "has_sub_epoch");
+    // give the new phase its temporal PDG right away (auto for all phases, like
+    // epochs). The has_sub_epoch edge is in place, so ensureEpochTemporalParadata
+    // sees it as a phase and skips the em-core anchor (view-side placement).
+    this.ensureEpochTemporalParadata(id);
     return node;
   }
 

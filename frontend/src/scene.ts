@@ -39,6 +39,11 @@ export interface Lane {
   end?: string;
 }
 
+/** Vertical gap (world units) stacked between adjacent phase sub-bands. The
+ *  dashed separator is drawn centred in this gap, so matrix.ts (which lays the
+ *  bands out) and renderer.ts (which draws the separator) MUST share it. */
+export const BAND_GAP = 26;
+
 /**
  * A phase (sub-epoch) sub-band inside an epoch swimlane. Emitted only when the
  * epoch's phases are toggled visible; the renderer draws a dashed separator at

@@ -11,6 +11,7 @@ import {
   traceRoute,
   type EdgeRoute,
 } from "./routing";
+import { BAND_GAP } from "./scene";
 import type { Scene, Viewport } from "./scene";
 
 export interface ConnectDrag {
@@ -308,14 +309,20 @@ export function render(
   const worldLeft = -vp.x / vp.scale;
   const worldRight = (viewW - vp.x) / vp.scale;
 
+  // lanes whose colour wash is provided by their phase sub-bands instead (so
+  // the lane's own wash is suppressed there — otherwise the two stack and the
+  // phase colour muddies against the epoch colour underneath)
+  const lanesWithBands = new Set(scene.subBands?.map((sb) => sb.laneId));
+
   // epoch swimlanes
   scene.lanes.forEach((lane, i) => {
     ctx.fillStyle = LANE_COLORS[i % 2];
     ctx.fillRect(worldLeft, lane.y, worldRight - worldLeft, lane.height);
     // tint the whole lane with the epoch's own colour (data.color) at a very
     // low alpha — a 5%-visible wash; the strong colour lives in the left rail
-    // + the label circle (drawn screen-space below)
-    if (lane.color) {
+    // + the label circle (drawn screen-space below). Skip it when sub-bands
+    // cover the lane: each band paints its own single-colour wash below.
+    if (lane.color && !lanesWithBands.has(lane.id)) {
       ctx.save();
       ctx.globalAlpha = 0.05;
       ctx.fillStyle = lane.color;
@@ -336,8 +343,10 @@ export function render(
   if (scene.subBands?.length) {
     for (const sb of scene.subBands) {
       if (sb.color) {
+        // single wash per band (the lane wash is suppressed under bands), so a
+        // touch stronger than the old stacked 6% for a clean, legible tint
         ctx.save();
-        ctx.globalAlpha = 0.06;
+        ctx.globalAlpha = 0.09;
         ctx.fillStyle = sb.color;
         ctx.fillRect(worldLeft, sb.y, worldRight - worldLeft, sb.height);
         ctx.restore();
@@ -349,8 +358,9 @@ export function render(
       ctx.lineWidth = 1.5 / vp.scale;
       ctx.setLineDash([9 / vp.scale, 6 / vp.scale]);
       ctx.beginPath();
-      ctx.moveTo(worldLeft, sb.y - 13); // centre the line in the inter-band gap
-      ctx.lineTo(worldRight, sb.y - 13);
+      const sepY = sb.y - BAND_GAP / 2; // centre the line in the inter-band gap
+      ctx.moveTo(worldLeft, sepY);
+      ctx.lineTo(worldRight, sepY);
       ctx.stroke();
       ctx.restore();
     }
@@ -803,6 +813,22 @@ export function render(
       const sy = sb.y * vp.scale + vp.y;
       const sh = sb.height * vp.scale;
       if (sy + sh < 0 || sy > viewH || sh < 14) continue;
+      // nesting rail: a vertical colour bar indented by depth, echoing the
+      // lane's own left rail so a sub-phase reads as contained at a glance.
+      // Skip the residual band — that IS the epoch, already marked by the lane
+      // rail; drawing another bar there would just double it.
+      if (!sb.residual && sb.color) {
+        const railX = RAIL + (sb.depth ?? 0) * 16;
+        const y0 = Math.max(sy, 0);
+        const y1 = Math.min(sy + sh, viewH);
+        if (y1 > y0) {
+          ctx.save();
+          ctx.globalAlpha = 0.9;
+          ctx.fillStyle = sb.color;
+          ctx.fillRect(railX, y0, 4, y1 - y0);
+          ctx.restore();
+        }
+      }
       // the topmost band sits under the lane chip — push its label below it
       const ty = Math.max(sy + 3, 4) + (sb.first ? 38 : 0);
       const dot = 9;
