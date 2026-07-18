@@ -387,19 +387,27 @@ export function renderInspector(
     addPh.title = "Create a sub-epoch (phase) inside this epoch";
     addPh.addEventListener("click", () => cb.onAddPhase(nodeId));
     pbar.appendChild(addPh);
-    // toggle: hidden (units share the one epoch lane) ⇄ shown (units split into
-    // per-phase sub-bands, separated by a dashed line). View-state only.
-    if (phases.length) {
-      const shown = cb.isPhasesVisible(nodeId);
+    // Phase-bands toggle: bands show by DEFAULT (opt-out). The toggle is
+    // available from the epoch OR any of its phases / sub-phases, and always
+    // targets the TOP-level epoch (the lane) so one click collapses/expands the
+    // whole hierarchy's bands at once. View-state only.
+    let topEpoch = nodeId;
+    const seenTop = new Set<string>();
+    while (store.parentEpoch(topEpoch) && !seenTop.has(topEpoch)) {
+      seenTop.add(topEpoch);
+      topEpoch = store.parentEpoch(topEpoch)!;
+    }
+    if (store.epochPhases(topEpoch).length) {
+      const shown = cb.isPhasesVisible(topEpoch);
       const tog = el(
         "button",
         "insp-btn",
         shown ? "▾ Hide phase bands" : "▸ Show phase bands",
       ) as HTMLButtonElement;
       tog.title = shown
-        ? "Merge the phases back into a single epoch lane"
-        : "Split this epoch's lane into one sub-band per phase";
-      tog.addEventListener("click", () => cb.onTogglePhases(nodeId));
+        ? "Collapse all phases back into a single epoch lane"
+        : "Split the epoch's lane into one sub-band per phase";
+      tog.addEventListener("click", () => cb.onTogglePhases(topEpoch));
       pbar.appendChild(tog);
     }
     root.appendChild(pbar);

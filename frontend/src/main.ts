@@ -91,9 +91,10 @@ const graphOverrides = new Map<string, { x: number; y: number }>();
 // doc.layout. Recomputed on filter change / view→matrix (see refreshMatrixViewLayout).
 let matrixViewLayout: import("./types").EmLayout | null = null;
 // Epochs whose phases (sub-epochs) are shown as lane sub-bands in the Matrix.
-// Pure view state — never persisted to the document. Absent = phases hidden
-// (all the epoch's units share the single lane).
-const phasesVisible = new Set<string>();
+// Pure view state — never persisted. Phase bands are shown BY DEFAULT for every
+// epoch that has phases; this set holds the top-level epochs the user COLLAPSED
+// back into a single lane (opt-out). Keyed by the top-level epoch (the lane).
+const phasesCollapsed = new Set<string>();
 const scenes: Partial<Record<ViewKind, Scene | null>> = {};
 const viewports: Record<ViewKind, Viewport> = {
   matrix: new Viewport(),
@@ -532,13 +533,15 @@ function refreshInspector(): void {
         toast(`phase ${ph.name} created`);
       },
       onTogglePhases: (epochId) => {
-        if (phasesVisible.has(epochId)) phasesVisible.delete(epochId);
-        else phasesVisible.add(epochId);
+        // epochId is the TOP-level epoch (the inspector resolves it); toggling
+        // collapses/expands ALL of its phases & sub-phases at once.
+        if (phasesCollapsed.has(epochId)) phasesCollapsed.delete(epochId);
+        else phasesCollapsed.add(epochId);
         buildScenes();
         refreshInspector();
         draw();
       },
-      isPhasesVisible: (epochId) => phasesVisible.has(epochId),
+      isPhasesVisible: (epochId) => !phasesCollapsed.has(epochId),
       onDeletePhase: (phaseId) => promptDeletePhase(phaseId),
       onAssignEpoch: (nodeId, epochId) => {
         store!.setFirstEpoch([nodeId], epochId);
@@ -861,10 +864,34 @@ function filteredView(): {
   };
 }
 
+/** Top-level epochs that have at least one phase in their subtree. */
+function phasedTopEpochs(): Set<string> {
+  const parent = new Map<string, string>();
+  for (const e of store!.doc.graph.edges)
+    if (e.edge_type === "has_sub_epoch") parent.set(e.target, e.source);
+  const topOf = (id: string): string => {
+    let c = id;
+    const seen = new Set<string>();
+    while (parent.has(c) && !seen.has(c)) {
+      seen.add(c);
+      c = parent.get(c)!;
+    }
+    return c;
+  };
+  const tops = new Set<string>();
+  for (const ph of parent.keys()) tops.add(topOf(ph));
+  return tops;
+}
+
 function buildScenes(): void {
   if (!store) return;
   const doc = store.doc;
   const fview = filteredView();
+  // Phase bands show BY DEFAULT for every phased epoch, except those the user
+  // collapsed — so a freshly created phase is visible with no extra click.
+  const phasesVisible = new Set(
+    [...phasedTopEpochs()].filter((id) => !phasesCollapsed.has(id)),
+  );
   scenes.matrix = buildMatrixScene(
     doc,
     fview,
