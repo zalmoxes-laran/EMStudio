@@ -147,7 +147,6 @@ export function buildMatrixScene(
     hiddenEpochPdg.add(pdg);
     for (const p of propsOfPdg.get(pdg) ?? []) hiddenEpochPdg.add(p);
   }
-  const allPhasePdgNodes = hiddenEpochPdg; // reflow skip (nodes aren't in scene)
   // give each lane its epoch's PDG id so the renderer draws the "PD" tag
   for (const lane of scene.lanes)
     lane.paradataGroupId = pdgOfEpochNode.get(lane.id);
@@ -528,9 +527,6 @@ export function buildMatrixScene(
       const rootKids = new Map<string, SceneNode[]>();
       for (const sn of scene.nodes) {
         if (laneOfNode(sn) !== li) continue;
-        // phase PDG boxes are placed separately below (at their band's
-        // bottom-left) — keep them out of the content bbox / band tally
-        if (allPhasePdgNodes.has(sn.id)) continue;
         const root = rootOf(sn.id);
         if (!rootKids.has(root)) rootKids.set(root, []);
         rootKids.get(root)!.push(sn);
@@ -552,7 +548,6 @@ export function buildMatrixScene(
         rootBand.set(root, bandIndex.get(best ?? lane.id) ?? bandOrder.length - 1);
       }
       // per-band bbox (over all member nodes) at current positions
-      const bMinX = bandOrder.map(() => Infinity);
       const bMinY = bandOrder.map(() => Infinity);
       const bMaxY = bandOrder.map(() => -Infinity);
       const nodeBand = new Map<string, number>();
@@ -560,81 +555,31 @@ export function buildMatrixScene(
         const bi = rootBand.get(root)!;
         for (const sn of kids) {
           nodeBand.set(sn.id, bi);
-          bMinX[bi] = Math.min(bMinX[bi], sn.x);
           bMinY[bi] = Math.min(bMinY[bi], sn.y);
           bMaxY[bi] = Math.max(bMaxY[bi], sn.y + sn.h);
         }
       }
-      // ---- place each phase's temporal PDG box in its own band --------------
-      // A phase has no lane, so its box goes at the phase band's content
-      // bottom-left (mirroring the epoch PDG at the lane bottom-left) and is
-      // folded into the band bbox so the stacking below reserves room and grows
-      // the band. A phase whose direct-member band is empty (only sub-phases
-      // hold units) still shows its box as a thin PDG-only band, so the
-      // chronology stays reachable and never floats loose.
-      let laneContentMinX = Infinity;
-      for (const v of bMinX) if (Number.isFinite(v)) laneContentMinX = Math.min(laneContentMinX, v);
-      if (!Number.isFinite(laneContentMinX)) laneContentMinX = 40;
-      const PDG_GAP = 8;
-      for (let bi = 0; bi < bandOrder.length; bi++) {
-        const key = bandOrder[bi];
-        if (key === lane.id) continue; // residual band: the epoch's own PDG box
-        const pdgId = pdgOfPhase.get(key);
-        if (!pdgId) continue;
-        const grp = scene.byId.get(pdgId);
-        if (!grp) continue; // bands off / filtered → not in the scene
-        const props = (propsOfPdg.get(pdgId) ?? [])
-          .map((p) => scene.byId.get(p))
-          .filter((s): s is SceneNode => !!s);
-        if (!props.length) continue;
-        const hasContent = Number.isFinite(bMinY[bi]);
-        // align every phase box at the LANE's left edge (like the epoch PDG),
-        // not the band's own leftmost unit — the band spans the full width, so
-        // a per-band minX would leave the boxes scattered mid-canvas
-        const baseX = laneContentMinX;
-        const contentBottom = hasContent ? bMaxY[bi] : 0;
-        // props sit PDG_GAP below the content; the group box header clears it
-        const baseY = contentBottom + PDG_GAP + GROUP_HEADER + 6;
-        let mx = Infinity, my = Infinity, Mx = -Infinity, My = -Infinity;
-        props.forEach((sn, s) => {
-          sn.x = baseX + s * 100;
-          sn.y = baseY;
-          nodeBand.set(sn.id, bi);
-          laneOf.set(sn.id, li);
-          mx = Math.min(mx, sn.x);
-          my = Math.min(my, sn.y);
-          Mx = Math.max(Mx, sn.x + sn.w);
-          My = Math.max(My, sn.y + sn.h);
-        });
-        // wrap the group box around the props (same maths as the outline pass)
-        grp.x = mx - GROUP_PAD;
-        grp.y = my - GROUP_HEADER - 6;
-        grp.w = Mx - mx + GROUP_PAD * 2;
-        grp.h = My - grp.y + GROUP_PAD;
-        nodeBand.set(grp.id, bi);
-        laneOf.set(grp.id, li);
-        if (hasContent) {
-          bMaxY[bi] = Math.max(bMaxY[bi], grp.y + grp.h);
-        } else {
-          // empty direct band → the box IS the band's content
-          bMinY[bi] = grp.y;
-          bMaxY[bi] = grp.y + grp.h;
-        }
-      }
-      // stack the non-empty bands from the lane's top, translating each rigidly
+      // stack the bands from the lane top, translating each content band
+      // rigidly. An empty PHASE band still renders as a thin labelled strip (its
+      // "PD" tag + name) so a freshly-created / unit-less phase is visible and
+      // can receive dropped units; an empty residual band is skipped.
+      const EMPTY_BAND_H = 26;
       let cursor = lane.y;
       let firstBand = true;
       for (let bi = 0; bi < bandOrder.length; bi++) {
-        if (!Number.isFinite(bMinY[bi])) continue; // empty band → skip
-        const h = bMaxY[bi] - bMinY[bi];
-        const delta = cursor - bMinY[bi];
-        for (const [id, b] of nodeBand)
-          if (b === bi) {
-            const sn = scene.byId.get(id);
-            if (sn) sn.y += delta;
-          }
         const key = bandOrder[bi];
         const isResidual = key === lane.id;
+        const hasContent = Number.isFinite(bMinY[bi]);
+        if (!hasContent && isResidual) continue; // empty residual → skip
+        const h = hasContent ? bMaxY[bi] - bMinY[bi] : EMPTY_BAND_H;
+        if (hasContent) {
+          const delta = cursor - bMinY[bi];
+          for (const [id, b] of nodeBand)
+            if (b === bi) {
+              const sn = scene.byId.get(id);
+              if (sn) sn.y += delta;
+            }
+        }
         subBands.push({
           laneId: lane.id,
           phaseId: key,
@@ -699,32 +644,6 @@ export function buildMatrixScene(
       const bi = laneIndexOf.get(sb.laneId);
       if (bi != null) sb.y += nodeShift[bi];
     }
-  }
-
-  // Re-wrap every ParadataNodeGroup box around its members' FINAL positions.
-  // The band reflow + re-stack translate members rigidly, but a PDG box can be
-  // left behind when its em-core anchor seeded it a position that maps to a
-  // different lane than its props (the epoch PDG detaches in a banded lane
-  // otherwise). Idempotent where the members did not move.
-  for (const g of outlineNodes) {
-    if (g.node.node_type !== "ParadataNodeGroup") continue;
-    if (folded.has(g.id) || emptyOutline.has(g.id)) continue;
-    let mx = Infinity, my = Infinity, Mx = -Infinity, My = -Infinity, any = false;
-    for (const [m, gid] of outlineMemberOf) {
-      if (gid !== g.id) continue;
-      const sn = scene.byId.get(m);
-      if (!sn) continue;
-      any = true;
-      mx = Math.min(mx, sn.x);
-      my = Math.min(my, sn.y);
-      Mx = Math.max(Mx, sn.x + sn.w);
-      My = Math.max(My, sn.y + sn.h);
-    }
-    if (!any) continue;
-    g.x = mx - GROUP_PAD;
-    g.y = my - GROUP_HEADER - 6;
-    g.w = Mx - mx + GROUP_PAD * 2;
-    g.h = My - g.y + GROUP_PAD;
   }
 
   // ---- container descriptors for the renderer ----
