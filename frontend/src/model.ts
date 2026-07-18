@@ -702,6 +702,32 @@ export class DocumentStore {
     this.emitOp({ op: "delete_node", node_id: id });
   }
 
+  /** Delete several nodes as ONE undo step (multi-selection). */
+  deleteNodes(ids: string[]): void {
+    if (!ids.length) return;
+    if (ids.length === 1) return this.deleteNode(ids[0]);
+    this.checkpoint();
+    const set = new Set(ids);
+    const g = this.doc.graph;
+    g.nodes = g.nodes.filter((n) => !set.has(n.id));
+    g.edges = g.edges.filter((e) => !set.has(e.source) && !set.has(e.target));
+    const layout = this.doc.layout;
+    if (layout) {
+      for (const id of ids) {
+        if (layout.positions) delete layout.positions[id];
+        if (layout.group_spaces) {
+          delete layout.group_spaces[id];
+          for (const space of Object.values(layout.group_spaces))
+            delete space[id];
+        }
+      }
+      if (layout.folded_groups)
+        layout.folded_groups = layout.folded_groups.filter((f) => !set.has(f));
+    }
+    this.emit();
+    for (const id of ids) this.emitOp({ op: "delete_node", node_id: id });
+  }
+
   deleteEdge(edge: EmEdge): void {
     this.checkpoint();
     const g = this.doc.graph;
@@ -885,6 +911,24 @@ export class DocumentStore {
   deletePhase(phaseId: string, reassignTo: string): void {
     this.checkpoint();
     const g = this.doc.graph;
+    // the phase's temporal PDG + its property members are deleted too — otherwise
+    // they'd be orphaned (no has_paradata_nodegroup source) and render as stray
+    // "· paradata" boxes on the canvas.
+    const pdgId = g.edges.find(
+      (e) => e.edge_type === "has_paradata_nodegroup" && e.source === phaseId,
+    )?.target;
+    const propIds = pdgId
+      ? g.edges
+          .filter(
+            (e) => e.edge_type === "is_in_paradata_nodegroup" && e.target === pdgId,
+          )
+          .map((e) => e.source)
+      : [];
+    const del = new Set<string>([
+      phaseId,
+      ...(pdgId ? [pdgId] : []),
+      ...propIds,
+    ]);
     const removed: EmEdge[] = [];
     const added: EmEdge[] = [];
     const kept: EmEdge[] = [];
@@ -913,21 +957,25 @@ export class DocumentStore {
         };
         added.push(ne);
         kept.push(ne);
-      } else if (e.source === phaseId || e.target === phaseId) {
-        // the parent→phase link (and any other stray edge on the phase) is gone
+      } else if (del.has(e.source) || del.has(e.target)) {
+        // edges on the phase, its PDG or its props (incl. the parent→phase link)
         removed.push(e);
       } else {
         kept.push(e);
       }
     }
     g.edges = kept;
-    g.nodes = g.nodes.filter((n) => n.id !== phaseId);
+    g.nodes = g.nodes.filter((n) => !del.has(n.id));
     const layout = this.doc.layout;
-    if (layout?.positions) delete layout.positions[phaseId];
+    if (layout?.positions) for (const id of del) delete layout.positions[id];
+    if (layout?.anchors)
+      layout.anchors = layout.anchors.filter(
+        (a) => !del.has(a.node) && !del.has(a.to),
+      );
     this.emit();
     for (const e of removed) this.emitOp({ op: "delete_edge", edge: e });
     for (const e of added) this.emitOp({ op: "add_edge", edge: e });
-    this.emitOp({ op: "delete_node", node_id: phaseId });
+    for (const id of del) this.emitOp({ op: "delete_node", node_id: id });
   }
 
   updateNode(id: string, patch: Partial<EmNode>): void {

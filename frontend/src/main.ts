@@ -3141,9 +3141,15 @@ window.addEventListener("keydown", (e) => {
       rebuildContext();
     } else select(null);
   }
-  if ((e.key === "Delete" || e.key === "Backspace") && selectedId && store) {
+  if (
+    (e.key === "Delete" || e.key === "Backspace") &&
+    (selectedIds.size || selectedId) &&
+    store
+  ) {
     e.preventDefault();
-    store.deleteNode(selectedId);
+    // delete the WHOLE multi-selection, not just the active node
+    const ids = selectedIds.size ? [...selectedIds] : selectedId ? [selectedId] : [];
+    store.deleteNodes(ids);
     select(null);
   }
   if ((e.key === "Delete" || e.key === "Backspace") && selectedEdge && store) {

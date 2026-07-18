@@ -152,6 +152,17 @@ export function buildMatrixScene(
     hiddenEpochPdg.add(pdg);
     for (const p of propsOfPdg.get(pdg) ?? []) hiddenEpochPdg.add(p);
   }
+  // ALSO hide ORPHAN ParadataNodeGroups — a "· paradata" group with no incoming
+  // has_paradata_nodegroup edge is a leftover (e.g. from an older delete-phase
+  // that didn't clean it up); it would otherwise render as a stray box.
+  const pdgTargets = new Set<string>();
+  for (const e of doc.graph.edges)
+    if (e.edge_type === "has_paradata_nodegroup") pdgTargets.add(e.target);
+  for (const n of doc.graph.nodes)
+    if (n.node_type === "ParadataNodeGroup" && !pdgTargets.has(n.id)) {
+      hiddenEpochPdg.add(n.id);
+      for (const p of propsOfPdg.get(n.id) ?? []) hiddenEpochPdg.add(p);
+    }
   // give each lane its epoch's PDG id so the renderer draws the "PD" tag
   for (const lane of scene.lanes)
     lane.paradataGroupId = pdgOfEpochNode.get(lane.id);
