@@ -40,6 +40,8 @@ export interface Lane {
   /** the epoch's temporal ParadataNodeGroup id, if any — drawn as a small "PD"
    *  tag in the lane label chip (click to enter the group) instead of a box */
   paradataGroupId?: string;
+  /** chronology-coherence conflict → a warning marker next to the name */
+  warn?: boolean;
 }
 
 /** Vertical gap (world units) stacked between adjacent phase sub-bands. The
@@ -75,6 +77,8 @@ export interface SubBand {
   /** phase temporal bounds (data.start_time / end_time), shown under the name */
   start?: string;
   end?: string;
+  /** chronology-coherence conflict → a warning marker next to the name */
+  warn?: boolean;
 }
 
 /** yEd-style group container drawn on the canvas (open box or closed tab). */

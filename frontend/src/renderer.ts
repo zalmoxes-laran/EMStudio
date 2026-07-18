@@ -437,8 +437,10 @@ export function render(
     }
   }
 
-  // edges (below nodes); incident edges of hover/selection get an accent pass
-  const focusId = state.hoverId ?? state.selectedId;
+  // edges (below nodes); incident edges of the HOVERED node get an accent pass
+  // (a transient connection preview). Selection does NOT light up edges — that
+  // read as "selecting all connected edges" and was unwanted (E.D.).
+  const focusId = state.hoverId;
   const { routes, visible } = routesFor(scene, state);
   const bridgeR = 3.5;
   const arrowSize = 6 / Math.sqrt(vp.scale);
@@ -851,6 +853,30 @@ export function render(
     ctx.restore();
     pdTagHits.push({ pdgId, x, y, w: PD_TAG_W, h: PD_TAG_H });
   };
+  // amber warning triangle (chronology-coherence conflict), centred at (x, cy)
+  const WARN_W = 13;
+  const drawWarn = (x: number, cy: number): void => {
+    ctx.save();
+    const h = 11;
+    ctx.beginPath();
+    ctx.moveTo(x + WARN_W / 2, cy - h / 2);
+    ctx.lineTo(x + WARN_W, cy + h / 2);
+    ctx.lineTo(x, cy + h / 2);
+    ctx.closePath();
+    ctx.fillStyle = "#f59e0b";
+    ctx.fill();
+    ctx.strokeStyle = "rgba(0,0,0,0.35)";
+    ctx.lineWidth = 0.8;
+    ctx.stroke();
+    ctx.fillStyle = "#3a2a00";
+    ctx.font = "700 8px system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("!", x + WARN_W / 2, cy + 2);
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    ctx.restore();
+  };
   for (const lane of scene.lanes) {
     const sy = lane.y * vp.scale + vp.y;
     const sh = lane.height * vp.scale;
@@ -876,8 +902,11 @@ export function render(
     const gap = dot ? 6 : 0;
     const hasPd = !!lane.paradataGroupId;
     const tagSpace = hasPd ? PD_TAG_W + 6 : 0;
+    const hasWarn = !!lane.warn;
+    const warnSpace = hasWarn ? WARN_W + 4 : 0;
     const chipX = RAIL + 4;
-    const chipW = 8 + dot + gap + Math.max(nameW, boundsW) + tagSpace + 8;
+    const chipW =
+      8 + dot + gap + Math.max(nameW, boundsW) + warnSpace + tagSpace + 8;
     const chipH = showBounds ? 32 : 18;
     const selectedLane = lane.id === state.selectedId;
     ctx.fillStyle = "rgba(255,255,255,0.86)";
@@ -918,6 +947,7 @@ export function render(
       ctx.font = "10px system-ui, sans-serif";
       ctx.fillText(boundsText, textX, ty + 15);
     }
+    if (hasWarn) drawWarn(textX + nameW + 4, ty + 6);
     if (hasPd)
       drawPdTag(chipX + chipW - PD_TAG_W - 6, ty - 1, lane.paradataGroupId!);
     // "+" quick-add-phase button: a small circle in the epoch's colour hanging
@@ -990,7 +1020,10 @@ export function render(
       const chipX = RAIL + 14 + (sb.depth ?? 0) * 16;
       const hasPd = !!sb.paradataGroupId;
       const tagSpace = hasPd ? PD_TAG_W + 5 : 0;
-      const chipW = 7 + dot + 5 + Math.max(nameW, boundsW) + tagSpace + 8;
+      const hasWarn = !!sb.warn;
+      const warnSpace = hasWarn ? WARN_W + 4 : 0;
+      const chipW =
+        7 + dot + 5 + Math.max(nameW, boundsW) + warnSpace + tagSpace + 8;
       const chipH = hasBounds ? 28 : 16;
       const selectedBand = sb.phaseId === state.selectedId;
       ctx.fillStyle = "rgba(255,255,255,0.82)";
@@ -1030,6 +1063,7 @@ export function render(
         ctx.font = "9px system-ui, sans-serif";
         ctx.fillText(boundsText, chipX + 7 + dot + 5, ty + 13);
       }
+      if (hasWarn) drawWarn(chipX + 7 + dot + 5 + nameW + 4, ty + 5);
       if (hasPd)
         drawPdTag(chipX + chipW - PD_TAG_W - 5, ty - 1, sb.paradataGroupId!);
       // the chip is a click target → select the phase (residual → the epoch)

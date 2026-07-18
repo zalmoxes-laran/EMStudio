@@ -552,9 +552,15 @@ export function renderInspector(
     }
   }
 
-  const danger = el("div", "insp-actions");
-  const delNode = el("button", "insp-btn danger", "Delete node");
-  delNode.addEventListener("click", () => cb.onDeleteNode(nodeId));
-  danger.appendChild(delNode);
-  root.appendChild(danger);
+  // A phase has its own "Delete phase" (which re-homes units / sub-phases) — the
+  // generic "Delete node" would orphan them, so don't offer both on a phase.
+  const isPhaseNode =
+    node.node_type === "EpochNode" && store.parentEpoch(nodeId) != null;
+  if (!isPhaseNode) {
+    const danger = el("div", "insp-actions");
+    const delNode = el("button", "insp-btn danger", "Delete node");
+    delNode.addEventListener("click", () => cb.onDeleteNode(nodeId));
+    danger.appendChild(delNode);
+    root.appendChild(danger);
+  }
 }

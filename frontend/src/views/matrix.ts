@@ -44,6 +44,8 @@ export function buildMatrixScene(
    *  epoch is absent, its phases are hidden and all its units render in the
    *  single epoch lane. View-state only — never touches the document. */
   phasesVisible?: Set<string>,
+  /** epoch/phase ids with a chronology-coherence conflict → warning marker */
+  warnIds?: Set<string>,
 ): Scene | null {
   // A layoutOverride (a VIEW layout computed by em-core on the filtered
   // subgraph) recompacts the Matrix when detail-rings hide nodes, so hidden
@@ -95,6 +97,7 @@ export function buildMatrixScene(
       color: typeof ecolor === "string" && ecolor ? ecolor : undefined,
       start: asText(ed.start_time),
       end: asText(ed.end_time),
+      warn: warnIds?.has(lane.epoch_id),
     });
   }
 
@@ -605,6 +608,7 @@ export function buildMatrixScene(
             ? undefined
             : asStr(nodeById.get(key)?.data?.start_time),
           end: isResidual ? undefined : asStr(nodeById.get(key)?.data?.end_time),
+          warn: isResidual ? undefined : warnIds?.has(key),
         });
         firstBand = false;
         cursor += h + BAND_GAP;

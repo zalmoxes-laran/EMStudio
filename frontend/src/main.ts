@@ -905,11 +905,20 @@ function buildScenes(): void {
   const phasesVisible = new Set(
     [...phasedTopEpochs()].filter((id) => !phasesCollapsed.has(id)),
   );
+  // epochs/phases with a chronology-coherence conflict → warning marker
+  const warnIds = new Set<string>();
+  for (const n of doc.graph.nodes)
+    if (
+      n.node_type === "EpochNode" &&
+      store.epochCoherenceWarnings(n.id).length > 0
+    )
+      warnIds.add(n.id);
   scenes.matrix = buildMatrixScene(
     doc,
     fview,
     matrixViewLayout ?? undefined,
     phasesVisible,
+    warnIds,
   );
   scenes.graph = buildGraphScene(doc, fview, {
     algorithm: graphAlgorithm,
