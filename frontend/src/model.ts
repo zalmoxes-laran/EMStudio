@@ -1168,6 +1168,86 @@ export class DocumentStore {
     for (const id of del) this.emitOp({ op: "delete_node", node_id: id });
   }
 
+  /** All epoch/phase ids in an epoch's subtree (itself + recursive sub-phases
+   *  via has_sub_epoch). */
+  private epochSubtree(epochId: string): Set<string> {
+    const all = new Set<string>([epochId]);
+    let frontier = [epochId];
+    while (frontier.length) {
+      const next: string[] = [];
+      for (const e of this.doc.graph.edges)
+        if (
+          e.edge_type === "has_sub_epoch" &&
+          all.has(e.source) &&
+          !all.has(e.target)
+        ) {
+          all.add(e.target);
+          next.push(e.target);
+        }
+      frontier = next;
+    }
+    return all;
+  }
+
+  /** What deleting an epoch affects: units are un-attributed (kept), sub-phases
+   *  are cascade-deleted. For the confirm prompt. */
+  epochDeletionImpact(epochId: string): { units: number; phases: number } {
+    const sub = this.epochSubtree(epochId);
+    const units = new Set<string>();
+    for (const e of this.doc.graph.edges)
+      if (
+        (e.edge_type === "has_first_epoch" ||
+          e.edge_type === "survive_in_epoch") &&
+        sub.has(e.target)
+      )
+        units.add(e.source);
+    return { units: units.size, phases: sub.size - 1 };
+  }
+
+  /** Delete a top-level epoch coherently (mirrors deletePhase's cleanup):
+   *  cascade-delete its sub-phases, remove every epoch/phase in the subtree with
+   *  its temporal PDG + property nodes AND its swimlane, drop the units'
+   *  has_first_epoch/survive_in_epoch edges (units are KEPT — they lose their
+   *  epoch), and clean positions/anchors. The caller runs a from-sketch relayout
+   *  so no phantom lane remains. */
+  deleteEpoch(epochId: string): void {
+    this.checkpoint();
+    const g = this.doc.graph;
+    const sub = this.epochSubtree(epochId);
+    const del = new Set<string>(sub);
+    // fold in each epoch/phase's temporal PDG + its property members
+    for (const e of g.edges)
+      if (e.edge_type === "has_paradata_nodegroup" && sub.has(e.source)) {
+        del.add(e.target);
+        for (const p of g.edges)
+          if (
+            p.edge_type === "is_in_paradata_nodegroup" &&
+            p.target === e.target
+          )
+            del.add(p.source);
+      }
+    const removed: EmEdge[] = [];
+    g.edges = g.edges.filter((e) => {
+      if (del.has(e.source) || del.has(e.target)) {
+        removed.push(e);
+        return false;
+      }
+      return true;
+    });
+    g.nodes = g.nodes.filter((n) => !del.has(n.id));
+    const layout = this.doc.layout;
+    if (layout?.swimlanes)
+      layout.swimlanes = layout.swimlanes.filter((s) => !del.has(s.epoch_id));
+    if (layout?.positions) for (const id of del) delete layout.positions[id];
+    if (layout?.anchors)
+      layout.anchors = layout.anchors.filter(
+        (a) => !del.has(a.node) && !del.has(a.to),
+      );
+    this.emit();
+    for (const e of removed) this.emitOp({ op: "delete_edge", edge: e });
+    for (const id of del) this.emitOp({ op: "delete_node", node_id: id });
+  }
+
   updateNode(id: string, patch: Partial<EmNode>): void {
     const n = this.node(id);
     if (!n) return;

@@ -20,6 +20,8 @@ export interface InspectorCallbacks {
   isPhasesVisible: (epochId: string) => boolean;
   /** delete a phase, prompting where to re-home its orphaned units */
   onDeletePhase: (phaseId: string) => void;
+  /** delete a top-level epoch (cascades sub-phases, un-attributes its units) */
+  onDeleteEpoch: (epochId: string) => void;
   /** move an (empty) epoch's swimlane up (-1) / down (+1), then relayout */
   onReorderEpoch: (epochId: string, dir: -1 | 1) => void;
   /** attribute a unit to an epoch or one of its phases (retargets has_first_epoch) */
@@ -552,11 +554,22 @@ export function renderInspector(
     }
   }
 
-  // A phase has its own "Delete phase" (which re-homes units / sub-phases) — the
-  // generic "Delete node" would orphan them, so don't offer both on a phase.
+  // Delete affordance is node-kind specific so nothing is ever orphaned:
+  //  - a PHASE has "Delete phase" (re-homes its units/sub-phases) — added above.
+  //  - a top-level EPOCH has "Delete epoch" (cascades sub-phases + swimlane +
+  //    temporal PDG, un-attributes its units) — the generic "Delete node" would
+  //    leave a phantom lane and orphan PDG.
+  //  - anything else uses the generic "Delete node".
   const isPhaseNode =
     node.node_type === "EpochNode" && store.parentEpoch(nodeId) != null;
-  if (!isPhaseNode) {
+  const isTopEpoch = node.node_type === "EpochNode" && !isPhaseNode;
+  if (isTopEpoch) {
+    const danger = el("div", "insp-actions");
+    const delEp = el("button", "insp-btn danger", "Delete epoch");
+    delEp.addEventListener("click", () => cb.onDeleteEpoch(nodeId));
+    danger.appendChild(delEp);
+    root.appendChild(danger);
+  } else if (!isPhaseNode) {
     const danger = el("div", "insp-actions");
     const delNode = el("button", "insp-btn danger", "Delete node");
     delNode.addEventListener("click", () => cb.onDeleteNode(nodeId));

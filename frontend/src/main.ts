@@ -552,6 +552,7 @@ function refreshInspector(): void {
       },
       isPhasesVisible: (epochId) => !phasesCollapsed.has(epochId),
       onDeletePhase: (phaseId) => promptDeletePhase(phaseId),
+      onDeleteEpoch: (epochId) => promptDeleteEpoch(epochId),
       onReorderEpoch: (epochId, dir) => {
         // set the new lane order, then a from-sketch relayout re-lays out every
         // node into its lane (semantic) so phased lanes don't malform
@@ -698,6 +699,71 @@ function promptDeletePhase(phaseId: string): void {
     };
     foot.appendChild(b);
   });
+  modal.appendChild(card);
+  modal.addEventListener("click", (e) => {
+    if (e.target === modal) close();
+  });
+  document.addEventListener("keydown", onKey, true);
+  document.body.appendChild(modal);
+}
+
+function promptDeleteEpoch(epochId: string): void {
+  if (!store) return;
+  const name = store.node(epochId)?.name || "epoch";
+  const { units, phases } = store.epochDeletionImpact(epochId);
+  const finishDelete = (): void => {
+    store!.deleteEpoch(epochId);
+    // structural change (lanes/PDGs removed): regenerate the em-core layout so
+    // no phantom lane lingers, then clear the selection.
+    void runLayout(false).then(() => {
+      select(null);
+      toast(`deleted ${name}`);
+    });
+  };
+  // empty epoch → delete straight away
+  if (units === 0 && phases === 0) {
+    finishDelete();
+    return;
+  }
+  const modal = document.createElement("div");
+  modal.className = "modal";
+  const card = document.createElement("div");
+  card.className = "modal-card";
+  const parts = [
+    phases ? `${phases} phase${phases > 1 ? "s" : ""} (deleted)` : "",
+    units
+      ? `${units} unit${units > 1 ? "s" : ""} (kept, un-attributed)`
+      : "",
+  ].filter(Boolean);
+  card.innerHTML =
+    `<div class="modal-head"><span>Delete “${name}”</span></div>` +
+    `<div class="modal-body"><p>This epoch holds <b>${parts.join(
+      " + ",
+    )}</b>. Sub-phases are removed; units are kept but lose their epoch. Continue?</p></div>` +
+    `<div class="modal-foot"></div>`;
+  const foot = card.querySelector(".modal-foot") as HTMLElement;
+  const close = (): void => {
+    modal.remove();
+    document.removeEventListener("keydown", onKey, true);
+  };
+  const onKey = (e: KeyboardEvent): void => {
+    if (e.key === "Escape") {
+      e.stopPropagation();
+      close();
+    }
+  };
+  const cancel = document.createElement("button");
+  cancel.textContent = "Cancel";
+  cancel.onclick = close;
+  foot.appendChild(cancel);
+  const del = document.createElement("button");
+  del.className = "primary";
+  del.textContent = "Delete epoch";
+  del.onclick = () => {
+    close();
+    finishDelete();
+  };
+  foot.appendChild(del);
   modal.appendChild(card);
   modal.addEventListener("click", (e) => {
     if (e.target === modal) close();
@@ -3354,8 +3420,22 @@ window.addEventListener("keydown", (e) => {
     e.preventDefault();
     // delete the WHOLE multi-selection, not just the active node
     const ids = selectedIds.size ? [...selectedIds] : selectedId ? [selectedId] : [];
-    store.deleteNodes(ids);
-    select(null);
+    // epochs & phases must go through their dedicated flows (swimlane + temporal
+    // PDG cleanup, unit re-home/un-attribution, relayout) — the generic
+    // deleteNodes would leave a phantom lane and orphan PDGs.
+    const isEpochish = (id: string) => store!.node(id)?.node_type === "EpochNode";
+    if (ids.length === 1 && isEpochish(ids[0])) {
+      if (store.parentEpoch(ids[0]) != null) promptDeletePhase(ids[0]);
+      else promptDeleteEpoch(ids[0]);
+      return;
+    }
+    const plain = ids.filter((id) => !isEpochish(id));
+    if (plain.length !== ids.length)
+      toast("Epochs/phases: use Delete epoch / Delete phase in the inspector");
+    if (plain.length) {
+      store.deleteNodes(plain);
+      select(null);
+    }
   }
   if ((e.key === "Delete" || e.key === "Backspace") && selectedEdge && store) {
     e.preventDefault();
