@@ -564,34 +564,28 @@ export function buildMatrixScene(
         if (!rootKids.has(root)) rootKids.set(root, []);
         rootKids.get(root)!.push(sn);
       }
-      // Does the epoch itself still hold DIRECT (un-phased) units? If not (e.g.
-      // the first phase absorbed them all), there must be NO residual band —
-      // otherwise leftover/inherited nodes (doc instances, paradata) land in a
-      // residual that stacks BELOW the phase and doubles the lane height. So when
-      // there are no direct units, un-voted blocks fall back to the DOMINANT
-      // phase, keeping ALL content in one band (≈ the original layout, no growth).
-      const epochHasDirectUnits = doc.graph.edges.some(
-        (e) =>
-          (e.edge_type === "has_first_epoch" ||
-            e.edge_type === "survive_in_epoch") &&
-          e.target === lane.id,
-      );
-      let fallbackKey = lane.id; // residual
-      if (!epochHasDirectUnits) {
-        const gt = new Map<string, number>();
-        for (const sn of scene.nodes) {
-          const ph = phaseFor(sn.id);
-          if (ph) gt.set(ph, (gt.get(ph) ?? 0) + 1);
-        }
-        let bn = 0;
-        let dom: string | undefined;
-        for (const [ph, n] of gt)
-          if (n > bn) {
-            dom = ph;
-            bn = n;
-          }
-        fallbackKey = dom ?? bandOrder.find((k) => k !== lane.id) ?? lane.id;
+      // No "senza fase" residual band (E.D. 2026-07-18): whenever an epoch has
+      // phases, its un-phased units — whether born directly here and left
+      // unassigned, or SURVIVING from an earlier epoch (survive_in_epoch), or
+      // synced from Blender where the auto-absorb never ran — fold into this
+      // epoch's DOMINANT phase band. Pure view: the graph/attribution is
+      // untouched. `phaseFor` is lane-scoped (topEpochOf === lane.id), so the
+      // tally only ever counts THIS lane's phases; with a phase guaranteed
+      // (bandOrder.length > 1 above) the fallback is always a phase, never the
+      // residual (lane.id) — so the residual band stays empty and is skipped.
+      const gt = new Map<string, number>();
+      for (const sn of scene.nodes) {
+        const ph = phaseFor(sn.id);
+        if (ph) gt.set(ph, (gt.get(ph) ?? 0) + 1);
       }
+      let bn = 0;
+      let dom: string | undefined;
+      for (const [ph, n] of gt)
+        if (n > bn) {
+          dom = ph;
+          bn = n;
+        }
+      const fallbackKey = dom ?? bandOrder.find((k) => k !== lane.id) ?? lane.id;
       // assign each root a band = majority phase among its subtree, else fallback
       for (const [root, kids] of rootKids) {
         const tally = new Map<string, number>();
