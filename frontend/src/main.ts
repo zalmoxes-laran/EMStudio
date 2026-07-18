@@ -8,6 +8,7 @@ import { edgeStyle } from "./palette";
 import { buildPalette, SECTIONS } from "./palette-ui";
 import {
   edgeAt,
+  hitAddPhase,
   hitBandLabel,
   hitPdTag,
   render,
@@ -2405,6 +2406,7 @@ let dragDetachSet: { id: string; container: string }[] = [];
 let spaceHeld = false; // Space → pan-always gesture (see pointerdown)
 let pdTagPending: string | null = null; // PD tag pressed → enter on click (pointerup)
 let bandSelectPending: string | null = null; // phase band label pressed → select on click
+let addPhasePending: string | null = null; // epoch "+" button pressed → add phase on click
 
 function worldPos(e: MouseEvent): { x: number; y: number } {
   const rect = canvas.getBoundingClientRect();
@@ -2485,6 +2487,13 @@ canvas.addEventListener("pointerdown", (e) => {
     const pd = hitPdTag(lx, ly);
     if (pd) {
       pdTagPending = pd;
+      dragMode = "none";
+      return;
+    }
+    // "+" quick-add-phase button on an epoch's rail
+    const ap = hitAddPhase(lx, ly);
+    if (ap) {
+      addPhasePending = ap;
       dragMode = "none";
       return;
     }
@@ -2812,6 +2821,17 @@ canvas.addEventListener("pointerup", (e) => {
     const id = bandSelectPending;
     bandSelectPending = null;
     if (!moved) select(id);
+    return;
+  }
+  // epoch "+" button click → add a phase to that epoch
+  if (addPhasePending) {
+    const epochId = addPhasePending;
+    addPhasePending = null;
+    if (!moved && store) {
+      const ph = store.addPhase(epochId);
+      select(ph.id);
+      toast(`phase ${ph.name} created`);
+    }
     return;
   }
   if (mode === "connect") {

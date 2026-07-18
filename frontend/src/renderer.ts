@@ -131,6 +131,15 @@ export function hitBandLabel(sx: number, sy: number): string | null {
   return null;
 }
 
+// Screen-space hit circles for the "+" quick-add-phase button on each epoch's
+// rail → the epoch id to add a phase to. Rebuilt each draw.
+let addPhaseHits: { id: string; cx: number; cy: number; r: number }[] = [];
+export function hitAddPhase(sx: number, sy: number): string | null {
+  for (const t of addPhaseHits)
+    if ((sx - t.cx) ** 2 + (sy - t.cy) ** 2 <= t.r * t.r) return t.id;
+  return null;
+}
+
 /** group title-tab colour: the canonical `label_background` from
  *  em_visual_rules when present (Activity cyan / Paradata peach / TimeBranch
  *  green / Location grey), else a legacy fallback tint from the border. */
@@ -401,6 +410,15 @@ export function render(
         ctx.save();
         ctx.globalAlpha = 0.09;
         ctx.fillStyle = sb.color;
+        ctx.fillRect(worldLeft, sb.y, worldRight - worldLeft, sb.height);
+        ctx.restore();
+      }
+      // selected phase → accent wash over its band (same feedback as an epoch
+      // lane); the residual band defers to the epoch's own lane highlight
+      if (!sb.residual && sb.phaseId === state.selectedId) {
+        ctx.save();
+        ctx.globalAlpha = 0.1;
+        ctx.fillStyle = ACCENT;
         ctx.fillRect(worldLeft, sb.y, worldRight - worldLeft, sb.height);
         ctx.restore();
       }
@@ -808,6 +826,7 @@ export function render(
   // "PD" tag: a small clickable badge for an epoch/phase temporal PDG, drawn in
   // the label chip instead of a box. Registers its screen rect for click-to-enter.
   pdTagHits = [];
+  addPhaseHits = [];
   const PD_TAG_W = 22;
   const PD_TAG_H = 14;
   const drawPdTag = (x: number, y: number, pdgId: string): void => {
@@ -901,6 +920,35 @@ export function render(
     }
     if (hasPd)
       drawPdTag(chipX + chipW - PD_TAG_W - 6, ty - 1, lane.paradataGroupId!);
+    // "+" quick-add-phase button: a small circle in the epoch's colour hanging
+    // off the coloured rail just below the name chip. Lanes ARE top-level epochs
+    // (phases don't render as lanes), so this only ever adds a phase to an epoch.
+    const addR = 7;
+    const addCx = RAIL + 14;
+    const addCy = ty - 2 + chipH + 12;
+    const ecol = lane.color || "#94a3b8";
+    ctx.strokeStyle = ecol;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(RAIL, addCy);
+    ctx.lineTo(addCx - addR, addCy);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.arc(addCx, addCy, addR, 0, Math.PI * 2);
+    ctx.fillStyle = ecol;
+    ctx.fill();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = "rgba(0,0,0,0.28)";
+    ctx.stroke();
+    ctx.strokeStyle = "#2c4a6e";
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.moveTo(addCx - 3.2, addCy);
+    ctx.lineTo(addCx + 3.2, addCy);
+    ctx.moveTo(addCx, addCy - 3.2);
+    ctx.lineTo(addCx, addCy + 3.2);
+    ctx.stroke();
+    addPhaseHits.push({ id: lane.id, cx: addCx, cy: addCy, r: addR + 2 });
   }
 
   // phase sub-band labels: a small indented chip (colour dot + name) at each
@@ -944,13 +992,24 @@ export function render(
       const tagSpace = hasPd ? PD_TAG_W + 5 : 0;
       const chipW = 7 + dot + 5 + Math.max(nameW, boundsW) + tagSpace + 8;
       const chipH = hasBounds ? 28 : 16;
+      const selectedBand = sb.phaseId === state.selectedId;
       ctx.fillStyle = "rgba(255,255,255,0.82)";
       if (typeof ctx.roundRect === "function") {
         ctx.beginPath();
         ctx.roundRect(chipX, ty - 1, chipW, chipH, 4);
         ctx.fill();
+        if (selectedBand) {
+          ctx.lineWidth = 2;
+          ctx.strokeStyle = ACCENT;
+          ctx.stroke();
+        }
       } else {
         ctx.fillRect(chipX, ty - 1, chipW, chipH);
+        if (selectedBand) {
+          ctx.lineWidth = 2;
+          ctx.strokeStyle = ACCENT;
+          ctx.strokeRect(chipX, ty - 1, chipW, chipH);
+        }
       }
       const cx = chipX + 7 + dot / 2;
       const cy = ty - 1 + 8;
