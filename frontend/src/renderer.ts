@@ -313,6 +313,30 @@ function shapePath(
   }
 }
 
+// "Arrows point DOWN": a directed edge means source-above-target. An edge that
+// points UP (target above source) conflicts with the lane chronology (e.g. an
+// is_after toward a unit in a more-recent lane). Mirrors em-core `upward_edges`:
+// symmetric / membership / epoch-attribution / paradata-group edges are exempt.
+const CONFLICT_COLOR = "#ff1e1e"; // bright red
+const CONFLICT_EXEMPT = new Set<string>([
+  ...SYMMETRIC_EDGES,
+  "is_in_activity",
+  "is_in_paradata_nodegroup",
+  "is_in_location",
+  "is_in_timebranch",
+  "is_part_of",
+  "has_first_epoch",
+  "survive_in_epoch",
+  "has_paradata_nodegroup",
+]);
+function upwardConflict(scene: Scene, e: Scene["edges"][number]): boolean {
+  if (CONFLICT_EXEMPT.has(e.edge.edge_type ?? "")) return false;
+  const s = scene.byId.get(e.source);
+  const tg = scene.byId.get(e.target);
+  if (!s || !tg) return false;
+  return tg.y + 0.5 < s.y; // target above source → arrow points up → conflict
+}
+
 export function render(
   ctx: CanvasRenderingContext2D,
   scene: Scene,
@@ -409,21 +433,25 @@ export function render(
       continue;
     }
     const st = edgeStyle(e.edge.edge_type);
-    ctx.strokeStyle = st.color;
-    ctx.globalAlpha = e.edge.edge_type === "is_after" ? 0.85 : 0.45;
-    ctx.lineWidth = st.width / Math.sqrt(vp.scale);
-    ctx.setLineDash(st.dash.map((d) => d / Math.sqrt(vp.scale)));
+    const conflict = upwardConflict(scene, e);
+    const col = conflict ? CONFLICT_COLOR : st.color;
+    ctx.strokeStyle = col;
+    ctx.globalAlpha = conflict ? 1 : e.edge.edge_type === "is_after" ? 0.85 : 0.45;
+    ctx.lineWidth =
+      (conflict ? Math.max(st.width, 2.5) : st.width) / Math.sqrt(vp.scale);
+    ctx.setLineDash(conflict ? [] : st.dash.map((d) => d / Math.sqrt(vp.scale)));
     ctx.beginPath();
     traceRoute(ctx, routes[i], bridgeR);
     ctx.stroke();
     ctx.setLineDash([]);
     if (!SYMMETRIC_EDGES.has(e.edge.edge_type ?? ""))
-      drawArrowhead(ctx, routes[i], arrowSize, st.color);
+      drawArrowhead(ctx, routes[i], arrowSize, col);
   }
   for (const i of accent) {
     const e = scene.edges[i];
     const st = edgeStyle(e.edge.edge_type);
-    ctx.strokeStyle = st.color;
+    const col = upwardConflict(scene, e) ? CONFLICT_COLOR : st.color;
+    ctx.strokeStyle = col;
     ctx.globalAlpha = 1;
     ctx.lineWidth = (st.width * 2) / Math.sqrt(vp.scale);
     ctx.setLineDash(st.dash.map((d) => d / Math.sqrt(vp.scale)));
@@ -432,7 +460,7 @@ export function render(
     ctx.stroke();
     ctx.setLineDash([]);
     if (!SYMMETRIC_EDGES.has(e.edge.edge_type ?? ""))
-      drawArrowhead(ctx, routes[i], arrowSize * 1.4, st.color);
+      drawArrowhead(ctx, routes[i], arrowSize * 1.4, col);
   }
   ctx.globalAlpha = 1;
   ctx.setLineDash([]);
