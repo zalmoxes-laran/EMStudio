@@ -783,6 +783,51 @@ body.sync-active #mode-indicator::before {
 }
 
 /* ---------- liquid filters panel ---------- */
+#btn-view-props {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 21;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  line-height: 1;
+  background: rgba(255, 255, 255, 0.97);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  cursor: pointer;
+  color: #2b3646;
+}
+#btn-view-props:hover {
+  background: #fff;
+  border-color: #9bb4cf;
+}
+/* panel header row: title + close × */
+.fp-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.fp-close {
+  border: none;
+  background: transparent;
+  color: #6b7682;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+}
+.fp-close:hover {
+  color: #2b3646;
+}
+
 #filter-panel {
   position: absolute;
   top: 10px;

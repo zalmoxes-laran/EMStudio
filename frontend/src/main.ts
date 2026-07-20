@@ -2370,8 +2370,20 @@ document.addEventListener("keydown", (e) => {
 // sets and rebuilds. Applies to BOTH views (matrix hides paradata by default;
 // each view keeps its own visible-ring set in circleState).
 const filterPanel = document.getElementById("filter-panel")!;
+const btnViewProps = document.getElementById("btn-view-props")!;
 function filterPanelOpen(): boolean {
   return !filterPanel.classList.contains("hidden");
+}
+// The panel and its floating opener are mutually exclusive in the top-right
+// corner: opening hides the gear button, the panel's × restores it.
+function openFilterPanel(): void {
+  renderCirclesPanel();
+  filterPanel.classList.remove("hidden");
+  btnViewProps.classList.add("hidden");
+}
+function closeFilterPanel(): void {
+  filterPanel.classList.add("hidden");
+  btnViewProps.classList.remove("hidden");
 }
 // Monochrome (B/W) display toggle — every node draws black-bordered + white
 // (shapes disambiguate). A pure presentation option (not a filter), so it lives
@@ -2403,10 +2415,19 @@ function renderCirclesPanel(): void {
   }
   const visible = circleState[view];
 
-  const hint = document.createElement("div");
+  const head = document.createElement("div");
+  head.className = "fp-head";
+  const hint = document.createElement("span");
   hint.className = "fp-hint";
   hint.textContent = `Detail level — ${view === "matrix" ? "Matrix" : "Graph"} view`;
-  filterPanel.appendChild(hint);
+  const close = document.createElement("button");
+  close.className = "fp-close";
+  close.textContent = "✕";
+  close.title = "Close (Esc)";
+  close.setAttribute("aria-label", "Close view properties");
+  close.addEventListener("click", closeFilterPanel);
+  head.append(hint, close);
+  filterPanel.appendChild(head);
 
   // Templates (at the top): one-click presets that set BOTH node and edge
   // rings (this replaced the old edge-only "All edges / Stratigraphic / None").
@@ -2503,13 +2524,9 @@ function renderCirclesPanel(): void {
   });
   filterPanel.appendChild(reset);
 }
-document.getElementById("btn-filters")!.addEventListener("click", () => {
-  if (filterPanel.classList.contains("hidden")) {
-    renderCirclesPanel();
-    filterPanel.classList.remove("hidden");
-  } else {
-    filterPanel.classList.add("hidden");
-  }
+btnViewProps.addEventListener("click", () => {
+  if (filterPanel.classList.contains("hidden")) openFilterPanel();
+  else closeFilterPanel();
 });
 
 // side panel tabs
@@ -3468,6 +3485,7 @@ window.addEventListener("keydown", (e) => {
   if (e.key === "Escape") {
     if (ctxMenuEl) hideContextMenu();
     else if (placingType) cancelPlacing();
+    else if (filterPanelOpen()) closeFilterPanel();
     else if (!edgeMenu.classList.contains("hidden")) hideEdgeMenu();
     else if (inContext()) {
       contextStack.pop();
