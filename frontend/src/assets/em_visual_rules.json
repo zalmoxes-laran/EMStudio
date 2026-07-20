@@ -24,7 +24,8 @@
         "border_color": "#540909",
         "fill_color": "#F0F0F0",
         "border_style": "solid",
-        "shape": "rectangle"
+        "shape": "rectangle",
+        "border_width": 4
       },
       "label_position": "over"
     },
@@ -44,7 +45,8 @@
         "border_color": "#083107",
         "fill_color": "#000000",
         "border_style": "solid",
-        "shape": "hexagon"
+        "shape": "hexagon",
+        "border_width": 4
       },
       "label_position": "over"
     },
@@ -64,7 +66,8 @@
         "border_color": "#0546CC",
         "fill_color": "#CCCCCC",
         "border_style": "solid",
-        "shape": "parallelogram"
+        "shape": "parallelogram",
+        "border_width": 4
       },
       "label_position": "over"
     },
@@ -84,7 +87,8 @@
         "border_color": "#70581E",
         "fill_color": "#CCCCCC",
         "border_style": "solid",
-        "shape": "octagon"
+        "shape": "octagon",
+        "border_width": 4
       },
       "label_position": "over"
     },
@@ -104,7 +108,8 @@
         "border_color": "#AF8208",
         "fill_color": "#CCCCCC",
         "border_style": "solid",
-        "shape": "octagon"
+        "shape": "octagon",
+        "border_width": 4
       },
       "label_position": "over"
     },
@@ -116,15 +121,16 @@
         "material": {
           "color": {
             "r": 0.608,
-            "g": 0.200,
-            "b": 0.200,
+            "g": 0.2,
+            "b": 0.2,
             "a": 1.0
           }
         },
         "border_color": "#9B3333",
         "fill_color": "#FFFFFF",
         "border_style": "solid",
-        "shape": "octagon"
+        "shape": "octagon",
+        "border_width": 4
       },
       "label_position": "over"
     },
@@ -144,7 +150,8 @@
         "border_color": "#D86400",
         "fill_color": "#F5F5F5",
         "border_style": "solid",
-        "shape": "rounded_rectangle"
+        "shape": "rounded_rectangle",
+        "border_width": 4
       },
       "label_position": "over"
     },
@@ -164,7 +171,8 @@
         "border_color": "#540909",
         "fill_color": "#EFEFEF",
         "border_style": "solid",
-        "shape": "ellipse"
+        "shape": "ellipse",
+        "border_width": 4
       },
       "label_position": "over"
     },
@@ -184,7 +192,8 @@
         "border_color": "#D86400",
         "fill_color": "#FFFFFF",
         "border_style": "solid",
-        "shape": "ellipse"
+        "shape": "ellipse",
+        "border_width": 4
       },
       "label_position": "over"
     },
@@ -204,7 +213,8 @@
         "border_color": "#083107",
         "fill_color": "#000000",
         "border_style": "solid",
-        "shape": "ellipse"
+        "shape": "ellipse",
+        "border_width": 4
       },
       "label_position": "over"
     },
@@ -224,7 +234,8 @@
         "border_color": "#0546CC",
         "fill_color": "#000000",
         "border_style": "solid",
-        "shape": "ellipse"
+        "shape": "ellipse",
+        "border_width": 4
       },
       "label_position": "over"
     },
@@ -244,7 +255,8 @@
         "border_color": "#808080",
         "fill_color": "#DDDDDD",
         "border_style": "dotted",
-        "shape": "rectangle"
+        "shape": "rectangle",
+        "border_width": 4
       },
       "label_position": "over"
     },
@@ -264,7 +276,8 @@
         "border_color": "#000000",
         "fill_color": "#FFFFFF",
         "border_style": "solid",
-        "shape": "diamond"
+        "shape": "diamond",
+        "border_width": 4
       },
       "label_position": "center"
     },
@@ -284,7 +297,8 @@
         "border_color": "#000000",
         "fill_color": "#FFFFFF",
         "border_style": "dashed",
-        "shape": "triangle"
+        "shape": "triangle",
+        "border_width": 4
       },
       "label_position": "over"
     },
@@ -666,7 +680,8 @@
         "border_color": "#540909",
         "fill_color": "#F0F0F0",
         "border_style": "dashed",
-        "shape": "rectangle"
+        "shape": "rectangle",
+        "border_width": 4
       },
       "label_position": "over"
     },
