@@ -363,7 +363,7 @@ function draw(): void {
       connect,
       editable: true,
       insertBoundary: view === "matrix" ? hoverInsertBoundary : null,
-      template: activeTemplateKey(),
+      monochrome,
     },
     w,
     h,
@@ -2373,17 +2373,10 @@ const filterPanel = document.getElementById("filter-panel")!;
 function filterPanelOpen(): boolean {
   return !filterPanel.classList.contains("hidden");
 }
-/** The detail-template key whose circle set the current view exactly matches
- *  (e.g. "harris"), or null when the rings are a custom mix. Stateless — reflects
- *  the live circleState, so toggling any ring drops back to null. */
-function activeTemplateKey(): string | null {
-  const visible = circleState[view];
-  const t = TEMPLATES.find(
-    (t) =>
-      t.circles.length === visible.size && t.circles.every((k) => visible.has(k)),
-  );
-  return t?.key ?? null;
-}
+// Monochrome (B/W) display toggle — every node draws black-bordered + white
+// (shapes disambiguate). A pure presentation option (not a filter), so it lives
+// as its own flag, exposed at the end of the detail panel.
+let monochrome = false;
 function applyTemplate(t: DetailTemplate): void {
   circleState[view] = new Set(t.circles);
   recomputeHiddenFromCircles();
@@ -2475,6 +2468,25 @@ function renderCirclesPanel(): void {
   };
   addSection("Nodes", "node");
   addSection("Edges", "edge");
+
+  // Display options (presentation, not a filter): monochrome overrides every
+  // node to a black border + white fill — the pre-EM-1.3 shape-only look.
+  const dh = document.createElement("div");
+  dh.className = "fp-sect";
+  dh.textContent = "Display";
+  filterPanel.appendChild(dh);
+  const monoRow = document.createElement("label");
+  monoRow.className = "fp-row";
+  const monoCb = document.createElement("input");
+  monoCb.type = "checkbox";
+  monoCb.checked = monochrome;
+  monoCb.addEventListener("change", () => {
+    monochrome = monoCb.checked;
+    draw();
+  });
+  monoRow.appendChild(monoCb);
+  monoRow.appendChild(document.createTextNode(" Monochrome (B/W) — black borders"));
+  filterPanel.appendChild(monoRow);
 
   const reset = document.createElement("button");
   reset.className = "fp-reset";
