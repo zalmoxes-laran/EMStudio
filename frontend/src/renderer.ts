@@ -526,9 +526,10 @@ export function render(
     (state.selectedIds?.has(n.id) ?? false);
   for (const n of scene.nodes) {
     const st = nodeStyle(n.node.node_type);
-    // Monochrome (B/W) mode: EVERY node draws with a black border (nodes are
-    // told apart by SHAPE — the pre-EM-1.3 look). Explicit user toggle, not tied
-    // to any template; leaves the EM type colours in every other mode.
+    // Monochrome (B/W) mode: EVERY node draws with a black BORDER only — fills,
+    // text and container header tints are left untouched (nodes are told apart by
+    // SHAPE + their existing fills, e.g. virtual USVn/USVs keep their black fill +
+    // white text). Explicit user toggle, not tied to any template.
     const mono = state.monochrome === true;
     const borderCol = mono ? "#1a1a1a" : st.border;
     const group = scene.groupsById?.get(n.id);
@@ -537,11 +538,7 @@ export function render(
         ctx,
         group,
         borderCol,
-        headerFillFor(
-          n.node.node_type,
-          borderCol,
-          mono ? undefined : st.labelBackground,
-        ),
+        headerFillFor(n.node.node_type, st.border, st.labelBackground),
         vp.scale,
         n.badge,
         drawLabels,
@@ -719,9 +716,9 @@ export function render(
     }
 
     shapePath(ctx, st.shape, n.x, n.y, n.w, n.h);
-    ctx.fillStyle = mono ? "#FFFFFF" : st.fill;
+    ctx.fillStyle = st.fill;
     ctx.fill();
-    // monochrome → black border (see `mono` above); else the EM type colour.
+    // monochrome → black border only (see `mono`); fill untouched. Else EM colour.
     ctx.strokeStyle = borderCol;
     // thick coloured frame so US/USV/SF/… read like the historical EM icons
     ctx.lineWidth = st.borderWidth / Math.sqrt(vp.scale);
