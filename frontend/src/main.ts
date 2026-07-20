@@ -363,6 +363,7 @@ function draw(): void {
       connect,
       editable: true,
       insertBoundary: view === "matrix" ? hoverInsertBoundary : null,
+      template: activeTemplateKey(),
     },
     w,
     h,
@@ -2371,6 +2372,17 @@ document.addEventListener("keydown", (e) => {
 const filterPanel = document.getElementById("filter-panel")!;
 function filterPanelOpen(): boolean {
   return !filterPanel.classList.contains("hidden");
+}
+/** The detail-template key whose circle set the current view exactly matches
+ *  (e.g. "harris"), or null when the rings are a custom mix. Stateless — reflects
+ *  the live circleState, so toggling any ring drops back to null. */
+function activeTemplateKey(): string | null {
+  const visible = circleState[view];
+  const t = TEMPLATES.find(
+    (t) =>
+      t.circles.length === visible.size && t.circles.every((k) => visible.has(k)),
+  );
+  return t?.key ?? null;
 }
 function applyTemplate(t: DetailTemplate): void {
   circleState[view] = new Set(t.circles);

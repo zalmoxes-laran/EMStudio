@@ -4,6 +4,7 @@
 // orthogonally with crossing bridges (routing.ts), yEd-style.
 import { ICON_NODE_TYPES, imageFor } from "./icons";
 import { documentVariant, edgeStyle, nodeStyle } from "./palette";
+import { isStratigraphicType } from "./rules";
 import {
   drawArrowhead,
   routeScene,
@@ -44,6 +45,10 @@ export interface RenderState {
    *  near (0 = above the top lane … lanes.length = below the last). Draws a
    *  dashed insertion line + a "+" badge; the click is resolved in main.ts. */
   insertBoundary?: number | null;
+  /** active detail-template key (e.g. "harris"): in Harris Matrix mode
+   *  stratigraphic nodes get a black border (classic Harris look), not their
+   *  EM visual-rule colour. */
+  template?: string | null;
 }
 
 // per-scene route cache (scenes are rebuilt on every document mutation)
@@ -523,13 +528,23 @@ export function render(
     (state.selectedIds?.has(n.id) ?? false);
   for (const n of scene.nodes) {
     const st = nodeStyle(n.node.node_type);
+    // Harris Matrix mode: stratigraphic units (leaf shapes AND is_part_of
+    // containers) draw with a BLACK border — the classic monochrome Harris look —
+    // instead of their EM visual-rule colour (e.g. US #540909).
+    const harrisStrat =
+      state.template === "harris" && isStratigraphicType(n.node.node_type);
+    const borderCol = harrisStrat ? "#1a1a1a" : st.border;
     const group = scene.groupsById?.get(n.id);
     if (group) {
       drawGroupContainer(
         ctx,
         group,
-        st.border,
-        headerFillFor(n.node.node_type, st.border, st.labelBackground),
+        borderCol,
+        headerFillFor(
+          n.node.node_type,
+          borderCol,
+          harrisStrat ? undefined : st.labelBackground,
+        ),
         vp.scale,
         n.badge,
         drawLabels,
@@ -709,7 +724,8 @@ export function render(
     shapePath(ctx, st.shape, n.x, n.y, n.w, n.h);
     ctx.fillStyle = st.fill;
     ctx.fill();
-    ctx.strokeStyle = st.border;
+    // Harris Matrix mode → black border (see harrisStrat above); else EM colour.
+    ctx.strokeStyle = borderCol;
     // thick coloured frame so US/USV/SF/… read like the historical EM icons
     ctx.lineWidth = st.borderWidth / Math.sqrt(vp.scale);
     ctx.setLineDash(
