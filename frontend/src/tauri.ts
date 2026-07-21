@@ -7,6 +7,7 @@
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { invoke } from "@tauri-apps/api/core";
 
 const EM_FILTERS = [
   { name: "Extended Matrix", extensions: ["em.json", "json"] },
@@ -51,6 +52,21 @@ export async function setWindowTitle(title: string): Promise<void> {
     await getCurrentWindow().setTitle(title);
   } catch {
     /* not in Tauri, or title API unavailable — ignore */
+  }
+}
+
+/**
+ * Base URL of the GraphML transformer service (s3Dgraphy) the desktop app
+ * should use. The Rust shell resolves it: a remote StratiGraph server if
+ * `EM_TRANSFORMER_URL` is set, else the locally-spawned `em-bridge` sidecar.
+ * Returns null in a plain browser (main.ts falls back to its own default).
+ */
+export async function transformerUrl(): Promise<string | null> {
+  if (!isTauri()) return null;
+  try {
+    return await invoke<string>("transformer_url");
+  } catch {
+    return null;
   }
 }
 

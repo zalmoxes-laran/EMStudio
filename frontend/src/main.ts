@@ -33,6 +33,7 @@ import {
   saveAsEmJson,
   setWindowTitle,
   baseName,
+  transformerUrl,
 } from "./tauri";
 import { type HostInfo, SyncClient } from "./sync";
 import {
@@ -2123,14 +2124,27 @@ document.getElementById("btn-svg")!.addEventListener("click", () => {
   URL.revokeObjectURL(a.href);
 });
 
-// Export as yEd GraphML via the local dev bridge (tools/em_bridge.py). The
-// frontend cannot run s3Dgraphy (ADR-001 invariant 2), so we POST the current
-// .em.json to the bridge and download the GraphML it returns. Bridge URL is
-// overridable with ?bridge= or window.EM_BRIDGE (default localhost:8765).
-const BRIDGE_URL =
-  new URLSearchParams(location.search).get("bridge") ??
-  (window as unknown as { EM_BRIDGE?: string }).EM_BRIDGE ??
-  "http://localhost:8765";
+// Export/import GraphML via the s3Dgraphy "transformer" service — the frontend
+// cannot run s3Dgraphy (ADR-001 invariant 2), so it POSTs the .em.json / GraphML
+// to an HTTP endpoint. That endpoint is PLUGGABLE (precedence):
+//   1. ?bridge= query param       (explicit override, dev/debug)
+//   2. window.EM_BRIDGE           (injected)
+//   3. desktop: the Rust `transformer_url` command — a remote StratiGraph
+//      server if EM_TRANSFORMER_URL is set, else the local em-bridge sidecar
+//   4. browser dev default        (./dev.sh bridge on :8765)
+let _bridgeUrl: string | null = null;
+async function bridgeUrl(): Promise<string> {
+  if (_bridgeUrl) return _bridgeUrl;
+  _bridgeUrl =
+    new URLSearchParams(location.search).get("bridge") ??
+    (window as unknown as { EM_BRIDGE?: string }).EM_BRIDGE ??
+    (await transformerUrl()) ??
+    "http://localhost:8765";
+  return _bridgeUrl;
+}
+const BRIDGE_UNREACHABLE =
+  "GraphML transformer not reachable — the local sidecar may still be starting; " +
+  "otherwise start it with ./dev.sh (or set EM_TRANSFORMER_URL to a server)";
 document.getElementById("btn-graphml")!.addEventListener("click", async () => {
   if (!store) {
     toast("Open a document first");
@@ -2140,7 +2154,7 @@ document.getElementById("btn-graphml")!.addEventListener("click", async () => {
   const name = String(g["name"] ?? g.graph_id ?? "graph");
   toast("Exporting GraphML…");
   try {
-    const res = await fetch(`${BRIDGE_URL}/graphml`, {
+    const res = await fetch(`${await bridgeUrl()}/graphml`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: store.toJSON(),
@@ -2164,9 +2178,7 @@ document.getElementById("btn-graphml")!.addEventListener("click", async () => {
     URL.revokeObjectURL(a.href);
     toast("GraphML exported");
   } catch {
-    toast(
-      "GraphML bridge not reachable — start it with ./dev.sh (or python3 tools/em_bridge.py)",
-    );
+    toast(BRIDGE_UNREACHABLE);
   }
 });
 
@@ -2185,7 +2197,7 @@ document
       toast("Importing GraphML…");
       try {
         const text = await file.text();
-        const res = await fetch(`${BRIDGE_URL}/import-graphml`, {
+        const res = await fetch(`${await bridgeUrl()}/import-graphml`, {
           method: "POST",
           headers: { "Content-Type": "application/xml" },
           body: text,
@@ -2205,9 +2217,7 @@ document
         loadDocument(doc, file.name); // no layout → auto fresh-layout on load
         toast(`Imported ${file.name}`);
       } catch {
-        toast(
-          "GraphML bridge not reachable — start it with ./dev.sh (or python3 tools/em_bridge.py)",
-        );
+        toast(BRIDGE_UNREACHABLE);
       }
     });
     inp.click();
