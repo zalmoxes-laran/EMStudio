@@ -149,6 +149,21 @@ fixture when served, or open the file and drop an .em.json).
    verify natively (no cargo in the dev sandbox). Likely tweak if it
    fails: the fs scope `**` (Tauri glob) — narrow/adjust to the real path
    roots if read/write is denied.
+   - DONE (July 2026): **GraphML transformer as a pluggable service**. The
+     Python transformer (`tools/em_bridge.py` + s3Dgraphy; `/health`
+     `/graphml` `/import-graphml`) now reachable from the packaged app.
+     Endpoint precedence (frontend `bridgeUrl()` in main.ts + `transformerUrl()`
+     in tauri.ts → Rust `transformer_url` command): `?bridge=` > `window.EM_BRIDGE`
+     > desktop (remote `EM_TRANSFORMER_URL` — a StratiGraph server — else the
+     local sidecar) > browser-dev `localhost:8765`. `main.rs` registers
+     tauri-plugin-shell and, unless `EM_TRANSFORMER_URL` is set, spawns the
+     bundled `em-bridge` sidecar on :8765 at launch (killed on exit; graceful
+     if missing/port-taken). Sidecar = PyInstaller-frozen bridge built by
+     `apps/desktop/build-bridge.sh` → `src-tauri/binaries/em-bridge-<triple>`
+     (bundle.externalBin, gitignored; data via --add-data; ad-hoc signed).
+     Cold start a few seconds (onefile + pandas); speed-ups: `--onedir` or
+     `--exclude-module pandas`. This is the "many dockerised services in
+     parallel" hook — same contract points at a remote transformer online.
 3. **GUI refinements** (Emanuel's list, first pass DONE July 2026):
    - Header overflow fixed: body is now a column flex (header · main · footer);
      the toolbar `flex-wrap`s instead of clipping, and `#breadcrumb` + `#info`
