@@ -2,7 +2,7 @@
   "formal_language": "EM",
   "version": "1.6.1",
   "_changelog": {
-    "1.6.1": "Align USVs and fix the TSU/USN border↔material swap against the point-of-truth palette (templates/em_palette_template.graphml). USVs: border_color #0546CC→#248FE7 and fill_color #CCCCCC→#000000 (black), material RGB updated to match #248FE7 — the canonical yEd 'virtual structural unit' look (node USV100). TSU had a grey 2D border (#808080) over a red material (#540808); the palette shows TSU red, so border_color #808080→#540909 (aligned to its own material, matching the US/RSF red family). USN was the mirror error (red 2D border over grey material); border_color #540909→#8C8C8C (aligned to its neutral-grey material, fitting a negative/cut unit). border_width was already 4 on all stratigraphic types.",
+    "1.6.1": "Align the virtual-unit colours to the canonical 2D icons and fix the TSU/USN border↔material swap. Point-of-truth = the reference PNGs src/2D/USVs.png (border #248FE7, fill #000000) and src/2D/USVn.png (border #31792D, fill ~#000000), confirmed by templates/em_palette_template.graphml (nodes USV100/USV102). USVs+serUSVs: border_color #0546CC→#248FE7, fill #CCCCCC→#000000 (USVs), material RGB updated to match — the values in the rules were an older, darker blue than the icon. USVn+serUSVn: border_color #083107→#31792D (the rules carried a near-black green, far darker than the canonical icon), material RGB updated to match. TSU had a grey 2D border (#808080) over a red material (#540808); the palette shows TSU red, so border_color #808080→#540909 (aligned to its own material, matching the US/RSF red family). USN was the mirror error (red 2D border over grey material); border_color #540909→#8C8C8C (aligned to its neutral-grey material, fitting a negative/cut unit). Note: border_color(hex) and material.color(rgb) were internally coherent for every type EXCEPT the TSU/USN swap; the USVs/USVn discrepancy was stale colour values vs the icons, not an rgb↔hex mismatch. border_width was already 4 on all stratigraphic types.",
     "1.6.0": "Version realigned to track the EM language version (EM 1.6); supersedes the 1.5.x line. Added canonical group-container styles for ActivityNodeGroup, ParadataNodeGroup and TimeBranchNodeGroup (mirroring the existing LocationNodeGroup pattern): neutral grey container (fill #F5F5F5, dashed #000000 border, roundrectangle) distinguished by the group title-tab colour in `label_background` — Activity #CCFFFF, Paradata #FFCC99, TimeBranch #99CC00 (green). Sourced from the point-of-truth palette template (templates/em_palette_template.graphml, nodes Att.[xx] / US[xxx]_PD / TB.0), aligning em_visual_rules with the GraphML palette. Previously ParadataNodeGroup and TimeBranchNodeGroup both resolved through the shared grey 'GRAPH' style and could not be told apart; ActivityNodeGroup rendered via the legacy purple-ellipse 'ANG'. Legacy 'ANG' and 'GRAPH' styles retained unchanged for back-compat with other consumers.",
     "1.5.3": "Fix USD / serUSD material colour: RGB was (0.549, 0.103, 0.0) = #8C1A00 (red), should be #D86400 (orange) to match the canonical USD documentary colour used in the GraphML palette template, node_registry defaults and document_variant_styles.observable. USD border_color also corrected from #8C1A00 to #D86400 (serUSD border was already correct).",
     "1.5.2": "Added RSF (Reused Special Find / spolia) node style — octagon, red border (#9B3333), white fill. Sibling of SF/VSF, distinguished by border colour. Originating DP: DP-26.",
@@ -37,13 +37,13 @@
       "style": {
         "material": {
           "color": {
-            "r": 0.031,
-            "g": 0.191,
-            "b": 0.026,
+            "r": 0.192,
+            "g": 0.475,
+            "b": 0.176,
             "a": 1.0
           }
         },
-        "border_color": "#083107",
+        "border_color": "#31792D",
         "fill_color": "#000000",
         "border_style": "solid",
         "shape": "hexagon",
@@ -205,13 +205,13 @@
       "style": {
         "material": {
           "color": {
-            "r": 0.031,
-            "g": 0.191,
-            "b": 0.026,
+            "r": 0.192,
+            "g": 0.475,
+            "b": 0.176,
             "a": 1.0
           }
         },
-        "border_color": "#083107",
+        "border_color": "#31792D",
         "fill_color": "#000000",
         "border_style": "solid",
         "shape": "ellipse",
@@ -226,13 +226,13 @@
       "style": {
         "material": {
           "color": {
-            "r": 0.018,
-            "g": 0.275,
-            "b": 0.799,
+            "r": 0.141,
+            "g": 0.561,
+            "b": 0.906,
             "a": 1.0
           }
         },
-        "border_color": "#0546CC",
+        "border_color": "#248FE7",
         "fill_color": "#000000",
         "border_style": "solid",
         "shape": "ellipse",

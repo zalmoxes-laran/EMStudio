@@ -105,7 +105,9 @@ function swatch(nodeType: string): HTMLCanvasElement {
   ctx.fillStyle = st.fill;
   ctx.fill();
   ctx.strokeStyle = st.border;
-  ctx.lineWidth = 1.4;
+  // border weight tracks the visual-rules border_width (data-driven) so the
+  // thick EM frame reads in the swatch too, clamped to this tiny 26×16 canvas.
+  ctx.lineWidth = Math.min(2.4, Math.max(1.4, st.borderWidth * 0.6));
   if (st.borderStyle === "dashed") ctx.setLineDash([3, 2]);
   else if (st.borderStyle === "dotted") ctx.setLineDash([1.5, 1.5]);
   ctx.stroke();

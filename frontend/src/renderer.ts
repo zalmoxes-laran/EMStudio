@@ -720,8 +720,12 @@ export function render(
     ctx.fill();
     // monochrome → black border only (see `mono`); fill untouched. Else EM colour.
     ctx.strokeStyle = borderCol;
-    // thick coloured frame so US/USV/SF/… read like the historical EM icons
-    ctx.lineWidth = st.borderWidth / Math.sqrt(vp.scale);
+    // thick coloured frame so US/USV/SF/… read like the historical EM icons.
+    // yEd parity: the border is a fixed fraction of the node (world units), so
+    // it stays proportionally thick at every zoom — the old `/sqrt(scale)` made
+    // it look thin once you zoomed IN on a node. A screen-space floor keeps it
+    // visible when zoomed far out.
+    ctx.lineWidth = Math.max(st.borderWidth, 1.4 / vp.scale);
     ctx.setLineDash(
       st.borderStyle === "dashed"
         ? [5, 3]
