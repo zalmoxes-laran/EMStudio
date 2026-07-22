@@ -161,9 +161,15 @@ fixture when served, or open the file and drop an .em.json).
      if missing/port-taken). Sidecar = PyInstaller-frozen bridge built by
      `apps/desktop/build-bridge.sh` → `src-tauri/binaries/em-bridge-<triple>`
      (bundle.externalBin, gitignored; data via --add-data; ad-hoc signed).
-     Cold start a few seconds (onefile + pandas); speed-ups: `--onedir` or
-     `--exclude-module pandas`. This is the "many dockerised services in
-     parallel" hook — same contract points at a remote transformer online.
+     Sidecar excludes pandas/numpy/openpyxl (xlsx-only deps) — needs
+     s3Dgraphy's `importer/xlsx_importer.py` to import pandas LAZILY (inside
+     its methods) so the GraphML/em.json chain loads pandas-free; this cut
+     the binary 27→15 MB and cold start ~30s→~6s (spawned in background at
+     launch, so ready before first use). This is the "many dockerised
+     services in parallel" hook — same contract points at a remote
+     transformer online (EM_TRANSFORMER_URL). Distribution still needs the
+     .app notarized (ad-hoc build is dev-only + would also fix any residual
+     first-launch dylib-scan latency).
 3. **GUI refinements** (Emanuel's list, first pass DONE July 2026):
    - Header overflow fixed: body is now a column flex (header · main · footer);
      the toolbar `flex-wrap`s instead of clipping, and `#breadcrumb` + `#info`
