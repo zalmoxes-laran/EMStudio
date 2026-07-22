@@ -52,7 +52,10 @@ fn main() {
             // the frontend still reaches whatever is on localhost:8765, and the
             // GraphML buttons surface a clear toast if nothing answers.
             match app.shell().sidecar("em-bridge") {
-                Ok(cmd) => match cmd.args(["--port", BRIDGE_PORT]).spawn() {
+                Ok(cmd) => match cmd
+                    .args(["--port", BRIDGE_PORT, "--exit-with-parent"])
+                    .spawn()
+                {
                     Ok((mut rx, child)) => {
                         app.state::<BridgeChild>().0.lock().unwrap().replace(child);
                         // Drain the sidecar's stdout/stderr. If we drop the

@@ -20,10 +20,34 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import sys
 import tempfile
+import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+def _exit_when_orphaned(poll: float = 1.0) -> None:
+    """Terminate the process once the parent that spawned it is gone.
+
+    The EMStudio desktop shell spawns this bridge and kills it on exit, but a
+    PyInstaller-onefile child re-parents to launchd (PPID 1) and can outlive
+    that kill, leaving a stale server holding the port. A daemon thread here
+    watches the parent PID and exits the process as soon as it changes (parent
+    died → re-parented), so the port is always freed. Enabled with
+    --exit-with-parent; harmless when run under a shell (./dev.sh).
+    """
+    parent = os.getppid()
+
+    def _watch() -> None:
+        while True:
+            time.sleep(poll)
+            if os.getppid() != parent:
+                os._exit(0)
+
+    threading.Thread(target=_watch, daemon=True).start()
 
 
 def _load_s3dgraphy(s3dgraphy_src: "pathlib.Path | None"):
@@ -162,7 +186,13 @@ def main() -> int:
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--s3dgraphy", type=pathlib.Path, default=None,
                     help="path to a s3Dgraphy 'src' dir (default: sibling checkout)")
+    ap.add_argument("--exit-with-parent", action="store_true",
+                    help="terminate when the spawning process exits "
+                         "(used by the EMStudio desktop shell)")
     args = ap.parse_args()
+
+    if args.exit_with_parent:
+        _exit_when_orphaned()
 
     try:
         (parse_emjson, GraphMLExporter, GraphMLImporter, build_emjson,
