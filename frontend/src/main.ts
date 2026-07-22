@@ -31,6 +31,8 @@ import {
   openEmJson,
   writeEmJson,
   saveAsEmJson,
+  openGraphml,
+  saveGraphml,
   setWindowTitle,
   baseName,
   transformerUrl,
@@ -2096,7 +2098,13 @@ document.addEventListener("click", closeAllDropdowns);
 const fileInput = document.getElementById("file-input") as HTMLInputElement;
 document
   .getElementById("btn-new")!
-  .addEventListener("click", () => newDocument());
+  .addEventListener("click", async () => {
+    // In Sidecar (sync) mode the graph is the host's; a New document must
+    // leave sync (optionally asking the host to save first) and return to
+    // Standalone, mirroring the online build.
+    if (!(await confirmLeaveSidecar("Starting a new document"))) return;
+    newDocument();
+  });
 document
   .getElementById("btn-open")!
   .addEventListener("click", () => void openDocument());
@@ -2170,55 +2178,74 @@ document.getElementById("btn-graphml")!.addEventListener("click", async () => {
       toast(`GraphML export failed: ${msg}`);
       return;
     }
-    const blob = await res.blob();
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `${name.replace(/[^\w.-]+/g, "_")}.graphml`;
-    a.click();
-    URL.revokeObjectURL(a.href);
-    toast("GraphML exported");
+    const xml = await res.text();
+    const filename = `${name.replace(/[^\w.-]+/g, "_")}.graphml`;
+    if (isTauri()) {
+      // Native "Save As…" dialog — the webview has no browser download UI.
+      const path = await saveGraphml(xml, filename);
+      if (!path) return; // cancelled
+      toast(`GraphML exported → ${baseName(path)}`);
+    } else {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([xml], { type: "application/xml" }));
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      toast("GraphML exported");
+    }
   } catch {
     toast(BRIDGE_UNREACHABLE);
   }
 });
 
-// Import a yEd GraphML file → em.json via the dev bridge (s3Dgraphy importer),
-// then load it. Same bridge/constraint as export (invariant 2).
+// Import a yEd GraphML file → em.json via the transformer (s3Dgraphy
+// importer), then load it. Same endpoint/constraint as export (invariant 2).
+async function importGraphmlText(text: string, srcName: string): Promise<void> {
+  if (!(await confirmLeaveSidecar("Importing GraphML"))) return;
+  toast("Importing GraphML…");
+  try {
+    const res = await fetch(`${await bridgeUrl()}/import-graphml`, {
+      method: "POST",
+      headers: { "Content-Type": "application/xml" },
+      body: text,
+    });
+    if (!res.ok) {
+      let msg = `bridge error ${res.status}`;
+      try {
+        const j = await res.json();
+        if (j?.error) msg = j.error;
+      } catch {
+        /* non-JSON error body */
+      }
+      toast(`GraphML import failed: ${msg}`);
+      return;
+    }
+    const doc = (await res.json()) as EmDocument;
+    loadDocument(doc, srcName); // no layout → auto fresh-layout on load
+    toast(`Imported ${srcName}`);
+  } catch {
+    toast(BRIDGE_UNREACHABLE);
+  }
+}
+
 document
   .getElementById("btn-import-graphml")!
-  .addEventListener("click", () => {
+  .addEventListener("click", async () => {
+    // Native file dialog in the Tauri webview (a plain <input type=file>
+    // doesn't open a picker there); <input type=file> in a real browser.
+    if (isTauri()) {
+      const picked = await openGraphml();
+      if (!picked) return; // cancelled
+      await importGraphmlText(picked.text, baseName(picked.path));
+      return;
+    }
     const inp = document.createElement("input");
     inp.type = "file";
     inp.accept = ".graphml,.xml";
     inp.addEventListener("change", async () => {
       const file = inp.files?.[0];
       if (!file) return;
-      if (!(await confirmLeaveSidecar("Importing GraphML"))) return;
-      toast("Importing GraphML…");
-      try {
-        const text = await file.text();
-        const res = await fetch(`${await bridgeUrl()}/import-graphml`, {
-          method: "POST",
-          headers: { "Content-Type": "application/xml" },
-          body: text,
-        });
-        if (!res.ok) {
-          let msg = `bridge error ${res.status}`;
-          try {
-            const j = await res.json();
-            if (j?.error) msg = j.error;
-          } catch {
-            /* non-JSON error body */
-          }
-          toast(`GraphML import failed: ${msg}`);
-          return;
-        }
-        const doc = (await res.json()) as EmDocument;
-        loadDocument(doc, file.name); // no layout → auto fresh-layout on load
-        toast(`Imported ${file.name}`);
-      } catch {
-        toast(BRIDGE_UNREACHABLE);
-      }
+      await importGraphmlText(await file.text(), file.name);
     });
     inp.click();
   });

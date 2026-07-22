@@ -13,6 +13,10 @@ const EM_FILTERS = [
   { name: "Extended Matrix", extensions: ["em.json", "json"] },
 ];
 
+const GRAPHML_FILTERS = [
+  { name: "yEd GraphML", extensions: ["graphml", "xml"] },
+];
+
 /** True when running inside the Tauri webview (desktop app). */
 export function isTauri(): boolean {
   return typeof (window as unknown as Record<string, unknown>)
@@ -41,6 +45,29 @@ export async function saveAsEmJson(
   defaultName: string,
 ): Promise<string | null> {
   const path = await save({ defaultPath: defaultName, filters: EM_FILTERS });
+  if (!path) return null;
+  await writeTextFile(path, text);
+  return path;
+}
+
+/** Native "Open…" dialog for a .graphml file → picked path + contents. */
+export async function openGraphml(): Promise<
+  { path: string; text: string } | null
+> {
+  const picked = await open({ multiple: false, filters: GRAPHML_FILTERS });
+  const path = Array.isArray(picked) ? picked[0] : picked;
+  if (!path || typeof path !== "string") return null;
+  const text = await readTextFile(path);
+  return { path, text };
+}
+
+/** Native "Save As…" dialog for GraphML → the chosen path (already written),
+ *  or null if cancelled. */
+export async function saveGraphml(
+  text: string,
+  defaultName: string,
+): Promise<string | null> {
+  const path = await save({ defaultPath: defaultName, filters: GRAPHML_FILTERS });
   if (!path) return null;
   await writeTextFile(path, text);
   return path;
