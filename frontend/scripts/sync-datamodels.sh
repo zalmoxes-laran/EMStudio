@@ -51,6 +51,10 @@ fi
 cp "$CFG/em_visual_rules.json" "$DST/"
 cp "$CFG/s3Dgraphy_connections_datamodel.json" "$DST/"
 cp "$CFG/s3Dgraphy_node_datamodel.json" "$DST/"
+# the class hierarchy now lives in a separate GENERATED file (s3Dgraphy P1-A);
+# vendor both: the datamodel (hand-authored semantics/CIDOC) and the registry
+# (generated parent/node_type hierarchy that rules.ts reads).
+cp "$CFG/node_registry.generated.json" "$DST/"
 cp "$CFG/em_qualia_types.json" "$DST/"
 mkdir -p "$DST/icons2d"
 cp "$CFG"/src/2D/*.png "$DST/icons2d/"
@@ -60,13 +64,15 @@ python3 - "$CFG" <<'EOF'
 import json, sys, pathlib
 cfg = pathlib.Path(sys.argv[1])
 n = json.loads((cfg / "s3Dgraphy_node_datamodel.json").read_text())
+r = json.loads((cfg / "node_registry.generated.json").read_text())
 c = json.loads((cfg / "s3Dgraphy_connections_datamodel.json").read_text())
 v = json.loads((cfg / "em_visual_rules.json").read_text())
 q = json.loads((cfg / "em_qualia_types.json").read_text())
 total = sum(len(s.get("qualia", []))
             for cat in q.get("qualia_categories", [])
             for s in cat.get("subcategories", {}).values())
-print(f"  node datamodel   {n.get('s3Dgraphy_data_model_version')} ({len(n.get('node_types', {}))} classes)")
+print(f"  node datamodel   {n.get('s3Dgraphy_data_model_version')} (hand-authored semantics)")
+print(f"  node registry    {r.get('s3Dgraphy_data_model_version')} ({len(r.get('node_types', {}))} classes)")
 print(f"  connections      {c.get('s3Dgraphy_connections_model_version')} ({len(c.get('edge_types', {}))} edge types)")
 print(f"  visual rules     {v.get('version')} ({len(v.get('node_styles', {}))} styles)")
 print(f"  qualia vocab     {q.get('metadata', {}).get('version')} ({total} terms)")

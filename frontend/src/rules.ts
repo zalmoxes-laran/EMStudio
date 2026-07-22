@@ -1,11 +1,12 @@
 // Live socket validation from s3Dgraphy's datamodels — the same versioned
 // JSONs that drive the Python side (EM 1.5/1.6 connector rules). The class
-// hierarchy lives in the node datamodel itself (node_types entries carry
-// `parent` and `node_type`; kept in sync with the Python classes by
-// s3dgraphy.tools.sync_node_datamodel — ADR-001). Refresh the local copies
-// with scripts/sync-datamodels.sh.
+// hierarchy lives in the GENERATED registry `node_registry.generated.json`
+// (node_types entries carry `parent` and `node_type`; derived from the Python
+// classes by s3dgraphy.tools.sync_node_datamodel — ADR-001 / Phase 1 P1-A).
+// The hand-authored datamodel keeps only semantics/CIDOC. Refresh both local
+// copies with scripts/sync-datamodels.sh.
 import connections from "./assets/s3Dgraphy_connections_datamodel.json";
-import nodeDatamodel from "./assets/s3Dgraphy_node_datamodel.json";
+import nodeRegistry from "./assets/node_registry.generated.json";
 
 interface EdgeTypeDef {
   name?: string;
@@ -26,7 +27,7 @@ const EDGE_TYPES = (
 ).edge_types;
 
 const CLASS_ENTRIES = (
-  nodeDatamodel as unknown as { node_types: Record<string, NodeTypeEntry> }
+  nodeRegistry as unknown as { node_types: Record<string, NodeTypeEntry> }
 ).node_types;
 
 // runtime node_type string → class name (e.g. "US" → "StratigraphicUnit")
