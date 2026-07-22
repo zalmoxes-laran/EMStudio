@@ -194,6 +194,14 @@ const verBtn = document.getElementById("em-version")!;
 // "Extended Matrix 1.6" — the version alone, no redundant "EM" prefix.
 verBtn.textContent = EM_VERSION;
 
+// EMStudio app/build version (distinct from the EM language version above) —
+// shown next to the header wordmark so testers know which build they're on.
+const appVerEl = document.getElementById("app-version");
+if (appVerEl) {
+  appVerEl.textContent = __EMSTUDIO_VERSION__;
+  appVerEl.title = `EMStudio ${__EMSTUDIO_VERSION__} — EM language ${EM_VERSION}`;
+}
+
 // Footer word for the current authoring mode (ADR-002): Standalone = editing a
 // local .em.json; Sidecar = live-synced to a host. Driven by the sync socket.
 const modeIndicator = document.getElementById("mode-indicator")!;

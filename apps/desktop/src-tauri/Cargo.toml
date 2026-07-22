@@ -1,6 +1,6 @@
 [package]
 name = "emstudio-desktop"
-version = "0.1.0"
+version = "1.6.0-dev.1"
 description = "EMStudio desktop shell (Tauri)"
 edition = "2021"
 license = "GPL-3.0-or-later"

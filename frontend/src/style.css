@@ -66,6 +66,17 @@ body.sync-active #statusbar {
 #brand .brand-word {
   line-height: 1;
 }
+#brand .app-ver {
+  align-self: flex-end;
+  margin-left: 5px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  line-height: 1;
+  opacity: 0.6;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 
 #toolbar button,
 #toolbar select {
