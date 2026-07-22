@@ -10,6 +10,9 @@ Endpoints (CORS open for http://localhost:*):
     GET  /health           → {"ok": true, ...}
     POST /graphml          ← em.json body   → GraphML (text/xml), downloadable
     POST /import-graphml   ← GraphML (XML)  → em.json dict (application/json)
+    POST /export-ttl       ← em.json body   → Turtle (text/turtle), downloadable
+                             (RDF/CIDOC projection via s3Dgraphy rdf_exporter;
+                             needs rdflib bundled — 501 if unavailable)
 
 Run it via ``dev.sh``, or standalone:
     python3 tools/em_bridge.py --port 8765 --s3dgraphy ~/GitHub/s3Dgraphy/src
@@ -101,6 +104,8 @@ def make_handler(parse_emjson, GraphMLExporter, GraphMLImporter, build_emjson, G
                 self._export_graphml(raw)
             elif route == "/import-graphml":
                 self._import_graphml(raw)
+            elif route == "/export-ttl":
+                self._export_ttl(raw)
             else:
                 self.send_error(404, "unknown endpoint")
 
@@ -139,6 +144,48 @@ def make_handler(parse_emjson, GraphMLExporter, GraphMLImporter, build_emjson, G
             self.send_header("Content-Length", str(len(graphml)))
             self.end_headers()
             self.wfile.write(graphml)
+
+        # em.json (JSON body) → Turtle (RDF/CIDOC projection), downloadable.
+        # rdflib is imported lazily: the sidecar still starts and serves GraphML
+        # even if rdflib was not bundled — TTL then fails with a clear 501.
+        def _export_ttl(self, raw):
+            try:
+                doc = json.loads(raw.decode("utf-8"))
+            except Exception as exc:
+                self._fail(400, f"invalid JSON body: {exc}")
+                return
+            try:
+                from s3dgraphy.exporter.rdf_exporter import RDFExporter
+            except ImportError as exc:
+                self._fail(
+                    501, f"TTL export unavailable — rdflib not bundled in the bridge ({exc})")
+                return
+            try:
+                graph, warnings = parse_emjson(doc)
+                for w in warnings:
+                    sys.stderr.write(f"  [bridge] warning: {w}\n")
+                # RDFExporter writes to a path; round-trip via a temp file.
+                with tempfile.NamedTemporaryFile(suffix=".ttl", delete=False) as tmp:
+                    tmp_path = pathlib.Path(tmp.name)
+                RDFExporter(str(tmp_path), format="turtle").export_single_graph(graph)
+                ttl = tmp_path.read_bytes()
+                tmp_path.unlink(missing_ok=True)
+            except Exception as exc:  # pragma: no cover — surface to the UI
+                import traceback
+                traceback.print_exc()
+                self._fail(500, f"TTL export failed: {exc}")
+                return
+
+            gid = (doc.get("graph") or {}).get("graph_id") or "graph"
+            filename = f"{gid}.ttl".replace("/", "_")
+            self.send_response(200)
+            self._cors()
+            self.send_header("Content-Type", "text/turtle")
+            self.send_header(
+                "Content-Disposition", f'attachment; filename="{filename}"')
+            self.send_header("Content-Length", str(len(ttl)))
+            self.end_headers()
+            self.wfile.write(ttl)
 
         # GraphML (yEd XML body) → em.json dict, returned as JSON for loadDocument
         def _import_graphml(self, raw):

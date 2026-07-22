@@ -36,6 +36,7 @@ echo "Building em-bridge sidecar for $TRIPLE …"
   --add-data "$SRC/templates:s3dgraphy/templates" \
   --add-data "$SRC/mappings:s3dgraphy/mappings" \
   --hidden-import lxml --hidden-import lxml.etree --hidden-import lxml._elementpath \
+  --collect-submodules rdflib --copy-metadata rdflib \
   --exclude-module pandas --exclude-module numpy --exclude-module openpyxl \
   --distpath "$WORK/dist" --workpath "$WORK/build" --specpath "$WORK" \
   --noconfirm --log-level WARN \
