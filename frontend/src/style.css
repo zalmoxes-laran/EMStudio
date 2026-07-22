@@ -67,10 +67,12 @@ body.sync-active #statusbar {
   line-height: 1;
 }
 #brand .app-ver {
-  align-self: flex-end;
-  margin-left: 5px;
-  font-size: 10px;
-  font-weight: 600;
+  /* sit on the wordmark's baseline (not the flex bottom, which made it hang
+     low) with the parent's 7px gap; small, dim, tabular so digits align */
+  align-self: baseline;
+  margin-left: -1px;
+  font-size: 11px;
+  font-weight: 500;
   letter-spacing: 0.2px;
   line-height: 1;
   opacity: 0.6;
