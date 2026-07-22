@@ -53,8 +53,16 @@ fn main() {
             // GraphML buttons surface a clear toast if nothing answers.
             match app.shell().sidecar("em-bridge") {
                 Ok(cmd) => match cmd.args(["--port", BRIDGE_PORT]).spawn() {
-                    Ok((_rx, child)) => {
+                    Ok((mut rx, child)) => {
                         app.state::<BridgeChild>().0.lock().unwrap().replace(child);
+                        // Drain the sidecar's stdout/stderr. If we drop the
+                        // receiver, the pipe's read end closes and the bridge's
+                        // first print() hits EPIPE — the Python server then dies
+                        // with the socket already bound, i.e. listening but never
+                        // answering (the "transformer not reachable" wedge).
+                        tauri::async_runtime::spawn(async move {
+                            while rx.recv().await.is_some() {}
+                        });
                     }
                     Err(e) => eprintln!("[emstudio] em-bridge sidecar spawn failed: {e}"),
                 },
