@@ -176,13 +176,22 @@ export class SyncClient {
 
   disconnect(): void {
     this.manualClose = true;
+    const wasConnected = this.ws !== null;
     if (this.ws) {
       try {
+        // Detach handlers first so the async onclose doesn't double-fire the
+        // status after we've already emitted it below.
+        this.ws.onclose = null;
+        this.ws.onerror = null;
         this.ws.close();
       } catch {
         /* ignore */
       }
       this.ws = null;
     }
+    // Emit "closed" synchronously. Relying on ws.onclose is unreliable once
+    // the socket is dropped (and in the Tauri webview it may not fire at
+    // all), which left the UI stuck in "Sidecar mode" after New/Open.
+    if (wasConnected) this.cb?.onStatus("closed");
   }
 }
