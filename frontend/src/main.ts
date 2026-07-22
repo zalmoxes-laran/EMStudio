@@ -33,6 +33,7 @@ import {
   saveAsEmJson,
   openGraphml,
   saveGraphml,
+  saveTtl,
   setWindowTitle,
   baseName,
   transformerUrl,
@@ -2200,6 +2201,52 @@ document.getElementById("btn-graphml")!.addEventListener("click", async () => {
       a.click();
       URL.revokeObjectURL(a.href);
       toast("GraphML exported");
+    }
+  } catch {
+    toast(BRIDGE_UNREACHABLE);
+  }
+});
+
+// Export the RDF/CIDOC Turtle projection via the transformer (s3Dgraphy
+// rdf_exporter — invariant 2: produced in Python, never reimplemented in TS).
+document.getElementById("btn-ttl")!.addEventListener("click", async () => {
+  if (!store) {
+    toast("Open a document first");
+    return;
+  }
+  const g = store.doc.graph;
+  const name = String(g["name"] ?? g.graph_id ?? "graph");
+  toast("Exporting Turtle…");
+  try {
+    const res = await fetch(`${await bridgeUrl()}/export-ttl`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: store.toJSON(),
+    });
+    if (!res.ok) {
+      let msg = `bridge error ${res.status}`;
+      try {
+        const j = await res.json();
+        if (j?.error) msg = j.error;
+      } catch {
+        /* non-JSON error body */
+      }
+      toast(`Turtle export failed: ${msg}`);
+      return;
+    }
+    const ttl = await res.text();
+    const filename = `${name.replace(/[^\w.-]+/g, "_")}.ttl`;
+    if (isTauri()) {
+      const path = await saveTtl(ttl, filename);
+      if (!path) return; // cancelled
+      toast(`Turtle exported → ${baseName(path)}`);
+    } else {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(new Blob([ttl], { type: "text/turtle" }));
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(a.href);
+      toast("Turtle exported");
     }
   } catch {
     toast(BRIDGE_UNREACHABLE);

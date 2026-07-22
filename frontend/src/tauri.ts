@@ -17,6 +17,10 @@ const GRAPHML_FILTERS = [
   { name: "yEd GraphML", extensions: ["graphml", "xml"] },
 ];
 
+const TTL_FILTERS = [
+  { name: "RDF Turtle", extensions: ["ttl"] },
+];
+
 /** True when running inside the Tauri webview (desktop app). */
 export function isTauri(): boolean {
   return typeof (window as unknown as Record<string, unknown>)
@@ -68,6 +72,18 @@ export async function saveGraphml(
   defaultName: string,
 ): Promise<string | null> {
   const path = await save({ defaultPath: defaultName, filters: GRAPHML_FILTERS });
+  if (!path) return null;
+  await writeTextFile(path, text);
+  return path;
+}
+
+/** Native "Save As…" dialog for a .ttl file → the chosen path (already
+ *  written), or null if cancelled. */
+export async function saveTtl(
+  text: string,
+  defaultName: string,
+): Promise<string | null> {
+  const path = await save({ defaultPath: defaultName, filters: TTL_FILTERS });
   if (!path) return null;
   await writeTextFile(path, text);
   return path;
