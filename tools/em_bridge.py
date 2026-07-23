@@ -13,6 +13,9 @@ Endpoints (CORS open for http://localhost:*):
     POST /export-ttl       ← em.json body   → Turtle (text/turtle), downloadable
                              (RDF/CIDOC projection via s3Dgraphy rdf_exporter;
                              needs rdflib bundled — 501 if unavailable)
+    GET  /resolve-authority?term=&facet=     → ranked authority candidates (JSON)
+    POST /resolve-authority ← {term, facet}  → ranked authority candidates (JSON)
+                             (offline resolver — s3Dgraphy authorities; P1-D)
 
 Run it via ``dev.sh``, or standalone:
     python3 tools/em_bridge.py --port 8765 --s3dgraphy ~/GitHub/s3Dgraphy/src
@@ -29,6 +32,7 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
@@ -85,7 +89,9 @@ def make_handler(parse_emjson, GraphMLExporter, GraphMLImporter, build_emjson, G
             self.end_headers()
 
         def do_GET(self):
-            if self.path.rstrip("/") == "/health":
+            parsed = urllib.parse.urlparse(self.path)
+            route = parsed.path.rstrip("/")
+            if route == "/health":
                 body = json.dumps({"ok": True, "service": "em_bridge"}).encode()
                 self.send_response(200)
                 self._cors()
@@ -93,11 +99,15 @@ def make_handler(parse_emjson, GraphMLExporter, GraphMLImporter, build_emjson, G
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+            elif route == "/resolve-authority":
+                q = urllib.parse.parse_qs(parsed.query)
+                self._resolve_authority(
+                    (q.get("term") or [""])[0], (q.get("facet") or [""])[0])
             else:
                 self.send_error(404, "unknown endpoint")
 
         def do_POST(self):
-            route = self.path.rstrip("/")
+            route = urllib.parse.urlparse(self.path).path.rstrip("/")
             length = int(self.headers.get("Content-Length", 0))
             raw = self.rfile.read(length) if length else b""
             if route == "/graphml":
@@ -106,8 +116,45 @@ def make_handler(parse_emjson, GraphMLExporter, GraphMLImporter, build_emjson, G
                 self._import_graphml(raw)
             elif route == "/export-ttl":
                 self._export_ttl(raw)
+            elif route == "/resolve-authority":
+                try:
+                    body = json.loads(raw.decode("utf-8")) if raw else {}
+                except Exception as exc:
+                    self._fail(400, f"invalid JSON body: {exc}")
+                    return
+                self._resolve_authority(body.get("term", ""), body.get("facet", ""))
             else:
                 self.send_error(404, "unknown endpoint")
+
+        # term + facet → ranked offline authority candidates (P1-D).
+        # The resolver is pure Python (no rdflib/network); imported lazily so a
+        # slimmed sidecar still serves it. Returns 400 on a bad facet.
+        def _resolve_authority(self, term, facet):
+            try:
+                from s3dgraphy.authorities import resolve, FACET_ORDER
+            except ImportError as exc:  # pragma: no cover
+                self._fail(501, f"authority resolver unavailable ({exc})")
+                return
+            if (facet or "").upper() not in FACET_ORDER:
+                self._fail(
+                    400,
+                    f"unknown facet {facet!r}; expected one of "
+                    f"{sorted(FACET_ORDER)}")
+                return
+            try:
+                candidates = resolve(term, facet)
+            except Exception as exc:  # pragma: no cover — surface to the UI
+                self._fail(500, f"resolve failed: {exc}")
+                return
+            out = json.dumps(
+                {"ok": True, "term": term, "facet": (facet or "").upper(),
+                 "candidates": candidates}).encode()
+            self.send_response(200)
+            self._cors()
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
 
         # em.json (JSON body) → GraphML (yEd), downloadable
         def _export_graphml(self, raw):
@@ -258,7 +305,8 @@ def main() -> int:
         parse_emjson, GraphMLExporter, GraphMLImporter, build_emjson, Graph)
     httpd = ThreadingHTTPServer((args.host, args.port), handler)
     print(f"em_bridge listening on http://{args.host}:{args.port} "
-          f"(POST /graphml, POST /import-graphml, GET /health) — Ctrl-C to stop")
+          f"(POST /graphml, /import-graphml, /export-ttl, /resolve-authority; "
+          f"GET /health, /resolve-authority) — Ctrl-C to stop")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
