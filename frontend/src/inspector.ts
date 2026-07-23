@@ -1,7 +1,7 @@
 import type { DocumentStore, HdtoFields } from "./model";
 import { edgeStyle, nodeStyle } from "./palette";
 import { isGroupType } from "./rules";
-import type { EmEdge, EmNode } from "./types";
+import type { AuthorityCandidate, AuthorityRef, EmEdge, EmNode } from "./types";
 import { qualiaList } from "./vocab";
 import { getSettings } from "./settings";
 
@@ -29,6 +29,9 @@ export interface InspectorCallbacks {
   /** pin/unpin a node's position (layout engine keeps pinned nodes in place) */
   onTogglePin: (nodeId: string) => void;
   isPinned: (nodeId: string) => boolean;
+  /** Query em-bridge /resolve-authority for ranked offline candidates. Optional:
+   *  when absent or on any failure the HDT-O authority field is plain free-text. */
+  resolveAuthority?: (term: string, facet: string) => Promise<AuthorityCandidate[]>;
 }
 
 function el(tag: string, cls?: string, text?: string): HTMLElement {
@@ -54,6 +57,118 @@ function toHexColor(v: unknown): string | null {
         .join("")
     ).toLowerCase();
   return null;
+}
+
+// Authority facets (the P1-D resolver enum WHEN/WHAT/WHERE/WHO). Not EM node/
+// edge types — a small resolver-side vocabulary, so it's fine to list here.
+const AUTHORITY_FACETS = ["WHAT", "WHERE", "WHEN", "WHO"] as const;
+
+/** The HC1 "Authority" sub-field: a facet selector + a URI/search input backed
+ *  by em-bridge /resolve-authority (via cb.resolveAuthority). Typing a term
+ *  shows ranked candidates; picking one stores the full P1-D ref. Fully offline
+ *  and graceful: no resolver / any failure → plain free-text URI entry. */
+function buildAuthorityField(
+  panel: HTMLElement,
+  inputs: Record<string, HTMLInputElement>,
+  hdto: HdtoFields,
+  cb: InspectorCallbacks,
+  ref: {
+    get: () => AuthorityRef | undefined;
+    set: (r: AuthorityRef | undefined) => void;
+    commit: () => void;
+  },
+): void {
+  panel.appendChild(el("label", "insp-field-label", "Authority"));
+
+  const facetSel = document.createElement("select");
+  facetSel.className = "insp-name-input insp-facet-select";
+  for (const f of AUTHORITY_FACETS) {
+    const o = document.createElement("option");
+    o.value = f;
+    o.textContent = f;
+    facetSel.appendChild(o);
+  }
+  panel.appendChild(facetSel);
+
+  const inp = document.createElement("input");
+  inp.className = "insp-name-input";
+  inp.value = hdto.heritageUri;
+  inp.placeholder = "type to search an authority, or paste a URI";
+  panel.appendChild(inp);
+  inputs["heritageUri"] = inp;
+
+  const badge = el("div", "insp-hint");
+  const paintBadge = (): void => {
+    const r = ref.get();
+    if (r?.authority)
+      badge.textContent = `✓ ${r.label ?? r.uri} — ${r.authority}${r.match ? ` (${r.match})` : ""}`;
+    else if (cb.resolveAuthority)
+      badge.textContent = "Offline resolver: type a term, pick a match, or paste a URI.";
+    else badge.textContent = "Paste an authority URI (resolver unavailable).";
+  };
+  paintBadge();
+  panel.appendChild(badge);
+
+  const menu = el("div", "insp-auth-menu") as HTMLElement;
+  menu.style.display = "none";
+  panel.appendChild(menu);
+  const closeMenu = (): void => {
+    menu.innerHTML = "";
+    menu.style.display = "none";
+  };
+
+  const renderCandidates = (cands: AuthorityCandidate[]): void => {
+    menu.innerHTML = "";
+    if (!cands.length) {
+      menu.style.display = "none";
+      return;
+    }
+    for (const c of cands) {
+      const row = el("button", "insp-auth-item") as HTMLButtonElement;
+      row.textContent = `${c.label ?? c.uri} — ${c.authority}${c.match ? ` (${c.match})` : ""}`;
+      row.title = String(c.uri);
+      row.addEventListener("click", () => {
+        const picked: AuthorityRef = {
+          uri: c.uri,
+          authority: c.authority,
+          label: c.label,
+          rank: c.rank,
+          match: c.match,
+        };
+        if (c.broader) picked.broader = c.broader;
+        ref.set(picked);
+        inp.value = c.uri;
+        closeMenu();
+        paintBadge();
+        ref.commit();
+      });
+      menu.appendChild(row);
+    }
+    menu.style.display = "";
+  };
+
+  let timer: number | undefined;
+  const queryNow = (): void => {
+    const term = inp.value.trim();
+    // a pasted URL is used verbatim (no search); empty / no resolver → nothing
+    if (!cb.resolveAuthority || !term || /^https?:\/\//i.test(term)) {
+      closeMenu();
+      return;
+    }
+    void cb
+      .resolveAuthority(term, facetSel.value)
+      .then(renderCandidates)
+      .catch(closeMenu);
+  };
+
+  inp.addEventListener("input", () => {
+    ref.set(undefined); // manual edit → no longer a resolved pick
+    paintBadge();
+    if (timer) window.clearTimeout(timer);
+    timer = window.setTimeout(queryNow, 250);
+  });
+  inp.addEventListener("change", ref.commit); // blur/Enter → persist
+  facetSel.addEventListener("change", queryNow);
 }
 
 export function renderInspector(
@@ -132,7 +247,12 @@ export function renderInspector(
     // edges in the em.json (via store.applyHdto) — they are not in the
     // stratigrapher palette; this panel is their authoring surface.
     const hdto = store.readHdto();
-    const inputs = {} as Record<keyof HdtoFields, HTMLInputElement>;
+    // text-valued fields only (heritageAuthorityRef is an object, handled below)
+    type HdtoTextKey = Exclude<keyof HdtoFields, "heritageAuthorityRef">;
+    const inputs = {} as Record<HdtoTextKey, HTMLInputElement>;
+    // the authority candidate the user picked (verbatim uri/authority/label/
+    // rank/match); cleared to free-text when the URI field is edited by hand.
+    let pickedRef: AuthorityRef | undefined = hdto.heritageAuthorityRef;
     function commit(): void {
       store.applyHdto({
         studyTitle: inputs.studyTitle.value,
@@ -140,12 +260,13 @@ export function renderInspector(
         studyDate: inputs.studyDate.value,
         heritageName: inputs.heritageName.value,
         heritageUri: inputs.heritageUri.value,
+        heritageAuthorityRef: pickedRef,
         parentName: inputs.parentName.value,
         projectName: inputs.projectName.value,
       });
     }
     const hfield = (
-      key: keyof HdtoFields,
+      key: HdtoTextKey,
       label: string,
       placeholder: string,
       hint?: string,
@@ -171,12 +292,11 @@ export function renderInspector(
 
     panel.appendChild(el("div", "insp-group-title", "Heritage entity (HC1)"));
     hfield("heritageName", "Name", "e.g. Colosseo");
-    hfield(
-      "heritageUri",
-      "Authority URI",
-      "https://…  (paste an authority record)",
-      "Plain link for now; the live authority resolver comes later (P1-D).",
-    );
+    buildAuthorityField(panel, inputs, hdto, cb, {
+      get: () => pickedRef,
+      set: (r) => (pickedRef = r),
+      commit,
+    });
     hfield("parentName", "Part of (parent entity)", "optional whole, e.g. Roma");
 
     panel.appendChild(el("div", "insp-group-title", "Project (HC13)"));

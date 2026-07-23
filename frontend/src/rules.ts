@@ -7,6 +7,7 @@
 // copies with scripts/sync-datamodels.sh.
 import connections from "./assets/s3Dgraphy_connections_datamodel.json";
 import nodeRegistry from "./assets/node_registry.generated.json";
+import nodeDatamodel from "./assets/s3Dgraphy_node_datamodel.json";
 
 interface EdgeTypeDef {
   name?: string;
@@ -80,6 +81,24 @@ export function classOf(nodeType: string | undefined): string {
  *  from the datamodel instead of hardcoding it. */
 export function nodeTypeForClass(className: string): string | undefined {
   return CLASS_ENTRIES[className]?.node_type ?? undefined;
+}
+
+/** Runtime node_type strings of the gated HDT-O authoring layer — read from the
+ *  datamodel's `hdto_nodes` section (HeritageEntity/HC1, Study/HC9, Project/HC13),
+ *  NOT a hardcoded list. Keys starting with `_` (e.g. `_section_note`) are skipped.
+ *  HDTNode(HC2)/GraphNode(HC16) are auto-authored by the panel, not hand-created,
+ *  so they live in `container_nodes` and are intentionally absent here. */
+export function hdtoAuthoringTypes(): string[] {
+  const section = (nodeDatamodel as { hdto_nodes?: Record<string, unknown> })
+    .hdto_nodes;
+  if (!section) return [];
+  const out: string[] = [];
+  for (const cls of Object.keys(section)) {
+    if (cls.startsWith("_")) continue;
+    const nt = nodeTypeForClass(cls);
+    if (nt) out.push(nt);
+  }
+  return out;
 }
 
 /** The single edge type the datamodel permits between two node_types, or

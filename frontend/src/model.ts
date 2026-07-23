@@ -3,7 +3,14 @@
 // live in the optional layout section, exactly as persisted in .em.json.
 // NOTE: this is the phase-4 in-frontend editing model; it migrates behind
 // em-core (WASM / Tauri IPC) when the core editing API lands.
-import type { EmDocument, EmEdge, EmNode, LayoutRect, Swimlane } from "./types";
+import type {
+  AuthorityRef,
+  EmDocument,
+  EmEdge,
+  EmNode,
+  LayoutRect,
+  Swimlane,
+} from "./types";
 import { MEMBERSHIP_EDGES } from "./folding";
 import { edgeTypeFor, nodeTypeForClass } from "./rules";
 
@@ -33,6 +40,11 @@ export interface HdtoFields {
   studyDate: string;
   heritageName: string;
   heritageUri: string;
+  /** A resolved authority candidate picked from the /resolve-authority
+   *  autocomplete — stored verbatim (uri/authority/label/rank/match) as the
+   *  HC1's authority_refs. When absent, `heritageUri` free-text becomes a bare
+   *  `[{uri}]` ref (offline / no pick). */
+  heritageAuthorityRef?: AuthorityRef;
   parentName: string;
   projectName: string;
 }
@@ -1337,15 +1349,18 @@ export class DocumentStore {
     const sd = (study?.data ?? {}) as Record<string, unknown>;
     const ad = (about?.data ?? {}) as Record<string, unknown>;
     const refs = Array.isArray(ad.authority_refs)
-      ? (ad.authority_refs as Array<Record<string, unknown>>)
+      ? (ad.authority_refs as AuthorityRef[])
       : [];
-    const firstUri = refs.map((r) => String(r?.uri ?? "")).find((u) => u) ?? "";
+    const first = refs.find((r) => r?.uri);
     return {
       studyTitle: String(study?.name ?? ""),
       studyAuthors: String(sd.authors ?? ""),
       studyDate: String(sd.date ?? ""),
       heritageName: String(about?.name ?? ""),
-      heritageUri: firstUri,
+      heritageUri: String(first?.uri ?? ""),
+      // a resolved pick carries an `authority` — surface it so the panel can
+      // show the label; a bare free-text uri has none.
+      heritageAuthorityRef: first?.authority ? first : undefined,
       parentName: String(parent?.name ?? ""),
       projectName: String(project?.name ?? ""),
     };
@@ -1454,10 +1469,14 @@ export class DocumentStore {
       if (about) {
         const d = (about.data ??= {}) as Record<string, unknown>;
         d.hdto_role = "about";
-        // interim authority link — P1-D will populate authority/rank; here we
-        // just carry the pasted URI in the P1-D-shaped `authority_refs`.
+        // Authority link, P1-D shape. A resolved pick (heritageAuthorityRef)
+        // is stored verbatim (uri/authority/label/rank/match); otherwise the
+        // free-text URI becomes a bare {uri} ref (offline / no pick).
+        const picked = fields.heritageAuthorityRef;
         const uri = trim(fields.heritageUri);
-        d.authority_refs = uri ? [{ uri }] : [];
+        if (picked?.uri && trim(picked.uri) === uri) d.authority_refs = [picked];
+        else if (uri) d.authority_refs = [{ uri }];
+        else d.authority_refs = [];
         twin = ensure("twin", `${trim(fields.heritageName) || "Heritage"} HDT`);
         ensureEdge(about, twin); // HC1 → HC2 (has_digital_twin)
         ensureEdge(twin, set); // HC2 → HC16 (contains_proposition_set)

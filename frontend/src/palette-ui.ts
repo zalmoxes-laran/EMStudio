@@ -3,7 +3,7 @@
 // Icons are the official s3Dgraphy 2D assets (JSON_config/src/2D), inlined
 // at build time; types without an official icon fall back to a drawn swatch.
 import { nodeStyle } from "./palette";
-import { isGroupType, typeDescription } from "./rules";
+import { hdtoAuthoringTypes, isGroupType, typeDescription } from "./rules";
 
 import { iconUrlFor } from "./icons";
 
@@ -166,38 +166,70 @@ export function buildPalette(
 ): { setActive: (nodeType: string | null) => void } {
   root.innerHTML = "";
   const buttons = new Map<string, HTMLButtonElement>();
+
+  const makeItem = (t: string, parent: HTMLElement): void => {
+    const b = document.createElement("button");
+    b.className = "pal-item";
+    b.title = typeDescription(t) || t;
+    if (isGroupType(t)) {
+      // groups render as canonical coloured container boxes, not swatches
+      b.appendChild(groupSwatch(t));
+    } else {
+      const icon = iconUrlFor(t);
+      if (icon) {
+        const img = document.createElement("img");
+        img.src = icon;
+        img.className = "pal-icon";
+        img.alt = t;
+        b.appendChild(img);
+      } else {
+        b.appendChild(swatch(t));
+      }
+    }
+    const span = document.createElement("span");
+    span.textContent = t;
+    b.appendChild(span);
+    b.addEventListener("click", () => onPick(t));
+    parent.appendChild(b);
+    buttons.set(t, b);
+  };
+
   for (const section of SECTIONS) {
     const h = document.createElement("div");
     h.className = "pal-sect";
     h.textContent = section.label;
     root.appendChild(h);
-    for (const t of section.types) {
-      const b = document.createElement("button");
-      b.className = "pal-item";
-      b.title = typeDescription(t) || t;
-      if (isGroupType(t)) {
-        // groups render as canonical coloured container boxes, not swatches
-        b.appendChild(groupSwatch(t));
-      } else {
-        const icon = iconUrlFor(t);
-        if (icon) {
-          const img = document.createElement("img");
-          img.src = icon;
-          img.className = "pal-icon";
-          img.alt = t;
-          b.appendChild(img);
-        } else {
-          b.appendChild(swatch(t));
-        }
-      }
-      const span = document.createElement("span");
-      span.textContent = t;
-      b.appendChild(span);
-      b.addEventListener("click", () => onPick(t));
-      root.appendChild(b);
-      buttons.set(t, b);
-    }
+    for (const t of section.types) makeItem(t, root);
   }
+
+  // Gated HDT-O authoring layer (ECHOES D7.1) — SEPARATE from and BELOW the
+  // stratigrapher palette, which stays exactly as above. Types are read from the
+  // datamodel's `hdto_nodes` section (no hardcoded list); collapsed by default so
+  // stratigraphers never see it unless they opt in. HC2/HC16 are auto-authored by
+  // the per-graph HDT-O panel, so they are not offered here.
+  const hdtoTypes = hdtoAuthoringTypes();
+  if (hdtoTypes.length) {
+    const toggle = document.createElement("button");
+    toggle.className = "pal-sect pal-sect-toggle";
+    const wrap = document.createElement("div");
+    wrap.className = "pal-hdto-group";
+    let open = false;
+    const paint = (): void => {
+      toggle.textContent = `${open ? "▾" : "▸"} HDT-O (advanced)`;
+      wrap.style.display = open ? "" : "none";
+    };
+    toggle.title =
+      "Heritage Digital Twin authoring (ECHOES D7.1) — gated; the stratigraphic palette is unaffected.";
+    toggle.addEventListener("click", () => {
+      open = !open;
+      paint();
+    });
+    root.appendChild(toggle);
+    root.appendChild(wrap);
+    for (const t of hdtoTypes) makeItem(t, wrap);
+    paint();
+  }
+
   return {
     setActive(nodeType: string | null): void {
       for (const [t, b] of buttons)

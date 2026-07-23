@@ -1209,6 +1209,26 @@ body.sync-active #footer-brand #em-version {
   margin-top: 0;
 }
 
+/* HDT-O section is a clickable header (button) that reuses .pal-sect styling
+   but stays interactive; the gated group collapses below it. */
+.pal-sect-toggle {
+  display: block;
+  width: calc(100% - 8px);
+  text-align: left;
+  background: none;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #778;
+}
+
+.pal-sect-toggle:hover {
+  color: var(--accent);
+}
+
 .pal-item {
   display: flex;
   align-items: center;
@@ -1450,6 +1470,37 @@ body.sync-active #footer-brand #em-version {
 .insp-name-input:hover,
 .insp-name-input:focus {
   border-color: var(--border);
+}
+
+/* HDT-O authority autocomplete */
+.insp-facet-select {
+  font-size: 12px;
+  font-weight: 600;
+}
+.insp-auth-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 2px 0 4px;
+  max-height: 180px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+}
+.insp-auth-item {
+  text-align: left;
+  background: none;
+  border: 0;
+  padding: 4px 7px;
+  font-size: 12px;
+  cursor: pointer;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.insp-auth-item:hover {
+  background: #f0f6ff;
 }
 
 /* name row: optional colour swatch + name + hex field, all on one line */

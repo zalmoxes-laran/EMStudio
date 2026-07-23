@@ -601,9 +601,33 @@ function refreshInspector(): void {
         toast(pinning ? "position locked" : "position unlocked");
       },
       isPinned: (nodeId) => store!.isPinned(nodeId),
+      resolveAuthority: resolveAuthority,
     },
     selectedEdge,
   );
+}
+
+// HDT-O authority autocomplete → em-bridge /resolve-authority (P1-D, offline).
+// Fully graceful: any non-200 / 501 / network error yields [] so the inspector
+// falls back to plain free-text URI entry.
+async function resolveAuthority(
+  term: string,
+  facet: string,
+): Promise<import("./types").AuthorityCandidate[]> {
+  if (!term.trim()) return [];
+  try {
+    const url = `${await bridgeUrl()}/resolve-authority?term=${encodeURIComponent(
+      term,
+    )}&facet=${encodeURIComponent(facet)}`;
+    const res = await fetch(url);
+    if (!res.ok) return [];
+    const j = (await res.json()) as { candidates?: unknown };
+    return Array.isArray(j.candidates)
+      ? (j.candidates as import("./types").AuthorityCandidate[])
+      : [];
+  } catch {
+    return [];
+  }
 }
 
 // Delete a phase, first asking where to re-home the units attributed to it (and

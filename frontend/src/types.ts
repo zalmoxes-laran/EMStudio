@@ -68,3 +68,23 @@ export interface EmDocument {
 }
 
 export type ViewKind = "matrix" | "graph";
+
+/** A resolved authority cross-reference stored on a node/qualia
+ *  (`data.authority_refs`) — the P1-D shape. `match` drives the export
+ *  predicate (skos:exactMatch / skos:closeMatch; owl:sameAs is identity-only). */
+export interface AuthorityRef {
+  uri: string;
+  authority?: string;
+  label?: string;
+  rank?: number;
+  match?: string;
+  broader?: string;
+}
+
+/** A ranked candidate returned by em-bridge `/resolve-authority` (superset of
+ *  AuthorityRef with resolver-side context that is NOT persisted on the node). */
+export interface AuthorityCandidate extends AuthorityRef {
+  scheme?: string;
+  provenance?: Record<string, unknown>;
+  license?: string;
+}
