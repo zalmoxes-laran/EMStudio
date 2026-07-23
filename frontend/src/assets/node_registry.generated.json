@@ -72,6 +72,11 @@
    "node_type": "hdt",
    "description": "HC2 Heritage Digital Twin (HDT-O / ECHOES D7.1)."
   },
+  "HeritageEntityNode": {
+   "parent": "Node",
+   "node_type": "heritage_entity",
+   "description": "HC1 Heritage Entity (HDT-O / ECHOES D7.1)."
+  },
   "LicenseNode": {
    "parent": "Node",
    "node_type": "license",
@@ -111,6 +116,11 @@
    "parent": "GroupNode",
    "node_type": "ParadataNodeGroup",
    "description": "Nodo gruppo per paradata. Questo gruppo tiene insieme tutti i paradati relativi ad una unità stratigrafica: normalmente si chiama \"[nome_US]_PD\" (ParaData)"
+  },
+  "ProjectNode": {
+   "parent": "Node",
+   "node_type": "project",
+   "description": "HC13 Project (HDT-O / ECHOES D7.1)."
   },
   "PropertyNode": {
    "parent": "ParadataNode",
@@ -191,6 +201,11 @@
    "parent": "VirtualStratigraphicUnit",
    "node_type": "USVs",
    "description": ""
+  },
+  "StudyNode": {
+   "parent": "Node",
+   "node_type": "study",
+   "description": "HC9 Study (HDT-O / ECHOES D7.1)."
   },
   "TimeBranchNodeGroup": {
    "parent": "GroupNode",

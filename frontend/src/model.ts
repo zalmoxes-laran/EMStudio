@@ -5,6 +5,7 @@
 // em-core (WASM / Tauri IPC) when the core editing API lands.
 import type { EmDocument, EmEdge, EmNode, LayoutRect, Swimlane } from "./types";
 import { MEMBERSHIP_EDGES } from "./folding";
+import { edgeTypeFor, nodeTypeForClass } from "./rules";
 
 /** A structured graph mutation for the live op-log bridge (ADR-002 phase 2).
  * Kept small and additive; more variants (add/delete node/edge) land next. */
@@ -21,6 +22,44 @@ interface Snapshot {
 }
 
 const MAX_UNDO = 80;
+
+/** The per-graph HDT-O (ECHOES D7.1) authoring fields surfaced by the Canvas
+ *  inspector. A graph is a Study (HC9) whose proposition set (HC16) is about a
+ *  Heritage Entity (HC1, with its digital twin HC2), optionally under a Project
+ *  (HC13). All fields optional — empty ones create/keep nothing. */
+export interface HdtoFields {
+  studyTitle: string;
+  studyAuthors: string;
+  studyDate: string;
+  heritageName: string;
+  heritageUri: string;
+  parentName: string;
+  projectName: string;
+}
+
+/** Marker stored in a node's `data.hdto_role` so the per-graph HDT-O singletons
+ *  stay idempotent (no duplicates) and the two Heritage Entities — the graph's
+ *  subject ("about") and its optional whole ("parent") — are distinguishable.
+ *  Internal to EMStudio; the RDF exporter ignores it (it reads specific
+ *  attributes only), so it never leaks into the projected Turtle. */
+type HdtoRole =
+  | "proposition_set" // GraphNode (HC16)
+  | "about" // HeritageEntityNode (HC1) — the subject
+  | "parent" // HeritageEntityNode (HC1) — the optional whole
+  | "twin" // HDTNode (HC2)
+  | "study" // StudyNode (HC9)
+  | "project"; // ProjectNode (HC13)
+
+/** role → the s3Dgraphy datamodel CLASS whose runtime node_type is resolved
+ *  from the vendored registry (never hardcode the wire string). */
+const HDTO_ROLE_CLASS: Record<HdtoRole, string> = {
+  proposition_set: "GraphNode",
+  about: "HeritageEntityNode",
+  parent: "HeritageEntityNode",
+  twin: "HDTNode",
+  study: "StudyNode",
+  project: "ProjectNode",
+};
 
 export class DocumentStore {
   doc: EmDocument;
@@ -1279,6 +1318,199 @@ export class DocumentStore {
     if (patch.name !== undefined) g["name"] = patch.name;
     if (patch.graph_id) g.graph_id = patch.graph_id;
     this.emit();
+  }
+
+  /** Find the (single) HDT-O singleton node carrying a given role marker. */
+  private hdtoNode(role: HdtoRole): EmNode | undefined {
+    return this.doc.graph.nodes.find(
+      (n) => (n.data as Record<string, unknown> | undefined)?.hdto_role === role,
+    );
+  }
+
+  /** Read back the HDT-O authoring fields from the real gated nodes, so the
+   *  Canvas inspector can populate the panel. Inverse of {@link applyHdto}. */
+  readHdto(): HdtoFields {
+    const study = this.hdtoNode("study");
+    const about = this.hdtoNode("about");
+    const parent = this.hdtoNode("parent");
+    const project = this.hdtoNode("project");
+    const sd = (study?.data ?? {}) as Record<string, unknown>;
+    const ad = (about?.data ?? {}) as Record<string, unknown>;
+    const refs = Array.isArray(ad.authority_refs)
+      ? (ad.authority_refs as Array<Record<string, unknown>>)
+      : [];
+    const firstUri = refs.map((r) => String(r?.uri ?? "")).find((u) => u) ?? "";
+    return {
+      studyTitle: String(study?.name ?? ""),
+      studyAuthors: String(sd.authors ?? ""),
+      studyDate: String(sd.date ?? ""),
+      heritageName: String(about?.name ?? ""),
+      heritageUri: firstUri,
+      parentName: String(parent?.name ?? ""),
+      projectName: String(project?.name ?? ""),
+    };
+  }
+
+  /** Author / update the per-graph HDT-O layer from the panel fields, as REAL
+   *  gated nodes + edges in the em.json graph (the single source of truth),
+   *  idempotently — singletons are keyed by `data.hdto_role`, so repeated calls
+   *  never duplicate. Node types come from the vendored registry and edge types
+   *  from the datamodel's allowed_connections (no hardcoded wire strings). The
+   *  whole reconciliation is ONE undo step.
+   *
+   *  Chain authored (HDT-O / ECHOES D7.1):
+   *    Project(HC13) ─includes_study→ Study(HC9) ─study_about_heritage→ HC1
+   *    HC1 ─has_digital_twin→ HC2 ─contains_proposition_set→ HC16(GraphNode)
+   *    Study(HC9) ─study_produced_proposition_set→ HC16
+   *    HC1(about) ─heritage_part_of→ HC1(parent)   [optional]
+   */
+  applyHdto(fields: HdtoFields): void {
+    this.checkpoint();
+    const g = this.doc.graph;
+    const trim = (s: string): string => (s ?? "").trim();
+    const addedNodes: EmNode[] = [];
+    const addedEdges: EmEdge[] = [];
+    const removed: EmEdge[] = [];
+
+    const nodeType = (role: HdtoRole): string | undefined =>
+      nodeTypeForClass(HDTO_ROLE_CLASS[role]);
+
+    // ensure a singleton node for `role` exists; returns it (or undefined if the
+    // datamodel doesn't know the class — defensive, keeps the panel from
+    // fabricating an untyped node).
+    const ensure = (role: HdtoRole, name: string): EmNode | undefined => {
+      let n = this.hdtoNode(role);
+      if (n) {
+        if (name && n.name !== name) n.name = name;
+        return n;
+      }
+      const nt = nodeType(role);
+      if (!nt) return undefined;
+      n = {
+        id: this.newId(),
+        name: name || "",
+        node_type: nt,
+        description: "",
+        data: { hdto_role: role },
+      };
+      g.nodes.push(n);
+      addedNodes.push(n);
+      return n;
+    };
+
+    const removeRole = (role: HdtoRole): void => {
+      const n = this.hdtoNode(role);
+      if (!n) return;
+      g.edges = g.edges.filter((e) => {
+        const drop = e.source === n.id || e.target === n.id;
+        if (drop) removed.push(e);
+        return !drop;
+      });
+      g.nodes = g.nodes.filter((x) => x.id !== n.id);
+      const pos = this.doc.layout?.positions;
+      if (pos) delete pos[n.id];
+    };
+
+    // idempotent typed edge between two existing nodes; type resolved from the
+    // datamodel for the concrete node_type pair.
+    const ensureEdge = (src?: EmNode, tgt?: EmNode): void => {
+      if (!src || !tgt) return;
+      const et = edgeTypeFor(src.node_type, tgt.node_type);
+      if (!et) return;
+      if (g.edges.some((e) => e.source === src.id && e.target === tgt.id && e.edge_type === et))
+        return;
+      const edge: EmEdge = {
+        id: `${src.id}__${et}__${tgt.id}`,
+        source: src.id,
+        target: tgt.id,
+        edge_type: et,
+      };
+      g.edges.push(edge);
+      addedEdges.push(edge);
+    };
+
+    const hasHeritage = !!(trim(fields.heritageName) || trim(fields.heritageUri));
+    const hasStudy = !!(
+      trim(fields.studyTitle) ||
+      trim(fields.studyAuthors) ||
+      trim(fields.studyDate)
+    );
+    // the proposition set (HC16) anchors both contains_ and produced_ edges; it
+    // is needed as soon as there's any HDT-O content to attach.
+    const needSet = hasHeritage || hasStudy;
+
+    let set: EmNode | undefined;
+    if (needSet) {
+      set = ensure("proposition_set", trim(this.graphName()) || "Proposition set");
+    } else {
+      removeRole("proposition_set");
+    }
+
+    // Heritage Entity (HC1) + its digital twin (HC2)
+    let about: EmNode | undefined;
+    let twin: EmNode | undefined;
+    if (hasHeritage) {
+      about = ensure("about", trim(fields.heritageName));
+      if (about) {
+        const d = (about.data ??= {}) as Record<string, unknown>;
+        d.hdto_role = "about";
+        // interim authority link — P1-D will populate authority/rank; here we
+        // just carry the pasted URI in the P1-D-shaped `authority_refs`.
+        const uri = trim(fields.heritageUri);
+        d.authority_refs = uri ? [{ uri }] : [];
+        twin = ensure("twin", `${trim(fields.heritageName) || "Heritage"} HDT`);
+        ensureEdge(about, twin); // HC1 → HC2 (has_digital_twin)
+        ensureEdge(twin, set); // HC2 → HC16 (contains_proposition_set)
+      }
+    } else {
+      removeRole("about");
+      removeRole("twin");
+      removeRole("parent");
+    }
+
+    // optional parent Heritage Entity (HC1) + part-whole
+    if (about && trim(fields.parentName)) {
+      const parent = ensure("parent", trim(fields.parentName));
+      ensureEdge(about, parent); // HC1(about) → HC1(parent) (heritage_part_of)
+    } else {
+      removeRole("parent");
+    }
+
+    // Study (HC9)
+    let study: EmNode | undefined;
+    if (hasStudy) {
+      study = ensure("study", trim(fields.studyTitle));
+      if (study) {
+        const d = (study.data ??= {}) as Record<string, unknown>;
+        d.hdto_role = "study";
+        d.authors = trim(fields.studyAuthors);
+        d.date = trim(fields.studyDate);
+        ensureEdge(study, about); // HC9 → HC1 (study_about_heritage)
+        ensureEdge(study, set); // HC9 → HC16 (study_produced_proposition_set)
+      }
+    } else {
+      removeRole("study");
+    }
+
+    // optional Project (HC13)
+    if (trim(fields.projectName)) {
+      const project = ensure("project", trim(fields.projectName));
+      ensureEdge(project, study); // HC13 → HC9 (includes_study)
+    } else {
+      removeRole("project");
+    }
+
+    this.emit();
+    for (const e of removed) this.emitOp({ op: "delete_edge", edge: e });
+    for (const n of addedNodes) this.emitOp({ op: "add_node", node: n });
+    for (const e of addedEdges) this.emitOp({ op: "add_edge", edge: e });
+  }
+
+  /** The graph's display name (header metadata), or "". */
+  private graphName(): string {
+    return String(
+      (this.doc.graph as Record<string, unknown>)["name"] ?? "",
+    );
   }
 
   /** Persisted position (matrix canvas). */

@@ -1097,6 +1097,102 @@
         ]
       }
     },
+    "includes_study": {
+      "name": "includes_study",
+      "label": "Includes study",
+      "description": "Links an HC13 Project to an HC9 Study carried out within it. D7.1 defines no direct HC13->HC9 property; modelled with CIDOC-CRM crm:P9_consists_of (activity/period composition) via the extension mechanism — consistent with HDT-O HP20 'was carried out under' being a subproperty of crm:P9i.",
+      "reverse": {
+        "name": "is_study_of_project",
+        "label": "Is study of project"
+      },
+      "mapping": {
+        "cidoc": "crm:P9_consists_of",
+        "cidoc_extension": null,
+        "extension_mapping": "P9_consists_of",
+        "extension_name": "CIDOC-CRM",
+        "rationale": "No HDT-O property connects HC13 Project to HC9 Study directly (D7.1). Both are activities (E7 subset of E4 Period), so crm:P9_consists_of expresses 'Project includes Study'. Aligns with HP20, itself a crm:P9i subproperty."
+      },
+      "allowed_connections": {
+        "source": [
+          "ProjectNode"
+        ],
+        "target": [
+          "StudyNode"
+        ]
+      }
+    },
+    "study_about_heritage": {
+      "name": "study_about_heritage",
+      "label": "Study is about heritage entity",
+      "description": "Links an HC9 Study to the HC1 Heritage Entity it investigated. HDT-O HP23 per ECHOES D7.1.",
+      "reverse": {
+        "name": "was_subject_of_study",
+        "label": "Was subject of study"
+      },
+      "mapping": {
+        "cidoc": "hdto:HP23_was_about",
+        "cidoc_extension": "HDT-O",
+        "extension_mapping": "P16_used_specific_object",
+        "extension_name": "CIDOC-CRM",
+        "rationale": "Per D7.1 HP23 'was about (was subject of)': Domain HC9 Study, Range HC1 Heritage Entity. Subproperty of crm:E7.P16 used specific object. Quantification many-to-many, necessary."
+      },
+      "allowed_connections": {
+        "source": [
+          "StudyNode"
+        ],
+        "target": [
+          "HeritageEntityNode"
+        ]
+      }
+    },
+    "study_produced_proposition_set": {
+      "name": "study_produced_proposition_set",
+      "label": "Study produced proposition set",
+      "description": "Links an HC9 Study to the documentary output it created — in EM the proposition set (HC16 / em:EMGraph / GraphNode). HDT-O HP25 per ECHOES D7.1.",
+      "reverse": {
+        "name": "was_created_by_study",
+        "label": "Was created by study"
+      },
+      "mapping": {
+        "cidoc": "hdto:HP25_has_created",
+        "cidoc_extension": "HDT-O",
+        "extension_mapping": "P94_has_created",
+        "extension_name": "CIDOC-CRM",
+        "rationale": "Per D7.1 HP25 'has created (was created by)': Domain HC9 Study, Range crm:E31 Document (subproperty of crm:E65.P94). The EM proposition set (HC16/em:EMGraph, an E73 Information Object) is the study's created documentary output; range widened E31->E73/HC16 and documented here."
+      },
+      "allowed_connections": {
+        "source": [
+          "StudyNode"
+        ],
+        "target": [
+          "GraphNode"
+        ]
+      }
+    },
+    "heritage_part_of": {
+      "name": "heritage_part_of",
+      "label": "Is part of heritage entity",
+      "description": "Part-whole BETWEEN Heritage Entities (HC1): the source entity forms part of the target entity — e.g. the porphyry Tetrarchs (HC1) forms part of San Marco (HC1). D7.1 declares no HC1->HC1 part-whole property; modelled with CIDOC-CRM crm:P46i_forms_part_of via the extension mechanism.",
+      "reverse": {
+        "name": "heritage_has_part",
+        "label": "Has part (heritage entity)"
+      },
+      "mapping": {
+        "cidoc": "crm:P46i_forms_part_of",
+        "cidoc_extension": null,
+        "extension_mapping": "P46i_forms_part_of",
+        "extension_name": "CIDOC-CRM",
+        "rationale": "No HDT-O property connects HC1 Heritage Entity to HC1 Heritage Entity (D7.1). crm:P46 is composed of / P46i forms part of expresses part-whole; source = part, target = whole (reverse heritage_has_part = crm:P46_is_composed_of). Domain/range E18 Physical Thing => fits tangible heritage (HC3 aspect of HC1); intangible-entity composition is deferred."
+      },
+      "allowed_connections": {
+        "source": [
+          "HeritageEntityNode"
+        ],
+        "target": [
+          "HeritageEntityNode"
+        ]
+      }
+    },
     "generic_connection": {
       "name": "generic_connection",
       "label": "Generic connection",

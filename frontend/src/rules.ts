@@ -73,6 +73,25 @@ export function classOf(nodeType: string | undefined): string {
   return TYPE_TO_CLASS.get(nodeType ?? "") ?? "Node";
 }
 
+/** Runtime node_type string for a datamodel class name (e.g.
+ *  "HeritageEntityNode" → "heritage_entity"), read from the generated
+ *  registry. Returns undefined for an unknown/abstract class. Lets callers
+ *  reference a concept by its stable class name and resolve the wire string
+ *  from the datamodel instead of hardcoding it. */
+export function nodeTypeForClass(className: string): string | undefined {
+  return CLASS_ENTRIES[className]?.node_type ?? undefined;
+}
+
+/** The single edge type the datamodel permits between two node_types, or
+ *  undefined if none (or, defensively, the first when several qualify). Reads
+ *  `allowed_connections` — no edge-name literals in caller code. */
+export function edgeTypeFor(
+  sourceType: string | undefined,
+  targetType: string | undefined,
+): string | undefined {
+  return allowedEdgeTypes(sourceType, targetType)[0];
+}
+
 export function typeDescription(nodeType: string | undefined): string {
   const className = TYPE_TO_CLASS.get(nodeType ?? "");
   return (className && CLASS_ENTRIES[className]?.description) || "";

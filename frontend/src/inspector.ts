@@ -1,4 +1,4 @@
-import type { DocumentStore } from "./model";
+import type { DocumentStore, HdtoFields } from "./model";
 import { edgeStyle, nodeStyle } from "./palette";
 import { isGroupType } from "./rules";
 import type { EmEdge, EmNode } from "./types";
@@ -124,6 +124,63 @@ export function renderInspector(
       else idIn.value = g.graph_id ?? "";
     });
     panel.appendChild(idIn);
+
+    // ── HDT-O (ECHOES D7.1) per-graph panel ────────────────────────────────
+    // This graph = a Study (HC9) whose proposition set (HC16) is about a
+    // Heritage Entity (HC1, with its digital twin HC2), optionally under a
+    // Project (HC13). Editing a field writes/updates REAL gated HDT-O nodes +
+    // edges in the em.json (via store.applyHdto) — they are not in the
+    // stratigrapher palette; this panel is their authoring surface.
+    const hdto = store.readHdto();
+    const inputs = {} as Record<keyof HdtoFields, HTMLInputElement>;
+    function commit(): void {
+      store.applyHdto({
+        studyTitle: inputs.studyTitle.value,
+        studyAuthors: inputs.studyAuthors.value,
+        studyDate: inputs.studyDate.value,
+        heritageName: inputs.heritageName.value,
+        heritageUri: inputs.heritageUri.value,
+        parentName: inputs.parentName.value,
+        projectName: inputs.projectName.value,
+      });
+    }
+    const hfield = (
+      key: keyof HdtoFields,
+      label: string,
+      placeholder: string,
+      hint?: string,
+    ): void => {
+      panel.appendChild(el("label", "insp-field-label", label));
+      const inp = document.createElement("input");
+      inp.className = "insp-name-input";
+      inp.value = hdto[key];
+      inp.placeholder = placeholder;
+      inp.addEventListener("change", commit);
+      panel.appendChild(inp);
+      if (hint) panel.appendChild(el("div", "insp-hint", hint));
+      inputs[key] = inp;
+    };
+
+    panel.appendChild(el("h3", "insp-sect", "Heritage Digital Twin (HDT-O)"));
+
+    const study = el("div", "insp-group-title", "Study (HC9)");
+    panel.appendChild(study);
+    hfield("studyTitle", "Title", "study title");
+    hfield("studyAuthors", "Author(s)", "e.g. Rossi, Bianchi");
+    hfield("studyDate", "Date", "e.g. 2026");
+
+    panel.appendChild(el("div", "insp-group-title", "Heritage entity (HC1)"));
+    hfield("heritageName", "Name", "e.g. Colosseo");
+    hfield(
+      "heritageUri",
+      "Authority URI",
+      "https://…  (paste an authority record)",
+      "Plain link for now; the live authority resolver comes later (P1-D).",
+    );
+    hfield("parentName", "Part of (parent entity)", "optional whole, e.g. Roma");
+
+    panel.appendChild(el("div", "insp-group-title", "Project (HC13)"));
+    hfield("projectName", "Name", "optional project");
 
     panel.appendChild(
       el("div", "insp-empty", "Select a node to inspect it"),
