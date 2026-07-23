@@ -3,7 +3,7 @@
 // Icons are the official s3Dgraphy 2D assets (JSON_config/src/2D), inlined
 // at build time; types without an official icon fall back to a drawn swatch.
 import { nodeStyle } from "./palette";
-import { hdtoAuthoringTypes, isGroupType, typeDescription } from "./rules";
+import { hdtoAuthoringTypes, isGroupType, nodeLabel, typeDescription } from "./rules";
 
 import { iconUrlFor } from "./icons";
 
@@ -167,7 +167,7 @@ export function buildPalette(
   root.innerHTML = "";
   const buttons = new Map<string, HTMLButtonElement>();
 
-  const makeItem = (t: string, parent: HTMLElement): void => {
+  const makeItem = (t: string, parent: HTMLElement, display?: string): void => {
     const b = document.createElement("button");
     b.className = "pal-item";
     b.title = typeDescription(t) || t;
@@ -187,7 +187,7 @@ export function buildPalette(
       }
     }
     const span = document.createElement("span");
-    span.textContent = t;
+    span.textContent = display ?? t;
     b.appendChild(span);
     b.addEventListener("click", () => onPick(t));
     parent.appendChild(b);
@@ -226,7 +226,9 @@ export function buildPalette(
     });
     root.appendChild(toggle);
     root.appendChild(wrap);
-    for (const t of hdtoTypes) makeItem(t, wrap);
+    // HDT-O items show the human-readable datamodel label (e.g. "Heritage
+    // Entity") rather than the raw node_type.
+    for (const t of hdtoTypes) makeItem(t, wrap, nodeLabel(t));
     paint();
   }
 

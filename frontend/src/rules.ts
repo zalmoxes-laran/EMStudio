@@ -101,6 +101,41 @@ export function hdtoAuthoringTypes(): string[] {
   return out;
 }
 
+/** All HDT-O-profile node_types the per-graph panel authors: the `hdto_nodes`
+ *  authoring types PLUS the auto-created twin (HC2/HDTNode) and proposition set
+ *  (HC16/GraphNode). Resolved from the datamodel (class names → node_type), no
+ *  hardcoded strings. Used to keep HDT-O metadata OFF the stratigraphic canvas
+ *  (they stay in em.json for projection + the future HDT-O lens). */
+export function hdtoProfileTypes(): Set<string> {
+  const out = new Set<string>(hdtoAuthoringTypes());
+  for (const cls of ["HDTNode", "GraphNode"]) {
+    const nt = nodeTypeForClass(cls);
+    if (nt) out.add(nt);
+  }
+  return out;
+}
+
+// class name → human `label` from the hand-authored datamodel (searches every
+// section for an entry carrying both `class` and `label`).
+const CLASS_TO_LABEL = new Map<string, string>();
+(function buildClassLabels(node: unknown): void {
+  if (Array.isArray(node)) {
+    for (const v of node) buildClassLabels(v);
+  } else if (node && typeof node === "object") {
+    const o = node as Record<string, unknown>;
+    if (typeof o.class === "string" && typeof o.label === "string")
+      CLASS_TO_LABEL.set(o.class, o.label);
+    for (const v of Object.values(o)) buildClassLabels(v);
+  }
+})(nodeDatamodel);
+
+/** Human-readable datamodel label for a runtime node_type (e.g. "heritage_entity"
+ *  → "Heritage Entity"); falls back to the node_type string when none is defined. */
+export function nodeLabel(nodeType: string): string {
+  const cls = TYPE_TO_CLASS.get(nodeType);
+  return (cls && CLASS_TO_LABEL.get(cls)) || nodeType;
+}
+
 /** The single edge type the datamodel permits between two node_types, or
  *  undefined if none (or, defensively, the first when several qualify). Reads
  *  `allowed_connections` — no edge-name literals in caller code. */

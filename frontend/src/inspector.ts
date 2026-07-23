@@ -88,6 +88,10 @@ function buildAuthorityField(
     o.textContent = f;
     facetSel.appendChild(o);
   }
+  // Default facet inferred from the node type this field annotates: this is the
+  // HC1 Heritage Entity → WHERE (place). (Epoch→WHEN, qualia→WHAT elsewhere.)
+  // User-overridable via the selector.
+  facetSel.value = "WHERE";
   panel.appendChild(facetSel);
 
   const inp = document.createElement("input");
@@ -217,7 +221,7 @@ export function renderInspector(
       graph_id: string;
     };
     const panel = el("div", "insp-canvas");
-    panel.appendChild(el("div", "insp-section-title", "Canvas"));
+    panel.appendChild(el("div", "insp-section-title", "Graph · dataset info"));
 
     panel.appendChild(el("label", "insp-field-label", "Name"));
     const nameIn = document.createElement("input");
@@ -283,6 +287,13 @@ export function renderInspector(
     };
 
     panel.appendChild(el("h3", "insp-sect", "Heritage Digital Twin (HDT-O)"));
+    panel.appendChild(
+      el(
+        "div",
+        "insp-hint",
+        "Optional — links this graph to its Heritage Digital Twin (enables the collaborative cloud + RDF projection). Stored as graph metadata, not on the canvas.",
+      ),
+    );
 
     const study = el("div", "insp-group-title", "Study (HC9)");
     panel.appendChild(study);

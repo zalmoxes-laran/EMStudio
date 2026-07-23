@@ -21,6 +21,7 @@ import {
   edgeTypeLabel,
   EM_VERSION,
   GENERIC_EDGE,
+  hdtoProfileTypes,
   isGroupType,
   isStratigraphicType,
   typeDescription,
@@ -125,6 +126,11 @@ let connect: ConnectDrag | null = null;
 // (recomputeHiddenFromCircles); they are what buildScenes applies.
 const hiddenNodeTypes = new Set<string>();
 const hiddenEdgeTypes = new Set<string>();
+// HDT-O-profile node types are ALWAYS hidden on the stratigraphic (EM-lens)
+// canvas — they are graph-level metadata authored via the Canvas panel, kept in
+// em.json for projection + the future HDT-O lens, never rendered as strat boxes.
+// Derived from the datamodel (no hardcoded list); independent of the circles.
+const HDTO_HIDDEN_TYPES = hdtoProfileTypes();
 // "circles of detail" — which detail rings are visible, per view. Matrix and
 // Graph keep independent visibility so each view has its own default depth.
 const circleState: Record<ViewKind, Set<CircleKey>> = {
@@ -938,6 +944,18 @@ function filteredView(): {
     : undefined;
   let vNodes = foldedView?.nodes ?? doc.graph.nodes;
   let vEdges = foldedView?.edges ?? doc.graph.edges;
+  // ALWAYS drop HDT-O-profile nodes (and any node the panel tagged with
+  // data.hdto_role) + their incident edges, so graph-level HDT-O metadata never
+  // clutters the stratigraphic canvas. The nodes remain in em.json (single
+  // source of truth) — only rendering is filtered.
+  const isHdto = (n: EmDocument["graph"]["nodes"][number]): boolean =>
+    HDTO_HIDDEN_TYPES.has(n.node_type) ||
+    !!(n.data as Record<string, unknown> | undefined)?.hdto_role;
+  if (vNodes.some(isHdto)) {
+    vNodes = vNodes.filter((n) => !isHdto(n));
+    const keep = new Set(vNodes.map((n) => n.id));
+    vEdges = vEdges.filter((e) => keep.has(e.source) && keep.has(e.target));
+  }
   // an epoch's temporal ParadataNodeGroup is a structural part of the epoch
   // (its chronology container), NOT regular paradata clutter — so it is always
   // visible, exempt from the "Paradata nodes" ring toggle.
