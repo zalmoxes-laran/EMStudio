@@ -29,7 +29,6 @@ import json
 import os
 import pathlib
 import sys
-import tempfile
 import threading
 import time
 import urllib.parse
@@ -58,21 +57,20 @@ def _exit_when_orphaned(poll: float = 1.0) -> None:
 
 
 def _load_s3dgraphy(s3dgraphy_src: "pathlib.Path | None"):
+    """Put s3dgraphy on sys.path and return its access-API surface module
+    (``s3dgraphy.api``, P1-F). All endpoints drive this surface — the bridge is
+    a thin HTTP adapter over the named ops, no ad-hoc s3dgraphy imports."""
     if s3dgraphy_src:
         sys.path.insert(0, str(s3dgraphy_src))
     else:
         sibling = pathlib.Path(__file__).resolve().parents[2] / "s3Dgraphy" / "src"
         if sibling.is_dir():
             sys.path.insert(0, str(sibling))
-    from s3dgraphy.exporter.graphml.graphml_exporter import GraphMLExporter
-    from s3dgraphy.importer.emjson_importer import parse_emjson
-    from s3dgraphy.importer.import_graphml import GraphMLImporter
-    from s3dgraphy.exporter.emjson_exporter import build_emjson
-    from s3dgraphy.graph import Graph
-    return parse_emjson, GraphMLExporter, GraphMLImporter, build_emjson, Graph
+    from s3dgraphy import api
+    return api
 
 
-def make_handler(parse_emjson, GraphMLExporter, GraphMLImporter, build_emjson, Graph):
+def make_handler(api):
     class Handler(BaseHTTPRequestHandler):
         # Quieter, dev-friendly logging.
         def log_message(self, fmt, *args):
@@ -130,22 +128,16 @@ def make_handler(parse_emjson, GraphMLExporter, GraphMLImporter, build_emjson, G
         # The resolver is pure Python (no rdflib/network); imported lazily so a
         # slimmed sidecar still serves it. Returns 400 on a bad facet.
         def _resolve_authority(self, term, facet):
-            try:
-                from s3dgraphy.authorities import resolve, FACET_ORDER
-            except ImportError as exc:  # pragma: no cover
-                self._fail(501, f"authority resolver unavailable ({exc})")
+            facets = api.authority_facets()
+            if not facets:  # resolver/authorities unavailable in this build
+                self._fail(501, "authority resolver unavailable")
                 return
-            if (facet or "").upper() not in FACET_ORDER:
+            if (facet or "").upper() not in facets:
                 self._fail(
                     400,
-                    f"unknown facet {facet!r}; expected one of "
-                    f"{sorted(FACET_ORDER)}")
+                    f"unknown facet {facet!r}; expected one of {sorted(facets)}")
                 return
-            try:
-                candidates = resolve(term, facet)
-            except Exception as exc:  # pragma: no cover — surface to the UI
-                self._fail(500, f"resolve failed: {exc}")
-                return
+            candidates = api.resolve_authority(term, facet)
             out = json.dumps(
                 {"ok": True, "term": term, "facet": (facet or "").upper(),
                  "candidates": candidates}).encode()
@@ -164,17 +156,10 @@ def make_handler(parse_emjson, GraphMLExporter, GraphMLImporter, build_emjson, G
                 self._fail(400, f"invalid JSON body: {exc}")
                 return
             try:
-                graph, warnings = parse_emjson(doc)
+                graph, warnings = api.load_emjson(doc)
                 for w in warnings:
                     sys.stderr.write(f"  [bridge] warning: {w}\n")
-                # GraphMLExporter writes to a path; round-trip via a temp file.
-                with tempfile.NamedTemporaryFile(
-                    suffix=".graphml", delete=False
-                ) as tmp:
-                    tmp_path = pathlib.Path(tmp.name)
-                GraphMLExporter(graph).export(str(tmp_path))
-                graphml = tmp_path.read_bytes()
-                tmp_path.unlink(missing_ok=True)
+                graphml = api.graph_to_graphml(graph).encode("utf-8")
             except Exception as exc:  # pragma: no cover — surface to the UI
                 import traceback
                 traceback.print_exc()
@@ -202,21 +187,16 @@ def make_handler(parse_emjson, GraphMLExporter, GraphMLImporter, build_emjson, G
                 self._fail(400, f"invalid JSON body: {exc}")
                 return
             try:
-                from s3dgraphy.exporter.rdf_exporter import RDFExporter
+                graph, warnings = api.load_emjson(doc)
+                for w in warnings:
+                    sys.stderr.write(f"  [bridge] warning: {w}\n")
+                # api.project_ttl raises MissingDependency (ImportError) if rdflib
+                # is not bundled — map that to a clear 501, everything else 500.
+                ttl = api.project_ttl(graph).encode("utf-8")
             except ImportError as exc:
                 self._fail(
                     501, f"TTL export unavailable — rdflib not bundled in the bridge ({exc})")
                 return
-            try:
-                graph, warnings = parse_emjson(doc)
-                for w in warnings:
-                    sys.stderr.write(f"  [bridge] warning: {w}\n")
-                # RDFExporter writes to a path; round-trip via a temp file.
-                with tempfile.NamedTemporaryFile(suffix=".ttl", delete=False) as tmp:
-                    tmp_path = pathlib.Path(tmp.name)
-                RDFExporter(str(tmp_path), format="turtle").export_single_graph(graph)
-                ttl = tmp_path.read_bytes()
-                tmp_path.unlink(missing_ok=True)
             except Exception as exc:  # pragma: no cover — surface to the UI
                 import traceback
                 traceback.print_exc()
@@ -237,18 +217,10 @@ def make_handler(parse_emjson, GraphMLExporter, GraphMLImporter, build_emjson, G
         # GraphML (yEd XML body) → em.json dict, returned as JSON for loadDocument
         def _import_graphml(self, raw):
             try:
-                # GraphMLImporter reads a filepath (and may write UUIDs back),
-                # so stage the uploaded XML in a temp file.
-                with tempfile.NamedTemporaryFile(
-                    suffix=".graphml", delete=False
-                ) as tmp:
-                    tmp.write(raw)
-                    tmp_path = pathlib.Path(tmp.name)
-                graph = GraphMLImporter(
-                    str(tmp_path), Graph(graph_id="imported_graph")
-                ).parse()
-                tmp_path.unlink(missing_ok=True)
-                doc = build_emjson(graph)  # layout=None → EMStudio re-lays-out
+                graph, warnings = api.graphml_to_graph(raw)
+                for w in warnings:
+                    sys.stderr.write(f"  [bridge] warning: {w}\n")
+                doc = api.graph_to_emjson(graph)  # layout=None → EMStudio re-lays-out
             except Exception as exc:  # pragma: no cover — surface to the UI
                 import traceback
                 traceback.print_exc()
@@ -289,8 +261,7 @@ def main() -> int:
         _exit_when_orphaned()
 
     try:
-        (parse_emjson, GraphMLExporter, GraphMLImporter, build_emjson,
-         Graph) = _load_s3dgraphy(args.s3dgraphy)
+        api = _load_s3dgraphy(args.s3dgraphy)
     except ImportError as exc:
         print(
             f"error: cannot import s3dgraphy ({exc}).\n"
@@ -301,8 +272,7 @@ def main() -> int:
         )
         return 1
 
-    handler = make_handler(
-        parse_emjson, GraphMLExporter, GraphMLImporter, build_emjson, Graph)
+    handler = make_handler(api)
     httpd = ThreadingHTTPServer((args.host, args.port), handler)
     print(f"em_bridge listening on http://{args.host}:{args.port} "
           f"(POST /graphml, /import-graphml, /export-ttl, /resolve-authority; "
