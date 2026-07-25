@@ -2,7 +2,8 @@
 // one hit-testing model, one style system, styles driven by the EM palette
 // metadata (palette.ts ← em_visual_rules.json). Edges are routed
 // orthogonally with crossing bridges (routing.ts), yEd-style.
-import { ICON_NODE_TYPES, imageFor } from "./icons";
+import { dtcGlyphUrl, ICON_NODE_TYPES, imageFor, imageForUrl } from "./icons";
+import { dtcGlyphName } from "./rules";
 import { documentVariant, edgeStyle, nodeStyle } from "./palette";
 import {
   drawArrowhead,
@@ -555,9 +556,22 @@ export function render(
     // paradata nodes render as their official 2D icon (yEd parity):
     // extractor / combiner get the glyph with the label top-left,
     // document gets the sheet with the label over it
-    const icon = ICON_NODE_TYPES.has(n.node.node_type)
+    // extractor/combiner → official 2D icon; DTC nodes → their per-kind glyph
+    // (data-driven from node.data.dtc_kind via dtc_kinds). Both render glyph-only.
+    let icon = ICON_NODE_TYPES.has(n.node.node_type)
       ? imageFor(n.node.node_type)
       : null;
+    if (!icon) {
+      const glyph = dtcGlyphUrl(
+        dtcGlyphName(
+          n.node.node_type,
+          (n.node.data as Record<string, unknown> | undefined)?.dtc_kind as
+            | string
+            | undefined,
+        ),
+      );
+      if (glyph) icon = imageForUrl(glyph);
+    }
     // document: vector sheet with ITS OWN border — thickness carries the
     // Master/Instance role, colour the geometry-axis variant
     // (em_visual_rules.document_variant_styles); corner decorator counts

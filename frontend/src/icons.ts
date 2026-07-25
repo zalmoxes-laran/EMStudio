@@ -6,6 +6,15 @@ const ICON_FILES = import.meta.glob("./assets/icons2d/*.png", {
   import: "default",
 }) as Record<string, string>;
 
+// DTC profile glyphs (2017 DTC SVG set); resolved data-driven by basename from
+// dtc_kinds[*][kind].glyph (see rules.dtcGlyphName). Adding a kind = a new SVG
+// here + a dtc_kinds entry, no code change.
+const GLYPH_FILES = import.meta.glob("./assets/dtc-glyphs/*.svg", {
+  eager: true,
+  query: "?url",
+  import: "default",
+}) as Record<string, string>;
+
 const ALIAS: Record<string, string> = {
   BR: "continuity",
   serUSVn: "serUSV",
@@ -15,6 +24,12 @@ const ALIAS: Record<string, string> = {
 export function iconUrlFor(nodeType: string): string | null {
   const base = ALIAS[nodeType] ?? nodeType;
   return ICON_FILES[`./assets/icons2d/${base}.png`] ?? null;
+}
+
+/** URL of a DTC glyph SVG by basename (e.g. "03_mesh"), or null if absent. */
+export function dtcGlyphUrl(basename: string | null): string | null {
+  if (!basename) return null;
+  return GLYPH_FILES[`./assets/dtc-glyphs/${basename}.svg`] ?? null;
 }
 
 /** node types drawn ON CANVAS as their official icon (yEd parity).
@@ -31,8 +46,8 @@ export function setIconRedraw(fn: () => void): void {
   redraw = fn;
 }
 
-export function imageFor(nodeType: string): HTMLImageElement | null {
-  const url = iconUrlFor(nodeType);
+/** Decode-and-cache an image by URL; triggers a repaint on load. */
+export function imageForUrl(url: string | null): HTMLImageElement | null {
   if (!url) return null;
   let img = imageCache.get(url);
   if (!img) {
@@ -42,4 +57,8 @@ export function imageFor(nodeType: string): HTMLImageElement | null {
     imageCache.set(url, img);
   }
   return img.complete && img.naturalWidth > 0 ? img : null;
+}
+
+export function imageFor(nodeType: string): HTMLImageElement | null {
+  return imageForUrl(iconUrlFor(nodeType));
 }

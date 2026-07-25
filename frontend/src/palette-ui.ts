@@ -3,9 +3,15 @@
 // Icons are the official s3Dgraphy 2D assets (JSON_config/src/2D), inlined
 // at build time; types without an official icon fall back to a drawn swatch.
 import { nodeStyle } from "./palette";
-import { hdtoAuthoringTypes, isGroupType, nodeLabel, typeDescription } from "./rules";
+import {
+  dtcAuthoringKinds,
+  hdtoAuthoringTypes,
+  isGroupType,
+  nodeLabel,
+  typeDescription,
+} from "./rules";
 
-import { iconUrlFor } from "./icons";
+import { dtcGlyphUrl, iconUrlFor } from "./icons";
 
 export interface Section {
   label: string;
@@ -162,36 +168,45 @@ function groupSwatch(nodeType: string): HTMLCanvasElement {
 
 export function buildPalette(
   root: HTMLElement,
-  onPick: (nodeType: string) => void,
-): { setActive: (nodeType: string | null) => void } {
+  onPick: (nodeType: string, kind?: string) => void,
+): { setActive: (activeKey: string | null) => void } {
   root.innerHTML = "";
+  // keyed by a display key: node_type for plain items, `${nodeType}:${kind}` for
+  // the DTC by-kind items (so several DTC items share a node_type without colliding).
   const buttons = new Map<string, HTMLButtonElement>();
 
-  const makeItem = (t: string, parent: HTMLElement, display?: string): void => {
+  const makeItem = (
+    t: string,
+    parent: HTMLElement,
+    opts?: {
+      display?: string;
+      iconUrl?: string | null;
+      onClick?: () => void;
+      key?: string;
+    },
+  ): void => {
     const b = document.createElement("button");
     b.className = "pal-item";
     b.title = typeDescription(t) || t;
+    const iconUrl = opts?.iconUrl !== undefined ? opts.iconUrl : iconUrlFor(t);
     if (isGroupType(t)) {
       // groups render as canonical coloured container boxes, not swatches
       b.appendChild(groupSwatch(t));
+    } else if (iconUrl) {
+      const img = document.createElement("img");
+      img.src = iconUrl;
+      img.className = "pal-icon";
+      img.alt = t;
+      b.appendChild(img);
     } else {
-      const icon = iconUrlFor(t);
-      if (icon) {
-        const img = document.createElement("img");
-        img.src = icon;
-        img.className = "pal-icon";
-        img.alt = t;
-        b.appendChild(img);
-      } else {
-        b.appendChild(swatch(t));
-      }
+      b.appendChild(swatch(t));
     }
     const span = document.createElement("span");
-    span.textContent = display ?? t;
+    span.textContent = opts?.display ?? t;
     b.appendChild(span);
-    b.addEventListener("click", () => onPick(t));
+    b.addEventListener("click", opts?.onClick ?? (() => onPick(t)));
     parent.appendChild(b);
-    buttons.set(t, b);
+    buttons.set(opts?.key ?? t, b);
   };
 
   for (const section of SECTIONS) {
@@ -202,40 +217,67 @@ export function buildPalette(
     for (const t of section.types) makeItem(t, root);
   }
 
-  // Gated HDT-O authoring layer (ECHOES D7.1) — SEPARATE from and BELOW the
-  // stratigrapher palette, which stays exactly as above. Types are read from the
-  // datamodel's `hdto_nodes` section (no hardcoded list); collapsed by default so
-  // stratigraphers never see it unless they opt in. HC2/HC16 are auto-authored by
-  // the per-graph HDT-O panel, so they are not offered here.
-  const hdtoTypes = hdtoAuthoringTypes();
-  if (hdtoTypes.length) {
+  // A gated, collapsed "advanced" section BELOW the stratigrapher palette (which
+  // stays byte-unchanged). Mirrors the HDT-O gating.
+  const gatedSection = (
+    label: string,
+    title: string,
+    fill: (wrap: HTMLElement) => void,
+  ): void => {
     const toggle = document.createElement("button");
     toggle.className = "pal-sect pal-sect-toggle";
     const wrap = document.createElement("div");
-    wrap.className = "pal-hdto-group";
     let open = false;
     const paint = (): void => {
-      toggle.textContent = `${open ? "▾" : "▸"} HDT-O (advanced)`;
+      toggle.textContent = `${open ? "▾" : "▸"} ${label}`;
       wrap.style.display = open ? "" : "none";
     };
-    toggle.title =
-      "Heritage Digital Twin authoring (ECHOES D7.1) — gated; the stratigraphic palette is unaffected.";
+    toggle.title = title;
     toggle.addEventListener("click", () => {
       open = !open;
       paint();
     });
     root.appendChild(toggle);
     root.appendChild(wrap);
-    // HDT-O items show the human-readable datamodel label (e.g. "Heritage
-    // Entity") rather than the raw node_type.
-    for (const t of hdtoTypes) makeItem(t, wrap, nodeLabel(t));
+    fill(wrap);
     paint();
-  }
+  };
+
+  // Gated HDT-O authoring layer (ECHOES D7.1). Types from the datamodel's
+  // `hdto_nodes` section; items show the human label.
+  const hdtoTypes = hdtoAuthoringTypes();
+  if (hdtoTypes.length)
+    gatedSection(
+      "HDT-O (advanced)",
+      "Heritage Digital Twin authoring (ECHOES D7.1) — gated; the stratigraphic palette is unaffected.",
+      (wrap) => {
+        for (const t of hdtoTypes) makeItem(t, wrap, { display: nodeLabel(t) });
+      },
+    );
+
+  // Gated DTC authoring layer (ECHOES). One item per (input/process/output) ×
+  // specific kind, read data-driven from `dtc_kinds`; each shows its label + the
+  // per-kind glyph. Creating a node sets node.data.dtc_kind (via onPick's 2nd arg).
+  const dtcKinds = dtcAuthoringKinds();
+  if (dtcKinds.length)
+    gatedSection(
+      "DTC (advanced)",
+      "Digital Twin Chain authoring (ECHOES) — provenance that produces documents; gated, the stratigraphic palette is unaffected.",
+      (wrap) => {
+        for (const d of dtcKinds)
+          makeItem(d.nodeType, wrap, {
+            display: d.label,
+            iconUrl: dtcGlyphUrl(d.glyph),
+            onClick: () => onPick(d.nodeType, d.kind),
+            key: `${d.nodeType}:${d.kind}`,
+          });
+      },
+    );
 
   return {
-    setActive(nodeType: string | null): void {
-      for (const [t, b] of buttons)
-        b.classList.toggle("active", t === nodeType);
+    setActive(activeKey: string | null): void {
+      for (const [k, b] of buttons)
+        b.classList.toggle("active", k === activeKey);
     },
   };
 }

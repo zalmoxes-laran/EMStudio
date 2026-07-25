@@ -68,7 +68,7 @@ import {
 } from "./scene";
 import { GROUP_HEADER, GROUP_PAD } from "./views/matrix";
 import { setupSearch } from "./search";
-import type { EmDocument, EmEdge, ViewKind } from "./types";
+import type { EmDocument, EmEdge, EmNode, ViewKind } from "./types";
 import { buildGroupScene } from "./views/context";
 import { buildGraphScene, type GraphAlgorithm } from "./views/graph";
 import { buildMatrixScene } from "./views/matrix";
@@ -120,6 +120,9 @@ let selectedId: string | null = null;
 let selectedEdge: EmEdge | null = null;
 let hoverEdgeIdx: number | null = null;
 let placingType: string | null = null;
+// for DTC palette items: the specific kind (photo, mesh, …) to stamp on the
+// created node's data.dtc_kind; null for non-DTC placement.
+let placingKind: string | null = null;
 let connect: ConnectDrag | null = null;
 /** graph-view "liquid" filters: hidden node / edge types */
 // hidden type sets are DERIVED from the visible circles of the CURRENT view
@@ -1481,33 +1484,43 @@ async function openDocument(): Promise<void> {
 }
 
 // ---------- placing (palette) ----------
-const paletteUi = buildPalette(document.getElementById("palette")!, (t) => {
-  if (!store) {
-    toast("Open a document first");
-    return;
-  }
-  // Epochs are swimlanes in Matrix, not free-dropped nodes — clicking the
-  // EpochNode palette entry adds a lane at the top (newest) and selects it for
-  // dating (the chronology, not an xy click, decides its final position; the
-  // "Ordina lane per data" banner sorts it in). Graph view keeps free-drop.
-  if (t === "EpochNode" && view === "matrix") {
-    if (placingType) cancelPlacing();
-    addEpochEmMode();
-    return;
-  }
-  placingType = placingType === t ? null : t;
-  paletteUi.setActive(placingType);
-  canvas.classList.toggle("placing", !!placingType);
-  if (placingType) {
-    hintBar.textContent = `Click the canvas to place a ${placingType} — Esc to cancel`;
-    hintBar.classList.remove("hidden");
-  } else {
-    hintBar.classList.add("hidden");
-  }
-});
+const paletteUi = buildPalette(
+  document.getElementById("palette")!,
+  (t, kind) => {
+    if (!store) {
+      toast("Open a document first");
+      return;
+    }
+    // Epochs are swimlanes in Matrix, not free-dropped nodes — clicking the
+    // EpochNode palette entry adds a lane at the top (newest) and selects it for
+    // dating (the chronology, not an xy click, decides its final position; the
+    // "Ordina lane per data" banner sorts it in). Graph view keeps free-drop.
+    if (t === "EpochNode" && view === "matrix") {
+      if (placingType) cancelPlacing();
+      addEpochEmMode();
+      return;
+    }
+    // toggle: same item again cancels. The key includes the DTC kind so two
+    // DTC items of the same node_type toggle independently.
+    const key = kind ? `${t}:${kind}` : t;
+    const active = placingType === t && placingKind === (kind ?? null);
+    placingType = active ? null : t;
+    placingKind = active ? null : (kind ?? null);
+    paletteUi.setActive(placingType ? (placingKind ? key : t) : null);
+    canvas.classList.toggle("placing", !!placingType);
+    if (placingType) {
+      const what = placingKind ?? placingType;
+      hintBar.textContent = `Click the canvas to place a ${what} — Esc to cancel`;
+      hintBar.classList.remove("hidden");
+    } else {
+      hintBar.classList.add("hidden");
+    }
+  },
+);
 
 function cancelPlacing(): void {
   placingType = null;
+  placingKind = null;
   paletteUi.setActive(null);
   canvas.classList.remove("placing");
   hintBar.classList.add("hidden");
@@ -1593,7 +1606,10 @@ function placeNode(wx: number, wy: number): void {
   const name = store.freshLabel(placingType);
   const w = isGroupType(placingType) ? 120 : 90;
   const h = 30;
-  const node = { id, name, node_type: placingType, description: "" };
+  const node: EmNode = { id, name, node_type: placingType, description: "" };
+  // DTC palette items carry a kind → stamp it so the node renders its glyph and
+  // projects its crm:P2_has_type (em.json = single source of truth).
+  if (placingKind) node.data = { dtc_kind: placingKind };
   if (inContext()) {
     const gid = contextStack[contextStack.length - 1];
     store.addNode(node);

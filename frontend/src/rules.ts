@@ -8,6 +8,7 @@
 import connections from "./assets/s3Dgraphy_connections_datamodel.json";
 import nodeRegistry from "./assets/node_registry.generated.json";
 import nodeDatamodel from "./assets/s3Dgraphy_node_datamodel.json";
+import visualRules from "./assets/em_visual_rules.json";
 
 interface EdgeTypeDef {
   name?: string;
@@ -134,6 +135,75 @@ const CLASS_TO_LABEL = new Map<string, string>();
 export function nodeLabel(nodeType: string): string {
   const cls = TYPE_TO_CLASS.get(nodeType);
   return (cls && CLASS_TO_LABEL.get(cls)) || nodeType;
+}
+
+// ── DTC substrate profile (ECHOES): data-driven kinds + glyphs ────────────────
+// The DTC node_types (dtc_input/dtc_process/dtc_output) come from the `dtc_nodes`
+// datamodel section; the per-kind vocabulary + glyph basenames come from the
+// `dtc_kinds` block of em_visual_rules.json. The two are linked by the "dtc_"
+// prefix convention (node_type `dtc_${base}` ↔ vocabulary base). Adding a kind is
+// a `dtc_kinds` entry (+ an SVG) — NO code change here.
+
+/** Runtime node_types of the gated DTC authoring layer (from `dtc_nodes`). */
+function dtcNodeTypes(): Set<string> {
+  const section = (nodeDatamodel as { dtc_nodes?: Record<string, unknown> })
+    .dtc_nodes;
+  const out = new Set<string>();
+  if (!section) return out;
+  for (const cls of Object.keys(section)) {
+    if (cls.startsWith("_")) continue;
+    const nt = nodeTypeForClass(cls);
+    if (nt) out.add(nt);
+  }
+  return out;
+}
+
+const DTC_KINDS =
+  (
+    visualRules as unknown as {
+      dtc_kinds?: Record<
+        string,
+        Record<string, { label?: string; glyph?: string }>
+      >;
+    }
+  ).dtc_kinds ?? {};
+
+export interface DtcKindItem {
+  nodeType: string; // dtc_input | dtc_process | dtc_output
+  kind: string; // photo | mesh | …
+  label: string;
+  glyph: string | null;
+}
+
+/** The DTC authoring palette, fully data-driven: one entry per (base kind) ×
+ *  (specific kind) from `dtc_kinds`, filtered to bases that map to a real DTC
+ *  node_type. Empty when the datamodel carries no DTC profile. */
+export function dtcAuthoringKinds(): DtcKindItem[] {
+  const types = dtcNodeTypes();
+  const out: DtcKindItem[] = [];
+  for (const base of Object.keys(DTC_KINDS)) {
+    if (base.startsWith("_")) continue;
+    const nodeType = `dtc_${base}`;
+    if (!types.has(nodeType)) continue; // only bases backed by a real node type
+    const entries = DTC_KINDS[base] ?? {};
+    for (const kind of Object.keys(entries)) {
+      if (kind.startsWith("_")) continue;
+      const e = entries[kind] ?? {};
+      out.push({ nodeType, kind, label: e.label ?? kind, glyph: e.glyph ?? null });
+    }
+  }
+  return out;
+}
+
+/** Glyph basename for a DTC node's kind (node.data.dtc_kind) — data-driven from
+ *  `dtc_kinds`; null when not a DTC node / no kind / no glyph. */
+export function dtcGlyphName(
+  nodeType: string | undefined,
+  dtcKind: string | undefined,
+): string | null {
+  if (!nodeType || !dtcKind || !nodeType.startsWith("dtc_")) return null;
+  const base = nodeType.slice(4);
+  return DTC_KINDS[base]?.[dtcKind]?.glyph ?? null;
 }
 
 /** The single edge type the datamodel permits between two node_types, or
