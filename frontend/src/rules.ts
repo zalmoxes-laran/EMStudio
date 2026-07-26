@@ -138,10 +138,11 @@ export function nodeLabel(nodeType: string): string {
 }
 
 // ── DTC substrate profile (ECHOES): data-driven kinds + glyphs ────────────────
-// The DTC node_types (dtc_input/dtc_process/dtc_output) come from the `dtc_nodes`
-// datamodel section; the per-kind vocabulary + glyph basenames come from the
-// `dtc_kinds` block of em_visual_rules.json. The two are linked by the "dtc_"
-// prefix convention (node_type `dtc_${base}` ↔ vocabulary base). Adding a kind is
+// The DTC node_types come from the `dtc_nodes` datamodel section — now just
+// `dtc_process` (both INPUT and OUTPUT are Resources = LinkNodes, no dedicated
+// class). The per-kind vocabulary + glyph basenames come from the `dtc_kinds`
+// block of em_visual_rules.json; a base with a dedicated `dtc_${base}` node uses
+// it, else the kind creates a Resource (LinkNode). Adding a kind is
 // a `dtc_kinds` entry (+ an SVG) — NO code change here.
 
 /** Runtime node_types of the gated DTC authoring layer (from `dtc_nodes`). */
@@ -169,7 +170,7 @@ const DTC_KINDS =
   ).dtc_kinds ?? {};
 
 export interface DtcKindItem {
-  nodeType: string; // dtc_input | dtc_process | (output →) link
+  nodeType: string; // dtc_process | (input/output →) link (a Resource)
   kind: string; // photo | mesh | …
   label: string;
   glyph: string | null;
