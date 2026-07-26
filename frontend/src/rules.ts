@@ -169,41 +169,64 @@ const DTC_KINDS =
   ).dtc_kinds ?? {};
 
 export interface DtcKindItem {
-  nodeType: string; // dtc_input | dtc_process | dtc_output
+  nodeType: string; // dtc_input | dtc_process | (output →) link
   kind: string; // photo | mesh | …
   label: string;
   glyph: string | null;
+  /** true when creating this item yields a RESOURCE (LinkNode) rather than a
+   *  dedicated DTC node — the output facet (slice b): the DTC output is a file
+   *  Resource, so it also gets a `resource_type`. */
+  isResource: boolean;
 }
 
 /** The DTC authoring palette, fully data-driven: one entry per (base kind) ×
- *  (specific kind) from `dtc_kinds`, filtered to bases that map to a real DTC
- *  node_type. Empty when the datamodel carries no DTC profile. */
+ *  (specific kind) from `dtc_kinds`. A base backed by a dedicated DTC node_type
+ *  (`dtc_${base}`) creates that node; a base WITHOUT one (the OUTPUT, slice b —
+ *  DTCOutputNode retired) creates a RESOURCE = the LinkNode. Empty when the
+ *  datamodel carries no DTC profile. */
 export function dtcAuthoringKinds(): DtcKindItem[] {
   const types = dtcNodeTypes();
+  const resourceNt = nodeTypeForClass("LinkNode"); // the Resource node ("link")
   const out: DtcKindItem[] = [];
   for (const base of Object.keys(DTC_KINDS)) {
     if (base.startsWith("_")) continue;
-    const nodeType = `dtc_${base}`;
-    if (!types.has(nodeType)) continue; // only bases backed by a real node type
+    const dedicated = `dtc_${base}`;
+    const hasNode = types.has(dedicated);
+    const nodeType = hasNode ? dedicated : resourceNt;
+    if (!nodeType) continue; // no dedicated node AND no Resource type available
     const entries = DTC_KINDS[base] ?? {};
     for (const kind of Object.keys(entries)) {
       if (kind.startsWith("_")) continue;
       const e = entries[kind] ?? {};
-      out.push({ nodeType, kind, label: e.label ?? kind, glyph: e.glyph ?? null });
+      out.push({
+        nodeType,
+        kind,
+        label: e.label ?? kind,
+        glyph: e.glyph ?? null,
+        isResource: !hasNode,
+      });
     }
   }
   return out;
 }
 
-/** Glyph basename for a DTC node's kind (node.data.dtc_kind) — data-driven from
- *  `dtc_kinds`; null when not a DTC node / no kind / no glyph. */
-export function dtcGlyphName(
-  nodeType: string | undefined,
-  dtcKind: string | undefined,
-): string | null {
-  if (!nodeType || !dtcKind || !nodeType.startsWith("dtc_")) return null;
-  const base = nodeType.slice(4);
-  return DTC_KINDS[base]?.[dtcKind]?.glyph ?? null;
+// flat kind → glyph basename (kinds are unique across the input/process/output
+// bases), so a glyph resolves from a node's `data.dtc_kind` regardless of its
+// node_type — covers the dtc_* chunks AND the output Resource (a LinkNode).
+const DTC_KIND_GLYPH = new Map<string, string>();
+for (const base of Object.keys(DTC_KINDS)) {
+  if (base.startsWith("_")) continue;
+  for (const [kind, e] of Object.entries(DTC_KINDS[base] ?? {})) {
+    if (kind.startsWith("_")) continue;
+    if (e?.glyph) DTC_KIND_GLYPH.set(kind, e.glyph);
+  }
+}
+
+/** Glyph basename for a node's `data.dtc_kind` — data-driven from `dtc_kinds`;
+ *  null when there is no kind / no glyph. Resolves for the dtc_* chunks and for
+ *  the output Resource (LinkNode) alike, keyed purely on the kind. */
+export function dtcGlyphName(dtcKind: string | undefined): string | null {
+  return (dtcKind && DTC_KIND_GLYPH.get(dtcKind)) || null;
 }
 
 /** The single edge type the datamodel permits between two node_types, or

@@ -168,7 +168,7 @@ function groupSwatch(nodeType: string): HTMLCanvasElement {
 
 export function buildPalette(
   root: HTMLElement,
-  onPick: (nodeType: string, kind?: string) => void,
+  onPick: (nodeType: string, kind?: string, isResource?: boolean) => void,
 ): { setActive: (activeKey: string | null) => void } {
   root.innerHTML = "";
   // keyed by a display key: node_type for plain items, `${nodeType}:${kind}` for
@@ -268,7 +268,7 @@ export function buildPalette(
           makeItem(d.nodeType, wrap, {
             display: d.label,
             iconUrl: dtcGlyphUrl(d.glyph),
-            onClick: () => onPick(d.nodeType, d.kind),
+            onClick: () => onPick(d.nodeType, d.kind, d.isResource),
             key: `${d.nodeType}:${d.kind}`,
           });
       },

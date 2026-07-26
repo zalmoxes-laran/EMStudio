@@ -69,7 +69,7 @@ import {
 import { GROUP_HEADER, GROUP_PAD } from "./views/matrix";
 import { setupSearch } from "./search";
 import type { EmDocument, EmEdge, EmNode, ViewKind } from "./types";
-import { buildGroupScene } from "./views/context";
+import { buildDtcGenesisScene, buildGroupScene } from "./views/context";
 import { buildGraphScene, type GraphAlgorithm } from "./views/graph";
 import { buildMatrixScene } from "./views/matrix";
 
@@ -123,6 +123,9 @@ let placingType: string | null = null;
 // for DTC palette items: the specific kind (photo, mesh, …) to stamp on the
 // created node's data.dtc_kind; null for non-DTC placement.
 let placingKind: string | null = null;
+// true when the DTC item being placed is a RESOURCE (output → a LinkNode) — so
+// placeNode also stamps data.resource_type.
+let placingIsResource = false;
 let connect: ConnectDrag | null = null;
 /** graph-view "liquid" filters: hidden node / edge types */
 // hidden type sets are DERIVED from the visible circles of the CURRENT view
@@ -904,15 +907,37 @@ function enterGroup(groupId: string): void {
   rebuildContext();
 }
 
+// A context id is either a group (→ its members) or a DTC-output Resource (→ its
+// upstream DTC genesis). Pick the right scene builder, reusing the same fold.
+function contextSceneFor(id: string): Scene | null {
+  if (!store) return null;
+  const n = store.node(id);
+  if (n && isGroupType(n.node_type)) return buildGroupScene(store.doc, id);
+  return buildDtcGenesisScene(store.doc, id);
+}
+
+/** The DTC-output Resource reachable from a double-clicked node, or null:
+ *  the node itself when it IS a DTC output (target of dtc_had_output), else the
+ *  Resource it references via has_linked_resource (the RM / Document facet). */
+function resolveDtcResource(nodeId: string): string | null {
+  if (!store) return null;
+  const edges = store.doc.graph.edges;
+  const isDtcOutput = (id: string): boolean =>
+    edges.some((e) => e.edge_type === "dtc_had_output" && e.target === id);
+  if (isDtcOutput(nodeId)) return nodeId;
+  for (const e of edges)
+    if (e.edge_type === "has_linked_resource" && e.source === nodeId && isDtcOutput(e.target))
+      return e.target;
+  return null;
+}
+
 function rebuildContext(): void {
   if (!store) return;
   select(null);
   hoverId = null;
-  if (inContext()) {
-    contextScene = buildGroupScene(store.doc, contextStack[contextStack.length - 1]);
-  } else {
-    contextScene = null;
-  }
+  contextScene = inContext()
+    ? contextSceneFor(contextStack[contextStack.length - 1])
+    : null;
   updateBreadcrumb();
   updateLegend();
   fit();
@@ -1245,10 +1270,7 @@ function loadDocument(
     buildScenes();
     if (filterPanelOpen()) renderCirclesPanel(); // refresh circle counts
     if (inContext()) {
-      contextScene = buildGroupScene(
-        store!.doc,
-        contextStack[contextStack.length - 1],
-      );
+      contextScene = contextSceneFor(contextStack[contextStack.length - 1]);
     }
     updateInfo();
     updateLegend();
@@ -1486,7 +1508,7 @@ async function openDocument(): Promise<void> {
 // ---------- placing (palette) ----------
 const paletteUi = buildPalette(
   document.getElementById("palette")!,
-  (t, kind) => {
+  (t, kind, isResource) => {
     if (!store) {
       toast("Open a document first");
       return;
@@ -1506,6 +1528,7 @@ const paletteUi = buildPalette(
     const active = placingType === t && placingKind === (kind ?? null);
     placingType = active ? null : t;
     placingKind = active ? null : (kind ?? null);
+    placingIsResource = active ? false : !!isResource;
     paletteUi.setActive(placingType ? (placingKind ? key : t) : null);
     canvas.classList.toggle("placing", !!placingType);
     if (placingType) {
@@ -1521,6 +1544,7 @@ const paletteUi = buildPalette(
 function cancelPlacing(): void {
   placingType = null;
   placingKind = null;
+  placingIsResource = false;
   paletteUi.setActive(null);
   canvas.classList.remove("placing");
   hintBar.classList.add("hidden");
@@ -1609,7 +1633,12 @@ function placeNode(wx: number, wy: number): void {
   const node: EmNode = { id, name, node_type: placingType, description: "" };
   // DTC palette items carry a kind → stamp it so the node renders its glyph and
   // projects its crm:P2_has_type (em.json = single source of truth).
-  if (placingKind) node.data = { dtc_kind: placingKind };
+  if (placingKind) {
+    // DTC chunk (input/process) carries dtc_kind; a DTC OUTPUT is a Resource
+    // (LinkNode) → also stamp resource_type (slice b). em.json = source of truth.
+    node.data = { dtc_kind: placingKind };
+    if (placingIsResource) node.data.resource_type = placingKind;
+  }
   if (inContext()) {
     const gid = contextStack[contextStack.length - 1];
     store.addNode(node);
@@ -3461,9 +3490,19 @@ canvas.addEventListener("dblclick", (e) => {
   if (!s) return;
   const w = worldPos(e);
   const hit = hitTest(s, w.x, w.y);
-  if (hit && isGroupType(hit.node.node_type)) {
+  if (!hit) return;
+  if (isGroupType(hit.node.node_type)) {
     e.preventDefault();
     enterGroup(hit.id);
+    return;
+  }
+  // DTC seam: double-clicking a RepresentationModel / Document / the Resource
+  // itself that resolves to a DTC-output Resource folds into its upstream DTC
+  // genesis (process → input resources), reusing the hypergraph context.
+  const res = resolveDtcResource(hit.id);
+  if (res) {
+    e.preventDefault();
+    enterGroup(res);
   }
 });
 

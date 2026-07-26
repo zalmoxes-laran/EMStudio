@@ -7,11 +7,8 @@ import type { Scene } from "../scene";
 import type { EmDocument } from "../types";
 import { layoutLayered } from "./graph";
 
-export function buildGroupScene(doc: EmDocument, groupId: string): Scene {
-  const membership = buildMembership(doc);
-  const { nodes, edges } = groupMembers(doc, membership, groupId);
-  const scene = layoutLayered(nodes, edges);
-  const stored = doc.layout?.group_spaces?.[groupId];
+function applyStored(doc: EmDocument, key: string, scene: Scene): Scene {
+  const stored = doc.layout?.group_spaces?.[key];
   if (stored) {
     for (const sn of scene.nodes) {
       const r = stored[sn.id];
@@ -24,4 +21,42 @@ export function buildGroupScene(doc: EmDocument, groupId: string): Scene {
     }
   }
   return scene;
+}
+
+export function buildGroupScene(doc: EmDocument, groupId: string): Scene {
+  const membership = buildMembership(doc);
+  const { nodes, edges } = groupMembers(doc, membership, groupId);
+  return applyStored(doc, groupId, layoutLayered(nodes, edges));
+}
+
+/** The DTC genesis context: the upstream provenance subgraph of a produced
+ *  Resource — its process and input resources — collected by a BFS over the DTC
+ *  chain edges (`dtc_`-prefixed) from the Resource. Reuses the same layered
+ *  layout + per-context position persistence as group folding. The EM-side
+ *  facets (RepresentationModel / Document that reference the Resource) are NOT
+ *  part of the genesis and are intentionally excluded. */
+export function buildDtcGenesisScene(doc: EmDocument, resourceId: string): Scene {
+  const keep = new Set<string>([resourceId]);
+  let frontier = new Set<string>([resourceId]);
+  const isDtc = (t: string | undefined): boolean => (t ?? "").startsWith("dtc_");
+  while (frontier.size) {
+    const next = new Set<string>();
+    for (const e of doc.graph.edges) {
+      if (!isDtc(e.edge_type)) continue;
+      if (frontier.has(e.source) && !keep.has(e.target)) {
+        keep.add(e.target);
+        next.add(e.target);
+      }
+      if (frontier.has(e.target) && !keep.has(e.source)) {
+        keep.add(e.source);
+        next.add(e.source);
+      }
+    }
+    frontier = next;
+  }
+  const nodes = doc.graph.nodes.filter((n) => keep.has(n.id));
+  const edges = doc.graph.edges.filter(
+    (e) => isDtc(e.edge_type) && keep.has(e.source) && keep.has(e.target),
+  );
+  return applyStored(doc, resourceId, layoutLayered(nodes, edges));
 }

@@ -564,7 +564,6 @@ export function render(
     if (!icon) {
       const glyph = dtcGlyphUrl(
         dtcGlyphName(
-          n.node.node_type,
           (n.node.data as Record<string, unknown> | undefined)?.dtc_kind as
             | string
             | undefined,
