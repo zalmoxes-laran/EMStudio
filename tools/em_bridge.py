@@ -16,6 +16,11 @@ Endpoints (CORS open for http://localhost:*):
     GET  /resolve-authority?term=&facet=     → ranked authority candidates (JSON)
     POST /resolve-authority ← {term, facet}  → ranked authority candidates (JSON)
                              (offline resolver — s3Dgraphy authorities; P1-D)
+    POST /scan-resources   ← {folder, doc?}  → {shelf: [orphans + stable IDs]}
+    POST /list-resources   ← {doc}           → {resources: [...]}
+    POST /resolve-resource ← {doc, resource_id} → {location: {kind,value,exists}}
+                             (Resource layer — s3Dgraphy resources; R0/R1/R5;
+                             501 if the active s3dgraphy predates it)
 
 Run it via ``dev.sh``, or standalone:
     python3 tools/em_bridge.py --port 8765 --s3dgraphy ~/GitHub/s3Dgraphy/src
@@ -121,6 +126,13 @@ def make_handler(api):
                     self._fail(400, f"invalid JSON body: {exc}")
                     return
                 self._resolve_authority(body.get("term", ""), body.get("facet", ""))
+            elif route in ("/scan-resources", "/list-resources", "/resolve-resource"):
+                try:
+                    body = json.loads(raw.decode("utf-8")) if raw else {}
+                except Exception as exc:
+                    self._fail(400, f"invalid JSON body: {exc}")
+                    return
+                self._resources(route, body)
             else:
                 self.send_error(404, "unknown endpoint")
 
@@ -141,6 +153,57 @@ def make_handler(api):
             out = json.dumps(
                 {"ok": True, "term": term, "facet": (facet or "").upper(),
                  "candidates": candidates}).encode()
+            self.send_response(200)
+            self._cors()
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+
+        # Resource layer (R0/R1/R5): a thin adapter over the s3dgraphy.api
+        # resource ops. All three take/return JSON; the FS-index scan needs a
+        # server-visible folder path. 501 if the active s3dgraphy predates the
+        # resource layer (op missing).
+        def _resources(self, route, body):
+            op = {"/scan-resources": "shelf_resources",
+                  "/list-resources": "list_resources",
+                  "/resolve-resource": "resolve_resource"}[route]
+            if not hasattr(api, op) or not hasattr(api, "scan_fs_resources"):
+                self._fail(501, "resource layer unavailable — s3dgraphy is out of date")
+                return
+            try:
+                if route == "/scan-resources":
+                    folder = body.get("folder", "")
+                    if not folder:
+                        self._fail(400, "scan-resources needs a 'folder'")
+                        return
+                    shelf = api.shelf_resources(
+                        body.get("doc"), folder,
+                        graph_code=body.get("graph_code"))
+                    payload = {"ok": True, "folder": folder, "shelf": shelf}
+                else:
+                    doc = body.get("doc")
+                    if doc is None:
+                        self._fail(400, f"{route} needs the current 'doc' (em.json)")
+                        return
+                    graph, warnings = api.load_emjson(doc)
+                    for w in warnings:
+                        sys.stderr.write(f"  [bridge] warning: {w}\n")
+                    if route == "/list-resources":
+                        payload = {"ok": True, "resources": api.list_resources(graph)}
+                    else:  # /resolve-resource
+                        rid = body.get("resource_id", "")
+                        if not rid:
+                            self._fail(400, "resolve-resource needs a 'resource_id'")
+                            return
+                        payload = {"ok": True, "resource_id": rid,
+                                   "location": api.resolve_resource(graph, rid)}
+            except Exception as exc:  # pragma: no cover — surface to the UI
+                import traceback
+                traceback.print_exc()
+                self._fail(500, f"{route} failed: {exc}")
+                return
+            out = json.dumps(payload).encode()
             self.send_response(200)
             self._cors()
             self.send_header("Content-Type", "application/json")
@@ -275,7 +338,8 @@ def main() -> int:
     handler = make_handler(api)
     httpd = ThreadingHTTPServer((args.host, args.port), handler)
     print(f"em_bridge listening on http://{args.host}:{args.port} "
-          f"(POST /graphml, /import-graphml, /export-ttl, /resolve-authority; "
+          f"(POST /graphml, /import-graphml, /export-ttl, /resolve-authority, "
+          f"/scan-resources, /list-resources, /resolve-resource; "
           f"GET /health, /resolve-authority) — Ctrl-C to stop")
     try:
         httpd.serve_forever()

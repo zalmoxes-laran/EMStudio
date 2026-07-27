@@ -62,6 +62,7 @@
         </div>
       </div>
       <button id="btn-sync" title="Connect to Blender/EMtools for live selection sync (ADR-002)">Sync</button>
+      <button id="btn-resources" title="Resources: the shared Resource layer (Documents · RM · DTC · Shelf) via the bridge">Resources</button>
       <button id="btn-settings" title="Settings (sync target, …)" aria-label="Settings">⚙</button>
       <span id="dirty-dot" class="hidden" title="unsaved changes">●</span>
       <span class="tb-sep"></span>
@@ -224,6 +225,60 @@
         <div class="modal-foot">
           <button id="settings-cancel">Cancel</button>
           <button id="settings-save" class="primary">Save</button>
+        </div>
+      </div>
+    </div>
+    <div id="resources-modal" class="modal hidden">
+      <div class="modal-card">
+        <div class="modal-head">
+          <span>Resources</span>
+          <button id="resources-close" class="modal-x" title="Close">✕</button>
+        </div>
+        <div class="modal-body">
+          <p class="settings-hint">
+            The shared Resource layer for this graph, over the em-bridge (a
+            single connector). Scan a library / DosCo folder: un-hatted files
+            appear in the <b>Shelf</b> with stable IDs; hatting one creates a
+            Document that <b>adopts that stable ID</b> as its node id.
+          </p>
+          <section class="settings-sect">
+            <label
+              >Library / DosCo folder
+              <input
+                id="res-folder"
+                type="text"
+                placeholder="/absolute/path/to/folder"
+              />
+            </label>
+            <div class="res-scan-row">
+              <button id="res-scan" class="primary">Scan</button>
+              <span id="res-status" class="settings-hint"></span>
+            </div>
+          </section>
+          <section class="settings-sect">
+            <h4>Shelf <span class="res-count" id="res-shelf-count"></span></h4>
+            <p class="settings-hint">Un-hatted resources (not yet a Document / RM).</p>
+            <div id="res-shelf" class="res-list"></div>
+          </section>
+          <section class="settings-sect">
+            <h4>Documents <span class="res-count" id="res-docs-count"></span></h4>
+            <div id="res-docs" class="res-list"></div>
+          </section>
+          <section class="settings-sect">
+            <h4>Representation Models</h4>
+            <p class="settings-hint">
+              Hatting a resource → RM: follow-up (R2/R5+).
+            </p>
+          </section>
+          <section class="settings-sect">
+            <h4>DTC</h4>
+            <p class="settings-hint">
+              Digital Twin Chain provenance: follow-up (DTC-residency UI).
+            </p>
+          </section>
+        </div>
+        <div class="modal-foot">
+          <button id="resources-done" class="primary">Done</button>
         </div>
       </div>
     </div>

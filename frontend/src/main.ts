@@ -24,6 +24,7 @@ import {
   hdtoProfileTypes,
   isGroupType,
   isStratigraphicType,
+  nodeTypeForClass,
   typeDescription,
 } from "./rules";
 import { sceneToSvg } from "./svg-export";
@@ -2541,6 +2542,171 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && !settingsModal.classList.contains("hidden")) {
     e.stopPropagation();
     closeSettings();
+  }
+});
+
+// ── Resources panel (R5): the EMStudio face of the shared Resource layer, over
+// the em-bridge (single connector). Sections Documents · RM · DTC · Shelf.
+// Shelf = the orphans from /scan-resources on a chosen library/DosCo folder;
+// hatting one creates a Document whose node_id ADOPTS the FS stable ID (mirror
+// R4). Per-graph view; canvas/palette untouched (additive).
+interface ShelfEntry {
+  resource_id: string;
+  key_id: string;
+  filename: string;
+  rel_path: string;
+}
+// The Document node_type comes from the datamodel (no hardcoded string).
+const RES_DOC_TYPE = nodeTypeForClass("DocumentNode") ?? "document";
+const resourcesModal = document.getElementById("resources-modal")!;
+const resFolderInp = document.getElementById("res-folder") as HTMLInputElement;
+const resStatus = document.getElementById("res-status")!;
+const resShelf = document.getElementById("res-shelf")!;
+const resShelfCount = document.getElementById("res-shelf-count")!;
+const resDocs = document.getElementById("res-docs")!;
+const resDocsCount = document.getElementById("res-docs-count")!;
+let resLastShelf: ShelfEntry[] = [];
+
+function openResources(): void {
+  if (!store) {
+    toast("Open a document first");
+    return;
+  }
+  renderResDocuments();
+  resStatus.textContent = resFolderInp.value.trim()
+    ? "Press Scan to refresh the Shelf."
+    : "Set a library / DosCo folder, then Scan.";
+  resourcesModal.classList.remove("hidden");
+}
+function closeResources(): void {
+  resourcesModal.classList.add("hidden");
+}
+
+function renderResDocuments(): void {
+  if (!store) return;
+  const docs = store.doc.graph.nodes.filter(
+    (n) => n.node_type === RES_DOC_TYPE,
+  );
+  resDocs.innerHTML = "";
+  resDocsCount.textContent = docs.length ? `(${docs.length})` : "";
+  if (!docs.length) {
+    resDocs.innerHTML = `<div class="res-empty">— no documents yet</div>`;
+    return;
+  }
+  for (const d of docs) {
+    const row = document.createElement("div");
+    row.className = "res-row";
+    const label = document.createElement("span");
+    label.textContent = String(d.name || d.id.slice(0, 8));
+    row.appendChild(label);
+    resDocs.appendChild(row);
+  }
+}
+
+function renderResShelf(): void {
+  resShelf.innerHTML = "";
+  resShelfCount.textContent = resLastShelf.length
+    ? `(${resLastShelf.length})`
+    : "";
+  if (!resLastShelf.length) {
+    resShelf.innerHTML = `<div class="res-empty">— Shelf empty (all resources hatted / matched)</div>`;
+    return;
+  }
+  for (const e of resLastShelf) {
+    const row = document.createElement("div");
+    row.className = "res-row";
+    const label = document.createElement("span");
+    label.textContent = `${e.filename}  ·  ${e.key_id}`;
+    row.appendChild(label);
+    const btn = document.createElement("button");
+    btn.textContent = "→ Document";
+    btn.title =
+      "Create a Document adopting this resource's stable ID as its node id";
+    btn.addEventListener("click", () => hatShelfEntry(e));
+    row.appendChild(btn);
+    resShelf.appendChild(row);
+  }
+}
+
+async function scanResources(): Promise<void> {
+  if (!store) return;
+  const folder = resFolderInp.value.trim();
+  if (!folder) {
+    resStatus.textContent = "Set a folder first.";
+    return;
+  }
+  resStatus.textContent = "Scanning…";
+  try {
+    const res = await fetch(`${await bridgeUrl()}/scan-resources`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ folder, doc: JSON.parse(store.toJSON()) }),
+    });
+    if (!res.ok) {
+      let msg = `bridge error ${res.status}`;
+      try {
+        const j = await res.json();
+        if (j?.error) msg = j.error;
+      } catch {
+        /* non-JSON */
+      }
+      resStatus.textContent = `Scan failed: ${msg}`;
+      return;
+    }
+    const j = await res.json();
+    resLastShelf = (j.shelf ?? []) as ShelfEntry[];
+    renderResShelf();
+    resStatus.textContent = `Indexed folder — ${resLastShelf.length} on the Shelf.`;
+  } catch {
+    resStatus.textContent = BRIDGE_UNREACHABLE;
+  }
+}
+
+// Hat: promote a Shelf orphan → a Document ADOPTING the FS stable ID as node_id.
+// em.json is the source of truth (the mutation is a plain addNode in the store);
+// the resource then leaves the Shelf because its stable ID is now a graph node.
+function hatShelfEntry(entry: ShelfEntry): void {
+  if (!store) return;
+  if (store.node(entry.resource_id)) {
+    toast("A node with this stable ID already exists");
+    return;
+  }
+  store.addNode({
+    id: entry.resource_id, // ADOPT the FS stable ID
+    name: entry.key_id || entry.resource_id.slice(0, 8),
+    node_type: RES_DOC_TYPE,
+    description: "",
+    data: {},
+  });
+  resLastShelf = resLastShelf.filter(
+    (e) => e.resource_id !== entry.resource_id,
+  );
+  renderResShelf();
+  renderResDocuments();
+  toast(`Hatted ${entry.key_id || "resource"} → Document`);
+}
+
+(document.getElementById("btn-resources") as HTMLButtonElement).addEventListener(
+  "click",
+  openResources,
+);
+(
+  document.getElementById("resources-close") as HTMLButtonElement
+).addEventListener("click", closeResources);
+(
+  document.getElementById("resources-done") as HTMLButtonElement
+).addEventListener("click", closeResources);
+(document.getElementById("res-scan") as HTMLButtonElement).addEventListener(
+  "click",
+  scanResources,
+);
+resourcesModal.addEventListener("click", (e) => {
+  if (e.target === resourcesModal) closeResources();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !resourcesModal.classList.contains("hidden")) {
+    e.stopPropagation();
+    closeResources();
   }
 });
 
