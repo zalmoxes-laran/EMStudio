@@ -9,7 +9,9 @@
 #
 # Needs s3Dgraphy importable (its venv has pyinstaller + pandas + lxml):
 #   (cd ../../s3Dgraphy && python3 -m venv .venv \
-#      && .venv/bin/pip install -e '.[sync]' pandas lxml pyinstaller)
+#      && .venv/bin/pip install -e '.[sync,minio]' pandas lxml pyinstaller)
+# The [minio] extra enables the /ingest-minio + /presign endpoints in the
+# sidecar; without it those endpoints 501 gracefully (like TTL without rdflib).
 #
 # Usage:
 #   ./build-bridge.sh                 # uses ../../s3Dgraphy
@@ -30,6 +32,19 @@ OUT="$HERE/src-tauri/binaries"
 
 WORK="$(mktemp -d)"
 echo "Building em-bridge sidecar for $TRIPLE …"
+
+# Bundle the MinIO SDK only if it is installed in the build venv, so the shared
+# object-store endpoints (/ingest-minio, /presign) work offline in the desktop
+# sidecar. If [minio] wasn't installed, skip it — those endpoints then 501
+# gracefully (like TTL without rdflib), and the build still succeeds.
+MINIO_ARGS=()
+if "$PY" -c "import minio" 2>/dev/null; then
+  MINIO_ARGS=(--collect-submodules minio --copy-metadata minio)
+  echo "  · bundling the 'minio' SDK (shared MinIO endpoints enabled)"
+else
+  echo "  · 'minio' SDK not in build venv — /ingest-minio + /presign will 501"
+fi
+
 "$PY" -m PyInstaller --onefile --name em-bridge \
   --paths "$S3/src" --collect-submodules s3dgraphy \
   --add-data "$SRC/JSON_config:s3dgraphy/JSON_config" \
@@ -37,6 +52,7 @@ echo "Building em-bridge sidecar for $TRIPLE …"
   --add-data "$SRC/mappings:s3dgraphy/mappings" \
   --hidden-import lxml --hidden-import lxml.etree --hidden-import lxml._elementpath \
   --collect-submodules rdflib --copy-metadata rdflib \
+  "${MINIO_ARGS[@]}" \
   --exclude-module pandas --exclude-module numpy --exclude-module openpyxl \
   --distpath "$WORK/dist" --workpath "$WORK/build" --specpath "$WORK" \
   --noconfirm --log-level WARN \

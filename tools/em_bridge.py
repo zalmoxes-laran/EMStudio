@@ -21,6 +21,11 @@ Endpoints (CORS open for http://localhost:*):
     POST /resolve-resource ← {doc, resource_id} → {location: {kind,value,exists}}
                              (Resource layer — s3Dgraphy resources; R0/R1/R5;
                              501 if the active s3dgraphy predates it)
+    POST /ingest-minio     ← {path}          → {id, object_key, s3_uri}
+    POST /presign          ← {id|object_key} → {object_key, http_url}
+                             (shared MinIO object store — s3Dgraphy R2; config from
+                             the S3_* env, same store Heriverse uses; 501 if the
+                             optional [minio] extra is not bundled)
 
 Run it via ``dev.sh``, or standalone:
     python3 tools/em_bridge.py --port 8765 --s3dgraphy ~/GitHub/s3Dgraphy/src
@@ -77,6 +82,11 @@ def _load_s3dgraphy(s3dgraphy_src: "pathlib.Path | None"):
 
 def make_handler(api):
     class Handler(BaseHTTPRequestHandler):
+        # Per-process id → MinIO object_key map, populated by /ingest-minio so a
+        # later /presign can accept the stable {id} (transport-layer convenience;
+        # callers may also presign an {object_key} directly, statelessly).
+        _minio_keys: dict = {}
+
         # Quieter, dev-friendly logging.
         def log_message(self, fmt, *args):
             sys.stderr.write("  [bridge] " + (fmt % args) + "\n")
@@ -133,6 +143,13 @@ def make_handler(api):
                     self._fail(400, f"invalid JSON body: {exc}")
                     return
                 self._resources(route, body)
+            elif route in ("/ingest-minio", "/presign"):
+                try:
+                    body = json.loads(raw.decode("utf-8")) if raw else {}
+                except Exception as exc:
+                    self._fail(400, f"invalid JSON body: {exc}")
+                    return
+                self._minio(route, body)
             else:
                 self.send_error(404, "unknown endpoint")
 
@@ -153,6 +170,61 @@ def make_handler(api):
             out = json.dumps(
                 {"ok": True, "term": term, "facet": (facet or "").upper(),
                  "candidates": candidates}).encode()
+            self.send_response(200)
+            self._cors()
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+
+        # Shared MinIO object store (R2 + connective tissue): ingest a local file
+        # into the SAME MinIO Heriverse provisions (config read from the S3_* env
+        # by s3dgraphy.api), and presign an object key → a fetchable http_url.
+        # Thin adapter over the api ops; 501 if the [minio] extra is absent (like
+        # TTL without rdflib) or the op is missing (stale s3dgraphy). A small
+        # per-process id→object_key cache lets /presign accept {id} across requests.
+        def _minio(self, route, body):
+            need = "ingest_minio_resource" if route == "/ingest-minio" \
+                else "presign_minio_resource"
+            if not hasattr(api, need):
+                self._fail(501, "MinIO ops unavailable — s3dgraphy is out of date")
+                return
+            try:
+                if route == "/ingest-minio":
+                    path = body.get("path", "")
+                    if not path:
+                        self._fail(400, "ingest-minio needs a local file 'path'")
+                        return
+                    if not os.path.isfile(path):
+                        self._fail(400, f"no such file: {path}")
+                        return
+                    res = api.ingest_minio_resource(path)
+                    Handler._minio_keys[res["id"]] = res["object_key"]
+                    payload = {"ok": True, **res}
+                else:  # /presign
+                    key = body.get("object_key")
+                    if not key and body.get("id"):
+                        key = Handler._minio_keys.get(body["id"])
+                        if not key:
+                            self._fail(404, "unknown id — ingest first, or pass object_key")
+                            return
+                    if not key:
+                        self._fail(400, "presign needs 'object_key' (or a known 'id')")
+                        return
+                    expires = int(body.get("expires_seconds", 3600))
+                    res = api.presign_minio_resource(key, expires_seconds=expires)
+                    payload = {"ok": True, **res}
+            except ImportError as exc:  # api.MissingDependency (minio SDK absent)
+                self._fail(501,
+                           f"MinIO backend unavailable — the 'minio' extra is not "
+                           f"bundled ({exc})")
+                return
+            except Exception as exc:  # pragma: no cover — surface to the UI
+                import traceback
+                traceback.print_exc()
+                self._fail(500, f"{route} failed: {exc}")
+                return
+            out = json.dumps(payload).encode()
             self.send_response(200)
             self._cors()
             self.send_header("Content-Type", "application/json")
@@ -339,8 +411,8 @@ def main() -> int:
     httpd = ThreadingHTTPServer((args.host, args.port), handler)
     print(f"em_bridge listening on http://{args.host}:{args.port} "
           f"(POST /graphml, /import-graphml, /export-ttl, /resolve-authority, "
-          f"/scan-resources, /list-resources, /resolve-resource; "
-          f"GET /health, /resolve-authority) — Ctrl-C to stop")
+          f"/scan-resources, /list-resources, /resolve-resource, /ingest-minio, "
+          f"/presign; GET /health, /resolve-authority) — Ctrl-C to stop")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
