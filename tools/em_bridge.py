@@ -21,11 +21,17 @@ Endpoints (CORS open for http://localhost:*):
     POST /resolve-resource ← {doc, resource_id} → {location: {kind,value,exists}}
                              (Resource layer — s3Dgraphy resources; R0/R1/R5;
                              501 if the active s3dgraphy predates it)
-    POST /ingest-minio     ← {path}          → {id, object_key, s3_uri}
+    POST /ingest-minio     ← {path, resource_id?} → {id, object_key, s3_uri}
     POST /presign          ← {id|object_key} → {object_key, http_url}
                              (shared MinIO object store — s3Dgraphy R2; config from
-                             the S3_* env, same store Heriverse uses; 501 if the
+                             the S3_* env, same store Heriverse uses; resource_id
+                             keeps a resource's stable ID on "promote"; 501 if the
                              optional [minio] extra is not bundled)
+    POST /detach-dtc       ← {graph, process_id} → {record}   (read-only)
+    POST /inject-dtc       ← {graph, record}     → {…ids, graph}
+    POST /bake-dtc         ← {graph, injector_id} → {report, graph}
+                             (DTC residency — s3Dgraphy R3; inject/bake return the
+                             mutated em.json; 501 if the op is unavailable)
 
 Run it via ``dev.sh``, or standalone:
     python3 tools/em_bridge.py --port 8765 --s3dgraphy ~/GitHub/s3Dgraphy/src
@@ -150,6 +156,13 @@ def make_handler(api):
                     self._fail(400, f"invalid JSON body: {exc}")
                     return
                 self._minio(route, body)
+            elif route in ("/detach-dtc", "/inject-dtc", "/bake-dtc"):
+                try:
+                    body = json.loads(raw.decode("utf-8")) if raw else {}
+                except Exception as exc:
+                    self._fail(400, f"invalid JSON body: {exc}")
+                    return
+                self._dtc(route, body)
             else:
                 self.send_error(404, "unknown endpoint")
 
@@ -198,7 +211,10 @@ def make_handler(api):
                     if not os.path.isfile(path):
                         self._fail(400, f"no such file: {path}")
                         return
-                    res = api.ingest_minio_resource(path)
+                    # optional resource_id → "promote" keeps the resource's stable
+                    # ID (same id whether FS or MinIO — one ID space)
+                    rid = body.get("resource_id") or None
+                    res = api.ingest_minio_resource(path, resource_id=rid)
                     Handler._minio_keys[res["id"]] = res["object_key"]
                     payload = {"ok": True, **res}
                 else:  # /presign
@@ -219,6 +235,67 @@ def make_handler(api):
                            f"MinIO backend unavailable — the 'minio' extra is not "
                            f"bundled ({exc})")
                 return
+            except Exception as exc:  # pragma: no cover — surface to the UI
+                import traceback
+                traceback.print_exc()
+                self._fail(500, f"{route} failed: {exc}")
+                return
+            out = json.dumps(payload).encode()
+            self.send_response(200)
+            self._cors()
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+
+        # DTC residency (R3): detach a DTC to a portable record, inject a record
+        # into a graph (nodes tagged injected_by = temporary), or bake it in
+        # (promote to persistent — e.g. for publication). Thin adapter over the
+        # s3dgraphy.api DTC ops. detach is read-only; inject/bake mutate the loaded
+        # graph, so they return the updated em.json alongside the result. 501 if
+        # the op is unavailable (stale s3dgraphy).
+        def _dtc(self, route, body):
+            op = {"/detach-dtc": "detach_dtc", "/inject-dtc": "inject_dtc",
+                  "/bake-dtc": "bake_dtc"}[route]
+            if not hasattr(api, op):
+                self._fail(501, "DTC ops unavailable — s3dgraphy is out of date")
+                return
+            doc = body.get("graph")
+            if doc is None:
+                self._fail(400, f"{route} needs the 'graph' (em.json)")
+                return
+            try:
+                graph, warnings = api.load_emjson(doc)
+                for w in warnings:
+                    sys.stderr.write(f"  [bridge] warning: {w}\n")
+                if route == "/detach-dtc":
+                    pid = body.get("process_id")
+                    if not pid:
+                        self._fail(400, "detach-dtc needs a 'process_id'")
+                        return
+                    try:
+                        record = api.detach_dtc(graph, pid)
+                    except ValueError as exc:  # not a DTC process node
+                        self._fail(404, str(exc))
+                        return
+                    payload = {"ok": True, "record": record}
+                elif route == "/inject-dtc":
+                    record = body.get("record")
+                    if not isinstance(record, dict):
+                        self._fail(400, "inject-dtc needs a DTC 'record'")
+                        return
+                    result = api.inject_dtc(graph, record)
+                    # inject mutates the graph → return the updated em.json too
+                    payload = {"ok": True, **result,
+                               "graph": api.graph_to_emjson(graph)}
+                else:  # /bake-dtc
+                    injector_id = body.get("injector_id")
+                    if not injector_id:
+                        self._fail(400, "bake-dtc needs an 'injector_id'")
+                        return
+                    report = api.bake_dtc(graph, injector_id)
+                    payload = {"ok": True, "report": report,
+                               "graph": api.graph_to_emjson(graph)}
             except Exception as exc:  # pragma: no cover — surface to the UI
                 import traceback
                 traceback.print_exc()
@@ -412,7 +489,8 @@ def main() -> int:
     print(f"em_bridge listening on http://{args.host}:{args.port} "
           f"(POST /graphml, /import-graphml, /export-ttl, /resolve-authority, "
           f"/scan-resources, /list-resources, /resolve-resource, /ingest-minio, "
-          f"/presign; GET /health, /resolve-authority) — Ctrl-C to stop")
+          f"/presign, /detach-dtc, /inject-dtc, /bake-dtc; "
+          f"GET /health, /resolve-authority) — Ctrl-C to stop")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

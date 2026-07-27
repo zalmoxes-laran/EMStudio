@@ -2556,8 +2556,16 @@ interface ShelfEntry {
   filename: string;
   rel_path: string;
 }
+interface ResourceRow {
+  id: string;
+  name: string;
+  locator: string;
+  kind: string;
+}
 // The Document node_type comes from the datamodel (no hardcoded string).
 const RES_DOC_TYPE = nodeTypeForClass("DocumentNode") ?? "document";
+// The resource (link) node_type — datamodel-driven, not hardcoded.
+const RES_LINK_TYPE = nodeTypeForClass("LinkNode") ?? "link";
 const resourcesModal = document.getElementById("resources-modal")!;
 const resFolderInp = document.getElementById("res-folder") as HTMLInputElement;
 const resStatus = document.getElementById("res-status")!;
@@ -2565,6 +2573,8 @@ const resShelf = document.getElementById("res-shelf")!;
 const resShelfCount = document.getElementById("res-shelf-count")!;
 const resDocs = document.getElementById("res-docs")!;
 const resDocsCount = document.getElementById("res-docs-count")!;
+const resLinks = document.getElementById("res-links")!;
+const resLinksCount = document.getElementById("res-links-count")!;
 let resLastShelf: ShelfEntry[] = [];
 
 function openResources(): void {
@@ -2573,6 +2583,7 @@ function openResources(): void {
     return;
   }
   renderResDocuments();
+  void renderResLinks();
   resStatus.textContent = resFolderInp.value.trim()
     ? "Press Scan to refresh the Shelf."
     : "Set a library / DosCo folder, then Scan.";
@@ -2684,6 +2695,112 @@ function hatShelfEntry(entry: ShelfEntry): void {
   renderResShelf();
   renderResDocuments();
   toast(`Hatted ${entry.key_id || "resource"} → Document`);
+}
+
+// ── Resources (link nodes) list + "Promote to MinIO" ───────────────────────────
+// Lists the graph's resources via the bridge (/list-resources — single connector).
+// Promote uploads a LOCAL resource's bytes into the shared MinIO under its OWN
+// stable ID (one ID space FS↔MinIO), then repoints its LinkNode locator at the
+// returned s3:// URI. The stable ID and every graph reference are unchanged.
+async function renderResLinks(): Promise<void> {
+  if (!store) return;
+  resLinks.innerHTML = `<div class="res-empty">loading…</div>`;
+  let rows: ResourceRow[] = [];
+  try {
+    const res = await fetch(`${await bridgeUrl()}/list-resources`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ doc: JSON.parse(store.toJSON()) }),
+    });
+    if (res.ok) rows = ((await res.json()).resources ?? []) as ResourceRow[];
+    else rows = listResourcesFromStore(); // bridge down → local fallback
+  } catch {
+    rows = listResourcesFromStore();
+  }
+  resLinks.innerHTML = "";
+  resLinksCount.textContent = rows.length ? `(${rows.length})` : "";
+  if (!rows.length) {
+    resLinks.innerHTML = `<div class="res-empty">— no resources yet</div>`;
+    return;
+  }
+  for (const r of rows) {
+    const row = document.createElement("div");
+    row.className = "res-row";
+    const label = document.createElement("span");
+    label.textContent = `${r.name || r.id.slice(0, 8)}  ·  ${r.kind}`;
+    row.appendChild(label);
+    // Promote is offered only for LOCAL resources (a path we can upload);
+    // already-remote (s3/http) resources have nothing to push.
+    if (r.kind === "local_path" || r.kind === "file_uri") {
+      const btn = document.createElement("button");
+      btn.textContent = "Promote to MinIO";
+      btn.title = "Upload into the shared MinIO (keeps the stable ID) and repoint the locator";
+      btn.addEventListener("click", () => void promoteToMinio(r, btn));
+      row.appendChild(btn);
+    }
+    resLinks.appendChild(row);
+  }
+}
+
+// Local fallback when the bridge is unreachable: read the link nodes straight
+// from the in-memory em.json (kind classified the same way the bridge does).
+function listResourcesFromStore(): ResourceRow[] {
+  if (!store) return [];
+  const out: ResourceRow[] = [];
+  for (const n of store.doc.graph.nodes) {
+    if (n.node_type !== RES_LINK_TYPE) continue;
+    const url = String((n.data as Record<string, unknown>)?.url ?? "");
+    const low = url.toLowerCase();
+    const kind = low.startsWith("http://") || low.startsWith("https://")
+      ? "http_url"
+      : low.startsWith("s3://")
+        ? "s3_uri"
+        : low.startsWith("file://")
+          ? "file_uri"
+          : "local_path";
+    out.push({ id: n.id, name: String(n.name ?? ""), locator: url, kind });
+  }
+  return out;
+}
+
+async function promoteToMinio(r: ResourceRow, btn: HTMLButtonElement): Promise<void> {
+  if (!store) return;
+  btn.disabled = true;
+  const prev = btn.textContent;
+  btn.textContent = "Promoting…";
+  try {
+    const res = await fetch(`${await bridgeUrl()}/ingest-minio`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      // resource_id = the resource's stable ID → same id in FS and MinIO
+      body: JSON.stringify({ path: r.locator, resource_id: r.id }),
+    });
+    if (!res.ok) {
+      let msg = `bridge error ${res.status}`;
+      try {
+        const j = await res.json();
+        if (j?.error) msg = j.error;
+      } catch {
+        /* non-JSON */
+      }
+      // 501 = the [minio] extra isn't bundled — a clear, graceful message.
+      toast(res.status === 501 ? `MinIO unavailable: ${msg}` : `Promote failed: ${msg}`);
+      btn.disabled = false;
+      btn.textContent = prev;
+      return;
+    }
+    const j = (await res.json()) as { s3_uri: string; object_key: string };
+    // Repoint the LinkNode locator at the shared-store URI (id + refs unchanged).
+    const node = store.node(r.id);
+    const data = { ...((node?.data as Record<string, unknown>) ?? {}), url: j.s3_uri };
+    store.updateNode(r.id, { data });
+    toast(`Promoted → ${j.s3_uri}`);
+    await renderResLinks();
+  } catch {
+    toast(BRIDGE_UNREACHABLE);
+    btn.disabled = false;
+    btn.textContent = prev;
+  }
 }
 
 (document.getElementById("btn-resources") as HTMLButtonElement).addEventListener(
