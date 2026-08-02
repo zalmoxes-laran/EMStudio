@@ -27,6 +27,11 @@
    "node_type": "BR",
    "description": ""
   },
+  "DTCAcquisitionNode": {
+   "parent": "DTCNode",
+   "node_type": "dtc_acquisition",
+   "description": "DTC acquisition/ingestion event (ECHOES DTC profile, acquisition seam)."
+  },
   "DTCNode": {
    "parent": "Node",
    "node_type": null,
@@ -61,6 +66,11 @@
    "parent": "ParadataNode",
    "node_type": "extractor",
    "description": "Nodo che rappresenta l'estrazione di informazioni da una fonte."
+  },
+  "FunctionalUnitNodeGroup": {
+   "parent": "GroupNode",
+   "node_type": "FunctionalUnitNodeGroup",
+   "description": "Typed aggregation of the stratigraphic units that make up one"
   },
   "GeoPositionNode": {
    "parent": "Node",

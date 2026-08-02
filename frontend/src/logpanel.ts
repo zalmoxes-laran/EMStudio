@@ -66,11 +66,34 @@ export function onLogChange(fn: () => void): void {
 
 // ── document diagnostics ──────────────────────────────────────────────────────
 
+/** One warning, in the same shape s3Dgraphy publishes: `{kind, node_id,
+ *  message}`. `nodeId` is the element to reveal when the reader clicks it —
+ *  for an edge warning, its source, since an edge is not selectable on its own
+ *  in most views and the source is where you need to look first. */
+export interface DiagnosticRecord {
+  kind: string;
+  nodeId: string;
+  message: string;
+  edgeId?: string;
+  targetId?: string;
+}
+
 export interface DiagnosticGroup {
   key: string;
   label: string;
-  messages: string[];
+  records: DiagnosticRecord[];
 }
+
+/** The warning-kind vocabulary. These strings are NOT local to EMStudio: they
+ *  are the same spelling s3Dgraphy publishes in
+ *  `edges/connection_resolver.WARNING_KINDS`, and the EMTools panel groups by.
+ *  One vocabulary across the three tools — do not diverge it here.
+ *  `unknown_node_type` is the one family EMStudio adds on its own: only a
+ *  client reading a document with a newer datamodel can notice it. */
+const KIND_UNTYPED_NODE = "untyped_node";
+const KIND_UNCLASSIFIED_GROUP = "unclassified_group";
+const KIND_DEGRADED_EDGE = "degraded_edge";
+const KIND_UNKNOWN_NODE_TYPE = "unknown_node_type";
 
 /** Node types that mean "this box carries no EM meaning". `Node` is the bare
  *  node the GraphML importer produces when a yEd shape matches nothing;
@@ -90,54 +113,68 @@ function nameOf(id: string, name?: string): string {
  */
 export function documentDiagnostics(doc: EmDocument | null): DiagnosticGroup[] {
   if (!doc?.graph) return [];
-  const untyped: string[] = [];
-  const unknown: string[] = [];
-  const roleless: string[] = [];
+  const untyped: DiagnosticRecord[] = [];
+  const unknown: DiagnosticRecord[] = [];
+  const roleless: DiagnosticRecord[] = [];
 
   for (const n of doc.graph.nodes ?? []) {
     const t = n.node_type;
     if (!t || t === UNTYPED_NODE_TYPE) {
-      untyped.push(
-        `${nameOf(n.id, n.name)} — no recognised EM type; it and its ` +
+      untyped.push({
+        kind: KIND_UNTYPED_NODE,
+        nodeId: n.id,
+        message:
+          `${nameOf(n.id, n.name)} — no recognised EM type; it and its ` +
           `connections stay untyped`,
-      );
+      });
     } else if (t === ROLELESS_GROUP_TYPE) {
-      roleless.push(
-        `${nameOf(n.id, n.name)} — group with no EM role (no palette ` +
+      roleless.push({
+        kind: KIND_UNCLASSIFIED_GROUP,
+        nodeId: n.id,
+        message:
+          `${nameOf(n.id, n.name)} — group with no EM role (no palette ` +
           `colour): kept as an organisational box`,
-      );
+      });
     } else if (classOf(t) === UNTYPED_NODE_TYPE) {
       // The document declares a type this build's datamodel has never heard
       // of. That is a version gap, not an authoring mistake — say so.
-      unknown.push(
-        `${nameOf(n.id, n.name)} — node_type "${t}" is not in this build's ` +
+      unknown.push({
+        kind: KIND_UNKNOWN_NODE_TYPE,
+        nodeId: n.id,
+        message:
+          `${nameOf(n.id, n.name)} — node_type "${t}" is not in this build's ` +
           `datamodel; it renders untyped`,
-      );
+      });
     }
   }
 
-  const degraded: string[] = [];
+  const degraded: DiagnosticRecord[] = [];
   const byId = new Map((doc.graph.nodes ?? []).map((n) => [n.id, n]));
   for (const e of doc.graph.edges ?? []) {
     if (e.edge_type !== GENERIC_EDGE) continue;
     const s = byId.get(e.source);
     const t = byId.get(e.target);
-    degraded.push(
-      `${nameOf(e.source, s?.name)} → ${nameOf(e.target, t?.name)} — ` +
+    degraded.push({
+      kind: KIND_DEGRADED_EDGE,
+      nodeId: e.source,
+      edgeId: e.id,
+      targetId: e.target,
+      message:
+        `${nameOf(e.source, s?.name)} → ${nameOf(e.target, t?.name)} — ` +
         `degraded to ${GENERIC_EDGE}`,
-    );
+    });
   }
 
   const groups: DiagnosticGroup[] = [
-    { key: "untyped_node", label: "Nodes with no recognised EM type", messages: untyped },
-    { key: "unclassified_group", label: "Groups with no EM role", messages: roleless },
-    { key: "degraded_edge", label: "Connections degraded to generic_connection", messages: degraded },
-    { key: "unknown_node_type", label: "Node types this build does not know", messages: unknown },
-  ].filter((g) => g.messages.length > 0);
+    { key: KIND_UNTYPED_NODE, label: "Nodes with no recognised EM type", records: untyped },
+    { key: KIND_UNCLASSIFIED_GROUP, label: "Groups with no EM role", records: roleless },
+    { key: KIND_DEGRADED_EDGE, label: "Connections degraded to generic_connection", records: degraded },
+    { key: KIND_UNKNOWN_NODE_TYPE, label: "Node types this build does not know", records: unknown },
+  ].filter((g) => g.records.length > 0);
 
   // Biggest problem first; ties keep declaration order so the panel does not
   // reshuffle between two loads of the same document.
-  groups.sort((a, b) => b.messages.length - a.messages.length);
+  groups.sort((a, b) => b.records.length - a.records.length);
   return groups;
 }
 
@@ -205,7 +242,7 @@ export function renderLogPanel(
   // — diagnostics —
   const groups = documentDiagnostics(doc);
   const diagHead = el("div", "log-section", groups.length
-    ? `Document warnings (${groups.reduce((n, g) => n + g.messages.length, 0)})`
+    ? `Document warnings (${groups.reduce((n, g) => n + g.records.length, 0)})`
     : "Document warnings (0)");
   container.appendChild(diagHead);
 
@@ -219,7 +256,7 @@ export function renderLogPanel(
     const box = el("div", "log-group");
     const head = el("button", "log-group-head");
     const open = expanded.has(g.key);
-    head.textContent = `${open ? "▾" : "▸"} ${g.label} (${g.messages.length})`;
+    head.textContent = `${open ? "▾" : "▸"} ${g.label} (${g.records.length})`;
     head.addEventListener("click", () => {
       if (expanded.has(g.key)) expanded.delete(g.key);
       else expanded.add(g.key);
@@ -228,10 +265,14 @@ export function renderLogPanel(
     box.appendChild(head);
     if (open) {
       const list = el("ul", "log-list");
-      for (const m of g.messages.slice(0, MAX_PER_GROUP)) {
-        list.appendChild(el("li", undefined, m));
+      for (const r of g.records.slice(0, MAX_PER_GROUP)) {
+        const li = el("li", undefined, r.message);
+        // The element this warning points at, carried on the DOM node so a
+        // future click-to-reveal has it without re-deriving anything.
+        li.dataset.nodeId = r.nodeId;
+        list.appendChild(li);
       }
-      const hidden = g.messages.length - MAX_PER_GROUP;
+      const hidden = g.records.length - MAX_PER_GROUP;
       if (hidden > 0) {
         // Never let a cap read as "that was all of them".
         list.appendChild(

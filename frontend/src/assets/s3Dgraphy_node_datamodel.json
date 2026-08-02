@@ -713,6 +713,41 @@
        }
       }
      }
+    },
+    "FunctionalUnitNodeGroup": {
+     "class": "FunctionalUnitNodeGroup",
+     "parent": "GroupNode",
+     "abbreviation": "FU",
+     "label": "Functional Unit",
+     "description": "Typed aggregation of the stratigraphic units that make up one recognisable functional/architectural component — the column made of its US, the wall made of its US (DP-72). Answers what a set of units IS, as a building component. Built BOTTOM-UP from the stratigraphic reading: the member units stay intact and fully stratigraphic underneath, each keeping its own epochs, paradata and provenance. Membership is a TAG axis, 'is_in_functional_unit' (m:n, additive), NOT the nesting axis 'is_part_of': the relation is the same mereological P46i, but a Functional Unit legitimately SPANS EPOCHS (a wall built across four of them still carries the roof as one body) and a swimlane box cannot, so the functional reading lives in its own view beside pure stratigraphy without either constraining the other. NOT an ActivityNodeGroup (DP-43: a cluster of actions/processes — what was DONE, not what the units ARE); NOT a generic container (DP-36: a US/USD/VSF acting as container is still a stratigraphic unit with its own formation event, while a Functional Unit has none of its own); NOT a LocationNodeGroup of kind 'functional' (a named PLACE answering 'where', not a COMPONENT answering 'what'); NOT a geometric construction grammar (the geometry type travels BY REFERENCE via 'geometry_type_ref', nothing internalized). Attach rules: members StratigraphicNode --is_in_functional_unit--> FunctionalUnit; nesting FunctionalUnit --is_in_functional_unit--> FunctionalUnit (the capital inside the column); FunctionalUnit --is_part_of--> US stays legal and means the whole component PHYSICALLY EMBEDDED in a stratigraphic unit (a column engaged in a later wall). The orthogonal axes stay orthogonal: a member keeps its own has_first_epoch / is_in_activity / is_in_location, and the Functional Unit has NO epoch of its own — its temporal extent is DERIVED from its members and may cover several epochs. EM manual: 'SU / USD / VSF as Container' (Stratigraphic Nodes) and the is_part_of connector.",
+     "s3Dgraphy_file": "group_node.py",
+     "mapping": {
+      "cidoc": "E24 Physical Human-Made Thing",
+      "cidoc_s3d": null,
+      "alternative": "E24 Physical Human-Made Thing + P46_is_composed_of (its member units)",
+      "rationale": "A Functional Unit asserts a made THING composed of its parts, so it takes the physical class and the mereological P46, NOT the E78 Collection its GroupNode parent defaults to: E78 is a curatorial set (what someone gathered), while a component is a whole made of parts. It is likewise not E7 Activity (that is the ActivityNodeGroup axis: the act, not the thing) nor E53 Place (the LocationNodeGroup axis: where, not what). Same precedent as TimeBranchNodeGroup, which overrides the E78 default with E4 Period. E24 rather than E22/E25 keeps both movable components and immobile features in scope without over-committing. The target mapping to CRMvr V5 Component Element is separate work (DP-72)."
+     },
+     "em_extension": {
+      "uri": "em:FunctionalUnit",
+      "rdf_type": "owl:Class",
+      "subclass_of": [
+       "crm:E24_Physical_Human-Made_Thing"
+      ],
+      "extension_status": "proposed"
+     },
+     "properties": {
+      "name": "P1_is_identified_by",
+      "description": "P3_has_note",
+      "geometry_type_ref": {
+       "type": "reference",
+       "required": false,
+       "description": "Opaque pointer into an EXTERNAL geometry-type taxonomy (bSDD / Getty AAT / an HBIM shape-grammar vocabulary). Free-form by design: no vocabulary is internalized or validated by s3Dgraphy, and the geometric construction grammar stays with the modeller / OpenBIM at export time (DP-72).",
+       "mapping": {
+        "cidoc": "P2_has_type → E55 Type",
+        "rationale": "A typological classification of the component, carried by reference to an external authority rather than by an internal enumeration. The concrete field shape (scheme + id, or a plain URI) is not fixed yet — see DP-72."
+       }
+      }
+     }
     }
    }
   }
@@ -970,6 +1005,36 @@
    "abbreviation": "RMDoc",
    "label": "Representation Model Document",
    "description": "3D representation of a documentary node — e.g. a historical photo georeferenced and positioned in 3D space at the location it depicts. Linked via crm:P138_represents to a DocumentNode (or ExtractorNode/CombinerNode that uses the document). Specialization of em:RepresentationModel.",
+   "scope_note": "RM of an asset that CANNOT sit in 3D without a transformation matrix — (0,0,0) is an improbable place for it — and that normally involves a POV / camera sighting the document (a section, an elevation, an image); typically a georeferenced 2D document used as a base. It is NOT the RMDoc case when a photogrammetric model is used as a SOURCE: that is an RM bound to its epoch, plus a Document. An asset that is already 3D and already an RM does NOT generate an RMDoc. The family reads as a parallel of spatial instances of conceptual nodes: proxy:US :: RMSF:SF :: RM:state :: RMDoc:Document. What has degrees on an RMDoc is the SPATIALISATION, not the existence: the document certainly exists, and its temporality is an attribution (certain, or argued through a paradata chain) — never a grade on the geometry axis. The position itself (X,Y,Z + rotation) lives here and nowhere else; the Document may mirror the geometry value on its yEd border for diagram convenience but carries no position.",
+   "placement_qualia": {
+    "axis": "geometry",
+    "authoritative_on": "RepresentationModelDocNode",
+    "vocabulary_source": "em_visual_rules.json → document_variant_styles",
+    "ladder": [
+     "reality_based",
+     "observable",
+     "asserted",
+     "symbolic"
+    ],
+    "not_a_rung": [
+     "em_based"
+    ],
+    "note": "Scale of METRIC AUTHORITY OF PLACEMENT, most to least. 'symbolic' (EM 1.6, Q-C) is the lowest rung: the base is not metric at all (not-to-scale map, schematic plan, sketch). 'em_based' sits outside the ladder — it is a provenance statement (the asset IS an EM-derived reconstruction), which says nothing about how well it is placed."
+   },
+   "attach_rules": {
+    "from_document": {
+     "edge_type": "has_representation_model_doc",
+     "direction": "Document → RMDoc",
+     "cidoc": "P138i_has_representation",
+     "note": "The Document is the attach target. An RMDoc is NOT bound to an epoch nor to a stratigraphic unit — that is what separates it from an RM."
+    },
+    "to_resource": {
+     "edge_type": "has_linked_resource",
+     "direction": "RMDoc → LinkNode",
+     "cidoc": "P67_refers_to",
+     "note": "The P67 hinge to the file on disk goes through the LinkNode, as for every other representation facet."
+    }
+   },
    "s3Dgraphy_file": "representation_node.py",
    "mapping": {
     "cidoc": "D1 Digital Object",
@@ -1322,7 +1387,7 @@
   }
  },
  "dtc_nodes": {
-  "_section_note": "DTC (Digital Twin Chain) substrate profile — the ECHOES deliverable: the DIGITAL PROVENANCE that produces documents (input Resources -> a Process event -> output Resources). Distinct from EM-paradata (interpretation ON a document = CRMinf/HC17). ONE chunk class only — DTCProcessNode; BOTH the INPUT and the OUTPUT are RESOURCES = the EM LinkNode (E73/D1, the shared hinge a RepresentationModel/Document may reference), NOT dedicated classes: the process links to them via dtc_had_input / dtc_had_output (target LinkNode); a Resource that participates carries data.dtc_kind + resource_type and projects crmdig:D1 + prov:Entity + P2(dtc_kind). The DTC graph = Resources connected by Process events (Process --dtc_had_input[prov:used]--> input Resource; Process --dtc_had_output[prov:generated]--> output Resource; output Resource --dtc_derived_from[prov:wasDerivedFrom]--> input Resource). Option A naming; CRMdig+PROV-O mapping in em_extension, no D-numbers in the UI. Gated OUT of the stratigrapher palette (like hdto_nodes). Per-kind vocabulary is DATA-DRIVEN + expandable in em_visual_rules.json -> dtc_kinds (via utils.get_dtc_kinds). EM commons (Author/License/Embargo/LinkNode) reused, not duplicated. (LinkNode -> ResourceNode rename is a future coordinated step.)",
+  "_section_note": "DTC (Digital Twin Chain) substrate profile — the ECHOES deliverable: the DIGITAL PROVENANCE around documents. TWO event chunk classes, both DISTINCT TYPES in the one DTC substrate: DTCProcessNode = GENESIS/transformation (crmdig:D7_Digital_Machine_Event) that produces documents (input Resources -> Process -> output Resources); DTCAcquisitionNode = ACQUISITION/ingestion (crmdig:D12_Data_Transfer_Event ⊂ D7) — how an asset ENTERS this study from an opaque external source (Tier 0: single-ring, acquisition --dtc_had_output--> Resource; source root recorded as literals). genesis != acquisition is a distinction of TYPE, never confused. Distinct from EM-paradata (interpretation ON a document = CRMinf/HC17). BOTH the INPUT and the OUTPUT are RESOURCES = the EM LinkNode (E73/D1, the shared hinge a RepresentationModel/Document may reference), NOT dedicated classes: the process links to them via dtc_had_input / dtc_had_output (target LinkNode); a Resource that participates carries data.dtc_kind + resource_type and projects crmdig:D1 + prov:Entity + P2(dtc_kind). The DTC graph = Resources connected by Process events (Process --dtc_had_input[prov:used]--> input Resource; Process --dtc_had_output[prov:generated]--> output Resource; output Resource --dtc_derived_from[prov:wasDerivedFrom]--> input Resource). Option A naming; CRMdig+PROV-O mapping in em_extension, no D-numbers in the UI. Gated OUT of the stratigrapher palette (like hdto_nodes). Per-kind vocabulary is DATA-DRIVEN + expandable in em_visual_rules.json -> dtc_kinds (via utils.get_dtc_kinds). EM commons (Author/License/Embargo/LinkNode) reused, not duplicated. (LinkNode -> ResourceNode rename is a future coordinated step.)",
   "DTCProcessNode": {
    "class": "DTCProcessNode",
    "parent": "DTCNode",
@@ -1340,6 +1405,34 @@
     "uri": "crmdig:D7_Digital_Machine_Event",
     "rdf_type": "owl:Class",
     "subclass_of": [
+     "prov:Activity"
+    ],
+    "extension_status": "profile-DTC-ECHOES"
+   },
+   "properties": {
+    "name": "P1_is_identified_by",
+    "description": "P3_has_note",
+    "dtc_kind": "P2_has_type"
+   }
+  },
+  "DTCAcquisitionNode": {
+   "class": "DTCAcquisitionNode",
+   "parent": "DTCNode",
+   "abbreviation": "DAC",
+   "label": "DTC Acquisition",
+   "description": "A DTC ACQUISITION chunk: the digital event by which an asset ENTERS this study from an (opaque, Tier-0) external source — a data-transfer / ingestion event, DISTINCT from the genesis DTCProcessNode. Projected as crmdig:D12_Data_Transfer_Event (a subclass of D7_Digital_Machine_Event, ⊂ prov:Activity): 'events that transfer a digital object from one digital carrier to another; normally the digital object remains the same' — the object arrives opaque, no genesis is asserted. Tier 0: single-ring chain — the acquisition event --dtc_had_output[prov:generated]--> the acquired Resource (LinkNode); the upstream root is an opaque external entity recorded as literals on data (repo/record/agent/retrieved_at/rights), not a genesis sub-graph. data.dtc_kind from the `acquisition` axis (download / ingest / local_import). Keeps genesis != acquisition as distinct TYPES inside the one DTC substrate.",
+   "s3Dgraphy_file": "dtc_acquisition_node.py",
+   "mapping": {
+    "cidoc": "crmdig:D12_Data_Transfer_Event",
+    "cidoc_s3d": null,
+    "alternative": "crmdig:D12_Data_Transfer_Event (⊂ crmdig:D7_Digital_Machine_Event ⊂ prov:Activity) — dual CRMdig + PROV-O",
+    "rationale": "An acquisition/ingestion is the transfer of a digital object from the source carrier to ours (D12), a more specific and DISTINCT class from the genesis D7 process event. Multi-typed prov:Activity so the PROV-O used/generated pattern applies (prov:generated the acquired Resource)."
+   },
+   "em_extension": {
+    "uri": "crmdig:D12_Data_Transfer_Event",
+    "rdf_type": "owl:Class",
+    "subclass_of": [
+     "crmdig:D7_Digital_Machine_Event",
      "prov:Activity"
     ],
     "extension_status": "profile-DTC-ECHOES"

@@ -1326,7 +1326,7 @@ function loadDocument(
   if (unresolved.length) {
     logWarn(
       unresolved
-        .map((g) => `${g.messages.length} ${g.label.toLowerCase()}`)
+        .map((g) => `${g.records.length} ${g.label.toLowerCase()}`)
         .join(" · ") + " — see Document warnings above",
     );
   }
