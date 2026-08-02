@@ -182,33 +182,93 @@ export function edgeStyle(edgeType?: string): EdgeStyle {
 }
 
 /**
- * EM 1.6 Master/Instance document variants (geometry axis): border colour
- * and width straight from em_visual_rules.document_variant_styles. Legacy
- * certainty_class values map onto the current variant keys.
+ * EM 1.6 document variants — the `geometry` axis (Q-C).
+ *
+ * Two independent things are drawn on a document's border, and conflating them
+ * is what made this wrong before:
+ *
+ *   WIDTH  = the canonical / use-instance role. Thick (>= 3.0) is the document
+ *            drawn at its own moment of creation; thin is a repetition of it
+ *            somewhere in the argument.
+ *   COLOUR = the geometry category — the metric authority of the placement of
+ *            its RM: reality_based / observable / asserted / symbolic, plus
+ *            `em_based` aside as a provenance statement.
+ *
+ * A canonical document with no geometry gets `canonical_unknown` (thick BLACK:
+ * classified as canonical, NOT yet classified on the axis). A document with no
+ * RM at all — a PDF article, a bibliography — simply has no geometry, and there
+ * is nothing to colour: it falls to `default`.
+ *
+ * Every colour and width comes from `em_visual_rules.document_variant_styles`;
+ * nothing here is hardcoded, so adding a rung upstream needs no code change.
  */
 const VARIANT_LEGACY: Record<string, string> = {
+  // pre-1.6 `certainty_class` spellings, still read off older documents
   direct: "reality_based",
   reconstructed: "observable",
   hypothetical: "asserted",
 };
 
-export function documentVariant(certainty?: string): {
-  color: string;
-  width: number;
-} {
-  const styles = (
-    rules as unknown as {
-      document_variant_styles?: Record<
-        string,
-        { border_color?: string; border_width?: number }
-      >;
-    }
-  ).document_variant_styles;
-  const key = certainty ? (VARIANT_LEGACY[certainty] ?? certainty) : "";
-  const st = styles?.[key];
-  if (st?.border_color)
-    return { color: st.border_color, width: st.border_width ?? 4 };
-  return { color: "#000000", width: 4 }; // master_unknown / missing
+const CANONICAL_UNKNOWN = "canonical_unknown";
+const VARIANT_DEFAULT = "default";
+
+function variantStyles(): Record<
+  string,
+  { border_color?: string; border_width?: number }
+> {
+  return (
+    (
+      rules as unknown as {
+        document_variant_styles?: Record<
+          string,
+          { border_color?: string; border_width?: number }
+        >;
+      }
+    ).document_variant_styles ?? {}
+  );
+}
+
+/** The style-lookup key for a document — the TS mirror of s3Dgraphy's
+ *  `DocumentNode.variant_style_key()`. Geometry wins; a canonical document
+ *  without one is `canonical_unknown`; anything else is `default`. */
+export function documentVariantKey(
+  data: Record<string, unknown> | undefined,
+  isCanonical: boolean,
+): string {
+  const styles = variantStyles();
+  const raw =
+    (typeof data?.["geometry"] === "string"
+      ? (data["geometry"] as string)
+      : undefined) ??
+    // legacy: the axis used to live under `certainty_class`
+    (typeof data?.["certainty_class"] === "string"
+      ? (data["certainty_class"] as string)
+      : undefined);
+  if (raw) {
+    const key = VARIANT_LEGACY[raw] ?? raw;
+    // `canonical_unknown` and `default` are STYLE keys, never geometry values
+    // (cleanup E) — a document declaring one as its geometry is not making a
+    // statement about metric authority.
+    if (key !== CANONICAL_UNKNOWN && key !== VARIANT_DEFAULT && styles[key])
+      return key;
+  }
+  return isCanonical ? CANONICAL_UNKNOWN : VARIANT_DEFAULT;
+}
+
+export function documentVariant(
+  data?: Record<string, unknown>,
+  isCanonical = false,
+): { color: string; width: number; key: string } {
+  const styles = variantStyles();
+  const key = documentVariantKey(data, isCanonical);
+  const st = styles[key] ?? styles[VARIANT_DEFAULT];
+  return {
+    key,
+    color: st?.border_color ?? "#000000",
+    // The datamodel's own widths: 4.0 for every canonical variant, 1.0 for the
+    // use-instance default. That IS the canonical/instance signal.
+    width: st?.border_width ?? (isCanonical ? 4 : 1),
+  };
 }
 
 /** Edge types considered part of the stratigraphic backbone. */

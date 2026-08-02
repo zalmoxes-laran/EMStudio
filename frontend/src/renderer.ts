@@ -583,11 +583,9 @@ export function render(
         data["is_canonical"] === true ||
         data["is_master"] === true ||
         (!n.instanceOf && (n.useCount ?? 0) > 1);
-      const variant = documentVariant(
-        typeof data["certainty_class"] === "string"
-          ? (data["certainty_class"] as string)
-          : undefined,
-      );
+      // WIDTH says canonical/instance, COLOUR says geometry — resolved once,
+      // from the datamodel, by the same rule s3Dgraphy uses.
+      const variant = documentVariant(data, isCanonical);
       const ih = Math.min(n.h, 30);
       const iw = ih * 0.78;
       const x0 = n.x + n.w / 2 - iw / 2;
@@ -602,17 +600,20 @@ export function render(
       ctx.closePath();
       ctx.fillStyle = "#FFFFFF";
       ctx.fill();
-      ctx.strokeStyle = isCanonical ? variant.color : "#1a1a1a";
-      ctx.lineWidth =
-        (isCanonical ? Math.max(2.4, variant.width * 0.65) : 0.9) /
-        Math.sqrt(vp.scale);
+      // The datamodel's widths are yEd stroke widths (4.0 canonical / 1.0
+      // instance); scale them to the canvas the way every other border here is
+      // scaled, and keep a floor so a thin border never disappears when zoomed
+      // out.
+      const bw = Math.max(0.9, variant.width * 0.6) / Math.sqrt(vp.scale);
+      ctx.strokeStyle = variant.color;
+      ctx.lineWidth = bw;
       ctx.stroke();
-      // fold
+      // fold — always hairline, it is a fold and not a border
       ctx.beginPath();
       ctx.moveTo(x0 + iw - f, y0);
       ctx.lineTo(x0 + iw - f, y0 + f);
       ctx.lineTo(x0 + iw, y0 + f);
-      ctx.strokeStyle = isCanonical ? variant.color : "#1a1a1a";
+      ctx.strokeStyle = variant.color;
       ctx.lineWidth = 0.9 / Math.sqrt(vp.scale);
       ctx.stroke();
       if (drawLabels) {
@@ -646,19 +647,28 @@ export function render(
       continue;
     }
 
-    // property: yEd chip — white rectangle with a corner tab, name inside
+    // property: the BPMN **text annotation**, which is what the palette
+    // template actually uses — `y:GenericNode` with configuration
+    // `com.yworks.bpmn.Artifact.withShadow` and
+    // `com.yworks.bpmn.type = ARTIFACT_TYPE_ANNOTATION`.
+    //
+    // The annotation has NO closed rectangle: it is a bracket on the left edge
+    // and the text beside it, over a near-white field (#FFFFFFE6). The previous
+    // rendering stroked a full box AND drew the ticks outside it, which read as
+    // a framed chip — a different shape from the one the author draws in yEd.
     if (n.node.node_type === "property") {
-      ctx.fillStyle = "#FFFFFF";
-      ctx.strokeStyle = "#1a1a1a";
-      ctx.lineWidth = 1.1 / Math.sqrt(vp.scale);
+      const st = nodeStyle(n.node.node_type);
+      ctx.fillStyle = st.fill || "#FFFFFFE6";
       ctx.fillRect(n.x, n.y, n.w, n.h);
-      ctx.strokeRect(n.x, n.y, n.w, n.h);
-      // the two little tab ticks on the left edge (palette template)
+      // the bracket: short tick, down the left edge, short tick
+      const tick = Math.min(5, n.w * 0.18);
       ctx.beginPath();
-      ctx.moveTo(n.x, n.y + 4);
-      ctx.lineTo(n.x - 4, n.y + 4);
-      ctx.lineTo(n.x - 4, n.y + n.h - 4);
-      ctx.lineTo(n.x, n.y + n.h - 4);
+      ctx.moveTo(n.x + tick, n.y);
+      ctx.lineTo(n.x, n.y);
+      ctx.lineTo(n.x, n.y + n.h);
+      ctx.lineTo(n.x + tick, n.y + n.h);
+      ctx.strokeStyle = st.border || "#000000";
+      ctx.lineWidth = 1.1 / Math.sqrt(vp.scale);
       ctx.stroke();
       if (drawLabels) {
         const label = String(n.node.name || n.id);

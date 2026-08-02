@@ -20,7 +20,7 @@
  * author the same story.
  */
 
-import { GENERIC_EDGE, classOf } from "./rules";
+import { allowedEdgeTypes, GENERIC_EDGE, classOf } from "./rules";
 import type { EmDocument } from "./types";
 
 // ── activity log ──────────────────────────────────────────────────────────────
@@ -76,6 +76,10 @@ export interface DiagnosticRecord {
   message: string;
   edgeId?: string;
   targetId?: string;
+  /** For a degraded edge: the relations the datamodel WOULD allow between its
+   *  endpoints. Shown in the tooltip as information — re-typing an edge is the
+   *  author's decision, made in the source graph, not a click here. */
+  candidates?: string[];
 }
 
 export interface DiagnosticGroup {
@@ -159,6 +163,7 @@ export function documentDiagnostics(doc: EmDocument | null): DiagnosticGroup[] {
       nodeId: e.source,
       edgeId: e.id,
       targetId: e.target,
+      candidates: allowedEdgeTypes(s?.node_type, t?.node_type),
       message:
         `${nameOf(e.source, s?.name)} → ${nameOf(e.target, t?.name)} — ` +
         `degraded to ${GENERIC_EDGE}`,
@@ -224,10 +229,15 @@ function el(tag: string, cls?: string, text?: string): HTMLElement {
  *  (a sync event, a new log line) does not collapse what the author opened. */
 const expanded = new Set<string>();
 
+/** What a warning line offers to do about the element it names. Supplied by
+ *  main.ts, which owns selection and the viewport. */
+export type RevealFn = (nodeId: string) => void;
+
 export function renderLogPanel(
   container: HTMLElement,
   doc: EmDocument | null,
   readWithVersion: string,
+  onReveal?: RevealFn,
 ): void {
   container.textContent = "";
 
@@ -260,16 +270,35 @@ export function renderLogPanel(
     head.addEventListener("click", () => {
       if (expanded.has(g.key)) expanded.delete(g.key);
       else expanded.add(g.key);
-      renderLogPanel(container, doc, readWithVersion);
+      renderLogPanel(container, doc, readWithVersion, onReveal);
     });
     box.appendChild(head);
     if (open) {
       const list = el("ul", "log-list");
       for (const r of g.records.slice(0, MAX_PER_GROUP)) {
         const li = el("li", undefined, r.message);
-        // The element this warning points at, carried on the DOM node so a
-        // future click-to-reveal has it without re-deriving anything.
         li.dataset.nodeId = r.nodeId;
+        // The candidates are INFORMATION, not an action: which relation an edge
+        // should have carried is an authorial decision, made in the source
+        // graph. Showing them here saves the author a lookup, nothing more.
+        const hints: string[] = [];
+        if (r.candidates?.length)
+          hints.push(`the datamodel allows: ${r.candidates.join(", ")}`);
+        if (onReveal) {
+          li.classList.add("log-clickable");
+          li.tabIndex = 0;
+          li.setAttribute("role", "button");
+          hints.push("click to select and centre it");
+          const reveal = () => onReveal(r.nodeId);
+          li.addEventListener("click", reveal);
+          li.addEventListener("keydown", (e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              reveal();
+            }
+          });
+        }
+        if (hints.length) li.title = hints.join(" — ");
         list.appendChild(li);
       }
       const hidden = g.records.length - MAX_PER_GROUP;

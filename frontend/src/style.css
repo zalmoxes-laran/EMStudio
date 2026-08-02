@@ -779,6 +779,21 @@ body.sync-active #mode-indicator::before {
   font-style: italic;
 }
 
+/* a warning that points at something you can go look at */
+.log-clickable {
+  cursor: pointer;
+  border-radius: 4px;
+  padding: 1px 3px;
+  margin-left: -3px;
+}
+
+.log-clickable:hover,
+.log-clickable:focus-visible {
+  background: #eef4fd;
+  color: var(--text);
+  outline: none;
+}
+
 .log-activity {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 11px;

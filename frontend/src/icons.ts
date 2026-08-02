@@ -33,10 +33,25 @@ export function dtcGlyphUrl(basename: string | null): string | null {
 }
 
 /** node types drawn ON CANVAS as their official icon (yEd parity).
+ *
+ * The rights nodes join extractor/combiner here because that is what they are
+ * in the GraphML: `y:ImageNode`s carrying the palette bitmap (a person, a
+ * robot, the licence mark, a no-entry sign), identified by their `A.` / `AI.` /
+ * `LI.` / `EB.` label prefix. Drawing them from `style.shape` instead produced
+ * a star, a star, a rounded rectangle and an octagon — four shapes with no
+ * relation to what the author sees in yEd.
+ *
  * property and document are NOT here: property's PNG embeds the word
  * "property", and the document sheet must carry ITS OWN border (thick =
- * master, coloured by geometry variant) — both are drawn vectorially. */
-export const ICON_NODE_TYPES = new Set(["extractor", "combiner"]);
+ * canonical, coloured by geometry variant) — both are drawn vectorially. */
+export const ICON_NODE_TYPES = new Set([
+  "extractor",
+  "combiner",
+  "author",
+  "author_ai",
+  "license",
+  "embargo",
+]);
 
 const imageCache = new Map<string, HTMLImageElement>();
 let redraw: (() => void) | null = null;

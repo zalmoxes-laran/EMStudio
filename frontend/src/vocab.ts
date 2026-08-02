@@ -9,14 +9,23 @@ export interface Qualia {
   name: string;
   category: string;
   categoryLabel: string;
+  /** The category's own gloss from the vocabulary — what the whole family is
+   *  for. Used as the tooltip of the section header, which had none. */
+  categoryDescription?: string;
   subcategory: string;
   subcategoryLabel: string;
+  subcategoryDescription?: string;
   description?: string;
   rationale?: string;
   example?: string;
   dataType?: string;
   units?: string[];
   values?: string[];
+  /** Authority mappings (Getty AAT, CIDOC-CRM, Dublin Core). Present on most
+   *  terms and previously unread; for a term with no prose they are the only
+   *  thing the vocabulary can say, and saying it beats saying nothing. */
+  mappings?: Record<string, string>;
+  expectedExtractors?: string[];
 }
 
 interface RawQ {
@@ -28,14 +37,18 @@ interface RawQ {
   data_type?: string;
   units?: string[];
   values?: string[];
+  mappings?: Record<string, string>;
+  expected_extractors?: string[];
 }
 interface RawSub {
   name?: string;
+  description?: string;
   qualia?: RawQ[];
 }
 interface RawCat {
   id: string;
   name?: string;
+  description?: string;
   subcategories?: Record<string, RawSub>;
 }
 
@@ -55,14 +68,18 @@ for (const c of doc.qualia_categories ?? []) {
         name: q.name,
         category: c.id,
         categoryLabel: c.name ?? c.id,
+        categoryDescription: c.description,
         subcategory: sk,
         subcategoryLabel: sv.name ?? sk,
+        subcategoryDescription: sv.description,
         description: q.description,
         rationale: q.rationale,
         example: q.example,
         dataType: q.data_type,
         units: q.units,
         values: q.values,
+        mappings: q.mappings,
+        expectedExtractors: q.expected_extractors,
       });
     }
   }

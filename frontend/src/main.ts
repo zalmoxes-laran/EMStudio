@@ -2103,6 +2103,36 @@ function onVocabKey(e: KeyboardEvent): void {
     hideVocabMenu();
   }
 }
+function escapeHtml(text: string): string {
+  const d = document.createElement("div");
+  d.textContent = text;
+  return d.innerHTML;
+}
+
+/** The facts the vocabulary records about a term besides its prose: value type,
+ *  admitted units or values, and the authority it maps onto. */
+function qualiaFacts(q: Qualia): string[] {
+  const out: string[] = [];
+  if (q.dataType) out.push(`type: ${q.dataType}`);
+  if (q.units?.length) out.push(`units: ${q.units.join(", ")}`);
+  if (q.values?.length) out.push(`values: ${q.values.join(", ")}`);
+  const cidoc = q.mappings?.["cidoc_crm"];
+  if (cidoc) out.push(`CIDOC ${cidoc}`);
+  return out;
+}
+
+/** A term's tooltip. It used to fall back to the term's own NAME, which reads
+ *  as "no tooltip" — the label is already on screen. Where the vocabulary has
+ *  no prose, say where the term sits and what it takes instead. */
+function qualiaTooltip(q: Qualia): string {
+  const prose = q.rationale || q.description;
+  const facts = qualiaFacts(q);
+  const place = `${q.categoryLabel} → ${q.subcategoryLabel}`;
+  return [prose ?? place, ...(facts.length ? [facts.join(" · ")] : [])].join(
+    "\n",
+  );
+}
+
 // Open the qualia catalogue on a just-created (or selected) PropertyNode so its
 // label is picked from the controlled vocabulary; each term shows its
 // rationale + example. Cancelling leaves the default label.
@@ -2128,13 +2158,25 @@ function openQualiaPicker(nodeId: string, wx: number, wy: number): void {
   const detail = document.createElement("div");
   detail.className = "vocab-detail";
   menu.appendChild(detail);
+  // The box under the list. Many terms carry no prose in the vocabulary yet
+  // (19 of 88 at 1.6.0 — the dimensional ones especially), and it used to say
+  // so and stop, which is a dead end for the reader. Nothing may be invented
+  // here, so instead it falls back to what the vocabulary DOES record about
+  // the term: where it sits, what type of value it takes, in which units, and
+  // which authority it maps onto.
   const showDetail = (q: Qualia): void => {
     const bits: string[] = [];
     if (q.rationale) bits.push(`<b>Why</b> ${q.rationale}`);
     if (q.example) bits.push(`<b>e.g.</b> ${q.example}`);
     if (!bits.length && q.description) bits.push(q.description);
-    detail.innerHTML =
-      bits.join("<br>") || "<i>no rationale in the vocabulary yet</i>";
+    if (!bits.length) {
+      bits.push(`<i>${escapeHtml(q.categoryLabel)} → ${escapeHtml(q.subcategoryLabel)}</i>`);
+      if (q.subcategoryDescription)
+        bits.push(escapeHtml(q.subcategoryDescription));
+    }
+    const facts = qualiaFacts(q);
+    if (facts.length) bits.push(facts.map(escapeHtml).join(" · "));
+    detail.innerHTML = bits.join("<br>");
   };
   const pick = (q: Qualia): void => {
     hideVocabMenu();
@@ -2170,6 +2212,9 @@ function openQualiaPicker(nodeId: string, wx: number, wy: number): void {
         const h = document.createElement("div");
         h.className = "cm-sect";
         h.textContent = q.categoryLabel;
+        // the category's gloss, straight from em_qualia_types.json — these
+        // headers carried no tooltip at all while every item below them did
+        if (q.categoryDescription) h.title = q.categoryDescription;
         listEl.appendChild(h);
       }
       if (q.subcategory !== lastSub) {
@@ -2177,12 +2222,13 @@ function openQualiaPicker(nodeId: string, wx: number, wy: number): void {
         const sh = document.createElement("div");
         sh.className = "cm-subsect";
         sh.textContent = q.subcategoryLabel;
+        if (q.subcategoryDescription) sh.title = q.subcategoryDescription;
         listEl.appendChild(sh);
       }
       const b = document.createElement("button");
       b.className = "cm-item";
       b.textContent = q.name;
-      b.title = q.rationale || q.description || q.name;
+      b.title = qualiaTooltip(q);
       b.addEventListener("mouseenter", () => showDetail(q));
       b.addEventListener("focus", () => showDetail(q));
       b.addEventListener("click", () => pick(q));
@@ -3040,11 +3086,29 @@ tabInspector.addEventListener("click", () => showTab("inspector"));
 tabNodes.addEventListener("click", () => showTab("nodes"));
 tabLog.addEventListener("click", () => showTab("log"));
 
+/** Click a warning → select the element it names and bring it into view.
+ *
+ * The same two steps the inspector's cross-references use (`onJump`), so a
+ * warning behaves like every other link in the app. A node can legitimately be
+ * absent from the current scene — folded into a group, filtered out by the
+ * circles of detail, or simply on the other view — and silently doing nothing
+ * would read as a broken button, so say what happened instead. */
+function revealFromWarning(nodeId: string): void {
+  if (!store) return;
+  if (!store.node(nodeId)) {
+    toast("that node is no longer in the document");
+    return;
+  }
+  select(nodeId);
+  if (scene()?.byId.has(nodeId)) centerOn(nodeId);
+  else toast("selected — not visible in this view (folded, or filtered out)");
+}
+
 /** Redraw the Log tab — only when it is the visible one; there is no point
  *  rebuilding a hidden DOM on every sync message. */
 function refreshLogPanel(): void {
   if (activeTab !== "log") return;
-  renderLogPanel(logpanelEl, store?.doc ?? null, EM_VERSION);
+  renderLogPanel(logpanelEl, store?.doc ?? null, EM_VERSION, revealFromWarning);
 }
 onLogChange(refreshLogPanel);
 btnUndo.addEventListener("click", () => store?.undo());
