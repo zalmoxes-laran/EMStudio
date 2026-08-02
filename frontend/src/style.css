@@ -2291,3 +2291,30 @@ body.sync-active #footer-brand #em-version {
 /* the key indicator states set/unset — never the key itself */
 .ai-key-set { color: #2e7d32; font-weight: 600; }
 .ai-key-unset { color: #9aa4b0; }
+
+/* "Valida" with nobody chosen to sign: it still acts — it takes you to the
+   picker — so it reads as available-but-incomplete, not as broken. */
+.nv-endorse-unsigned {
+  border-style: dashed;
+  opacity: 0.75;
+}
+
+/* the "firmo come" picker, when an endorsement went looking for it */
+.nv-wants-attention {
+  outline: 2px solid #ff6600;
+  outline-offset: 2px;
+  border-radius: 4px;
+  animation: nv-pulse 0.6s ease-in-out 3;
+}
+
+@keyframes nv-pulse {
+  50% { outline-color: transparent; }
+}
+
+.nv-tool-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #9aa4b0;
+  margin-left: 4px;
+}

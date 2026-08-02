@@ -28,17 +28,26 @@ Endpoints (CORS open for http://localhost:*):
                              keeps a resource's stable ID on "promote"; 501 if the
                              optional [minio] extra is not bundled)
     POST /generate-narrative-draft
-                           ← {doc, activity_id, provider?, instruction?}
+                           ← {doc, activity_id, provider?, model?, instruction?}
                            → {doc, narrative_id, chapter_title, author_id,
                               prompt_id, status, sent}
                              (EM Narrative N5: s3Dgraphy builds the briefing,
                               the selected LLMProvider writes the prose, s3Dgraphy
                               writes it back attributed to the AI author with the
                               prompt as a source and UNENDORSED. Provider from
-                              `provider` or $EM_LLM_PROVIDER, default claude;
-                              the Claude adapter reads $ANTHROPIC_API_KEY at call
-                              time and never stores it. 501 when unconfigured,
-                              502 when the model call fails.)
+                              `provider` or $EM_LLM_PROVIDER, default claude.
+                              501 when unconfigured, 502 when the model call fails.)
+    GET  /llm-key-status   → {set: bool, source: "session"|"env"|"none"}
+    POST /set-llm-key      ← {key}  → {set, source}
+    POST /clear-llm-key    →         {set, source}
+                             (S3 — the browser-dev half of the key story. No
+                              keychain in a browser, so the pasted key lives in
+                              a MODULE VARIABLE for this process's lifetime:
+                              never on disk, never in the environment, never in
+                              a log, never in a response. The session key wins
+                              over $ANTHROPIC_API_KEY. There is deliberately NO
+                              route that returns a key — only one that says
+                              whether there is one and where it came from.)
     POST /detach-dtc       ← {graph, process_id} → {record}   (read-only)
     POST /inject-dtc       ← {graph, record}     → {…ids, graph}
     POST /bake-dtc         ← {graph, injector_id} → {report, graph}
@@ -131,6 +140,8 @@ def make_handler(api):
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
+            elif route == "/llm-key-status":
+                self._llm_key_status()
             elif route == "/resolve-authority":
                 q = urllib.parse.parse_qs(parsed.query)
                 self._resolve_authority(
@@ -176,6 +187,8 @@ def make_handler(api):
                     self._fail(400, f"invalid JSON body: {exc}")
                     return
                 self._generate_narrative_draft(body)
+            elif route in ("/set-llm-key", "/clear-llm-key"):
+                self._llm_key_write(route, raw)
             elif route in ("/detach-dtc", "/inject-dtc", "/bake-dtc"):
                 try:
                     body = json.loads(raw.decode("utf-8")) if raw else {}
@@ -204,6 +217,71 @@ def make_handler(api):
                 {"ok": True, "term": term, "facet": (facet or "").upper(),
                  "candidates": candidates}).encode()
             self.send_response(200)
+            self._cors()
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+
+        # The session API key (S3). Three routes, and note the shape of the set:
+        # you can PUT a key and you can DELETE it, but there is nothing that
+        # GIVES one back. `/llm-key-status` answers "is there one, and where
+        # from" — never "which one". That asymmetry is the invariant; it is the
+        # same one the desktop shell keeps in Rust.
+        #
+        # The key exists in a module variable for the life of this process. It
+        # is not written to disk, not put in the environment, not echoed in a
+        # response, and not logged: the access log prints the request LINE only
+        # (method + path), never the body, and the failure paths below say what
+        # went wrong without quoting what was sent.
+        def _llm_key_status(self):
+            try:
+                _here = str(pathlib.Path(__file__).resolve().parent)
+                if _here not in sys.path:
+                    sys.path.insert(0, _here)
+                from llm_provider import api_key_source
+            except ImportError as exc:
+                self._fail(501, f"LLM seam unavailable: {exc}")
+                return
+            source = api_key_source()
+            self._json({"ok": True, "set": source != "none", "source": source})
+
+        def _llm_key_write(self, route, raw):
+            try:
+                _here = str(pathlib.Path(__file__).resolve().parent)
+                if _here not in sys.path:
+                    sys.path.insert(0, _here)
+                from llm_provider import (api_key_source, clear_session_key,
+                                          set_session_key)
+            except ImportError as exc:
+                self._fail(501, f"LLM seam unavailable: {exc}")
+                return
+
+            if route == "/clear-llm-key":
+                clear_session_key()
+                source = api_key_source()
+                self._json({"ok": True, "set": source != "none",
+                            "source": source})
+                return
+
+            try:
+                body = json.loads(raw.decode("utf-8")) if raw else {}
+            except Exception:
+                # deliberately not `{exc}`: a decoder message can carry a
+                # fragment of the document, and this document is a key
+                self._fail(400, "invalid JSON body")
+                return
+            key = (body.get("key") or "").strip() if isinstance(body, dict) else ""
+            if not key:
+                self._fail(400, "no key in the request body")
+                return
+            set_session_key(key)
+            del key, body, raw
+            self._json({"ok": True, "set": True, "source": api_key_source()})
+
+        def _json(self, payload, status=200):
+            out = json.dumps(payload).encode()
+            self.send_response(status)
             self._cors()
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(out)))

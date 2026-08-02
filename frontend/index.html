@@ -240,11 +240,13 @@
           <section class="settings-sect">
             <h4>AI provider</h4>
             <p class="settings-hint">
-              Chi scrive le bozze narrative. La chiave <b>non</b> passa mai dal
-              frontend: nell'app desktop finisce nel <b>portachiavi di sistema</b>
-              e viene iniettata nell'ambiente di em-bridge, che la legge al
-              momento della chiamata. Non entra in em.json, nel localStorage,
-              nei log, né in questa finestra dopo il salvataggio.
+              Chi scrive le bozze narrative. La chiave non viene <b>mai</b>
+              salvata dal frontend: nell'app desktop finisce nel
+              <b>portachiavi di sistema</b>, in sviluppo resta nella
+              <b>memoria di em-bridge</b> per questa sessione. In entrambi i
+              casi è em-bridge a leggerla al momento della chiamata. Non entra
+              in em.json, nel localStorage, nei log, né in questa finestra dopo
+              il salvataggio — e non esiste modo di rileggerla da qui.
             </p>
             <label
               >Provider

@@ -46,6 +46,18 @@ struct BridgeChild(Mutex<Option<CommandChild>>);
 const KEYRING_SERVICE: &str = "org.extendedmatrix.emstudio";
 const KEYRING_USER: &str = "anthropic-api-key";
 
+/// What to say when there is no credential store to write to. Names the one
+/// safe alternative instead of just reporting a failure — most often a Linux
+/// box with no Secret Service daemon (headless, bare WM, or a locked keyring).
+fn no_store_message(detail: &str) -> String {
+    format!(
+        "nessun portachiavi disponibile su questo sistema ({detail}). \
+         Su Linux serve un Secret Service attivo (GNOME Keyring, KWallet). \
+         In alternativa esporta la key nell'ambiente prima di avviare \
+         l'applicazione:  export ANTHROPIC_API_KEY=…"
+    )
+}
+
 fn keyring_entry() -> Result<keyring::Entry, String> {
     keyring::Entry::new(KEYRING_SERVICE, KEYRING_USER).map_err(|e| e.to_string())
 }
@@ -56,10 +68,52 @@ fn stored_llm_key() -> Option<String> {
     keyring_entry().ok()?.get_password().ok()
 }
 
-/// Is a key set? A boolean, deliberately: the UI shows "impostata", not the key.
+/// What the Settings panel is allowed to know: whether a keychain answered at
+/// all, and whether something is in it. Never the key.
+///
+/// The two flags are separate because the failures are separate. On Linux the
+/// Secret Service is a running daemon, not a guarantee: a headless box, a bare
+/// window manager, or a locked keyring all mean "no store here". Collapsing
+/// that into `set = false` would tell the user they have no key saved when the
+/// truth is that this machine cannot save one — and they would paste it again,
+/// and again.
+#[derive(serde::Serialize)]
+struct KeyStatus {
+    /// a credential store answered
+    available: bool,
+    /// …and it holds a non-empty key
+    set: bool,
+    /// why not, when `available` is false — shown verbatim to the user
+    detail: String,
+}
+
+/// Probe the credential store. `NoEntry` is a WORKING store with nothing in it;
+/// any other error means the store itself is out of reach.
 #[tauri::command]
-fn llm_key_status() -> bool {
-    stored_llm_key().is_some_and(|k| !k.trim().is_empty())
+fn llm_key_status() -> KeyStatus {
+    let entry = match keyring_entry() {
+        Ok(e) => e,
+        Err(detail) => {
+            return KeyStatus { available: false, set: false, detail }
+        }
+    };
+    match entry.get_password() {
+        Ok(key) => KeyStatus {
+            available: true,
+            set: !key.trim().is_empty(),
+            detail: String::new(),
+        },
+        Err(keyring::Error::NoEntry) => KeyStatus {
+            available: true,
+            set: false,
+            detail: String::new(),
+        },
+        Err(e) => KeyStatus {
+            available: false,
+            set: false,
+            detail: e.to_string(),
+        },
+    }
 }
 
 /// Store the key and restart the bridge so it picks it up.
@@ -74,17 +128,21 @@ fn set_llm_key(app: tauri::AppHandle, key: String) -> Result<bool, String> {
     if key.is_empty() {
         return Err("empty key".into());
     }
-    keyring_entry()?.set_password(&key).map_err(|e| e.to_string())?;
+    let entry = keyring_entry().map_err(|e| no_store_message(&e))?;
+    entry
+        .set_password(&key)
+        .map_err(|e| no_store_message(&e.to_string()))?;
     restart_bridge(&app);
     Ok(true)
 }
 
 #[tauri::command]
 fn clear_llm_key(app: tauri::AppHandle) -> Result<bool, String> {
-    match keyring_entry()?.delete_credential() {
+    let entry = keyring_entry().map_err(|e| no_store_message(&e))?;
+    match entry.delete_credential() {
         Ok(()) => {}
         Err(keyring::Error::NoEntry) => {}
-        Err(e) => return Err(e.to_string()),
+        Err(e) => return Err(no_store_message(&e.to_string())),
     }
     restart_bridge(&app);
     Ok(true)

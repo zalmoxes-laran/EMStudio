@@ -350,13 +350,16 @@ function provenanceStrip(
       strip.appendChild(b);
     }
   } else if (endorse) {
+    // Never disabled for lack of a signer. A disabled button with an
+    // explanation of where the missing control lives makes the user hunt; this
+    // one always acts — it signs, or it brings the picker to them.
     const b = el("button", "nv-endorse", "Valida") as HTMLButtonElement;
     b.title = signer
       ? `Metti il nome di ${signer.label} su questo paragrafo. ` +
         `Solo una persona può avallare: un modello che garantisce per un ` +
         `modello non è una validazione.`
-      : "Scegli prima con quale nome firmi (in alto, «firmo come»).";
-    b.disabled = !signer;
+      : "Scegli con quale nome firmi — premi e ti porto al selettore.";
+    b.classList.toggle("nv-endorse-unsigned", !signer);
     b.addEventListener("click", (e) => { e.stopPropagation(); endorse(); });
     strip.appendChild(b);
   }
@@ -622,6 +625,9 @@ export function renderNarrativeView(
     }
     if (editor) {
       const tools = el("div", "nv-chapter-tools");
+      // The chapter toolbar already carries an author select; without a label
+      // the two reads as one, and the user looks for "firmo come" here.
+      tools.appendChild(el("span", "nv-tool-label", "autore cap."));
       const canon = iconButton(
         chapter.canonical ? "★" : "☆",
         chapter.canonical
@@ -686,13 +692,13 @@ export function renderNarrativeView(
         const signer = editor.signer();
         const all = el("button", "nv-endorse nv-endorse-all",
           `Valida capitolo (${pending})`) as HTMLButtonElement;
-        all.disabled = !signer;
+        all.classList.toggle("nv-endorse-unsigned", !signer);
         all.title = signer
           ? `Metti il nome di ${signer.label} su ${pending} ` +
             `paragraf${pending === 1 ? "o" : "i"} di questo capitolo. ` +
             `Resta un atto per paragrafo: nel grafo si vedrà a quali frasi ` +
             `ha messo la firma, non solo che ha firmato il capitolo.`
-          : "Scegli prima con quale nome firmi (in alto, «firmo come»).";
+          : "Scegli con quale nome firmi — premi e ti porto al selettore.";
         all.addEventListener("click", (e) => {
           e.stopPropagation();
           editor.endorseChapter(ci);

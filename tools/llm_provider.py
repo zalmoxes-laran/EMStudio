@@ -92,6 +92,55 @@ def get_provider(name: Optional[str] = None, **opts) -> LLMProvider:
     return factory(**opts)
 
 
+# ── where the key comes from ──────────────────────────────────────────────────
+#
+# Two sources, and they exist because the two ways of running EMStudio have
+# different places to keep a secret:
+#
+#   * **desktop** — the OS keychain, injected into this process's environment
+#     when the Tauri shell spawns it. Persistent, and this process only ever
+#     sees it as `$ANTHROPIC_API_KEY`.
+#   * **browser dev** — no keychain to write to, so the user pastes the key and
+#     it lives HERE, in a module variable, for as long as this process does.
+#     Nothing writes it to disk, to a log, or back down the wire.
+#
+# The session key wins when both are set: it is the one the user just typed, so
+# it is the one they meant. Neither is ever readable from outside — there is no
+# endpoint that returns a key, only one that says whether there is one.
+
+_SESSION_KEY: str = ""
+
+
+def set_session_key(key: str) -> None:
+    """Hold a key in memory for this process's lifetime. Not persisted."""
+    global _SESSION_KEY
+    _SESSION_KEY = (key or "").strip()
+
+
+def clear_session_key() -> None:
+    global _SESSION_KEY
+    _SESSION_KEY = ""
+
+
+def api_key_source() -> str:
+    """`session` | `env` | `none` — never the key."""
+    if _SESSION_KEY:
+        return "session"
+    if os.environ.get("ANTHROPIC_API_KEY", "").strip():
+        return "env"
+    return "none"
+
+
+def resolve_api_key() -> str:
+    """The key to use, session first. Returns "" when there is none.
+
+    Read at CALL time, not at construction: in dev the user can paste a key
+    into a bridge that is already running, and a provider built a moment
+    earlier must still see it.
+    """
+    return _SESSION_KEY or os.environ.get("ANTHROPIC_API_KEY", "").strip()
+
+
 # ── Claude (Anthropic) — the first adapter ────────────────────────────────────
 
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
@@ -123,16 +172,19 @@ class ClaudeProvider(LLMProvider):
                                              DEFAULT_CLAUDE_MODEL)
         self.max_tokens = max_tokens
         self.timeout = timeout
-        # Held only for the lifetime of the call. Never written anywhere.
-        self._api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+        # An explicit key wins; otherwise resolved at call time, so a key
+        # pasted after this provider was built is still picked up.
+        self._api_key = api_key or ""
 
     def generate(self, system: str, prompt: str,
                  context: Dict[str, Any]) -> str:
-        if not self._api_key:
+        api_key = self._api_key or resolve_api_key()
+        if not api_key:
             raise LLMError(
-                "ANTHROPIC_API_KEY is not set in this bridge's environment. "
-                "Export it before starting em-bridge; it is read at call time "
-                "and never stored.", status=501)
+                "no API key: paste one in EMStudio's Settings (AI provider), "
+                "or export ANTHROPIC_API_KEY before starting em-bridge. "
+                "It is read at call time and never written to disk.",
+                status=501)
         body = json.dumps({
             "model": self.model,
             "max_tokens": self.max_tokens,
@@ -149,7 +201,7 @@ class ClaudeProvider(LLMProvider):
             headers={
                 "content-type": "application/json",
                 "anthropic-version": ANTHROPIC_VERSION,
-                "x-api-key": self._api_key,
+                "x-api-key": api_key,
             })
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as resp:

@@ -122,13 +122,36 @@ export async function transformerUrl(): Promise<string | null> {
 // in a browser context ever holds it. Which also means it cannot leak into
 // em.json, localStorage, or a console log, because it is never there to leak.
 
-/** Is an API key stored in the OS keychain? A boolean, never the key. */
-export async function llmKeyStatus(): Promise<boolean> {
-  if (!isTauri()) return false;
+/** What the UI may know about the key: never the key itself. */
+export interface KeyStatus {
+  /** a credential store answered */
+  available: boolean;
+  /** …and it holds a non-empty key */
+  set: boolean;
+  /** why not, when `available` is false — shown verbatim */
+  detail: string;
+}
+
+/**
+ * Is an API key stored in the OS keychain?
+ *
+ * Two flags, not one, because the failures are different. On Linux the Secret
+ * Service is a running daemon, not a guarantee — a headless box or a locked
+ * keyring means "no store here". Reporting that as `set: false` would tell the
+ * user they have no key saved when this machine simply cannot save one, and
+ * they would paste it again, and again.
+ */
+export async function llmKeyStatus(): Promise<KeyStatus> {
+  if (!isTauri())
+    return { available: false, set: false, detail: "browser" };
   try {
-    return await invoke<boolean>("llm_key_status");
-  } catch {
-    return false;
+    return await invoke<KeyStatus>("llm_key_status");
+  } catch (e) {
+    return {
+      available: false,
+      set: false,
+      detail: e instanceof Error ? e.message : String(e),
+    };
   }
 }
 

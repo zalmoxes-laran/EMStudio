@@ -20,7 +20,25 @@ tauri-plugin-fs = "2"
 tauri-plugin-shell = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# OS keychain (macOS Keychain / Windows Credential Manager / Linux Secret
-# Service). The LLM API key is the only secret EMStudio holds, and it must not
-# touch em.json, localStorage, or any log — see main.rs.
-keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+
+# ── OS keychain, one backend per platform ───────────────────────────────────
+#
+# The LLM API key is the only secret EMStudio holds, and it must not touch
+# em.json, localStorage, or any log — see main.rs.
+#
+# Declared PER TARGET rather than as one feature list, for two reasons. The
+# small one: each OS ships only the backend it can use. The one that actually
+# matters: `sync-secret-service` does **not** bring its own encryption — it
+# needs `crypto-rust` or `crypto-openssl` for the D-Bus session, and a single
+# unconditional feature list that omitted it built fine on macOS and would have
+# failed on the first Linux build. `crypto-rust` over `crypto-openssl` so a
+# Linux build needs no system OpenSSL.
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", features = ["apple-native"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", features = ["windows-native"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", features = ["sync-secret-service", "crypto-rust"] }

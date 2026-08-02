@@ -2586,61 +2586,171 @@ for (const p of AI_PROVIDERS) {
 }
 
 /**
- * Show whether a key is set — never the key.
+ * Where the key lives, and therefore what Settings can offer (S3).
  *
- * Outside the desktop app there is no keychain, so the field is disabled and
- * the hint names the one safe alternative. Degrading to localStorage would put
- * a credential where every script on the page can read it; refusing and
- * explaining is the better failure.
+ * Two modes, because the two ways of running EMStudio have different places to
+ * keep a secret — and the difference is worth stating to the user rather than
+ * hiding behind one button that means two things:
+ *
+ *   * **desktop** — the OS keychain. Persistent; survives a restart.
+ *   * **browser dev** — no keychain to write to, so the key goes to em-bridge
+ *     and lives in that PROCESS, in memory, for as long as it runs. Not saved.
+ *
+ * What both modes share is the part that matters: the key goes one way. There
+ * is no call, in either, that hands it back.
  */
+type KeyMode = "keychain" | "session" | "unavailable";
+
+interface AiKeyState {
+  mode: KeyMode;
+  set: boolean;
+  /** where a dev key came from, so "env" is not shown as "you pasted this" */
+  source?: string;
+  detail: string;
+}
+
+async function readAiKeyState(): Promise<AiKeyState> {
+  if (isTauri()) {
+    const { available, set, detail } = await llmKeyStatus();
+    return {
+      mode: available ? "keychain" : "unavailable",
+      set,
+      detail,
+    };
+  }
+  // Browser: ask the bridge. If it is not running there is nowhere to put a
+  // key, which is a different problem from "you have not set one".
+  try {
+    const res = await fetch(`${await bridgeUrl()}/llm-key-status`);
+    if (!res.ok) throw new Error(String(res.status));
+    const j = (await res.json()) as { set: boolean; source: string };
+    return { mode: "session", set: !!j.set, source: j.source, detail: "" };
+  } catch {
+    return {
+      mode: "unavailable",
+      set: false,
+      detail:
+        "em-bridge non raggiungibile: è lì che vive la key in modalità " +
+        "sviluppo. Avvialo con ./dev.sh, poi riapri questa finestra.",
+    };
+  }
+}
+
 async function refreshAiKeyState(): Promise<void> {
-  const desktop = isTauri();
-  setAiKey.disabled = !desktop;
-  setAiKeySave.disabled = !desktop;
-  if (!desktop) {
-    setAiKeyState.textContent = "";
-    setAiKeyClear.disabled = true;
+  // On the desktop, saving restarts em-bridge (the key enters at spawn), which
+  // would cut a generation off mid-request. In dev the key enters at runtime,
+  // so there is nothing to restart and nothing to interrupt — the guard is
+  // therefore desktop-only, not a blanket "don't touch anything while busy".
+  const busy = generating.size > 0 && isTauri();
+  const { mode, set, source, detail } = await readAiKeyState();
+  const usable = mode !== "unavailable";
+
+  setAiKey.disabled = !usable || busy;
+  setAiKeySave.disabled = !usable || busy;
+  setAiKeyClear.disabled = !set || busy || source === "env";
+
+  if (!usable) setAiKeyState.textContent = isTauri()
+    ? "portachiavi non disponibile"
+    : "bridge non raggiungibile";
+  else if (!set) setAiKeyState.textContent = "nessuna key impostata";
+  else if (mode === "keychain") setAiKeyState.textContent = "✓ key impostata";
+  else setAiKeyState.textContent = source === "env"
+    ? "✓ key dall'ambiente"
+    : "✓ key di sessione — non salvata";
+  setAiKeyState.className = usable && set ? "ai-key-set" : "ai-key-unset";
+
+  if (busy) {
     setAiKeyHint.textContent =
-      "Nel browser di sviluppo non c'è un portachiavi in cui metterla al " +
-      "sicuro, quindi EMStudio non la salva. Esportala prima di avviare il " +
-      "bridge:  export ANTHROPIC_API_KEY=…  ;  ./dev.sh";
+      "Generazione in corso: salvare la key riavvia em-bridge e la " +
+      "interromperebbe. Attendi il termine.";
     return;
   }
-  const set = await llmKeyStatus();
-  setAiKeyState.textContent = set ? "✓ key impostata" : "nessuna key impostata";
-  setAiKeyState.className = set ? "ai-key-set" : "ai-key-unset";
-  setAiKeyClear.disabled = !set;
-  setAiKeyHint.textContent = set
-    ? "Salvata nel portachiavi di sistema. Non è leggibile da qui: puoi " +
-      "sostituirla o rimuoverla."
-    : "Incolla la key e premi Salva. Finisce nel portachiavi di sistema e " +
-      "viene passata a em-bridge, che riparte per riceverla.";
+  if (!usable) {
+    setAiKeyHint.textContent = detail;
+    return;
+  }
+  if (mode === "keychain") {
+    setAiKeyHint.textContent = set
+      ? "Salvata nel portachiavi di sistema. Non è leggibile da qui: puoi " +
+        "sostituirla o rimuoverla."
+      : "Incolla la key e premi Salva. Finisce nel portachiavi di sistema e " +
+        "viene passata a em-bridge, che riparte per riceverla.";
+    return;
+  }
+  // dev / session
+  setAiKeyHint.textContent = source === "env"
+    ? "Presa da ANTHROPIC_API_KEY nell'ambiente di em-bridge. Puoi incollarne " +
+      "un'altra qui: varrà per questa sessione e avrà la precedenza."
+    : set
+      ? "Vive nella memoria di em-bridge — non è salvata da nessuna parte e " +
+        "sparisce quando fermi il bridge. In modalità sviluppo non c'è un " +
+        "portachiavi in cui metterla al sicuro; per una key persistente usa " +
+        "l'app desktop."
+      : "Incolla la key: vale solo per questa sessione, non viene salvata. " +
+        "Vive nella memoria di em-bridge finché il bridge è acceso. In " +
+        "alternativa esportala prima di avviarlo:  export ANTHROPIC_API_KEY=…";
+}
+
+/** Settings may be open while a generation starts or finishes — keep the guard
+ *  honest instead of only correct at the moment the panel was opened. */
+function refreshAiKeyStateIfOpen(): void {
+  if (!settingsModal.classList.contains("hidden")) void refreshAiKeyState();
+}
+
+/** POST the key to em-bridge, which keeps it in memory for its own lifetime.
+ *  Returns an error message, or null. */
+async function postSessionKey(key: string | null): Promise<string | null> {
+  const route = key === null ? "/clear-llm-key" : "/set-llm-key";
+  try {
+    const res = await fetch(`${await bridgeUrl()}${route}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: key === null ? "{}" : JSON.stringify({ key }),
+    });
+    if (res.ok) return null;
+    const j = await res.json().catch(() => null);
+    return (j as { error?: string } | null)?.error ?? `bridge error ${res.status}`;
+  } catch {
+    return "em-bridge non raggiungibile";
+  }
 }
 
 setAiKeySave.addEventListener("click", async () => {
+  if (generating.size > 0 && isTauri()) {
+    toast("Generazione in corso — attendi il termine prima di salvare la key");
+    return;
+  }
   const key = setAiKey.value.trim();
   if (!key) {
     toast("Incolla prima la key");
     return;
   }
-  const err = await setLlmKey(key);
+  const err = isTauri() ? await setLlmKey(key) : await postSessionKey(key);
   setAiKey.value = "";          // never keep it in the DOM after saving
   if (err) {
     toast(`Key non salvata: ${err}`);
     return;
   }
-  toast("Key salvata nel portachiavi — bridge riavviato");
+  toast(isTauri()
+    ? "Key salvata nel portachiavi — bridge riavviato"
+    : "Key attiva per questa sessione — non salvata");
   await refreshAiKeyState();
 });
 
 setAiKeyClear.addEventListener("click", async () => {
-  const err = await clearLlmKey();
+  if (generating.size > 0 && isTauri()) {
+    toast("Generazione in corso — attendi il termine prima di rimuovere la key");
+    return;
+  }
+  const err = isTauri() ? await clearLlmKey() : await postSessionKey(null);
   if (err) {
     toast(`Key non rimossa: ${err}`);
     return;
   }
   setAiKey.value = "";
-  toast("Key rimossa dal portachiavi — bridge riavviato");
+  toast(isTauri()
+    ? "Key rimossa dal portachiavi — bridge riavviato"
+    : "Key di sessione rimossa");
   await refreshAiKeyState();
 });
 
@@ -3229,6 +3339,51 @@ let selectedNarrativeId: string | null = null;
  *  it is a fact about the person at the keyboard, not about the graph. What
  *  gets written is the signature itself (`block.validated_by`). */
 let signingAs: string | null = null;
+
+/**
+ * Who signs, when nobody has said.
+ *
+ * With exactly ONE human author in the graph there is no choice to make, and
+ * asking for one is a riddle rather than a safeguard — the user is deep inside
+ * a chapter, the picker is in the byline far above, and the refusal tells them
+ * where it is instead of taking them there. With two or more the question is
+ * real and stays unanswered.
+ *
+ * This does not make anyone sign by accident: the ACT is still pressing
+ * "Valida". This only fills in the name when the graph admits a single one.
+ */
+function defaultSigner(): string | null {
+  if (!store) return null;
+  const humans = nauth.humanAuthorsIn(store.doc);
+  return humans.length === 1 ? humans[0].id : null;
+}
+
+function currentSigner(): string | null {
+  if (signingAs) return signingAs;
+  signingAs = defaultSigner();
+  return signingAs;
+}
+
+/**
+ * Bring the "firmo come" picker to the user instead of describing where it is.
+ *
+ * Called when an endorsement is attempted with no signer chosen — which only
+ * happens when the graph has several human authors, i.e. exactly when the
+ * choice matters.
+ */
+function revealSignerPicker(): void {
+  const sel = document.querySelector(
+    "#narrative-view .nv-signing select") as HTMLSelectElement | null;
+  if (!sel) {
+    toast("Nessun autore umano nel grafo: aggiungine uno per poter avallare");
+    return;
+  }
+  sel.scrollIntoView({ behavior: "smooth", block: "center" });
+  sel.focus();
+  sel.classList.add("nv-wants-attention");
+  window.setTimeout(() => sel.classList.remove("nv-wants-attention"), 2400);
+  toast("Scegli con quale nome firmi");
+}
 /** Chapters with a generation request in flight, so the button can say so and
  *  a double click cannot send two. */
 const generating = new Set<number>();
@@ -3255,6 +3410,7 @@ async function generateChapterDraft(narrativeId: string,
   generating.add(chapterIndex);
   let reached = false;   // did we get an answer at all, or never leave the room?
   refreshNarrativeView();
+  refreshAiKeyStateIfOpen();   // Settings may be open: lock the key controls
   toast(`Genero la bozza di «${chapter?.title ?? activityId}»…`);
   try {
     const res = await fetch(`${await bridgeUrl()}/generate-narrative-draft`, {
@@ -3305,6 +3461,7 @@ async function generateChapterDraft(narrativeId: string,
   } finally {
     generating.delete(chapterIndex);
     refreshNarrativeView();
+    refreshAiKeyStateIfOpen();
   }
 }
 
@@ -3346,18 +3503,19 @@ function narrativeEditor(narrativeId: string): NarrativeEditor {
     setChapterAuthor: (i, id) =>
       nauth.setChapterAuthor(s, narrativeId, i, id),
     signer: (): AuthorRef | null =>
-      nauth.humanAuthorsIn(s.doc).find((a) => a.id === signingAs) ?? null,
+      nauth.humanAuthorsIn(s.doc).find((a) => a.id === currentSigner()) ?? null,
     setSigner: (id) => {
       signingAs = id;
       refreshNarrativeView();
     },
     endorse: (c, b) => {
-      if (!signingAs) {
-        toast("Scegli prima con quale nome firmi");
+      const who = currentSigner();
+      if (!who) {
+        revealSignerPicker();
         return;
       }
       try {
-        nauth.endorseBlock(s, narrativeId, c, b, signingAs);
+        nauth.endorseBlock(s, narrativeId, c, b, who);
       } catch (e) {
         // Every refusal here is something the user has to understand — an
         // unknown author, or a model asked to vouch for a model.
@@ -3365,12 +3523,13 @@ function narrativeEditor(narrativeId: string): NarrativeEditor {
       }
     },
     endorseChapter: (c) => {
-      if (!signingAs) {
-        toast("Scegli prima con quale nome firmi");
+      const who = currentSigner();
+      if (!who) {
+        revealSignerPicker();
         return;
       }
       try {
-        const n = nauth.endorseChapter(s, narrativeId, c, signingAs);
+        const n = nauth.endorseChapter(s, narrativeId, c, who);
         toast(`${n} paragraf${n === 1 ? "o avallato" : "i avallati"}`);
       } catch (e) {
         toast(e instanceof Error ? e.message : String(e));
