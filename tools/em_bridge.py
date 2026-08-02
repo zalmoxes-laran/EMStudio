@@ -27,6 +27,18 @@ Endpoints (CORS open for http://localhost:*):
                              the S3_* env, same store Heriverse uses; resource_id
                              keeps a resource's stable ID on "promote"; 501 if the
                              optional [minio] extra is not bundled)
+    POST /generate-narrative-draft
+                           ← {doc, activity_id, provider?, instruction?}
+                           → {doc, narrative_id, chapter_title, author_id,
+                              prompt_id, status, sent}
+                             (EM Narrative N5: s3Dgraphy builds the briefing,
+                              the selected LLMProvider writes the prose, s3Dgraphy
+                              writes it back attributed to the AI author with the
+                              prompt as a source and UNENDORSED. Provider from
+                              `provider` or $EM_LLM_PROVIDER, default claude;
+                              the Claude adapter reads $ANTHROPIC_API_KEY at call
+                              time and never stores it. 501 when unconfigured,
+                              502 when the model call fails.)
     POST /detach-dtc       ← {graph, process_id} → {record}   (read-only)
     POST /inject-dtc       ← {graph, record}     → {…ids, graph}
     POST /bake-dtc         ← {graph, injector_id} → {report, graph}
@@ -156,6 +168,13 @@ def make_handler(api):
                     self._fail(400, f"invalid JSON body: {exc}")
                     return
                 self._minio(route, body)
+            elif route == "/generate-narrative-draft":
+                try:
+                    body = json.loads(raw.decode("utf-8")) if raw else {}
+                except Exception as exc:
+                    self._fail(400, f"invalid JSON body: {exc}")
+                    return
+                self._generate_narrative_draft(body)
             elif route in ("/detach-dtc", "/inject-dtc", "/bake-dtc"):
                 try:
                     body = json.loads(raw.decode("utf-8")) if raw else {}
@@ -183,6 +202,98 @@ def make_handler(api):
             out = json.dumps(
                 {"ok": True, "term": term, "facet": (facet or "").upper(),
                  "candidates": candidates}).encode()
+            self.send_response(200)
+            self._cors()
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+
+        # EM Narrative — generate one chapter's prose from an activity (N5).
+        #
+        # The whole flow, and every step is somebody's job:
+        #   s3Dgraphy   builds the briefing from the graph      (pure, no network)
+        #   LLMProvider turns the briefing into prose           (the only network)
+        #   s3Dgraphy   writes it back, attributed, UNENDORSED  (pure)
+        #
+        # The bridge only wires them together. It never validates anything —
+        # endorsement is an act by a named person (N4) and pressing "generate"
+        # is not one — and the API key never leaves this process: not into the
+        # response, not into the returned em.json, not into the log.
+        def _generate_narrative_draft(self, body):
+            if not hasattr(api, "build_narrative_generation_context"):
+                self._fail(501, "this s3dgraphy has no narrative generation "
+                                "seam (needs N5)")
+                return
+            doc = body.get("doc") or body.get("graph")
+            activity_id = body.get("activity_id")
+            if not isinstance(doc, dict):
+                self._fail(400, "/generate-narrative-draft needs the em.json "
+                                "as 'doc'")
+                return
+            if not activity_id:
+                self._fail(400, "/generate-narrative-draft needs an "
+                                "'activity_id': generation is anchored to an "
+                                "activity, which is where the actions are")
+                return
+            try:
+                # sibling module; sys.path[0] is this file's directory when the
+                # bridge runs as a script, but be explicit so an embedded import
+                # works too
+                _here = str(pathlib.Path(__file__).resolve().parent)
+                if _here not in sys.path:
+                    sys.path.insert(0, _here)
+                from llm_provider import (LLMError, SYSTEM_PROMPT, build_prompt,
+                                          describe_payload, get_provider)
+            except ImportError as exc:
+                self._fail(501, f"LLM seam unavailable: {exc}")
+                return
+
+            try:
+                graph, _warnings = api.load_emjson(doc)
+                context = api.build_narrative_generation_context(
+                    graph, activity_id)
+            except Exception as exc:
+                self._fail(400, f"could not build the generation context: {exc}")
+                return
+
+            prompt = build_prompt(context, body.get("instruction", "") or "")
+            try:
+                provider = get_provider(body.get("provider"))
+                text = provider.generate(SYSTEM_PROMPT, prompt, context)
+            except LLMError as exc:
+                # 501 = not configured (no key, unknown provider); 502 = the
+                # model was reached and something went wrong. Different problems,
+                # different fixes.
+                self._fail(exc.status, str(exc))
+                return
+            except Exception as exc:
+                self._fail(502, f"generation failed: {exc}")
+                return
+
+            try:
+                written = api.write_ai_draft(
+                    graph, activity_id, text,
+                    model=getattr(provider, "model", "") or provider.name,
+                    version=body.get("model_version", "") or "",
+                    date=body.get("date"),
+                    prompt=prompt,
+                    narrative_id=body.get("narrative_id"))
+            except Exception as exc:
+                self._fail(400, f"could not write the draft back: {exc}")
+                return
+
+            out = json.dumps({
+                "ok": True,
+                "provider": provider.name,
+                "model": getattr(provider, "model", ""),
+                "sent": describe_payload(context),
+                # the prose itself, so the caller can show it without digging
+                # it back out of the returned document
+                "text": text,
+                **written,
+                "doc": api.graph_to_emjson(graph),
+            }).encode()
             self.send_response(200)
             self._cors()
             self.send_header("Content-Type", "application/json")

@@ -17,6 +17,8 @@
  * palette in this app and this is not a second one.
  */
 
+import { blockStatus, narrativeAuthors } from "./narrative-authorship";
+import type { AuthorRef, BlockStatus } from "./narrative-authorship";
 import { VIEW_TYPES } from "./narrative-edit";
 import { nodeStyle } from "./palette";
 import { typeDescription } from "./rules";
@@ -29,6 +31,11 @@ interface NarrativeBlock {
   ref?: string;
   view_type?: string;
   options?: Record<string, unknown>;
+  // N4/N6 — who wrote it, what they were asked, who vouches for it.
+  authored_by?: string;
+  prompt_ref?: string;
+  validated_by?: string;
+  ai_generated?: boolean;
 }
 
 interface NarrativeChapter {
@@ -36,6 +43,7 @@ interface NarrativeChapter {
   anchor?: string;
   canonical?: boolean;
   blocks?: NarrativeBlock[];
+  authored_by?: string;
 }
 
 export interface Narrative {
@@ -243,6 +251,118 @@ function renderEmbed(
   return box;
 }
 
+// ── provenance of a paragraph (N6) ─────────────────────────────────
+//
+// The badge is not decoration. A reader of an archaeological narrative has to
+// be able to tell, without asking, whether the sentence in front of them was
+// written by a person, produced by a model and left unchecked, or produced by a
+// model and signed off by somebody who can be asked about it.
+//
+// Colours come from the vendored visual rules — the AI badge takes the AUTH_AI
+// node style, the endorsement badge takes AUTH — so the story and the canvas
+// say "author" in the same colour. Nothing here is a second palette.
+
+const STATUS_LABEL: Record<BlockStatus, string> = {
+  human: "",                     // a person wrote it; nothing to announce
+  ai_draft: "bozza AI",
+  ai_endorsed: "avallata",
+};
+
+/**
+ * The strip under a generated paragraph: what wrote it, what it was asked, who
+ * (if anyone) has vouched for it, and the gesture to vouch.
+ *
+ * `onReveal` makes the prompt reachable in ONE click, exactly like any other
+ * source embed — "how do I know this" has to hold for "how did the machine come
+ * to write it" too, or the transparency is decorative.
+ */
+function provenanceStrip(
+  block: NarrativeBlock,
+  index: Map<string, EmNode>,
+  onReveal?: (nodeId: string) => void,
+  endorse?: () => void,
+  retract?: () => void,
+  signer?: AuthorRef | null,
+): HTMLElement | null {
+  const status = blockStatus(block);
+  if (status === "human") return null;
+  const ai = nodeStyle("author_ai");
+  const human = nodeStyle("author");
+  const strip = el("div", "nv-prov");
+
+  const badge = el("span", "nv-prov-badge", STATUS_LABEL[status]);
+  const style = status === "ai_endorsed" ? human : ai;
+  badge.style.background = style.fill;
+  badge.style.borderColor = style.border;
+  badge.style.color = style.textColor;
+  strip.appendChild(badge);
+
+  const model = index.get(block.authored_by ?? "");
+  if (block.authored_by) {
+    const who = el("span", "nv-prov-who",
+      model ? String(model.name || model.id) : block.authored_by);
+    who.title = "Il modello che ha scritto questo paragrafo";
+    strip.appendChild(who);
+  }
+  const opts = block.options ?? {};
+  for (const key of ["model_version", "generated_at"]) {
+    const v = opts[key];
+    if (typeof v === "string" && v) {
+      const chip = el("span", "nv-prov-dim", v);
+      chip.title = key === "generated_at"
+        ? "Quando è stata generata"
+        : "Versione del modello";
+      strip.appendChild(chip);
+    }
+  }
+
+  if (block.prompt_ref) {
+    const prompt = index.get(block.prompt_ref);
+    const link = el("button", "nv-prov-link", "prompt") as HTMLButtonElement;
+    link.title = prompt?.description
+      ? `Cosa è stato chiesto:\n\n${prompt.description}`
+      : `La fonte-prompt «${block.prompt_ref}» non è in questo grafo`;
+    if (!prompt) link.classList.add("nv-prov-missing");
+    link.addEventListener("click", (e) => {
+      e.stopPropagation();
+      if (prompt && onReveal) onReveal(prompt.id);
+    });
+    link.disabled = !prompt || !onReveal;
+    strip.appendChild(link);
+  } else {
+    const none = el("span", "nv-prov-dim nv-prov-missing", "nessun prompt");
+    none.title =
+      "Questa bozza non registra cosa è stato chiesto al modello: il «come lo " +
+      "so» resta incompleto.";
+    strip.appendChild(none);
+  }
+
+  if (status === "ai_endorsed") {
+    const by = index.get(block.validated_by ?? "");
+    const sig = el("span", "nv-prov-signed",
+      `✓ ${by ? String(by.name || by.id) : block.validated_by}`);
+    sig.title = "Chi ha messo il proprio nome su questo testo";
+    strip.appendChild(sig);
+    if (retract) {
+      const b = el("button", "nv-mini", "ritira") as HTMLButtonElement;
+      b.title = "Ritira l'avallo: il paragrafo torna a leggersi come bozza.";
+      b.addEventListener("click", (e) => { e.stopPropagation(); retract(); });
+      strip.appendChild(b);
+    }
+  } else if (endorse) {
+    const b = el("button", "nv-endorse", "Valida") as HTMLButtonElement;
+    b.title = signer
+      ? `Metti il nome di ${signer.label} su questo paragrafo. ` +
+        `Solo una persona può avallare: un modello che garantisce per un ` +
+        `modello non è una validazione.`
+      : "Scegli prima con quale nome firmi (in alto, «firmo come»).";
+    b.disabled = !signer;
+    b.addEventListener("click", (e) => { e.stopPropagation(); endorse(); });
+    strip.appendChild(b);
+  }
+  return strip;
+}
+
 /**
  * Render the narratives of `doc` into `container`.
  *
@@ -267,6 +387,51 @@ export interface NarrativeEditor {
   deleteBlock(chapter: number, block: number): void;
   /** Lanes a chapter may be anchored to: epochs and activities. */
   lanes(): { id: string; label: string }[];
+
+  // — authorship, generation, endorsement (N6) —
+  /** Everyone the graph knows as an author, models included. */
+  authors(): AuthorRef[];
+  /** Only people. A model may not sign — see `endorse`. */
+  humanAuthors(): AuthorRef[];
+  addAuthor(authorId: string): void;
+  removeAuthor(authorId: string): void;
+  setChapterAuthor(index: number, authorId: string | null): void;
+  /** Who is signing, right now. One place says it; every Valida uses it. */
+  signer(): AuthorRef | null;
+  setSigner(authorId: string | null): void;
+  endorse(chapter: number, block: number): void;
+  retract(chapter: number, block: number): void;
+  /** True where a draft can be generated: the chapter narrates an ACTIVITY,
+   *  which is where the actions — and so the story — are. */
+  canGenerate(index: number): boolean;
+  generate(index: number): void;
+  /** A request is in flight for this chapter. */
+  generating(index: number): boolean;
+}
+
+/** A `<select>` over authors. Resets to its placeholder after a pick when the
+ *  chosen value is an action rather than a state ("+ autore"). */
+function authorSelect(options: AuthorRef[], selected: string | null,
+                      placeholder: string, title: string,
+                      onPick: (id: string | null) => void): HTMLSelectElement {
+  const sel = document.createElement("select");
+  sel.className = "nv-author-select";
+  sel.title = title;
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = placeholder;
+  none.selected = !selected;
+  sel.appendChild(none);
+  for (const a of options) {
+    const o = document.createElement("option");
+    o.value = a.id;
+    o.textContent = a.ai ? `${a.label} (AI)` : a.label;
+    o.selected = a.id === selected;
+    sel.appendChild(o);
+  }
+  sel.disabled = options.length === 0;
+  sel.addEventListener("change", () => onPick(sel.value || null));
+  return sel;
 }
 
 function iconButton(label: string, title: string,
@@ -332,6 +497,54 @@ export function renderNarrativeView(
   head.appendChild(el("div", "nv-meta", meta.join(" · ")));
   if (current.description)
     head.appendChild(el("p", "nv-lede", current.description));
+
+  // The narrative's authors are `has_author` EDGES (the N4 model), so they show
+  // here in the same place a paper shows its byline — and the AI ones show too,
+  // labelled as such, because a byline that hides the model is not a byline.
+  const byline = el("div", "nv-authors");
+  byline.appendChild(el("span", "nv-authors-label", "autori"));
+  const authors = narrativeAuthors(doc, current.id);
+  if (!authors.length)
+    byline.appendChild(el("span", "nv-prov-dim", "nessuno indicato"));
+  for (const a of authors) {
+    const style = nodeStyle(a.ai ? "author_ai" : "author");
+    const chip = el("span", "nv-author-chip", a.label);
+    chip.style.background = style.fill;
+    chip.style.borderColor = style.border;
+    chip.style.color = style.textColor;
+    chip.title = a.ai
+      ? "Autore AI: ha scritto del testo, non può avallarlo"
+      : "Autore umano";
+    if (editor) {
+      const x = el("button", "nv-chip-x", "✕") as HTMLButtonElement;
+      x.title = `Togli ${a.label} dagli autori di questa narrativa`;
+      x.addEventListener("click", () => editor.removeAuthor(a.id));
+      chip.appendChild(x);
+    }
+    byline.appendChild(chip);
+  }
+  if (editor) {
+    const add = authorSelect(
+      editor.authors().filter((a) => !authors.some((x) => x.id === a.id)),
+      null, "+ autore", "Aggiungi un autore a questa narrativa",
+      (id) => { if (id) editor.addAuthor(id); });
+    byline.appendChild(add);
+
+    // "Signing as" lives once, at the top: an endorsement is the same act
+    // whichever paragraph it lands on, and asking who you are on every click
+    // would turn a signature into a form.
+    const signing = el("span", "nv-signing");
+    signing.appendChild(el("span", "nv-authors-label", "firmo come"));
+    const humans = editor.humanAuthors();
+    signing.appendChild(authorSelect(
+      humans, editor.signer()?.id ?? null,
+      humans.length ? "(nessuno)" : "(nessun autore umano nel grafo)",
+      "Chi mette il proprio nome quando premi Valida. Solo persone: " +
+      "un modello non può avallare.",
+      (id) => editor.setSigner(id)));
+    byline.appendChild(signing);
+  }
+  head.appendChild(byline);
   container.appendChild(head);
 
   const index = new Map((doc?.graph?.nodes ?? []).map((n) => [n.id, n]));
@@ -346,6 +559,17 @@ export function renderNarrativeView(
         "Settled by the author: regenerating the template leaves this chapter " +
         "untouched.";
       h.appendChild(badge);
+    }
+    if (chapter.authored_by && !editor) {
+      const node = index.get(chapter.authored_by);
+      const who = node ? String(node.name || node.id) : chapter.authored_by;
+      const chip = el("span", "nv-author-chip nv-author-inline", who);
+      const style = nodeStyle(node?.node_type ?? "author");
+      chip.style.background = style.fill;
+      chip.style.borderColor = style.border;
+      chip.style.color = style.textColor;
+      chip.title = "Chi firma questo capitolo";
+      h.appendChild(chip);
     }
     if (chapter.anchor) {
       // The chapter usually takes its title FROM the lane, so echoing the lane's
@@ -396,6 +620,31 @@ export function renderNarrativeView(
         () => editor.moveChapter(ci, 1)));
       tools.appendChild(iconButton("✕", "Delete this chapter",
         () => editor.deleteChapter(ci)));
+      tools.appendChild(authorSelect(
+        editor.authors(), chapter.authored_by ?? null, "(nessun autore)",
+        "Chi firma questo capitolo",
+        (id) => editor.setChapterAuthor(ci, id)));
+      // Generation is anchored to an ACTIVITY: that is where the actions are,
+      // and a briefing built from anything else would be empty. The button is
+      // simply absent elsewhere rather than present and disabled — a control
+      // that can never apply is noise.
+      if (editor.canGenerate(ci)) {
+        const busy = editor.generating(ci);
+        const gen = el("button", "nv-generate",
+          busy ? "genero…" : "Genera bozza (AI)") as HTMLButtonElement;
+        gen.disabled = busy;
+        gen.title =
+          "Manda al modello un briefing di QUESTA attività — le sue azioni in " +
+          "ordine stratigrafico, le epoche e le evidenze già registrate — e " +
+          "inserisce la prosa come bozza non avallata, attribuita al modello, " +
+          "col prompt registrato come fonte. Nient'altro del grafo viene " +
+          "inviato.";
+        gen.addEventListener("click", (e) => {
+          e.stopPropagation();
+          editor.generate(ci);
+        });
+        tools.appendChild(gen);
+      }
       h.appendChild(tools);
 
       const titleEl = h.querySelector(".nv-chapter-title") as HTMLElement;
@@ -418,11 +667,25 @@ export function renderNarrativeView(
 
     const blocks = chapter.blocks ?? [];
     blocks.forEach((block, bi) => {
-      const body = block.block_type === "prose"
+      let body = block.block_type === "prose"
         ? (editor ? editableProse(block.text ?? "", (t) =>
             editor.setProse(ci, bi, t))
           : renderProse(block.text ?? ""))
         : renderEmbed(block, index, onReveal);
+      // Provenance rides with the paragraph in BOTH modes: knowing a machine
+      // wrote this is not an authoring convenience, it is what the reader needs.
+      const strip = block.block_type === "prose"
+        ? provenanceStrip(block, index, onReveal,
+            editor ? () => editor.endorse(ci, bi) : undefined,
+            editor ? () => editor.retract(ci, bi) : undefined,
+            editor ? editor.signer() : null)
+        : null;
+      if (strip) {
+        const wrap = el("div", `nv-prose-wrap nv-${blockStatus(block)}`);
+        wrap.appendChild(body);
+        wrap.appendChild(strip);
+        body = wrap;
+      }
       if (!editor) {
         section.appendChild(body);
         return;

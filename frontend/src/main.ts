@@ -3,6 +3,8 @@ import { applyFolding, buildMembership, MEMBERSHIP_EDGES } from "./folding";
 import { renderInspector } from "./inspector";
 import { narrativesIn, renderNarrativeView } from "./narrative";
 import type { NarrativeEditor } from "./narrative";
+import * as nauth from "./narrative-authorship";
+import type { AuthorRef, DraftResult } from "./narrative-authorship";
 import * as nedit from "./narrative-edit";
 import {
   documentDiagnostics,
@@ -3134,6 +3136,85 @@ onLogChange(refreshLogPanel);
 let narrativeOpen = false;
 let narrativeEditing = false;
 let selectedNarrativeId: string | null = null;
+/** Who is signing endorsements in this session. NOT persisted in the document:
+ *  it is a fact about the person at the keyboard, not about the graph. What
+ *  gets written is the signature itself (`block.validated_by`). */
+let signingAs: string | null = null;
+/** Chapters with a generation request in flight, so the button can say so and
+ *  a double click cannot send two. */
+const generating = new Set<number>();
+
+/**
+ * Ask the bridge for a draft of one chapter, and file the answer.
+ *
+ * The key is NEVER here. It lives in em-bridge's environment (N5); this side
+ * only knows an endpoint. That is not a detail of the implementation, it is the
+ * reason the frontend can be served from anywhere without becoming a place
+ * where a credential could leak.
+ */
+async function generateChapterDraft(narrativeId: string,
+                                    chapterIndex: number): Promise<void> {
+  if (!store || generating.has(chapterIndex)) return;
+  const narrative = narrativesIn(store.doc).find((n) => n.id === narrativeId);
+  const chapter = narrative?.chapters[chapterIndex];
+  const activityId = chapter?.anchor;
+  if (!activityId) {
+    toast("Questo capitolo non è ancorato a un'attività");
+    return;
+  }
+  generating.add(chapterIndex);
+  let reached = false;   // did we get an answer at all, or never leave the room?
+  refreshNarrativeView();
+  toast(`Genero la bozza di «${chapter?.title ?? activityId}»…`);
+  try {
+    const res = await fetch(`${await bridgeUrl()}/generate-narrative-draft`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        doc: store.doc,
+        activity_id: activityId,
+        narrative_id: narrativeId,
+        // when it was written, recorded with the block: a provenance note
+        // without a date answers "who" but not "when this was still current"
+        date: new Date().toISOString().slice(0, 10),
+      }),
+    });
+    reached = true;
+    if (!res.ok) {
+      let msg = `bridge error ${res.status}`;
+      try {
+        const j = await res.json();
+        if (j?.error) msg = j.error;
+      } catch {
+        /* non-JSON error body */
+      }
+      // 501 = the seam is not configured (no ANTHROPIC_API_KEY, or a build
+      // without the LLM adapter). Different problem from a model that failed,
+      // and the user can only fix the first one — so say which it is.
+      toast(res.status === 501
+        ? `Generazione non configurata: ${msg}`
+        : `Generazione fallita: ${msg}`);
+      return;
+    }
+    const result = (await res.json()) as DraftResult;
+    nauth.applyGeneratedDraft(store, result, activityId);
+    toast(`Bozza di ${result.model || result.provider} inserita — ` +
+          `non avallata (${result.pending_validation} in attesa)`);
+  } catch (e) {
+    // A fetch that never reached the bridge says "Failed to fetch", which tells
+    // the user nothing they can act on. The actionable fact is that the bridge
+    // is not running — so say that, and keep the real message for failures that
+    // happened AFTER we had an answer.
+    toast(!reached
+      ? "em-bridge non raggiungibile: la generazione passa da lì (è anche " +
+        "dove sta la key, mai nel frontend). Avvialo con ./dev.sh, oppure " +
+        "punta EM_TRANSFORMER_URL a un server."
+      : `Generazione fallita: ${e instanceof Error ? e.message : String(e)}`);
+  } finally {
+    generating.delete(chapterIndex);
+    refreshNarrativeView();
+  }
+}
 
 /** The authoring hooks (N3). Every one of them funnels through
  *  `DocumentStore.updateNode`, so a narrative edit is undoable, marks the
@@ -3164,6 +3245,42 @@ function narrativeEditor(narrativeId: string): NarrativeEditor {
         .filter((n) => n.node_type === "EpochNode"
                     || n.node_type === "ActivityNodeGroup")
         .map((n) => ({ id: n.id, label: String(n.name || n.id) })),
+
+    // — N6 —
+    authors: () => nauth.authorsIn(s.doc),
+    humanAuthors: () => nauth.humanAuthorsIn(s.doc),
+    addAuthor: (id) => nauth.addNarrativeAuthor(s, narrativeId, id),
+    removeAuthor: (id) => nauth.removeNarrativeAuthor(s, narrativeId, id),
+    setChapterAuthor: (i, id) =>
+      nauth.setChapterAuthor(s, narrativeId, i, id),
+    signer: (): AuthorRef | null =>
+      nauth.humanAuthorsIn(s.doc).find((a) => a.id === signingAs) ?? null,
+    setSigner: (id) => {
+      signingAs = id;
+      refreshNarrativeView();
+    },
+    endorse: (c, b) => {
+      if (!signingAs) {
+        toast("Scegli prima con quale nome firmi");
+        return;
+      }
+      try {
+        nauth.endorseBlock(s, narrativeId, c, b, signingAs);
+      } catch (e) {
+        // Every refusal here is something the user has to understand — an
+        // unknown author, or a model asked to vouch for a model.
+        toast(e instanceof Error ? e.message : String(e));
+      }
+    },
+    retract: (c, b) => nauth.retractEndorsement(s, narrativeId, c, b),
+    canGenerate: (i) => {
+      const anchor = narrativesIn(s.doc)
+        .find((n) => n.id === narrativeId)?.chapters[i]?.anchor;
+      return !!anchor
+        && s.node(anchor)?.node_type === "ActivityNodeGroup";
+    },
+    generate: (i) => void generateChapterDraft(narrativeId, i),
+    generating: (i) => generating.has(i),
   };
 }
 

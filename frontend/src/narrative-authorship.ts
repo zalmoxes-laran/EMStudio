@@ -1,0 +1,244 @@
+/**
+ * N6 — who wrote this, and who vouches for it.
+ *
+ * Three states, and the difference between them is the whole point:
+ *
+ *   `human`        a person wrote it and signed it
+ *   `ai_draft`     a model wrote it and **nobody has vouched for it yet**
+ *   `ai_endorsed`  a model wrote it and a named person put their name to it
+ *
+ * The state is **derived, never stored** — exactly as in s3Dgraphy's
+ * `narrative_node.Block.status`. A stored status could disagree with the facts
+ * (a block marked "endorsed" with no validator), and on a claim about an
+ * archaeological site that disagreement is not a display bug.
+ *
+ * Everything here writes through the ordinary `DocumentStore` mutations, so an
+ * authorship change is undoable, marks the document dirty, reaches a synced
+ * peer and is written by the existing save. There is no parallel format: the
+ * narrative-level author is a `has_author` EDGE (the N4 model), the
+ * chapter-level author is `chapter.authored_by`, and an endorsement is
+ * `block.validated_by`.
+ *
+ * Nothing in this module ever sets `validated_by` on its own. Endorsement is an
+ * act by a person; pressing "generate" is not one.
+ */
+
+import type { DocumentStore } from "./model";
+import { editChapters } from "./narrative-edit";
+import type { EditableBlock, EditableChapter } from "./narrative-edit";
+import type { EmDocument, EmNode } from "./types";
+
+export type BlockStatus = "human" | "ai_draft" | "ai_endorsed";
+
+/** The node types the datamodel gives authorship. `author_ai` is a SUBCLASS of
+ *  `author`, which is why "is this an author" and "is this a human" are two
+ *  different questions everywhere below. */
+export const AUTHOR_TYPE = "author";
+export const AI_AUTHOR_TYPE = "author_ai";
+
+export interface AuthorRef {
+  id: string;
+  label: string;
+  ai: boolean;
+}
+
+/** Mirrors `Block.status` in s3Dgraphy. Derived from the facts, every time. */
+export function blockStatus(block: {
+  ai_generated?: boolean;
+  validated_by?: string | null;
+}): BlockStatus {
+  if (!block.ai_generated) return "human";
+  return block.validated_by ? "ai_endorsed" : "ai_draft";
+}
+
+function label(node: EmNode): string {
+  return String(node.name || node.id);
+}
+
+export function authorsIn(doc: EmDocument | null): AuthorRef[] {
+  return (doc?.graph?.nodes ?? [])
+    .filter((n) => n.node_type === AUTHOR_TYPE || n.node_type === AI_AUTHOR_TYPE)
+    .map((n) => ({
+      id: n.id,
+      label: label(n),
+      ai: n.node_type === AI_AUTHOR_TYPE,
+    }));
+}
+
+/** Only these may endorse. A model vouching for a model is a signature with
+ *  nobody behind it — the same refusal s3Dgraphy's `resolve_human_author`
+ *  makes, restated here so the UI never offers the impossible choice. */
+export function humanAuthorsIn(doc: EmDocument | null): AuthorRef[] {
+  return authorsIn(doc).filter((a) => !a.ai);
+}
+
+export function authorLabel(doc: EmDocument | null, id: string | undefined):
+    string {
+  if (!id) return "";
+  const node = (doc?.graph?.nodes ?? []).find((n) => n.id === id);
+  return node ? label(node) : id;
+}
+
+export function isAiAuthor(doc: EmDocument | null,
+                           id: string | undefined): boolean {
+  if (!id) return false;
+  return (doc?.graph?.nodes ?? []).some(
+    (n) => n.id === id && n.node_type === AI_AUTHOR_TYPE);
+}
+
+// ── narrative-level authorship: an edge, not a field ──────────────────────────
+
+export function narrativeAuthors(doc: EmDocument | null,
+                                 narrativeId: string): AuthorRef[] {
+  const known = new Map(authorsIn(doc).map((a) => [a.id, a]));
+  const out: AuthorRef[] = [];
+  for (const e of doc?.graph?.edges ?? []) {
+    if (e.edge_type !== "has_author" || e.source !== narrativeId) continue;
+    const a = known.get(e.target);
+    if (a && !out.some((x) => x.id === a.id)) out.push(a);
+  }
+  return out;
+}
+
+export function addNarrativeAuthor(store: DocumentStore, narrativeId: string,
+                                   authorId: string): void {
+  if (!authorId) return;
+  if (store.hasEdge(narrativeId, authorId, "has_author")) return;
+  store.addEdge(narrativeId, authorId, "has_author");
+}
+
+export function removeNarrativeAuthor(store: DocumentStore, narrativeId: string,
+                                      authorId: string): void {
+  const edge = store.doc.graph.edges.find(
+    (e) => e.edge_type === "has_author"
+      && e.source === narrativeId
+      && e.target === authorId);
+  if (edge) store.deleteEdge(edge);
+}
+
+// ── chapter-level authorship ──────────────────────────────────────────────────
+
+export function setChapterAuthor(store: DocumentStore, narrativeId: string,
+                                 index: number,
+                                 authorId: string | null): void {
+  editChapters(store, narrativeId, (cs) => {
+    const c = cs[index];
+    if (!c) return;
+    if (authorId) (c as EditableChapter & { authored_by?: string })
+      .authored_by = authorId;
+    else delete (c as EditableChapter & { authored_by?: string }).authored_by;
+  });
+}
+
+// ── endorsement ───────────────────────────────────────────────────────────────
+
+/**
+ * A person vouches for a generated block.
+ *
+ * Throws — with the reason — rather than silently doing nothing, because every
+ * refusal here is something the user must understand: an unknown author, a node
+ * that is not an author at all, or a model being asked to validate a model.
+ */
+export function endorseBlock(store: DocumentStore, narrativeId: string,
+                             chapterIndex: number, blockIndex: number,
+                             humanAuthorId: string): void {
+  if (!humanAuthorId)
+    throw new Error("un avallo deve portare il nome di chi lo fa");
+  const node = store.node(humanAuthorId);
+  if (!node)
+    throw new Error(
+      `il grafo non conosce «${humanAuthorId}»: un avallo deve nominare ` +
+      `qualcuno che c'è`);
+  if (node.node_type === AI_AUTHOR_TYPE)
+    throw new Error(
+      `«${label(node)}» è un autore AI: solo una persona può avallare. ` +
+      `Un modello che garantisce per un modello non è una validazione.`);
+  if (node.node_type !== AUTHOR_TYPE)
+    throw new Error(`«${label(node)}» non è un autore`);
+  editChapters(store, narrativeId, (cs) => {
+    const b = cs[chapterIndex]?.blocks?.[blockIndex] as
+      (EditableBlock & { validated_by?: string; ai_generated?: boolean })
+      | undefined;
+    if (b) b.validated_by = humanAuthorId;
+  });
+}
+
+/** Withdraw an endorsement. Signing is reversible; that it happened is not
+ *  hidden, the block simply goes back to reading as an unendorsed draft. */
+export function retractEndorsement(store: DocumentStore, narrativeId: string,
+                                   chapterIndex: number,
+                                   blockIndex: number): void {
+  editChapters(store, narrativeId, (cs) => {
+    const b = cs[chapterIndex]?.blocks?.[blockIndex] as
+      (EditableBlock & { validated_by?: string }) | undefined;
+    if (b) delete b.validated_by;
+  });
+}
+
+// ── transplanting a generated draft ───────────────────────────────────────────
+
+/** What the bridge answers with (`POST /generate-narrative-draft`, N5). */
+export interface DraftResult {
+  ok: boolean;
+  text: string;
+  provider: string;
+  model: string;
+  narrative_id: string;
+  chapter_title: string;
+  author_id: string;
+  prompt_id: string | null;
+  status: string;
+  pending_validation: number;
+  sent: Record<string, unknown>;
+  doc: EmDocument;
+}
+
+/**
+ * Bring a generated draft into the live document.
+ *
+ * The bridge returns the WHOLE graph as s3Dgraphy rewrote it. Loading that
+ * wholesale would be wrong twice over: it has no `layout` (s3Dgraphy does not
+ * model one, so every position would be lost) and it would replace nodes the
+ * user may have edited while the request was in flight.
+ *
+ * So we transplant only what the generation actually produced — the nodes it
+ * minted (the AI author, the prompt-as-source) and the narrative's chapters as
+ * s3Dgraphy rewrote them. s3Dgraphy stays the authority on *what* a draft is;
+ * this side only files the result. One `batch`, so it is one undo.
+ */
+export function applyGeneratedDraft(store: DocumentStore, result: DraftResult,
+                                    anchor: string): void {
+  const incoming = result.doc?.graph?.nodes ?? [];
+  const narrative = incoming.find((n) => n.id === result.narrative_id);
+  if (!narrative)
+    throw new Error(
+      "la risposta del bridge non contiene la narrativa: bozza non applicata");
+  const written = ((((narrative.data ?? {}) as Record<string, unknown>)
+    .chapters ?? []) as EditableChapter[])
+    .find((c) => c.anchor === anchor);
+  if (!written)
+    throw new Error(
+      `la risposta del bridge non contiene il capitolo ancorato a «${anchor}»`);
+
+  store.batch(() => {
+    for (const id of [result.author_id, result.prompt_id]) {
+      if (!id || store.node(id)) continue;
+      const node = incoming.find((n) => n.id === id);
+      if (node) store.addNode(JSON.parse(JSON.stringify(node)) as EmNode);
+    }
+    // the narrative is attributed to the model too, so "what did this model
+    // write" is answerable from the edges and not only by reading the chapters
+    if (result.author_id && store.node(result.author_id))
+      addNarrativeAuthor(store, result.narrative_id, result.author_id);
+
+    // Only the generated chapter is taken over. Replacing the whole list would
+    // silently discard anything the author changed elsewhere while the request
+    // was in flight — a request that can take a minute against a real model.
+    editChapters(store, result.narrative_id, (chapters) => {
+      const copy = JSON.parse(JSON.stringify(written)) as EditableChapter;
+      const at = chapters.findIndex((c) => c.anchor === anchor);
+      if (at >= 0) chapters[at] = copy;
+      else chapters.push(copy);
+    });
+  });
+}

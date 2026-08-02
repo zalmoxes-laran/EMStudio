@@ -149,9 +149,34 @@ export class DocumentStore {
   }
 
   private checkpoint(): void {
+    // Inside a batch the enclosing call already took the snapshot; taking
+    // another would split one user-level change into several undo steps.
+    if (this.batchDepth > 0) return;
     this.undoStack.push(this.take());
     if (this.undoStack.length > MAX_UNDO) this.undoStack.shift();
     this.redoStack = [];
+  }
+
+  private batchDepth = 0;
+
+  /**
+   * Run several mutations as ONE undoable change.
+   *
+   * Some edits are only meaningful whole: writing a generated draft adds the AI
+   * author, files the prompt as a source and appends the paragraph. Undoing
+   * that one gesture must not leave an author and a prompt behind with no text
+   * to explain them. Nesting is safe — the outermost call owns the step.
+   */
+  batch<T>(fn: () => T): T {
+    if (this.batchDepth > 0) return fn();
+    this.checkpoint();
+    this.batchDepth++;
+    try {
+      return fn();
+    } finally {
+      this.batchDepth--;
+      this.emit();
+    }
   }
 
   get canUndo(): boolean {
