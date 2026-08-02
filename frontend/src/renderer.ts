@@ -572,12 +572,15 @@ export function render(
       if (glyph) icon = imageForUrl(glyph);
     }
     // document: vector sheet with ITS OWN border — thickness carries the
-    // Master/Instance role, colour the geometry-axis variant
+    // Canonical/Instance role, colour the geometry-axis variant
     // (em_visual_rules.document_variant_styles); corner decorator counts
-    // the scene uses
+    // the scene uses.
+    // em.json schema 2 spells the flag `is_canonical`; `is_master` is the
+    // legacy spelling, still READ so older em.json files render, never written.
     if (n.node.node_type === "document") {
       const data = (n.node.data ?? {}) as Record<string, unknown>;
-      const isMaster =
+      const isCanonical =
+        data["is_canonical"] === true ||
         data["is_master"] === true ||
         (!n.instanceOf && (n.useCount ?? 0) > 1);
       const variant = documentVariant(
@@ -599,9 +602,9 @@ export function render(
       ctx.closePath();
       ctx.fillStyle = "#FFFFFF";
       ctx.fill();
-      ctx.strokeStyle = isMaster ? variant.color : "#1a1a1a";
+      ctx.strokeStyle = isCanonical ? variant.color : "#1a1a1a";
       ctx.lineWidth =
-        (isMaster ? Math.max(2.4, variant.width * 0.65) : 0.9) /
+        (isCanonical ? Math.max(2.4, variant.width * 0.65) : 0.9) /
         Math.sqrt(vp.scale);
       ctx.stroke();
       // fold
@@ -609,7 +612,7 @@ export function render(
       ctx.moveTo(x0 + iw - f, y0);
       ctx.lineTo(x0 + iw - f, y0 + f);
       ctx.lineTo(x0 + iw, y0 + f);
-      ctx.strokeStyle = isMaster ? variant.color : "#1a1a1a";
+      ctx.strokeStyle = isCanonical ? variant.color : "#1a1a1a";
       ctx.lineWidth = 0.9 / Math.sqrt(vp.scale);
       ctx.stroke();
       if (drawLabels) {

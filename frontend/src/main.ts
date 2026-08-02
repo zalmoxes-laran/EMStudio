@@ -1,6 +1,15 @@
 import "./style.css";
 import { applyFolding, buildMembership, MEMBERSHIP_EDGES } from "./folding";
 import { renderInspector } from "./inspector";
+import {
+  documentDiagnostics,
+  logError,
+  logInfo,
+  logWarn,
+  onLogChange,
+  renderLogPanel,
+  versionBanner,
+} from "./logpanel";
 import { DocumentStore } from "./model";
 import { buildNodeList } from "./nodelist";
 import { buildOverview } from "./overview";
@@ -200,7 +209,9 @@ const dirtyDot = document.getElementById("dirty-dot")!;
 const sidePanel = document.getElementById("side")!;
 const tabInspector = document.getElementById("tab-inspector") as HTMLButtonElement;
 const tabNodes = document.getElementById("tab-nodes") as HTMLButtonElement;
+const tabLog = document.getElementById("tab-log") as HTMLButtonElement;
 const nodelistEl = document.getElementById("nodelist")!;
+const logpanelEl = document.getElementById("logpanel")!;
 
 // EM-version pill → click for the version breakdown (config files + ontologies)
 const verBtn = document.getElementById("em-version")!;
@@ -1251,6 +1262,7 @@ function loadDocument(
 ): void {
   if (!d?.graph?.nodes) {
     info.textContent = `${sourceName}: not an .em.json document (missing graph.nodes)`;
+    logError(`${sourceName}: not an .em.json document (missing graph.nodes)`);
     return;
   }
   currentFilePath = path; // desktop: enables in-place Save; null in browser
@@ -1302,19 +1314,39 @@ function loadDocument(
   // NO usable positions — a fresh graph, or a Blender sync snapshot (its emjson
   // layout has no matrix coordinates). In that case DON'T fall back to Graph:
   // compute a fresh layout via em-core so the Matrix renders, then show it.
+  // S6 — the load is the anchor of the activity log: what came in, from where,
+  // which language version it declares, and what the document leaves unresolved.
+  const declared = versionBanner(d);
+  logInfo(
+    `loaded "${sourceName}" — ${d.graph.nodes.length} nodes, ` +
+      `${(d.graph.edges ?? []).length} edges` +
+      (declared ? ` · ${declared}` : " · no version declared"),
+  );
+  const unresolved = documentDiagnostics(d);
+  if (unresolved.length) {
+    logWarn(
+      unresolved
+        .map((g) => `${g.messages.length} ${g.label.toLowerCase()}`)
+        .join(" · ") + " — see Document warnings above",
+    );
+  }
   if (hadStoredPositions) {
     setView(scenes.matrix ? "matrix" : "graph");
   } else {
+    logInfo("no stored positions — computing a fresh layout via em-core");
     void runLayout(true)
       .then(() => {
         setView("matrix");
         fit();
       })
       .catch((e) => {
-        info.textContent = `auto-layout failed: ${e instanceof Error ? e.message : e}`;
+        const msg = e instanceof Error ? e.message : String(e);
+        info.textContent = `auto-layout failed: ${msg}`;
+        logError(`auto-layout failed: ${msg}`);
         setView(scenes.matrix ? "matrix" : "graph");
       });
   }
+  refreshLogPanel();
 }
 
 // Sidecar (sync) ↔ Standalone. Opening/importing a file replaces the live view,
@@ -2992,14 +3024,29 @@ btnViewProps.addEventListener("click", () => {
 });
 
 // side panel tabs
-function showTab(which: "inspector" | "nodes"): void {
+type SideTab = "inspector" | "nodes" | "log";
+let activeTab: SideTab = "inspector";
+function showTab(which: SideTab): void {
+  activeTab = which;
   tabInspector.classList.toggle("active", which === "inspector");
   tabNodes.classList.toggle("active", which === "nodes");
+  tabLog.classList.toggle("active", which === "log");
   inspector.classList.toggle("hidden", which !== "inspector");
   nodelistEl.classList.toggle("hidden", which !== "nodes");
+  logpanelEl.classList.toggle("hidden", which !== "log");
+  if (which === "log") refreshLogPanel();
 }
 tabInspector.addEventListener("click", () => showTab("inspector"));
 tabNodes.addEventListener("click", () => showTab("nodes"));
+tabLog.addEventListener("click", () => showTab("log"));
+
+/** Redraw the Log tab — only when it is the visible one; there is no point
+ *  rebuilding a hidden DOM on every sync message. */
+function refreshLogPanel(): void {
+  if (activeTab !== "log") return;
+  renderLogPanel(logpanelEl, store?.doc ?? null, EM_VERSION);
+}
+onLogChange(refreshLogPanel);
 btnUndo.addEventListener("click", () => store?.undo());
 btnRedo.addEventListener("click", () => store?.redo());
 btnMatrix.addEventListener("click", () => setView("matrix"));

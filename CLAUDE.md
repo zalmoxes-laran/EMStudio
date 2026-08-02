@@ -91,13 +91,18 @@ July 2026; this file is the handoff map — read it before touching anything.
 ## Build & verify
 
 ```bash
-cargo test                                   # 8/8 = engine contract
+cargo test                                   # engine contract (11 tests)
 cargo build -p em-cli --release
 ./frontend/scripts/build-wasm.sh             # after touching em-core
 cd frontend && npm run build                 # single-file dist
 ```
-Visual check: load `frontend/dist/index.html` (the app auto-loads the
-fixture when served, or open the file and drop an .em.json).
+Visual check: load `frontend/dist/index.html` and **drop an .em.json onto
+it**. The app deliberately starts from an EMPTY canvas — it does NOT
+auto-load a fixture (`main.ts`, `// ---------- boot ----------`): starting
+blank is more natural than opening a sample nobody asked for. Use New,
+Open…, drop a file, or Sync. Automated tests inject a document by setting
+`window.__EM_TEST_DATA__` before the module runs; that is the only path
+that loads anything on boot.
 
 ## Backlog (owner: Emanuel — ordered, July 2026)
 
