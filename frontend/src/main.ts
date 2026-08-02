@@ -1,6 +1,9 @@
 import "./style.css";
 import { applyFolding, buildMembership, MEMBERSHIP_EDGES } from "./folding";
 import { renderInspector } from "./inspector";
+import { narrativesIn, renderNarrativeView } from "./narrative";
+import type { NarrativeEditor } from "./narrative";
+import * as nedit from "./narrative-edit";
 import {
   documentDiagnostics,
   logError,
@@ -203,6 +206,10 @@ const toastEl = document.getElementById("toast")!;
 const chronoBanner = document.getElementById("chrono-banner")!;
 const btnMatrix = document.getElementById("btn-matrix") as HTMLButtonElement;
 const btnGraph = document.getElementById("btn-graph") as HTMLButtonElement;
+const btnNarrative = document.getElementById("btn-narrative") as HTMLButtonElement;
+const narrativeViewEl = document.getElementById("narrative-view")!;
+const btnNarrativeEdit = document.getElementById(
+  "btn-narrative-edit") as HTMLButtonElement;
 const btnUndo = document.getElementById("btn-undo") as HTMLButtonElement;
 const btnRedo = document.getElementById("btn-redo") as HTMLButtonElement;
 const dirtyDot = document.getElementById("dirty-dot")!;
@@ -1221,6 +1228,9 @@ async function refreshMatrixViewLayout(): Promise<void> {
 }
 
 function setView(v: ViewKind): void {
+  // Picking a canvas view means you want the canvas: close the overlay rather
+  // than leaving it covering a view the user just asked for.
+  if (narrativeOpen) setNarrativeOpen(false);
   const changed = view !== v;
   view = v;
   btnMatrix.classList.toggle("active", v === "matrix");
@@ -1289,6 +1299,7 @@ function loadDocument(
     updateLegend();
     updateToolbar();
     refreshInspector();
+    refreshNarrativeView();   // embeds are references: a graph edit shows here
     nodeList.refresh();
     draw();
   });
@@ -1322,6 +1333,11 @@ function loadDocument(
       `${(d.graph.edges ?? []).length} edges` +
       (declared ? ` · ${declared}` : " · no version declared"),
   );
+  selectedNarrativeId = null;
+  const narratives = narrativesIn(d);
+  if (narratives.length)
+    logInfo(`${narratives.length} narrative(s) in this document — see the Narrative view`);
+  refreshNarrativeView();
   const unresolved = documentDiagnostics(d);
   if (unresolved.length) {
     logWarn(
@@ -3111,6 +3127,87 @@ function refreshLogPanel(): void {
   renderLogPanel(logpanelEl, store?.doc ?? null, EM_VERSION, revealFromWarning);
 }
 onLogChange(refreshLogPanel);
+// ── Narrative view (N2) ───────────────────────────────────────────────────
+// An OVERLAY over the canvas, not a third ViewKind: Matrix and Graph are built
+// on scenes, layout and circles-of-detail, and a story is none of those.
+// Toggling it leaves the canvas exactly as it was underneath.
+let narrativeOpen = false;
+let narrativeEditing = false;
+let selectedNarrativeId: string | null = null;
+
+/** The authoring hooks (N3). Every one of them funnels through
+ *  `DocumentStore.updateNode`, so a narrative edit is undoable, marks the
+ *  document dirty, reaches a synced peer and is written by the ordinary save —
+ *  exactly like editing any other node. */
+function narrativeEditor(narrativeId: string): NarrativeEditor {
+  const s = store!;
+  return {
+    narrativeId,
+    addChapter: () => nedit.addChapter(s, narrativeId),
+    renameChapter: (i, t) => nedit.renameChapter(s, narrativeId, i, t),
+    moveChapter: (i, d) => nedit.moveChapter(s, narrativeId, i, d),
+    deleteChapter: (i) => nedit.deleteChapter(s, narrativeId, i),
+    toggleCanonical: (i) => nedit.toggleCanonical(s, narrativeId, i),
+    setAnchor: (i, a) => nedit.setChapterAnchor(s, narrativeId, i, a),
+    addProse: (c) => nedit.addProse(s, narrativeId, c),
+    setProse: (c, b, t) => nedit.setProse(s, narrativeId, c, b, t),
+    addEmbed: (c, ref, at) =>
+      nedit.addEmbed(s, narrativeId, c, ref,
+                     nedit.defaultViewType(s.node(ref)), at),
+    setViewType: (c, b, vt) => nedit.setEmbedViewType(s, narrativeId, c, b, vt),
+    moveBlock: (c, b, d) => nedit.moveBlock(s, narrativeId, c, b, d),
+    deleteBlock: (c, b) => nedit.deleteBlock(s, narrativeId, c, b),
+    // A chapter is anchored to a LANE: an epoch or an activity. Offering every
+    // node would make the control useless — most of them are not lanes.
+    lanes: () =>
+      (s.doc.graph.nodes ?? [])
+        .filter((n) => n.node_type === "EpochNode"
+                    || n.node_type === "ActivityNodeGroup")
+        .map((n) => ({ id: n.id, label: String(n.name || n.id) })),
+  };
+}
+
+function refreshNarrativeView(): void {
+  if (!narrativeOpen) return;
+  const narratives = narrativesIn(store?.doc ?? null);
+  const current = narratives.find((n) => n.id === selectedNarrativeId)
+    ?? narratives[0];
+  renderNarrativeView(
+    narrativeViewEl,
+    store?.doc ?? null,
+    selectedNarrativeId,
+    (id) => {
+      selectedNarrativeId = id;
+      refreshNarrativeView();
+    },
+    // an embed that resolves is a way into the graph: same gesture as the Log
+    // tab, so "go and look at it" means one thing everywhere in the app
+    (nodeId) => {
+      setNarrativeOpen(false);
+      revealFromWarning(nodeId);
+    },
+    narrativeEditing && current && store
+      ? narrativeEditor(current.id)
+      : undefined,
+  );
+}
+
+function setNarrativeOpen(open: boolean): void {
+  narrativeOpen = open;
+  narrativeViewEl.classList.toggle("hidden", !open);
+  btnNarrative.classList.toggle("active", open);
+  btnNarrativeEdit.classList.toggle("hidden", !open);
+  if (open) refreshNarrativeView();
+}
+
+btnNarrative.addEventListener("click", () => setNarrativeOpen(!narrativeOpen));
+btnNarrativeEdit.addEventListener("click", () => {
+  narrativeEditing = !narrativeEditing;
+  btnNarrativeEdit.classList.toggle("active", narrativeEditing);
+  btnNarrativeEdit.textContent = narrativeEditing ? "Done" : "Edit";
+  refreshNarrativeView();
+});
+
 btnUndo.addEventListener("click", () => store?.undo());
 btnRedo.addEventListener("click", () => store?.redo());
 btnMatrix.addEventListener("click", () => setView("matrix"));

@@ -170,6 +170,16 @@ export function buildNodeList(
       body.appendChild(desc);
       row.appendChild(body);
       row.addEventListener("click", () => onPick(n.id));
+      // Drag-to-embed (N3): a row is the handle for dropping this node into a
+      // narrative chapter. The canvas cannot be the drag source — the narrative
+      // view is an overlay OVER it, so the two never share the screen — and
+      // this list is the graph's other face, always visible beside the story.
+      row.draggable = true;
+      row.addEventListener("dragstart", (e) => {
+        e.dataTransfer?.setData("application/x-em-node-id", n.id);
+        e.dataTransfer?.setData("text/plain", String(n.name || n.id));
+        if (e.dataTransfer) e.dataTransfer.effectAllowed = "copy";
+      });
       listEl.appendChild(row);
       rows.set(n.id, row);
     }

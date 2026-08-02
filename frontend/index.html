@@ -72,6 +72,12 @@
       <div id="view-toggle" role="group">
         <button id="btn-matrix" class="active">Matrix</button>
         <button id="btn-graph">Graph</button>
+        <button
+          id="btn-narrative"
+          title="Narrative — the graph read as a story (chapters, prose, live embeds)"
+        >
+          Narrative
+        </button>
       </div>
       <select
         id="graph-layout"
@@ -82,6 +88,13 @@
         <option value="radial">Radial</option>
         <option value="force">Force</option>
       </select>
+      <button
+        id="btn-narrative-edit"
+        class="hidden"
+        title="Edit this narrative: write prose, drag nodes in from the Nodes tab, reorder and settle chapters"
+      >
+        Edit
+      </button>
       <button id="btn-fit" title="Fit to view (0)">Fit</button>
       <button id="btn-layout" title="Recompute the swimlane layout (em-core, same engine as the CLI)">Layout</button>
       <input type="file" id="file-input" accept=".json,.em.json" hidden />
@@ -122,6 +135,12 @@
         </button>
         <div id="filter-panel" class="hidden"></div>
         <div id="toast" class="hidden"></div>
+        <!-- N2: the narrative view is an OVERLAY over the canvas, not a third
+             ViewKind. The canvas views (Matrix / Graph) are built on scenes,
+             layout and circles-of-detail; a story is none of those, and
+             threading it through that machinery would have changed the graph
+             view to add something beside it. -->
+        <div id="narrative-view" class="hidden"></div>
         <canvas id="overview" title="Overview — click to move the viewport"></canvas>
       </div>
       <aside id="side" class="hidden">
