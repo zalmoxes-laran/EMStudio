@@ -1,0 +1,47 @@
+# Guards the desktop shell's OS-keychain backends (S5).
+#
+# The API key lives in the OS keychain. Which backend `keyring` uses is decided
+# by per-target features in apps/desktop/src-tauri/Cargo.toml, and a wrong
+# feature set does NOT break the build — on Linux, omitting the crypto feature
+# compiles fine and then sends the key over D-Bus with no encryption at all.
+# That is the bug (S2) this job exists to prevent from coming back.
+#
+# `cargo tree --target` resolves a foreign target's dependency graph without
+# installing that target's std and without compiling anything, so all three
+# platforms are checked from one Linux runner in seconds. The assertion is on
+# the CONTENT of the graph — cargo's exit code is 0 either way.
+name: desktop keychain backends
+
+on:
+  push:
+    paths:
+      - "apps/desktop/src-tauri/Cargo.toml"
+      - "apps/desktop/src-tauri/Cargo.lock"
+      - "apps/desktop/check-keychain-backends.sh"
+      - ".github/workflows/desktop-keychain-backends.yml"
+  pull_request:
+    paths:
+      - "apps/desktop/src-tauri/Cargo.toml"
+      - "apps/desktop/src-tauri/Cargo.lock"
+      - "apps/desktop/check-keychain-backends.sh"
+      - ".github/workflows/desktop-keychain-backends.yml"
+  workflow_dispatch:
+
+jobs:
+  backends:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache the cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-tree-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock') }}
+          restore-keys: cargo-tree-
+
+      # No `rustup target add`: cargo tree resolves a target it cannot build.
+      - name: Every platform resolves its intended keychain backend
+        run: ./apps/desktop/check-keychain-backends.sh

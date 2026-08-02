@@ -6,7 +6,17 @@ in Python), so the "Export GraphML" button POSTs the current .em.json to this
 tiny localhost server, which runs the s3Dgraphy exporter in-process and
 returns the yEd GraphML for download. Dev-only, single-user, no auth.
 
-Endpoints (CORS open for http://localhost:*):
+**Who may call it (S6).** No authentication, but not open either: a request
+carrying an `Origin` that is not localhost (or the desktop app's own
+`tauri://localhost`) is refused with 403 before dispatch, and the CORS header
+reflects the vetted origin instead of `*`. Requests with no `Origin` at all —
+curl, the CLI, any non-browser tool — still pass. This matters because the
+bridge can hold an API key in memory (S3): without the gate, any page open in
+the same browser could spend it. `Origin: null` (a page opened from `file://`,
+but also a sandboxed iframe anywhere) is refused; override with
+`EM_BRIDGE_ALLOW_ORIGIN=<origin>[,<origin>]`.
+
+Endpoints:
     GET  /health           → {"ok": true, ...}
     POST /graphml          ← em.json body   → GraphML (text/xml), downloadable
     POST /import-graphml   ← GraphML (XML)  → em.json dict (application/json)
@@ -73,6 +83,16 @@ import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
+#: Extra origins the operator vouches for, comma-separated in
+#: `EM_BRIDGE_ALLOW_ORIGIN`. The gate below is deliberately strict — it refuses
+#: `Origin: null`, which is what a page opened straight from disk sends — and
+#: this is the way out that does not require weakening it for everybody.
+_ALLOWED_EXTRA_ORIGINS = {
+    o.strip() for o in os.environ.get("EM_BRIDGE_ALLOW_ORIGIN", "").split(",")
+    if o.strip()
+}
+
+
 def _exit_when_orphaned(poll: float = 1.0) -> None:
     """Terminate the process once the parent that spawned it is gone.
 
@@ -119,17 +139,79 @@ def make_handler(api):
         def log_message(self, fmt, *args):
             sys.stderr.write("  [bridge] " + (fmt % args) + "\n")
 
+        # ── who may talk to this bridge ─────────────────────────────────
+        #
+        # The bridge listens on loopback with no auth, which was tolerable while
+        # it only transformed documents. Since S3 it can hold an API key in
+        # memory, and `Access-Control-Allow-Origin: *` meant any page you
+        # happened to have open could spend that key, or overwrite it.
+        #
+        # A browser sets `Origin` itself and a page cannot forge it, so checking
+        # it is enough to keep other sites out. Requests with NO Origin — curl,
+        # the CLI, anything not a browser — still pass: they are not the threat,
+        # and blocking them would break every local tool for nothing.
+
+        def _origin_allowed(self, origin):
+            if origin in _ALLOWED_EXTRA_ORIGINS:
+                return True
+            # Tauri's own protocol: the packaged desktop app serves from
+            # `tauri://localhost` (macOS/Linux) or `http://tauri.localhost`
+            # (Windows), NOT from an http://localhost port. Leaving these out
+            # would have blocked the desktop app on the first packaged build,
+            # while the dev flow kept working — the exact shape of bug that
+            # ships.
+            if origin in ("tauri://localhost", "http://tauri.localhost",
+                          "https://tauri.localhost"):
+                return True
+            try:
+                parsed = urllib.parse.urlparse(origin)
+            except ValueError:
+                return False
+            return (parsed.scheme in ("http", "https")
+                    and parsed.hostname in ("localhost", "127.0.0.1", "::1"))
+
+        def _gate(self):
+            """False → the request was refused and answered; stop handling it.
+
+            `Origin: null` is refused deliberately. It is what a `file://` page
+            sends — and also what a sandboxed iframe on any site sends, so
+            allowing it would hand the key back to the thing this gate exists to
+            stop. Serve the frontend over http://localhost instead, or name the
+            origin in EM_BRIDGE_ALLOW_ORIGIN.
+            """
+            origin = self.headers.get("Origin")
+            if origin is None or self._origin_allowed(origin):
+                return True
+            # The refused value is NOT echoed — not in the body, not in a log
+            # line. It is attacker-controlled text and this message is read by
+            # a human.
+            self._fail(403, "origin not allowed: em-bridge answers only the "
+                            "local EMStudio (localhost, or the desktop app). "
+                            "Serve the frontend from http://localhost, or set "
+                            "EM_BRIDGE_ALLOW_ORIGIN.")
+            return False
+
         def _cors(self):
-            self.send_header("Access-Control-Allow-Origin", "*")
+            # Reflect the caller's origin instead of `*`, so the browser only
+            # ever hands a response to the origin we vetted. `Vary: Origin`
+            # keeps a cache from serving one origin's response to another.
+            origin = self.headers.get("Origin")
+            if origin and self._origin_allowed(origin):
+                self.send_header("Access-Control-Allow-Origin", origin)
+                self.send_header("Vary", "Origin")
             self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
             self.send_header("Access-Control-Allow-Headers", "Content-Type")
 
         def do_OPTIONS(self):
+            if not self._gate():
+                return
             self.send_response(204)
             self._cors()
             self.end_headers()
 
         def do_GET(self):
+            if not self._gate():
+                return
             parsed = urllib.parse.urlparse(self.path)
             route = parsed.path.rstrip("/")
             if route == "/health":
@@ -150,6 +232,8 @@ def make_handler(api):
                 self.send_error(404, "unknown endpoint")
 
         def do_POST(self):
+            if not self._gate():
+                return
             route = urllib.parse.urlparse(self.path).path.rstrip("/")
             length = int(self.headers.get("Content-Length", 0))
             raw = self.rfile.read(length) if length else b""
