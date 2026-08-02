@@ -53,6 +53,7 @@ Needs s3Dgraphy importable (pandas + lxml) — use its checkout's venv python.
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
 import pathlib
@@ -259,7 +260,12 @@ def make_handler(api):
 
             prompt = build_prompt(context, body.get("instruction", "") or "")
             try:
-                provider = get_provider(body.get("provider"))
+                # a model override is per-request; the provider's own default
+                # (a Sonnet, see llm_provider.py) applies when it is empty
+                opts = {}
+                if (body.get("model") or "").strip():
+                    opts["model"] = body["model"].strip()
+                provider = get_provider(body.get("provider"), **opts)
                 text = provider.generate(SYSTEM_PROMPT, prompt, context)
             except LLMError as exc:
                 # 501 = not configured (no key, unknown provider); 502 = the
@@ -596,7 +602,26 @@ def main() -> int:
         return 1
 
     handler = make_handler(api)
-    httpd = ThreadingHTTPServer((args.host, args.port), handler)
+    # A socket left in TIME_WAIT by a Ctrl-C should not lock the port for the
+    # next run. This does NOT help against a bridge that is still alive — for
+    # that there is the message below, and dev.sh frees the port up front.
+    ThreadingHTTPServer.allow_reuse_address = True
+    try:
+        httpd = ThreadingHTTPServer((args.host, args.port), handler)
+    except OSError as exc:
+        if exc.errno != errno.EADDRINUSE:
+            raise
+        # A traceback here says "something went wrong in the socket module".
+        # What the reader actually needs is the one command that fixes it.
+        print(
+            f"error: port {args.port} is already in use — a previous em-bridge "
+            f"is probably still running.\n"
+            f"Free it with:\n"
+            f"    lsof -ti tcp:{args.port} | xargs kill\n"
+            f"or start this one elsewhere with --port <n>.",
+            file=sys.stderr,
+        )
+        return 2
     print(f"em_bridge listening on http://{args.host}:{args.port} "
           f"(POST /graphml, /import-graphml, /export-ttl, /resolve-authority, "
           f"/scan-resources, /list-resources, /resolve-resource, /ingest-minio, "

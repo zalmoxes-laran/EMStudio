@@ -238,6 +238,44 @@
             </label>
           </section>
           <section class="settings-sect">
+            <h4>AI provider</h4>
+            <p class="settings-hint">
+              Chi scrive le bozze narrative. La chiave <b>non</b> passa mai dal
+              frontend: nell'app desktop finisce nel <b>portachiavi di sistema</b>
+              e viene iniettata nell'ambiente di em-bridge, che la legge al
+              momento della chiamata. Non entra in em.json, nel localStorage,
+              nei log, né in questa finestra dopo il salvataggio.
+            </p>
+            <label
+              >Provider
+              <select id="set-ai-provider"></select>
+            </label>
+            <label
+              >Modello (vuoto = default del provider)
+              <input
+                id="set-ai-model"
+                type="text"
+                placeholder="claude-sonnet-5"
+              />
+            </label>
+            <label
+              >API key
+              <input
+                id="set-ai-key"
+                type="password"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="Incolla qui la key"
+              />
+            </label>
+            <p class="settings-url">
+              <span id="set-ai-key-state"></span>
+              <button id="set-ai-key-save" type="button">Salva key</button>
+              <button id="set-ai-key-clear" type="button">Rimuovi</button>
+            </p>
+            <p class="settings-hint" id="set-ai-key-hint"></p>
+          </section>
+          <section class="settings-sect">
             <h4>Developer</h4>
             <label class="settings-check">
               <input id="set-dev-uuid" type="checkbox" />

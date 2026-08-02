@@ -149,7 +149,11 @@ export function dtcGlyphUrl(basename: string | null): string | null {
  *
  * property and document are NOT here: property's PNG embeds the word
  * "property", and the document sheet must carry ITS OWN border (thick =
- * canonical, coloured by geometry variant) — both are drawn vectorially. */
+ * canonical, coloured by geometry variant) — both are drawn vectorially.
+ *
+ * `narrative` joins them for the same reason as the rights nodes: it is an
+ * icon, not a shape. It had no visual rule at all until N7 and fell through to
+ * `unknown` — a red dotted question mark on every canvas holding a story. */
 export const ICON_NODE_TYPES = new Set([
   "extractor",
   "combiner",
@@ -157,6 +161,7 @@ export const ICON_NODE_TYPES = new Set([
   "author_ai",
   "license",
   "embargo",
+  "narrative",
 ]);
 
 const imageCache = new Map<string, HTMLImageElement>();

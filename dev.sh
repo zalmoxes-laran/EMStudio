@@ -55,6 +55,32 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+# --- free a stale bridge holding the port ---------------------------------
+# A previous run killed with SIGKILL, or a sidecar re-parented to launchd, can
+# outlive its shell and keep :$BRIDGE_PORT. The bridge then dies on EADDRINUSE
+# and the app just says "transformer not reachable". Clear it here so every
+# ./dev.sh starts clean without a manual kill.
+#
+# Guarded: only if lsof exists, only the LISTENER on that port, and `|| true`
+# throughout so `set -e` does not abort when there is nothing to kill.
+free_port() {
+  local port="$1"
+  command -v lsof >/dev/null 2>&1 || return 0
+  local pids
+  pids="$(lsof -ti tcp:"$port" -sTCP:LISTEN 2>/dev/null || true)"
+  [[ -z "$pids" ]] && return 0
+  echo "⚠️  freeing stale listener on :$port (pid $(echo "$pids" | tr '\n' ' '))"
+  kill $pids 2>/dev/null || true
+  # give it a moment to release the socket, then insist once
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 0.2
+    [[ -z "$(lsof -ti tcp:"$port" -sTCP:LISTEN 2>/dev/null || true)" ]] && return 0
+  done
+  kill -9 $pids 2>/dev/null || true
+  sleep 0.3
+}
+free_port "$BRIDGE_PORT"
+
 echo "🐍  Bridge:   http://localhost:$BRIDGE_PORT  (GraphML export)"
 "$PY" "$ROOT/tools/em_bridge.py" --port "$BRIDGE_PORT" --s3dgraphy "$S3DGRAPHY_SRC" &
 pids+=("$!")

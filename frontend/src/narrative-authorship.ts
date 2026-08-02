@@ -242,3 +242,91 @@ export function applyGeneratedDraft(store: DocumentStore, result: DraftResult,
     });
   });
 }
+
+// ── endorsing a whole chapter ─────────────────────────────────────────────────
+
+/** The AI paragraphs in a chapter that nobody has vouched for yet. */
+export function pendingInChapter(chapter: EditableChapter | undefined): number[] {
+  const out: number[] = [];
+  (chapter?.blocks ?? []).forEach((b, i) => {
+    const block = b as EditableBlock & {
+      ai_generated?: boolean; validated_by?: string };
+    if (block.block_type === "prose" && blockStatus(block) === "ai_draft")
+      out.push(i);
+  });
+  return out;
+}
+
+/**
+ * Vouch for every unendorsed AI paragraph in one chapter.
+ *
+ * **The per-paragraph act is preserved.** This writes a separate `validated_by`
+ * on each block rather than one flag on the chapter — a chapter is not a claim,
+ * the paragraphs are, and "which sentences did this person put their name to"
+ * has to stay answerable afterwards. What the gesture saves is clicks, not
+ * granularity.
+ *
+ * One `batch`, so it is one undo: an endorsement half-applied across a chapter
+ * would be worse than none.
+ *
+ * Returns how many paragraphs were endorsed.
+ */
+export function endorseChapter(store: DocumentStore, narrativeId: string,
+                               chapterIndex: number,
+                               humanAuthorId: string): number {
+  const node = store.node(narrativeId);
+  const chapters = ((node?.data ?? {}) as Record<string, unknown>)
+    .chapters as EditableChapter[] | undefined;
+  const pending = pendingInChapter(chapters?.[chapterIndex]);
+  if (!pending.length) return 0;
+  store.batch(() => {
+    for (const blockIndex of pending)
+      endorseBlock(store, narrativeId, chapterIndex, blockIndex, humanAuthorId);
+  });
+  return pending.length;
+}
+
+// ── the byline ────────────────────────────────────────────────────────────────
+
+export interface Byline {
+  /** People who carry responsibility: the human authors, plus anyone who has
+   *  put their name to a generated paragraph. */
+  responsible: AuthorRef[];
+  /** Models that contributed text. Never co-authors — assistance. */
+  assisted: AuthorRef[];
+}
+
+/**
+ * Who is responsible, and what assisted.
+ *
+ * The two are **not** the same line (E.D., 2026-08-02). Listing a model beside a
+ * person as an equal co-author states something false: only one of them can be
+ * asked about the claim afterwards. So the people come first and the models
+ * follow as *assistance* — which is also the honest reading of what happened,
+ * since nothing a model wrote counts until a person endorses it.
+ *
+ * A human who endorsed a paragraph without being a declared author is included
+ * among the responsible: signing IS taking responsibility, and a byline that
+ * omitted them would hide the one person who vouched for the text.
+ */
+export function bylineOf(doc: EmDocument | null, narrativeId: string,
+                         chapters: EditableChapter[]): Byline {
+  const known = new Map(authorsIn(doc).map((a) => [a.id, a]));
+  const declared = narrativeAuthors(doc, narrativeId);
+  const responsible = declared.filter((a) => !a.ai);
+  const assisted = declared.filter((a) => a.ai);
+
+  for (const chapter of chapters) {
+    for (const b of chapter.blocks ?? []) {
+      const block = b as EditableBlock & {
+        validated_by?: string; authored_by?: string };
+      const signer = known.get(block.validated_by ?? "");
+      if (signer && !signer.ai && !responsible.some((r) => r.id === signer.id))
+        responsible.push(signer);
+      const wrote = known.get(block.authored_by ?? "");
+      if (wrote?.ai && !assisted.some((a) => a.id === wrote.id))
+        assisted.push(wrote);
+    }
+  }
+  return { responsible, assisted };
+}

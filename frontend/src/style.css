@@ -2276,3 +2276,18 @@ body.sync-active #footer-brand #em-version {
 
 .nv-endorse:hover:not(:disabled) { background: #fff2e6; }
 .nv-endorse:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* «con l'assistenza di …» — a second line, deliberately quieter than the
+   responsibility line above it. The models are declared, not co-billed. */
+.nv-authors.nv-assist {
+  border-top: 0;
+  margin-top: 4px;
+  padding-top: 0;
+  font-size: 11px;
+}
+
+.nv-endorse-all { margin-left: 4px; }
+
+/* the key indicator states set/unset — never the key itself */
+.ai-key-set { color: #2e7d32; font-weight: 600; }
+.ai-key-unset { color: #9aa4b0; }

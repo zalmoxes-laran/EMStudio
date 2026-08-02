@@ -17,7 +17,7 @@
  * palette in this app and this is not a second one.
  */
 
-import { blockStatus, narrativeAuthors } from "./narrative-authorship";
+import { blockStatus, bylineOf, narrativeAuthors } from "./narrative-authorship";
 import type { AuthorRef, BlockStatus } from "./narrative-authorship";
 import { VIEW_TYPES } from "./narrative-edit";
 import { nodeStyle } from "./palette";
@@ -400,6 +400,10 @@ export interface NarrativeEditor {
   signer(): AuthorRef | null;
   setSigner(authorId: string | null): void;
   endorse(chapter: number, block: number): void;
+  /** Vouch for every unendorsed AI paragraph in one chapter, one act each. */
+  endorseChapter(chapter: number): void;
+  /** How many paragraphs `endorseChapter` would sign right now. */
+  pendingIn(chapter: number): number;
   retract(chapter: number, block: number): void;
   /** True where a draft can be generated: the chapter narrates an ACTIVITY,
    *  which is where the actions — and so the story — are. */
@@ -407,6 +411,22 @@ export interface NarrativeEditor {
   generate(index: number): void;
   /** A request is in flight for this chapter. */
   generating(index: number): boolean;
+}
+
+function authorChip(a: AuthorRef, ai: boolean): HTMLElement {
+  const style = nodeStyle(ai ? "author_ai" : "author");
+  const chip = el("span", "nv-author-chip", a.label);
+  chip.style.background = style.fill;
+  chip.style.borderColor = style.border;
+  chip.style.color = style.textColor;
+  return chip;
+}
+
+function chipRemove(a: AuthorRef, onClick: () => void): HTMLButtonElement {
+  const x = el("button", "nv-chip-x", "✕") as HTMLButtonElement;
+  x.title = `Togli ${a.label} dagli autori di questa narrativa`;
+  x.addEventListener("click", onClick);
+  return x;
 }
 
 /** A `<select>` over authors. Resets to its placeholder after a pick when the
@@ -498,35 +518,31 @@ export function renderNarrativeView(
   if (current.description)
     head.appendChild(el("p", "nv-lede", current.description));
 
-  // The narrative's authors are `has_author` EDGES (the N4 model), so they show
-  // here in the same place a paper shows its byline — and the AI ones show too,
-  // labelled as such, because a byline that hides the model is not a byline.
+  // The byline is TWO lines, and the split is the point (N8). People who can be
+  // asked about a claim go first, as responsible; models follow as assistance.
+  // One line listing them as equal co-authors would state something false.
+  const { responsible, assisted } = bylineOf(doc, current.id, current.chapters);
+  const declared = narrativeAuthors(doc, current.id);
+
   const byline = el("div", "nv-authors");
-  byline.appendChild(el("span", "nv-authors-label", "autori"));
-  const authors = narrativeAuthors(doc, current.id);
-  if (!authors.length)
-    byline.appendChild(el("span", "nv-prov-dim", "nessuno indicato"));
-  for (const a of authors) {
-    const style = nodeStyle(a.ai ? "author_ai" : "author");
-    const chip = el("span", "nv-author-chip", a.label);
-    chip.style.background = style.fill;
-    chip.style.borderColor = style.border;
-    chip.style.color = style.textColor;
-    chip.title = a.ai
-      ? "Autore AI: ha scritto del testo, non può avallarlo"
-      : "Autore umano";
-    if (editor) {
-      const x = el("button", "nv-chip-x", "✕") as HTMLButtonElement;
-      x.title = `Togli ${a.label} dagli autori di questa narrativa`;
-      x.addEventListener("click", () => editor.removeAuthor(a.id));
-      chip.appendChild(x);
-    }
+  byline.appendChild(el("span", "nv-authors-label", "a cura di"));
+  if (!responsible.length)
+    byline.appendChild(el("span", "nv-prov-dim nv-prov-missing",
+      "nessuna persona responsabile"));
+  for (const a of responsible) {
+    const chip = authorChip(a, false);
+    chip.title = declared.some((d) => d.id === a.id)
+      ? "Autore umano: risponde di questo racconto"
+      : "Ha avallato del testo generato — e quindi ne risponde";
+    if (editor && declared.some((d) => d.id === a.id))
+      chip.appendChild(chipRemove(a, () => editor.removeAuthor(a.id)));
     byline.appendChild(chip);
   }
   if (editor) {
     const add = authorSelect(
-      editor.authors().filter((a) => !authors.some((x) => x.id === a.id)),
-      null, "+ autore", "Aggiungi un autore a questa narrativa",
+      editor.authors().filter(
+        (a) => !a.ai && !responsible.some((x) => x.id === a.id)),
+      null, "+ autore", "Aggiungi una persona fra gli autori di questa narrativa",
       (id) => { if (id) editor.addAuthor(id); });
     byline.appendChild(add);
 
@@ -545,6 +561,23 @@ export function renderNarrativeView(
     byline.appendChild(signing);
   }
   head.appendChild(byline);
+
+  // «con l'assistenza di …» — declared, attributed, and subordinate. A model is
+  // never a co-author here: nothing it wrote counts until a person endorses it.
+  if (assisted.length) {
+    const help = el("div", "nv-authors nv-assist");
+    help.appendChild(el("span", "nv-authors-label", "con l'assistenza di"));
+    for (const a of assisted) {
+      const chip = authorChip(a, true);
+      chip.title =
+        "Modello che ha scritto del testo. Non può avallarlo: " +
+        "un modello che garantisce per un modello non è una validazione.";
+      if (editor && declared.some((d) => d.id === a.id))
+        chip.appendChild(chipRemove(a, () => editor.removeAuthor(a.id)));
+      help.appendChild(chip);
+    }
+    head.appendChild(help);
+  }
   container.appendChild(head);
 
   const index = new Map((doc?.graph?.nodes ?? []).map((n) => [n.id, n]));
@@ -644,6 +677,27 @@ export function renderNarrativeView(
           editor.generate(ci);
         });
         tools.appendChild(gen);
+      }
+      // "Valida capitolo" states the count in its own label: an endorsement is
+      // a signature, and a button that doesn't say how much it is signing
+      // invites an absent-minded stamp.
+      const pending = editor.pendingIn(ci);
+      if (pending > 0) {
+        const signer = editor.signer();
+        const all = el("button", "nv-endorse nv-endorse-all",
+          `Valida capitolo (${pending})`) as HTMLButtonElement;
+        all.disabled = !signer;
+        all.title = signer
+          ? `Metti il nome di ${signer.label} su ${pending} ` +
+            `paragraf${pending === 1 ? "o" : "i"} di questo capitolo. ` +
+            `Resta un atto per paragrafo: nel grafo si vedrà a quali frasi ` +
+            `ha messo la firma, non solo che ha firmato il capitolo.`
+          : "Scegli prima con quale nome firmi (in alto, «firmo come»).";
+        all.addEventListener("click", (e) => {
+          e.stopPropagation();
+          editor.endorseChapter(ci);
+        });
+        tools.appendChild(all);
       }
       h.appendChild(tools);
 

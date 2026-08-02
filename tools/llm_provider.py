@@ -96,7 +96,14 @@ def get_provider(name: Optional[str] = None, **opts) -> LLMProvider:
 
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
-DEFAULT_CLAUDE_MODEL = "claude-opus-5"
+#: The default is a **Sonnet**, not an Opus (E.D., 2026-08-02). The task is
+#: rule-simple — the template supplies the structure, the model supplies the
+#: prose, and a named human is the final gate before anything counts as
+#: endorsed. Paying Opus rates for a draft somebody must read anyway is not a
+#: quality decision, it is a habit. Opus stays selectable per request via
+#: `EM_LLM_MODEL` or the `model` argument, and this is the ONLY place the name
+#: is written.
+DEFAULT_CLAUDE_MODEL = "claude-sonnet-5"
 
 
 @register_provider("claude")

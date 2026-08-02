@@ -53,9 +53,13 @@ import {
   setWindowTitle,
   baseName,
   transformerUrl,
+  llmKeyStatus,
+  setLlmKey,
+  clearLlmKey,
 } from "./tauri";
 import { type HostInfo, SyncClient } from "./sync";
 import {
+  AI_PROVIDERS,
   getSettings,
   getSyncUrl,
   saveSettings,
@@ -2563,6 +2567,82 @@ const setDevUuid = document.getElementById("set-dev-uuid") as HTMLInputElement;
 const setEdgeTips = document.getElementById(
   "set-edge-tooltips",
 ) as HTMLInputElement;
+const setAiProvider = document.getElementById(
+  "set-ai-provider") as HTMLSelectElement;
+const setAiModel = document.getElementById("set-ai-model") as HTMLInputElement;
+const setAiKey = document.getElementById("set-ai-key") as HTMLInputElement;
+const setAiKeyState = document.getElementById("set-ai-key-state")!;
+const setAiKeySave = document.getElementById(
+  "set-ai-key-save") as HTMLButtonElement;
+const setAiKeyClear = document.getElementById(
+  "set-ai-key-clear") as HTMLButtonElement;
+const setAiKeyHint = document.getElementById("set-ai-key-hint")!;
+
+for (const p of AI_PROVIDERS) {
+  const o = document.createElement("option");
+  o.value = p.value;
+  o.textContent = p.label;
+  setAiProvider.appendChild(o);
+}
+
+/**
+ * Show whether a key is set — never the key.
+ *
+ * Outside the desktop app there is no keychain, so the field is disabled and
+ * the hint names the one safe alternative. Degrading to localStorage would put
+ * a credential where every script on the page can read it; refusing and
+ * explaining is the better failure.
+ */
+async function refreshAiKeyState(): Promise<void> {
+  const desktop = isTauri();
+  setAiKey.disabled = !desktop;
+  setAiKeySave.disabled = !desktop;
+  if (!desktop) {
+    setAiKeyState.textContent = "";
+    setAiKeyClear.disabled = true;
+    setAiKeyHint.textContent =
+      "Nel browser di sviluppo non c'è un portachiavi in cui metterla al " +
+      "sicuro, quindi EMStudio non la salva. Esportala prima di avviare il " +
+      "bridge:  export ANTHROPIC_API_KEY=…  ;  ./dev.sh";
+    return;
+  }
+  const set = await llmKeyStatus();
+  setAiKeyState.textContent = set ? "✓ key impostata" : "nessuna key impostata";
+  setAiKeyState.className = set ? "ai-key-set" : "ai-key-unset";
+  setAiKeyClear.disabled = !set;
+  setAiKeyHint.textContent = set
+    ? "Salvata nel portachiavi di sistema. Non è leggibile da qui: puoi " +
+      "sostituirla o rimuoverla."
+    : "Incolla la key e premi Salva. Finisce nel portachiavi di sistema e " +
+      "viene passata a em-bridge, che riparte per riceverla.";
+}
+
+setAiKeySave.addEventListener("click", async () => {
+  const key = setAiKey.value.trim();
+  if (!key) {
+    toast("Incolla prima la key");
+    return;
+  }
+  const err = await setLlmKey(key);
+  setAiKey.value = "";          // never keep it in the DOM after saving
+  if (err) {
+    toast(`Key non salvata: ${err}`);
+    return;
+  }
+  toast("Key salvata nel portachiavi — bridge riavviato");
+  await refreshAiKeyState();
+});
+
+setAiKeyClear.addEventListener("click", async () => {
+  const err = await clearLlmKey();
+  if (err) {
+    toast(`Key non rimossa: ${err}`);
+    return;
+  }
+  setAiKey.value = "";
+  toast("Key rimossa dal portachiavi — bridge riavviato");
+  await refreshAiKeyState();
+});
 
 for (const t of SYNC_TOOLS) {
   const o = document.createElement("option");
@@ -2586,6 +2666,10 @@ function openSettings(): void {
   setPortInp.value = String(s.sync.port);
   setDevUuid.checked = s.developer.showNodeIds;
   setEdgeTips.checked = s.interaction.edgeTooltips;
+  setAiProvider.value = s.ai.provider;
+  setAiModel.value = s.ai.model;
+  setAiKey.value = "";
+  void refreshAiKeyState();
   refreshSyncUrlPreview();
   settingsModal.classList.remove("hidden");
 }
@@ -2624,6 +2708,11 @@ settingsModal.addEventListener("click", (e) => {
     },
     developer: { showNodeIds: setDevUuid.checked },
     interaction: { edgeTooltips: setEdgeTips.checked },
+    // provider + model only — the key is never part of what gets persisted
+    ai: {
+      provider: setAiProvider.value || "claude",
+      model: setAiModel.value.trim(),
+    },
   };
   saveSettings(next);
   closeSettings();
@@ -3162,6 +3251,7 @@ async function generateChapterDraft(narrativeId: string,
     toast("Questo capitolo non è ancorato a un'attività");
     return;
   }
+  const ai = getSettings().ai;
   generating.add(chapterIndex);
   let reached = false;   // did we get an answer at all, or never leave the room?
   refreshNarrativeView();
@@ -3174,6 +3264,8 @@ async function generateChapterDraft(narrativeId: string,
         doc: store.doc,
         activity_id: activityId,
         narrative_id: narrativeId,
+        provider: ai.provider,
+        model: ai.model,
         // when it was written, recorded with the block: a provenance note
         // without a date answers "who" but not "when this was still current"
         date: new Date().toISOString().slice(0, 10),
@@ -3272,6 +3364,21 @@ function narrativeEditor(narrativeId: string): NarrativeEditor {
         toast(e instanceof Error ? e.message : String(e));
       }
     },
+    endorseChapter: (c) => {
+      if (!signingAs) {
+        toast("Scegli prima con quale nome firmi");
+        return;
+      }
+      try {
+        const n = nauth.endorseChapter(s, narrativeId, c, signingAs);
+        toast(`${n} paragraf${n === 1 ? "o avallato" : "i avallati"}`);
+      } catch (e) {
+        toast(e instanceof Error ? e.message : String(e));
+      }
+    },
+    pendingIn: (c) => nauth.pendingInChapter(
+      (((s.node(narrativeId)?.data ?? {}) as Record<string, unknown>)
+        .chapters as nedit.EditableChapter[] | undefined)?.[c]).length,
     retract: (c, b) => nauth.retractEndorsement(s, narrativeId, c, b),
     canGenerate: (i) => {
       const anchor = narrativesIn(s.doc)

@@ -21,10 +21,26 @@ export interface InteractionSettings {
   edgeTooltips: boolean;
 }
 
+/**
+ * Which model writes an AI draft (N8).
+ *
+ * Note what is NOT here: the API key. Everything in this interface is persisted
+ * to localStorage, and a credential in localStorage is a credential in every
+ * script that runs on the page. The key lives in the OS keychain and is reached
+ * through the desktop shell (`tauri.ts`), never through Settings.
+ */
+export interface AiSettings {
+  /** provider id understood by em-bridge's registry (`claude`, `echo`, …) */
+  provider: string;
+  /** optional model override; empty = the provider's own default */
+  model: string;
+}
+
 export interface Settings {
   sync: SyncSettings;
   developer: DeveloperSettings;
   interaction: InteractionSettings;
+  ai: AiSettings;
 }
 
 const KEY = "emstudio.settings";
@@ -33,7 +49,16 @@ const DEFAULTS: Settings = {
   sync: { protocol: "ws", host: "localhost", port: 8788, tool: "blender" },
   developer: { showNodeIds: false },
   interaction: { edgeTooltips: true },
+  ai: { provider: "claude", model: "" },
 };
+
+/** Providers em-bridge registers (`tools/llm_provider.py`). `echo` is a real
+ *  provider, not a mock: deterministic, keyless, and enough to exercise the
+ *  whole generate → attribute → validate path without a network call. */
+export const AI_PROVIDERS: { value: string; label: string }[] = [
+  { value: "claude", label: "Claude (Anthropic)" },
+  { value: "echo", label: "Echo — prova locale, senza key" },
+];
 
 /** Sync targets. `enabled:false` entries render disabled — the host role is a
  *  role (ADR-002 §1); more hosts (EMStudio-desktop, StratiGraph Service) land
@@ -50,6 +75,7 @@ function clone(s: Settings): Settings {
     sync: { ...s.sync },
     developer: { ...s.developer },
     interaction: { ...s.interaction },
+    ai: { ...s.ai },
   };
 }
 
@@ -63,6 +89,7 @@ function load(): Settings {
       sync: { ...DEFAULTS.sync, ...(parsed.sync ?? {}) },
       developer: { ...DEFAULTS.developer, ...(parsed.developer ?? {}) },
       interaction: { ...DEFAULTS.interaction, ...(parsed.interaction ?? {}) },
+      ai: { ...DEFAULTS.ai, ...(parsed.ai ?? {}) },
     };
   } catch {
     return clone(DEFAULTS);

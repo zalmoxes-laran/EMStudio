@@ -113,6 +113,47 @@ export async function transformerUrl(): Promise<string | null> {
   }
 }
 
+// ── the LLM API key (N8) ─────────────────────────────────────────────────────
+//
+// Three calls, and note what is missing: there is no `getLlmKey`. The webview
+// can set the key, clear it, and ask whether one exists — it can never read it
+// back. That asymmetry is the whole design: the key lives in the OS keychain,
+// the Rust shell injects it into em-bridge's environment, and nothing that runs
+// in a browser context ever holds it. Which also means it cannot leak into
+// em.json, localStorage, or a console log, because it is never there to leak.
+
+/** Is an API key stored in the OS keychain? A boolean, never the key. */
+export async function llmKeyStatus(): Promise<boolean> {
+  if (!isTauri()) return false;
+  try {
+    return await invoke<boolean>("llm_key_status");
+  } catch {
+    return false;
+  }
+}
+
+/** Store the key in the OS keychain and restart the bridge so it takes effect.
+ *  Returns an error message, or null on success. */
+export async function setLlmKey(key: string): Promise<string | null> {
+  if (!isTauri()) return "no secure storage outside the desktop app";
+  try {
+    await invoke<boolean>("set_llm_key", { key });
+    return null;
+  } catch (e) {
+    return e instanceof Error ? e.message : String(e);
+  }
+}
+
+export async function clearLlmKey(): Promise<string | null> {
+  if (!isTauri()) return "no secure storage outside the desktop app";
+  try {
+    await invoke<boolean>("clear_llm_key");
+    return null;
+  } catch (e) {
+    return e instanceof Error ? e.message : String(e);
+  }
+}
+
 /** Basename of an absolute path, for the window title / info bar. */
 export function baseName(path: string): string {
   const parts = path.split(/[\\/]/);

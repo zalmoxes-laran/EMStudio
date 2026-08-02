@@ -65,6 +65,7 @@ const NODE_ALIAS: Record<string, string> = {
   representation_model_sf: "RMSF",
   license: "LIC",
   embargo: "EMB",
+  narrative: "NARR",
   graph: "GRAPH",
 };
 
