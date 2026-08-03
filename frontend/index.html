@@ -111,7 +111,19 @@
       <div id="canvas-wrap">
         <canvas id="canvas"></canvas>
         <div id="chrono-banner" class="hidden"></div>
-        <div id="drop-hint">Drop an <b>.em.json</b> file here</div>
+        <!-- The empty state has to offer BOTH ways of getting a graph. Dropping
+             a file assumes one already exists; StratiMiner is for when it does
+             not, which is exactly the moment its panel would otherwise be
+             unreachable (the side panel only appears once a document is open). -->
+        <div id="drop-hint">
+          <span>Drop an <b>.em.json</b> file here</span>
+          <span class="dh-alt">
+            or
+            <button id="drop-hint-stratiminer" type="button">
+              build one from your sources
+            </button>
+          </span>
+        </div>
         <div id="hint-bar" class="hidden"></div>
         <div id="edge-menu" class="hidden"></div>
         <button
@@ -147,12 +159,19 @@
         <div id="side-tabs">
           <button id="tab-inspector" class="active">Inspector</button>
           <button id="tab-nodes">Nodes</button>
+          <button
+            id="tab-stratiminer"
+            title="StratiMiner: build a graph from a folder of unstructured sources, via the reviewable em_data.xlsx table"
+          >
+            StratiMiner
+          </button>
           <button id="tab-log" title="Document warnings and activity log">
             Log
           </button>
         </div>
         <div id="inspector"></div>
         <div id="nodelist" class="hidden"></div>
+        <div id="stratiminer" class="hidden"></div>
         <div id="logpanel" class="hidden"></div>
       </aside>
     </main>

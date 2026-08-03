@@ -362,6 +362,14 @@ def make_handler(api):
                     self._fail(400, f"invalid JSON body: {exc}")
                     return
                 self._generate_narrative_draft(body)
+            elif route in ("/stratiminer-prompt", "/stratiminer-extract",
+                           "/import-em-data"):
+                try:
+                    body = json.loads(raw.decode("utf-8")) if raw else {}
+                except Exception as exc:
+                    self._fail(400, f"invalid JSON body: {exc}")
+                    return
+                self._stratiminer(route, body)
             elif route in ("/set-llm-key", "/clear-llm-key"):
                 self._llm_key_write(route, raw)
             elif route in ("/detach-dtc", "/inject-dtc", "/bake-dtc"):
@@ -559,6 +567,228 @@ def make_handler(api):
             self.send_header("Content-Length", str(len(out)))
             self.end_headers()
             self.wfile.write(out)
+
+        # ── StratiMiner: assisted graph creation from a folder of sources ─────
+        #
+        # Three routes for a pipeline with a deliberate seam in the middle:
+        #
+        #   /stratiminer-prompt   → the prompt, for the user to run in Cowork
+        #   /stratiminer-extract  → Path A: the bridge calls a model and writes
+        #                           em_data.xlsx from the rows it returns
+        #   /import-em-data       → em_data.xlsx → em.json (no model involved)
+        #
+        # The two paths converge on a FILE the archaeologist can open. The model
+        # never writes the graph — it returns table rows, `api.write_em_data`
+        # materialises the workbook, and only the deterministic importer turns
+        # that into em.json. Splitting it this way is the point, not a
+        # limitation: canonisation stays reviewable while it is still a table.
+        #
+        # Text-extraction honesty: the bridge reads what it can decode as text
+        # and tells the model, in the prompt, which files it could NOT read.
+        # PDFs need an extractor this build does not bundle, so for a folder of
+        # PDFs Path B (Cowork, where the agent has the filesystem) is the real
+        # answer today — and the response says so rather than quietly returning
+        # a table built from filenames.
+        #: Per file, and in total, so one large folder cannot turn a request into
+        #: an unbounded upload. Generous enough for excavation notes.
+        _TEXT_BYTES_PER_FILE = 200_000
+        _TEXT_BYTES_TOTAL = 800_000
+
+        def _stratiminer_catalog(self, folder):
+            """Inventory a source folder: every file named, the readable ones also
+            read. Returns the dict `build_stratiminer_prompt` expects.
+
+            **Which suffixes are readable, and how a PDF is read, is s3Dgraphy's
+            decision** (`api.source_text`) — not this file's. The rule is the same
+            wherever StratiMiner runs, and a copy kept here would be a second rule
+            free to drift from the one the library tests.
+            """
+            entries, total = [], 0
+            for name in sorted(os.listdir(folder)):
+                full = os.path.join(folder, name)
+                if not os.path.isfile(full) or name.startswith("."):
+                    continue
+                entry = {
+                    "name": name,
+                    "kind": os.path.splitext(name)[1].lower().lstrip(".")
+                            or "file",
+                    "bytes": os.path.getsize(full),
+                }
+                if total < self._TEXT_BYTES_TOTAL:
+                    read = api.source_text(
+                        full, max_chars=min(
+                            self._TEXT_BYTES_PER_FILE,
+                            self._TEXT_BYTES_TOTAL - total))
+                    if read.get("text"):
+                        entry["text"] = read["text"]
+                        total += len(read["text"])
+                    # The REASON travels with the entry, so the prompt can tell the
+                    # model "this one was not read, and why" instead of leaving it
+                    # to guess from a bare filename.
+                    if read.get("note"):
+                        entry["note"] = read["note"]
+                else:
+                    entry["note"] = ("budget for source text exhausted — this "
+                                     "file was not read")
+                entries.append(entry)
+            return {
+                "folder": folder,
+                "files": entries,
+                "sheets": list(api.em_data_sheets()),
+                "columns": {k: list(v)
+                            for k, v in api.em_data_columns().items()},
+                # Stated once, before the work: with no extractor a folder of PDFs
+                # yields filenames only, and the user has to know that BEFORE
+                # reading a suspiciously thin table.
+                "pdf_text": api.pdf_text_available(),
+                "extractor": api.source_text_extractor(),
+            }
+
+        def _stratiminer(self, route, body):
+            for need in ("em_data_sheets", "import_em_data"):
+                if not hasattr(api, need):
+                    self._fail(501, "StratiMiner unavailable — this s3dgraphy "
+                                    "has no em_data surface (needs SM1)")
+                    return
+
+            if route == "/import-em-data":
+                path = (body.get("path") or "").strip()
+                if not path:
+                    self._fail(400, "/import-em-data needs the 'path' of an "
+                                    "em_data.xlsx")
+                    return
+                if not os.path.isfile(path):
+                    self._fail(400, f"no such file: {path}")
+                    return
+                try:
+                    graph, warnings, stats = api.em_data_to_graph(
+                        path, graph_id=(body.get("graph_id") or "").strip()
+                        or None)
+                except ImportError as exc:
+                    # pandas/openpyxl absent (a slimmed sidecar): the request was
+                    # valid, this build cannot serve it. 501, never 500.
+                    self._fail(501, f"em_data import needs pandas/openpyxl, "
+                                    f"absent from this build: {exc}")
+                    return
+                except FileNotFoundError as exc:
+                    self._fail(400, str(exc))
+                    return
+                except Exception as exc:
+                    # A malformed workbook is the user's file, not our bug —
+                    # 400 with the importer's own message (it names the sheet).
+                    self._fail(400, f"could not read em_data.xlsx: {exc}")
+                    return
+                self._json({"ok": True, "stats": stats, "warnings": warnings,
+                            "doc": api.graph_to_emjson(graph)})
+                return
+
+            folder = (body.get("folder") or "").strip()
+            if not folder:
+                self._fail(400, f"{route} needs a source 'folder'")
+                return
+            if not os.path.isdir(folder):
+                self._fail(400, f"not a folder: {folder}")
+                return
+
+            try:
+                spec = api.stratiminer_prompt(
+                    language=(body.get("language") or "").strip() or None,
+                    documents_folder=folder,
+                    dosco_in_place=bool(body.get("dosco_in_place", True)),
+                    ai_has_filesystem_access=bool(
+                        body.get("ai_has_filesystem_access",
+                                 route == "/stratiminer-prompt")),
+                )
+            except FileNotFoundError as exc:
+                self._fail(501, f"the StratiMiner prompt template is missing "
+                                f"from this s3dgraphy: {exc}")
+                return
+
+            if route == "/stratiminer-prompt":
+                # Path B. The prompt goes to the user, who runs it where the
+                # agent CAN read the folder. Nothing is sent anywhere from here.
+                self._json({"ok": True, "prompt": spec,
+                            "chars": len(spec), "folder": folder})
+                return
+
+            # Path A — the bridge does the model call itself.
+            try:
+                _here = str(pathlib.Path(__file__).resolve().parent)
+                if _here not in sys.path:
+                    sys.path.insert(0, _here)
+                from llm_provider import (LLMError, STRATIMINER_SYSTEM_PROMPT,
+                                          build_stratiminer_prompt,
+                                          get_provider, model_for_task,
+                                          parse_stratiminer_reply)
+            except ImportError as exc:
+                self._fail(501, f"LLM seam unavailable: {exc}")
+                return
+
+            catalog = self._stratiminer_catalog(folder)
+            if not catalog["files"]:
+                self._fail(400, f"no files to read in {folder}")
+                return
+            prompt = build_stratiminer_prompt(
+                spec, catalog, body.get("instruction", "") or "")
+
+            try:
+                # Per-request model wins; otherwise the per-TASK default, which
+                # for extraction is a frontier model rather than the prose
+                # default (see llm_provider.TASK_MODELS).
+                opts = {}
+                chosen = ((body.get("model") or "").strip()
+                          or model_for_task("stratiminer"))
+                if chosen:
+                    opts["model"] = chosen
+                # A table is many rows; the prose default would truncate it.
+                opts["max_tokens"] = int(body.get("max_tokens") or 16000)
+                provider = get_provider(body.get("provider"), **opts)
+                reply = provider.generate(
+                    STRATIMINER_SYSTEM_PROMPT, prompt, catalog)
+                sheets = parse_stratiminer_reply(reply)
+            except LLMError as exc:
+                self._fail(exc.status, str(exc))
+                return
+            except Exception as exc:
+                self._fail(502, f"extraction failed: {exc}")
+                return
+
+            out_path = (body.get("out_path") or "").strip() or os.path.join(
+                folder, "em_data.xlsx")
+            try:
+                report = api.write_em_data(sheets, out_path)
+            except ImportError as exc:
+                self._fail(501, f"writing em_data.xlsx needs openpyxl, absent "
+                                f"from this build: {exc}")
+                return
+            except Exception as exc:
+                self._fail(502, f"could not write em_data.xlsx: {exc}")
+                return
+
+            # Name AND reason: "report.pdf" alone tells the user nothing about
+            # whether to install an extra, fix a scan, or accept the gap.
+            unread = [{"name": e["name"], "why": e.get("note", "not read")}
+                      for e in catalog["files"] if not e.get("text")]
+            self._json({
+                "ok": True,
+                "provider": provider.name,
+                "model": getattr(provider, "model", ""),
+                "xlsx_path": report["path"],
+                "rows": report["rows"],
+                # Two kinds of warning, kept apart: what the writer refused
+                # (invented columns) and what the bridge could not read at all.
+                "warnings": report["warnings"],
+                "unread_files": unread,
+                # So the UI can say "no PDF extractor in this build" once, rather
+                # than the user inferring it from a suspiciously thin table.
+                "pdf_text": catalog["pdf_text"],
+                "extractor": catalog["extractor"],
+                "sent": {"folder": folder,
+                         "files": len(catalog["files"]),
+                         "files_with_text": len(catalog["files"]) - len(unread),
+                         "excludes": ["the graph", "credentials",
+                                      "anything outside the named folder"]},
+            })
 
         # Shared MinIO object store (R2 + connective tissue): ingest a local file
         # into the SAME MinIO Heriverse provisions (config read from the S3_* env

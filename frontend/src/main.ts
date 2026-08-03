@@ -59,7 +59,22 @@ import {
   setLlmKey,
   clearLlmKey,
   onForeignBridge,
+  pickFolder,
+  pickXlsx,
 } from "./tauri";
+import {
+  describeExtraction,
+  describeImport,
+  initialState as initialStratiMinerState,
+  renderStratiMiner,
+  unreadWarnings,
+} from "./stratiminer";
+import type {
+  ExtractResult,
+  ImportResult,
+  PromptResult,
+  StratiMinerHandlers,
+} from "./stratiminer";
 import { type HostInfo, SyncClient } from "./sync";
 import {
   AI_PROVIDERS,
@@ -225,7 +240,11 @@ const dirtyDot = document.getElementById("dirty-dot")!;
 const sidePanel = document.getElementById("side")!;
 const tabInspector = document.getElementById("tab-inspector") as HTMLButtonElement;
 const tabNodes = document.getElementById("tab-nodes") as HTMLButtonElement;
+const tabStratiminer = document.getElementById(
+  "tab-stratiminer",
+) as HTMLButtonElement;
 const tabLog = document.getElementById("tab-log") as HTMLButtonElement;
+const stratiminerEl = document.getElementById("stratiminer") as HTMLDivElement;
 const nodelistEl = document.getElementById("nodelist")!;
 const logpanelEl = document.getElementById("logpanel")!;
 
@@ -3392,21 +3411,206 @@ btnViewProps.addEventListener("click", () => {
 });
 
 // side panel tabs
-type SideTab = "inspector" | "nodes" | "log";
+type SideTab = "inspector" | "nodes" | "stratiminer" | "log";
 let activeTab: SideTab = "inspector";
 function showTab(which: SideTab): void {
   activeTab = which;
   tabInspector.classList.toggle("active", which === "inspector");
   tabNodes.classList.toggle("active", which === "nodes");
+  tabStratiminer.classList.toggle("active", which === "stratiminer");
   tabLog.classList.toggle("active", which === "log");
   inspector.classList.toggle("hidden", which !== "inspector");
   nodelistEl.classList.toggle("hidden", which !== "nodes");
+  stratiminerEl.classList.toggle("hidden", which !== "stratiminer");
   logpanelEl.classList.toggle("hidden", which !== "log");
   if (which === "log") refreshLogPanel();
+  if (which === "stratiminer") refreshStratiMiner();
 }
 tabInspector.addEventListener("click", () => showTab("inspector"));
 tabNodes.addEventListener("click", () => showTab("nodes"));
+tabStratiminer.addEventListener("click", () => showTab("stratiminer"));
 tabLog.addEventListener("click", () => showTab("log"));
+
+// ── StratiMiner ───────────────────────────────────────────────────────────────
+//
+// The panel owns no logic: it renders state and calls back. The three bridge
+// calls live here because endpoint precedence (`bridgeUrl`) is owned here, and
+// because loading the produced document is `loadDocument`'s job — the same entry
+// point Open… and drop use, so a StratiMiner graph is not a second kind of
+// document with its own quirks.
+let smState = initialStratiMinerState();
+
+function refreshStratiMiner(): void {
+  renderStratiMiner(stratiminerEl, smState, smHandlers, { native: isTauri() });
+}
+
+/** Open the side panel on StratiMiner, document or no document.
+ *
+ * The panel is normally revealed by `loadDocument`, because every other tab
+ * describes something in the open graph. StratiMiner is the exception: it exists
+ * to MAKE the graph, so gating it behind having one would put the tool behind
+ * the problem it solves. Reached from the empty-state hint. */
+function openStratiMiner(): void {
+  sidePanel.classList.remove("hidden");
+  showTab("stratiminer");
+}
+document
+  .getElementById("drop-hint-stratiminer")
+  ?.addEventListener("click", (e) => {
+    // The hint sits over the canvas; without this the click also reaches the
+    // canvas handler underneath and starts a selection marquee.
+    e.stopPropagation();
+    openStratiMiner();
+  });
+
+function smSet(patch: Partial<typeof smState>): void {
+  smState = { ...smState, ...patch };
+  if (activeTab === "stratiminer") refreshStratiMiner();
+}
+
+/** Read a bridge error body the way the narrative path does: the endpoint's own
+ *  message when there is one, the status when there is not. A 501 here means
+ *  "this build cannot", a 502 "the model failed" — different fixes, so the text
+ *  matters more than the code. */
+async function smBridgeError(res: Response): Promise<string> {
+  try {
+    const j = await res.json();
+    if (j?.error) return String(j.error);
+  } catch {
+    /* non-JSON error body */
+  }
+  return `bridge error ${res.status}`;
+}
+
+const smHandlers: StratiMinerHandlers = {
+  onFolderChange: (v) => smSet({ folder: v }),
+  onXlsxChange: (v) => smSet({ xlsxPath: v }),
+  onLanguageChange: (v) => smSet({ language: v }),
+
+  onExtract: async () => {
+    smSet({ busy: "extract", report: "", warnings: [] });
+    toast("StratiMiner: estrazione in corso…");
+    try {
+      const res = await fetch(`${await bridgeUrl()}/stratiminer-extract`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          folder: smState.folder.trim(),
+          language: smState.language.trim(),
+          provider: getSettings().ai.provider,
+          // No `model`: the bridge picks the per-task default, which for
+          // extraction is a frontier model rather than the prose default.
+          // Settings' model is the narrative one; sending it here would quietly
+          // downgrade the harder task.
+        }),
+      });
+      if (!res.ok) {
+        const msg = await smBridgeError(res);
+        smSet({ busy: "", report: `Estrazione non riuscita: ${msg}` });
+        logError(`StratiMiner extract: ${msg}`);
+        return;
+      }
+      const r = (await res.json()) as ExtractResult;
+      smSet({
+        busy: "",
+        // Prefill step 3 — the two paths converge on this field, and having
+        // just written the file we know where it is.
+        xlsxPath: r.xlsx_path,
+        report: describeExtraction(r),
+        // Both lists, in one place: a column the writer refused and a source
+        // nobody read are equally things to look at before trusting the table.
+        warnings: [...r.warnings, ...unreadWarnings(r)],
+      });
+      toast("em_data.xlsx scritta — aprila e controllala prima di convertirla");
+    } catch {
+      smSet({ busy: "", report: BRIDGE_UNREACHABLE });
+      logError(`StratiMiner extract: ${BRIDGE_UNREACHABLE}`);
+    }
+  },
+
+  onCopyPrompt: async () => {
+    smSet({ busy: "prompt", report: "", warnings: [], promptFallback: "" });
+    let prompt = "";
+    try {
+      const res = await fetch(`${await bridgeUrl()}/stratiminer-prompt`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          folder: smState.folder.trim(),
+          language: smState.language.trim(),
+        }),
+      });
+      if (!res.ok) {
+        const msg = await smBridgeError(res);
+        smSet({ busy: "", report: `Prompt non disponibile: ${msg}` });
+        return;
+      }
+      prompt = ((await res.json()) as PromptResult).prompt;
+    } catch {
+      smSet({ busy: "", report: BRIDGE_UNREACHABLE });
+      return;
+    }
+    // Two failures worth telling apart: the bridge could not build the prompt
+    // (above — nothing to show), or the prompt exists and only the clipboard
+    // refused. In the second case the text is the deliverable, so hand it over
+    // in a field rather than apologising for losing it.
+    const runIt =
+      `Eseguilo in una sessione Cowork che possa leggere la cartella, poi ` +
+      `indica qui sotto l'em_data.xlsx che ne esce.`;
+    try {
+      await navigator.clipboard.writeText(prompt);
+      smSet({
+        busy: "",
+        report: `Prompt copiato (${prompt.length} caratteri). ${runIt}`,
+      });
+      toast("Prompt StratiMiner copiato");
+    } catch {
+      smSet({
+        busy: "",
+        report:
+          `Il browser ha negato l'accesso agli appunti — il prompt è qui ` +
+          `sotto (${prompt.length} caratteri). ${runIt}`,
+        promptFallback: prompt,
+      });
+    }
+  },
+
+  onTransform: async () => {
+    smSet({ busy: "import", report: "", warnings: [] });
+    try {
+      const res = await fetch(`${await bridgeUrl()}/import-em-data`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: smState.xlsxPath.trim() }),
+      });
+      if (!res.ok) {
+        const msg = await smBridgeError(res);
+        smSet({ busy: "", report: `Conversione non riuscita: ${msg}` });
+        logError(`StratiMiner import: ${msg}`);
+        return;
+      }
+      const r = (await res.json()) as ImportResult;
+      // The xlsx path is the source name, not a file EMStudio can save back
+      // into: passing it as `path` would point Save at the workbook.
+      loadDocument(r.doc, smState.xlsxPath.trim().split("/").pop() ?? "em_data");
+      smSet({ busy: "", report: describeImport(r), warnings: r.warnings });
+      toast("Grafo creato da em_data.xlsx");
+    } catch {
+      smSet({ busy: "", report: BRIDGE_UNREACHABLE });
+      logError(`StratiMiner import: ${BRIDGE_UNREACHABLE}`);
+    }
+  },
+
+  onPickFolder: async () => {
+    const picked = await pickFolder();
+    if (picked) smSet({ folder: picked });
+  },
+
+  onPickXlsx: async () => {
+    const picked = await pickXlsx();
+    if (picked) smSet({ xlsxPath: picked });
+  },
+};
 
 /** Click a warning → select the element it names and bring it into view.
  *

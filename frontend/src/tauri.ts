@@ -21,6 +21,10 @@ const TTL_FILTERS = [
   { name: "RDF Turtle", extensions: ["ttl"] },
 ];
 
+const XLSX_FILTERS = [
+  { name: "Excel workbook", extensions: ["xlsx"] },
+];
+
 /** True when running inside the Tauri webview (desktop app). */
 export function isTauri(): boolean {
   return typeof (window as unknown as Record<string, unknown>)
@@ -52,6 +56,31 @@ export async function saveAsEmJson(
   if (!path) return null;
   await writeTextFile(path, text);
   return path;
+}
+
+/** Native folder picker → the chosen absolute path, or null.
+ *
+ * StratiMiner needs a FOLDER, and the path is all it needs: the bridge does the
+ * reading, server-side. Handing the webview the files instead would mean
+ * uploading a whole DosCo through the browser to reach a process running on the
+ * same machine. Returns null outside Tauri — the browser has no folder picker
+ * worth the name, so there the path is typed. */
+export async function pickFolder(): Promise<string | null> {
+  if (!isTauri()) return null;
+  const picked = await open({ directory: true, multiple: false });
+  return Array.isArray(picked) ? (picked[0] ?? null)
+    : (typeof picked === "string" ? picked : null);
+}
+
+/** Native picker for an em_data.xlsx → the chosen path, or null.
+ *
+ * The PATH only, deliberately: the workbook is read by the bridge (openpyxl
+ * lives there), so the contents never need to enter the webview. */
+export async function pickXlsx(): Promise<string | null> {
+  if (!isTauri()) return null;
+  const picked = await open({ multiple: false, filters: XLSX_FILTERS });
+  return Array.isArray(picked) ? (picked[0] ?? null)
+    : (typeof picked === "string" ? picked : null);
 }
 
 /** Native "Open…" dialog for a .graphml file → picked path + contents. */

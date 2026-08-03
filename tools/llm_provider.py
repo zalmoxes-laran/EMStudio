@@ -242,8 +242,22 @@ class EchoProvider(LLMProvider):
     name = "echo"
     model = "echo-1"
 
+    def __init__(self, **_opts):
+        # Accepts and ignores whatever the caller passes (model, max_tokens…).
+        # Without this, echo stops being selectable the moment an endpoint sets
+        # an option — which is exactly when being able to select it matters.
+        pass
+
     def generate(self, system: str, prompt: str,
                  context: Dict[str, Any]) -> str:
+        # Two shapes of task reach this provider, and the context says which:
+        # an extraction context carries the table's own schema (`sheets`), a
+        # narrative context carries an activity. Returning prose to the
+        # extraction endpoint would fail at the JSON parse and make the whole
+        # Path-A wiring untestable without a key — the one thing this provider
+        # exists to prevent.
+        if context.get("sheets"):
+            return self._echo_table(context)
         activity = (context.get("activity") or {}).get("name", "questa attività")
         actions = [a.get("name", "?") for a in context.get("actions") or []]
         epochs = [e.get("name", "?") for e in context.get("epochs") or []]
@@ -253,6 +267,33 @@ class EchoProvider(LLMProvider):
         if epochs:
             bits.append("collocata in " + ", ".join(epochs))
         return "; ".join(bits) + "."
+
+    @staticmethod
+    def _echo_table(context: Dict[str, Any]) -> str:
+        """A minimal but VALID table: one unit, one epoch, and a Documents row
+        per file the bridge inventoried.
+
+        Obviously machine-made — ``ECHO_U1``, no claims invented from files it
+        did not read — so nobody mistakes an echo run for an extraction, while
+        still exercising every downstream step: JSON parse, ``write_em_data``,
+        the importer, the graph landing in EMStudio.
+        """
+        documents = [
+            {"ID": f"D.{index:02d}", "FILENAME": entry.get("name", ""),
+             "TITLE": entry.get("name", "")}
+            for index, entry in enumerate(context.get("files") or [], start=1)
+        ]
+        return json.dumps({
+            "Units": [{"ID": "ECHO_U1", "TYPE": "US",
+                       "NAME": "echo placeholder unit"}],
+            "Epochs": [{"ID": "ECHO_E1", "NAME": "echo epoch",
+                        "START": 0, "END": 1}],
+            "Claims": [{"TARGET_ID": "ECHO_U1",
+                        "PROPERTY_TYPE": "has_first_epoch",
+                        "VALUE": "ECHO_E1"}],
+            "Authors": [],
+            "Documents": documents,
+        }, ensure_ascii=False)
 
 
 # ── the prompt, and what leaves the machine ───────────────────────────────────
@@ -297,3 +338,168 @@ def describe_payload(context: Dict[str, Any]) -> Dict[str, Any]:
         "excludes": ["the rest of the graph", "file paths", "credentials",
                      "anything outside the named activity"],
     }
+
+
+# ── which model a task deserves ───────────────────────────────────────────────
+#
+# Not every call wants the same model, and the difference is not a preference:
+#
+#   * **narrative prose** — the template supplies the structure, the model
+#     supplies sentences, and a named human reads it before it counts as
+#     endorsed. A Sonnet is the right tool, and paying more for a draft somebody
+#     must read anyway is a habit, not a quality decision. (This is the
+#     provider's own default; no entry below.)
+#   * **StratiMiner extraction** — reading unstructured excavation sources and
+#     canonising them into a typed table is the opposite kind of task: long
+#     inputs, a strict schema, and mistakes that are expensive to catch because
+#     a plausible wrong row looks exactly like a right one. Here the frontier
+#     model earns its cost.
+#
+#: A task with no entry gets the provider's default. Absence is the statement
+#: "the default is correct for this", which is why `narrative` is not listed:
+#: naming it here would fork the default into two places.
+TASK_MODELS: Dict[str, str] = {
+    "stratiminer": "claude-opus-5",
+}
+
+
+def model_for_task(task: str) -> str:
+    """The model id for *task*, or ``""`` to mean "the provider's default".
+
+    Precedence: ``EM_LLM_MODEL_<TASK>`` (an operator pinning one task), then the
+    table above. Deliberately NOT falling back to the global ``EM_LLM_MODEL``:
+    that variable is the provider's own default, and returning it here would
+    turn "no task-specific opinion" into an explicit argument, silently
+    overriding the per-task default a caller just asked for.
+    """
+    slug = task.strip().upper().replace("-", "_")
+    pinned = os.environ.get(f"EM_LLM_MODEL_{slug}", "").strip()
+    if pinned:
+        return pinned
+    return TASK_MODELS.get(task.strip().lower(), "")
+
+
+# ── StratiMiner: extraction into the canonical table ──────────────────────────
+
+STRATIMINER_SYSTEM_PROMPT = (
+    "You are canonising archaeological source material into the Extended "
+    "Matrix intermediate table. You do not build a graph and you do not decide "
+    "what the stratigraphy means: you transcribe what the sources say into "
+    "typed rows, keeping every claim attached to the document it came from. "
+    "Invent nothing — no unit that is not described, no date that is not "
+    "written, no author who is not named. When a source is unclear, leave the "
+    "cell empty rather than guessing: an empty cell is a question the "
+    "archaeologist can answer, a guessed one is an error they cannot see."
+)
+
+
+def build_stratiminer_prompt(spec: str, catalog: Dict[str, Any],
+                             extra: str = "") -> str:
+    """The user-side prompt for Path A: the bundled StratiMiner spec, plus the
+    folder inventory, plus a JSON output contract.
+
+    **Why the output contract is overridden here.** The spec bundled in
+    s3Dgraphy (``StratiMiner_Extraction_Prompt.md``) tells the model to *save an
+    em_data.xlsx*, which is right for the Cowork path — an agent with a
+    filesystem writes the file itself. Over a messages API nothing can hand back
+    a binary, so the same domain rules are asked for as JSON rows and em-bridge
+    materialises the workbook via ``api.write_em_data``.
+
+    The invariant is untouched by this: the model still produces only the
+    **table**, never the graph. What changes is the transport of the table, not
+    who is allowed to write what.
+    """
+    sheets = ", ".join(catalog.get("sheets") or [])
+    lines = [
+        "Read the sources listed below and produce the Extended Matrix "
+        "intermediate table for them.",
+        "",
+        "OUTPUT CONTRACT — read this before the specification:",
+        "Reply with a SINGLE JSON object and nothing else: no prose, no "
+        "explanation, no markdown fence. Its keys are the sheet names "
+        f"({sheets}); each value is an array of row objects whose keys are that "
+        "sheet's column names, exactly as spelled in the specification. Use "
+        "empty strings for unknown cells. Do NOT return a spreadsheet, a "
+        "GraphML, or an em.json — the table is your only output; converting it "
+        "into a graph is a separate, deterministic step you are not part of.",
+        "",
+        "COLUMN LAYOUT (authoritative — any other key is dropped):",
+    ]
+    for sheet, columns in (catalog.get("columns") or {}).items():
+        lines.append(f"  {sheet}: {', '.join(columns)}")
+    lines += [
+        "",
+        "SOURCES AVAILABLE:",
+        f"  folder: {catalog.get('folder', '')}",
+    ]
+    for entry in catalog.get("files") or []:
+        if entry.get("text"):
+            state = " (text included below)"
+        elif entry.get("note"):
+            # The REASON, per file. "Not read" and "read but says nothing" lead a
+            # model to opposite behaviour, and only the first justifies a
+            # Documents row with no claims attached.
+            state = f" (NOT read: {entry['note']})"
+        else:
+            state = " (not read)"
+        lines.append(
+            f"  - {entry.get('name', '')} "
+            f"[{entry.get('kind', '?')}, {entry.get('bytes', 0)} bytes]"
+            f"{state}")
+    unread = [e.get("name", "") for e in (catalog.get("files") or [])
+              if not e.get("text")]
+    if unread:
+        lines += [
+            "",
+            "NOTE — the following files were NOT read, so you are seeing only "
+            f"their names: {', '.join(unread)}. Do not invent their contents. "
+            "Record what the filenames legitimately support (a Documents row "
+            "each) and leave the claims that would need their text to the "
+            "archaeologist.",
+        ]
+    if catalog.get("pdf_text") is False:
+        lines += [
+            "",
+            "NOTE — this build has no PDF text extractor, so no PDF in the "
+            "folder has been read at all. If the folder is mostly PDFs, say so "
+            "in your reply rather than producing a table built from filenames: "
+            "a thin table that looks complete is worse than an explicit "
+            "'the sources were not readable here'.",
+        ]
+    for entry in catalog.get("files") or []:
+        if entry.get("text"):
+            lines += ["", f"--- {entry['name']} ---", entry["text"]]
+    if extra.strip():
+        lines += ["", f"Additional instruction from the author: {extra.strip()}"]
+    lines += ["", "SPECIFICATION:", spec]
+    return "\n".join(lines)
+
+
+def parse_stratiminer_reply(text: str) -> Dict[str, Any]:
+    """Pull the sheets object out of a model reply.
+
+    Tolerates the two things models do to JSON even when told not to: wrapping
+    it in a ``` fence, and prefacing it with a sentence. Anything else raises
+    :class:`LLMError` with the reply's opening characters attached — a parse
+    failure the user cannot see the cause of is worse than no feature.
+    """
+    raw = (text or "").strip()
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[-1]
+        if raw.rstrip().endswith("```"):
+            raw = raw.rstrip()[:-3]
+    start, end = raw.find("{"), raw.rfind("}")
+    if start == -1 or end <= start:
+        raise LLMError(
+            f"the model did not return a JSON object; reply began: "
+            f"{raw[:200]!r}", status=502)
+    try:
+        parsed = json.loads(raw[start:end + 1])
+    except json.JSONDecodeError as exc:
+        raise LLMError(
+            f"the model's JSON did not parse ({exc}); reply began: "
+            f"{raw[:200]!r}", status=502) from None
+    if not isinstance(parsed, dict):
+        raise LLMError("the model returned JSON that is not an object",
+                       status=502)
+    return parsed
