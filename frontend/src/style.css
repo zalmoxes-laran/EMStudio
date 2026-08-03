@@ -2948,3 +2948,18 @@ body.sync-active #footer-brand #em-version {
   border-radius: 5px;
   resize: vertical;
 }
+
+.sm-fallback button {
+  margin-top: 5px;
+  padding: 4px 9px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: #f7f9fb;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.sm-fallback button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}

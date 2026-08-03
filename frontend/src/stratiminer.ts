@@ -112,6 +112,8 @@ export interface StratiMinerHandlers {
   /** Native folder/file pickers, when running in Tauri. */
   onPickFolder?(): void;
   onPickXlsx?(): void;
+  /** Last resort for Path B: put the prompt in a file. */
+  onSavePrompt?(): void;
 }
 
 function esc(s: string): string {
@@ -176,7 +178,8 @@ export function renderStratiMiner(host: HTMLElement, state: StratiMinerState,
           </button>
           <span class="sm-hint">
             The bridge calls a frontier model and writes the workbook. Reads
-            text files; names PDFs it cannot decode.
+            text files, and PDFs when the <code>[pdf]</code> extra is
+            installed; it always lists which files it could not read, and why.
           </span>
         </div>
         <div class="sm-path">
@@ -185,7 +188,7 @@ export function renderStratiMiner(host: HTMLElement, state: StratiMinerState,
           </button>
           <span class="sm-hint">
             Run it in a session that can read the folder, then set the path
-            below. The only path that reads PDFs today.
+            below. The answer for scans and anything Path A reports as unread.
           </span>
         </div>
       </div>
@@ -207,11 +210,18 @@ export function renderStratiMiner(host: HTMLElement, state: StratiMinerState,
 
       ${state.report ? `<div class="sm-report">${esc(state.report)}</div>` : ""}
       ${state.promptFallback
-      ? `<label class="sm-fallback">
-           Select all and copy manually:
-           <textarea id="sm-prompt-text" readonly rows="6"
-             >${esc(state.promptFallback)}</textarea>
-         </label>`
+      ? `<div class="sm-fallback">
+           <label>
+             Select all and copy manually:
+             <textarea id="sm-prompt-text" readonly rows="6"
+               >${esc(state.promptFallback)}</textarea>
+           </label>
+           <button id="sm-prompt-save">Save the prompt to a file…</button>
+           <span class="sm-hint">
+             33k characters is a lot to select by hand; a file is easier to hand
+             to a Cowork session.
+           </span>
+         </div>`
       : ""}
       ${state.warnings.length
       ? `<ul class="sm-warnings">${state.warnings
@@ -244,6 +254,9 @@ export function renderStratiMiner(host: HTMLElement, state: StratiMinerState,
   // the next thing they need is a selection they did not have to make.
   const fallback = host.querySelector<HTMLTextAreaElement>("#sm-prompt-text");
   if (fallback) fallback.addEventListener("focus", () => fallback.select());
+  if (handlers.onSavePrompt) {
+    on("sm-prompt-save", "click", () => handlers.onSavePrompt?.());
+  }
   if (handlers.onPickFolder) {
     on("sm-pick-folder", "click", () => handlers.onPickFolder?.());
   }

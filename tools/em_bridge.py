@@ -594,7 +594,7 @@ def make_handler(api):
         _TEXT_BYTES_PER_FILE = 200_000
         _TEXT_BYTES_TOTAL = 800_000
 
-        def _stratiminer_catalog(self, folder):
+        def _stratiminer_catalog(self, folder, *, skip=()):
             """Inventory a source folder: every file named, the readable ones also
             read. Returns the dict `build_stratiminer_prompt` expects.
 
@@ -602,11 +602,19 @@ def make_handler(api):
             decision** (`api.source_text`) — not this file's. The rule is the same
             wherever StratiMiner runs, and a copy kept here would be a second rule
             free to drift from the one the library tests.
+
+            ``skip`` excludes StratiMiner's OWN output. The default out_path is
+            ``<folder>/em_data.xlsx``, so on a second run the table would be
+            catalogued as one of its own sources — harmless (it reports as
+            unreadable) but confusing exactly when the user is trying to work out
+            why a run looks different from the last one.
             """
             entries, total = [], 0
             for name in sorted(os.listdir(folder)):
                 full = os.path.join(folder, name)
                 if not os.path.isfile(full) or name.startswith("."):
+                    continue
+                if name in skip:
                     continue
                 entry = {
                     "name": name,
@@ -724,7 +732,12 @@ def make_handler(api):
                 self._fail(501, f"LLM seam unavailable: {exc}")
                 return
 
-            catalog = self._stratiminer_catalog(folder)
+            # Resolved BEFORE the catalogue, so the file we are about to write is
+            # the one we exclude from the sources.
+            out_path = (body.get("out_path") or "").strip() or os.path.join(
+                folder, "em_data.xlsx")
+            catalog = self._stratiminer_catalog(
+                folder, skip=(os.path.basename(out_path),))
             if not catalog["files"]:
                 self._fail(400, f"no files to read in {folder}")
                 return
@@ -753,8 +766,6 @@ def make_handler(api):
                 self._fail(502, f"extraction failed: {exc}")
                 return
 
-            out_path = (body.get("out_path") or "").strip() or os.path.join(
-                folder, "em_data.xlsx")
             try:
                 report = api.write_em_data(sheets, out_path)
             except ImportError as exc:

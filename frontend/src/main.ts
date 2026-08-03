@@ -3601,6 +3601,23 @@ const smHandlers: StratiMinerHandlers = {
     }
   },
 
+  // Third way out for Path B, after the clipboard and the textarea. 33k characters
+  // is not something to select by hand, and a file is what a Cowork session wants
+  // anyway. A download and not the native save dialog on purpose: it works in both
+  // deliveries, and this path only exists because something else already failed.
+  onSavePrompt: () => {
+    if (!smState.promptFallback) return;
+    const blob = new Blob([smState.promptFallback], {
+      type: "text/markdown;charset=utf-8",
+    });
+    const anchor = document.createElement("a");
+    anchor.href = URL.createObjectURL(blob);
+    anchor.download = "StratiMiner_prompt.md";
+    anchor.click();
+    URL.revokeObjectURL(anchor.href);
+    toast("Prompt salvato come StratiMiner_prompt.md");
+  },
+
   onPickFolder: async () => {
     const picked = await pickFolder();
     if (picked) smSet({ folder: picked });
