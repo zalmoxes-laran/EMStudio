@@ -1,13 +1,14 @@
 {
   "name": "emstudio-frontend",
   "private": true,
-  "version": "1.6.0-dev.1",
+  "version": "1.6.0-dev.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "serve": "vite preview --host"
+    "serve": "vite preview --host",
+    "set-version": "node ../scripts/set-version.mjs"
   },
   "devDependencies": {
     "typescript": "^5.6.0",

@@ -15,7 +15,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use std::sync::Mutex;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 use tauri_plugin_shell::process::CommandChild;
 use tauri_plugin_shell::ShellExt;
 
@@ -192,16 +192,95 @@ fn spawn_bridge(app: &tauri::AppHandle) {
     }
 }
 
+/// Is something listening on the bridge port right now?
+///
+/// A connect attempt, not a bind attempt: binding would briefly occupy the port
+/// ourselves and race with the very thing we are trying to observe.
+fn bridge_port_busy() -> bool {
+    use std::net::{SocketAddr, TcpStream};
+    let addr: SocketAddr = format!("127.0.0.1:{BRIDGE_PORT}").parse().unwrap();
+    TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(150)).is_ok()
+}
+
+/// Wait until nothing answers on the bridge port. Returns false on timeout.
+///
+/// **Why this exists (K1).** `restart_bridge` used to `kill()` the sidecar and
+/// call `spawn_bridge` on the next line. `kill()` sends the signal and returns —
+/// it does not wait for the process to die, and the listening socket outlives it
+/// by a few milliseconds. The fresh bridge, the one carrying the newly saved API
+/// key in its environment, therefore hit `Address already in use` and exited,
+/// leaving the OLD keyless bridge answering (or nothing at all). That is exactly
+/// the bug: the keychain has the key, Settings says "key set", and generation
+/// answers "no API key".
+///
+/// Polling the port rather than sleeping a fixed interval, because the port is
+/// the actual precondition — a blind `sleep(500ms)` would be both slower than
+/// needed on a fast machine and still too short on a loaded one.
+fn wait_for_bridge_port_free(timeout: std::time::Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        if !bridge_port_busy() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    !bridge_port_busy()
+}
+
+/// Tell the frontend that the bridge on :8765 is not ours, so the key cannot
+/// reach it. Emitted instead of logging-and-carrying-on, because "silently talks
+/// to a bridge without the key" is the failure mode that cost an evening.
+fn warn_foreign_bridge(app: &tauri::AppHandle) {
+    let message = format!(
+        "Un altro bridge è già in ascolto sulla porta {BRIDGE_PORT} e non è stato \
+         avviato dall'app: la key del portachiavi non lo raggiunge. Chiudi quel \
+         processo (tipicamente ./dev.sh) e riavvia l'app, oppure esporta \
+         ANTHROPIC_API_KEY nell'ambiente di quel bridge."
+    );
+    eprintln!("[emstudio] {message}");
+    // Best effort: if the webview is not up yet the event is simply lost, and the
+    // stderr line above remains.
+    let _ = app.emit("bridge-foreign", message);
+}
+
 /// Kill the running sidecar and start a fresh one, so an environment change
 /// (the API key) actually takes effect. A no-op when a remote transformer is
 /// configured — there is no local process to restart.
+///
+/// The order matters and is the whole fix: kill → **wait for the port** → spawn.
 fn restart_bridge(app: &tauri::AppHandle) {
     if std::env::var("EM_TRANSFORMER_URL").is_ok() {
         return;
     }
-    if let Some(child) = app.state::<BridgeChild>().0.lock().unwrap().take() {
-        let _ = child.kill();
+    // The state handle must outlive the lock guard, hence the `let` binding:
+    // locking a temporary would drop it at the end of the statement.
+    let state = app.state::<BridgeChild>();
+    let taken = state.0.lock().unwrap().take();
+    let had_child = match taken {
+        Some(child) => {
+            let _ = child.kill();
+            true
+        }
+        None => false,
+    };
+
+    if had_child {
+        // Our own sidecar was told to die; wait for it to let go of the socket.
+        if !wait_for_bridge_port_free(std::time::Duration::from_secs(5)) {
+            // Five seconds and still occupied: either the kill did not take, or
+            // something else has taken the port in the meantime. Spawning now
+            // would produce the silent keyless-bridge state, so say so instead.
+            warn_foreign_bridge(app);
+            return;
+        }
+    } else if bridge_port_busy() {
+        // Nothing of ours was running and yet the port answers: a foreign bridge
+        // (usually ./dev.sh). Spawning would just fail with EADDRINUSE and leave
+        // the user talking to a bridge that has no key.
+        warn_foreign_bridge(app);
+        return;
     }
+
     spawn_bridge(app);
 }
 
@@ -223,11 +302,18 @@ fn main() {
                 return Ok(());
             }
             // Silent local pipe: spawn the frozen s3Dgraphy bridge. If the
-            // sidecar is missing (build-bridge.sh not run) or the port is
-            // already taken (a dev ./dev.sh bridge), we just log and carry on —
-            // the frontend still reaches whatever is on localhost:8765, and the
-            // GraphML buttons surface a clear toast if nothing answers.
-            spawn_bridge(app.handle());
+            // sidecar is missing (build-bridge.sh not run) the spawn logs and the
+            // GraphML buttons surface a clear toast when nothing answers.
+            //
+            // If the port is ALREADY taken at launch it is somebody else's bridge
+            // (./dev.sh, or a leftover). GraphML through it still works, so the
+            // app carries on — but the keychain key does NOT reach it, and that is
+            // now said out loud rather than discovered later as "no API key".
+            if bridge_port_busy() {
+                warn_foreign_bridge(app.handle());
+            } else {
+                spawn_bridge(app.handle());
+            }
             Ok(())
         })
         .build(tauri::generate_context!())

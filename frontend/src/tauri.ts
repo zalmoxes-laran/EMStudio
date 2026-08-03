@@ -177,6 +177,30 @@ export async function clearLlmKey(): Promise<string | null> {
   }
 }
 
+/**
+ * Subscribe to the shell's "the bridge on :8765 is not mine" warning (K1).
+ *
+ * The desktop shell spawns the sidecar with the keychain key in its environment.
+ * When the port is ALREADY taken — almost always a `./dev.sh` bridge left running —
+ * the app cannot inject anything into that process, so GraphML keeps working while
+ * generation answers "no API key". That combination is impossible to diagnose from
+ * the UI, so the shell says it out loud and this hands it to the user.
+ *
+ * A no-op in the browser: there is no shell to hear it from.
+ */
+export async function onForeignBridge(
+  handler: (message: string) => void,
+): Promise<void> {
+  if (!isTauri()) return;
+  try {
+    const { listen } = await import("@tauri-apps/api/event");
+    await listen<string>("bridge-foreign", (event) => handler(String(event.payload)));
+  } catch {
+    // The event API is unavailable (an old shell): the shell's stderr line stays
+    // the record. Not worth failing the app's boot over.
+  }
+}
+
 /** Basename of an absolute path, for the window title / info bar. */
 export function baseName(path: string): string {
   const parts = path.split(/[\\/]/);

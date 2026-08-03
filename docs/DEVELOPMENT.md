@@ -64,6 +64,30 @@ cd apps/desktop && cargo tauri dev
 - Edit the s3Dgraphy exporter → restart the bridge (Ctrl-C, re-run `dev.sh`);
   it imports s3Dgraphy once at startup.
 
+## Versioning the app
+
+The APP version (the badge in the header, the crate, the bundle) lives in three
+files. One command writes all three:
+
+```bash
+node scripts/set-version.mjs --bump-dev        # 1.6.0-dev.1 → 1.6.0-dev.2, the daily case
+node scripts/set-version.mjs 1.6.1-dev.1       # set exactly
+node scripts/set-version.mjs --print           # what is set now, per file
+# from frontend/: npm run set-version -- <same args>
+cd frontend && npm run build                   # the badge reads package.json at build time
+```
+
+`frontend/package.json` and `src-tauri/Cargo.toml` get the full version including
+`-dev.N`; **`src-tauri/tauri.conf.json` gets the numeric core only** (`1.6.0`),
+because the macOS and Windows bundle formats take `x.y.z` and either reject or
+silently truncate a pre-release suffix — silently being the worse outcome, since the
+.dmg would then claim a version nobody chose. So the dev counter is visible where a
+tester reads it and absent where an installer cannot carry it; `--print` shows all
+three side by side.
+
+This is **not** `EM_VERSION`, the version of the EM *language*, which is
+data-driven from the vendored datamodels and must never be written by hand.
+
 ## Packaging the desktop app (macOS · Windows · Linux)
 
 The distributable app is the Tauri bundle **plus** a frozen Python sidecar: the

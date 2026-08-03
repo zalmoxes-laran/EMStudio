@@ -58,6 +58,7 @@ import {
   llmKeyStatus,
   setLlmKey,
   clearLlmKey,
+  onForeignBridge,
 } from "./tauri";
 import { type HostInfo, SyncClient } from "./sync";
 import {
@@ -2670,6 +2671,16 @@ async function refreshAiKeyState(): Promise<void> {
     : "✓ key di sessione — non salvata";
   setAiKeyState.className = usable && set ? "ai-key-set" : "ai-key-unset";
 
+  // K2 — the field is always EMPTY on reopen, because the key is not readable
+  // (that asymmetry is the security invariant: set / clear / status, never get).
+  // An empty box next to "✓ key impostata" reads as "not saved" though, and the
+  // user pastes it again. So the PLACEHOLDER carries the state: a fixed run of
+  // dots and a sentence. It is a placeholder, not a value — `setAiKey.value`
+  // stays empty, nothing is read from anywhere, and typing behaves as before.
+  setAiKey.placeholder = usable && set
+    ? "•••••••••••• — impostata (incolla per sostituire)"
+    : "Incolla qui la key";
+
   if (busy) {
     setAiKeyHint.textContent =
       "Generazione in corso: salvare la key riavvia em-bridge e la " +
@@ -4709,6 +4720,15 @@ new ResizeObserver(resizeCanvas).observe(wrap);
 resizeCanvas();
 // repaint when an official icon finishes decoding
 import("./icons").then(({ setIconRedraw }) => setIconRedraw(() => draw()));
+
+// K1 — the desktop shell warns when the bridge on :8765 is somebody else's, so
+// the keychain key cannot reach it. Surfaced as a toast AND a log line: the toast
+// is what the user sees now, the log is what they find when generation later says
+// "no API key".
+void onForeignBridge((message) => {
+  logWarn(message);
+  toast(message);
+});
 
 // ---------- boot ----------
 // Start from an EMPTY canvas (more natural than auto-loading a sample): use

@@ -22,6 +22,34 @@ function s(v: unknown): string {
   return typeof v === "string" ? v : String(v ?? "?");
 }
 
+/**
+ * Shorten an ontology version for DISPLAY only.
+ *
+ * Every reference ontology in the datamodel carries a number — `7.1.3`, `2.1.1`,
+ * `1.2` — except PROV-O, whose "version" is the sentence *"W3C Recommendation
+ * 2013-04-30"*. In a list of numbers that one line wraps and pushes the popup wide,
+ * and it reads as an anomaly rather than as the same kind of fact.
+ *
+ * So a leading `W3C Recommendation` becomes `REC`: the standards world's own
+ * abbreviation for exactly this maturity level, and short enough to sit in the same
+ * column as `7.1.3`. `REC 2013-04-30` still says which document and from when —
+ * nothing is lost, and the date is what a reader would check.
+ *
+ * **Formatting only.** The datamodel keeps the full string; the vendored JSONs are
+ * byte-identical to s3Dgraphy's and are not to be edited for presentation. Written
+ * as a general rule rather than a special case for PROV-O, so a future ontology
+ * quoting its W3C status is shortened the same way.
+ */
+export function displayOntologyVersion(version: string): string {
+  return version
+    .replace(/^W3C\s+Recommendation\b/i, "REC")
+    .replace(/^W3C\s+Working\s+Draft\b/i, "WD")
+    .replace(/^W3C\s+Candidate\s+Recommendation\b/i, "CR")
+    .replace(/^W3C\s+Proposed\s+Recommendation\b/i, "PR")
+    .replace(/^W3C\s+Note\b/i, "NOTE")
+    .trim();
+}
+
 export function versionBreakdown(): VersionBreakdown {
   const n = node as Record<string, unknown>;
   const c = conn as Record<string, unknown>;
@@ -47,7 +75,9 @@ export function versionBreakdown(): VersionBreakdown {
     const o = val as { version?: unknown; source?: unknown };
     ontologies.push({
       name,
-      version: s(o.version),
+      // Display form: see `displayOntologyVersion`. The datamodel's own string is
+      // untouched — this is the only place that shortens it, and only for reading.
+      version: displayOntologyVersion(s(o.version)),
       source: typeof o.source === "string" ? o.source : undefined,
     });
   }

@@ -320,12 +320,22 @@ body.sync-active #mode-indicator::before {
 .modal.hidden {
   display: none;
 }
+/* K2 — a modal is a COLUMN: header · scrollable body · fixed footer.
+   The bug this fixes: the card had no height limit and `overflow: hidden`, so on a
+   small desktop window the content simply ran past the bottom edge and took the
+   Cancel/OK row with it — a floating window with no way out. Now the card can
+   never exceed the viewport, and the only part that scrolls is the middle. */
 .modal-card {
   width: min(430px, 92vw);
+  /* leave a margin so the card never touches the window edges, and so a user can
+     see there is a page behind it */
+  max-height: min(88vh, calc(100vh - 3rem));
+  display: flex;
+  flex-direction: column;
   background: #fff;
   border-radius: 10px;
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.28);
-  overflow: hidden;
+  overflow: hidden;   /* clips the rounded corners; the BODY does the scrolling */
   font-size: 13px;
   color: #1f2733;
 }
@@ -337,6 +347,7 @@ body.sync-active #mode-indicator::before {
   background: var(--brand);
   color: #fff;
   font-weight: 600;
+  flex: 0 0 auto;      /* never shrinks: the title stays put while the body scrolls */
 }
 .modal-x {
   background: transparent;
@@ -349,8 +360,15 @@ body.sync-active #mode-indicator::before {
 .modal-x:hover {
   opacity: 1;
 }
+/* The ONLY scrolling part. `min-height: 0` is what makes it actually scroll
+   inside a flex column — without it a flex item refuses to shrink below its
+   content and the overflow silently escapes the card again. */
 .modal-body {
   padding: 14px 16px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;   /* a scroll that ends here does not move the page */
 }
 .settings-sect h4 {
   margin: 0 0 6px;
@@ -401,12 +419,16 @@ body.sync-active #mode-indicator::before {
   border-radius: 4px;
   color: #1f6feb;
 }
+/* Always reachable, whatever the content length: outside the scroll area and
+   non-shrinkable. The white background matters — the body scrolls UNDER it. */
 .modal-foot {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
   padding: 12px 16px;
   border-top: 1px solid var(--border);
+  flex: 0 0 auto;
+  background: #fff;
 }
 /* Resources panel (R5) */
 .res-scan-row {

@@ -14,7 +14,14 @@
 # tools against a checkout instead (editable install or the --s3dgraphy
 # flag / dev.sh, which puts ../s3Dgraphy/src on sys.path). Bump this pin
 # after publishing a new dev that contains the changes you depend on.
-s3dgraphy==1.6.0.dev10
+#
+# The EXTRAS are not cosmetic — em_bridge.py needs both:
+#   [geo] → pyproj, for /reproject and /georeference-scene (the map for any
+#           projected CRS). pyproj's wheels bundle PROJ, so no system GDAL.
+#   [rdf] → rdflib, for /export-ttl.
+# Without them those endpoints answer 501 (honestly, but uselessly). dev12 is
+# the first release that declares [geo]; dev11 and older silently ignored it.
+s3dgraphy[geo,rdf]==1.6.0.dev12
 
 # Hard runtime deps of the s3Dgraphy importer/exporter used by the tools.
 lxml>=4.9
