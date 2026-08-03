@@ -278,6 +278,38 @@
             <p class="settings-hint" id="set-ai-key-hint"></p>
           </section>
           <section class="settings-sect">
+            <h4>Visualizzatore 3D</h4>
+            <p class="settings-hint">
+              Dove vive il 3D. EMStudio non incorpora un motore 3D: le scene
+              sono di <b>ATON</b>, e <b>Heriverse</b> è la web-app ATON che
+              legge questo stesso grafo. Serve solo l'indirizzo del server —
+              il riferimento (id di scena o risorsa) sta nel grafo. Lasciato
+              vuoto, un blocco <code>epoch3d</code> lo dice invece di restare
+              muto.
+            </p>
+            <label
+              >Server ATON
+              <input
+                id="set-aton-base"
+                type="text"
+                spellcheck="false"
+                placeholder="https://localhost:8083"
+              />
+            </label>
+            <label
+              >App Heriverse (montata sotto il server)
+              <input
+                id="set-heriverse-app"
+                type="text"
+                spellcheck="false"
+                placeholder="a/heriverse"
+              />
+            </label>
+            <p class="settings-url">
+              Scena: <code id="set-aton-scene-url"></code>
+            </p>
+          </section>
+          <section class="settings-sect">
             <h4>Developer</h4>
             <label class="settings-check">
               <input id="set-dev-uuid" type="checkbox" />

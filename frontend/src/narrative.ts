@@ -17,11 +17,17 @@
  * palette in this app and this is not a second one.
  */
 
+import { create3dEmbed, isRef3D, resolve3d } from "./embed3d";
+import { geoOf, georeferenceScene, reprojectPoint } from "./geo";
+import type { GeoRef } from "./geo";
+import { onFirstVisible } from "./lazy";
 import { blockStatus, bylineOf, narrativeAuthors } from "./narrative-authorship";
 import type { AuthorRef, BlockStatus } from "./narrative-authorship";
-import { VIEW_TYPES } from "./narrative-edit";
+import { canonicalViewType, VIEW_TYPES } from "./narrative-edit";
+import { createOsmMap } from "./osm-map";
+import type { OsmView } from "./osm-map";
 import { nodeStyle } from "./palette";
-import { typeDescription } from "./rules";
+import { narrativeViewTypeDescription, typeDescription } from "./rules";
 import type { EmDocument, EmNode } from "./types";
 
 /** A block as it is serialised by s3Dgraphy (`narrative_node.Block`). */
@@ -58,7 +64,9 @@ export interface Narrative {
 /** The view types this phase actually draws. Anything else is labelled as not
  *  yet rendered — an honest placeholder, never an error: the enum is allowed to
  *  lead the implementations. */
-const RENDERED_VIEW_TYPES = new Set(["source", "document", "us", "map"]);
+const RENDERED_VIEW_TYPES = new Set([
+  "source", "document", "us", "map", "scene3d", "rm",
+]);
 
 export function narrativesIn(doc: EmDocument | null): Narrative[] {
   if (!doc?.graph?.nodes) return [];
@@ -167,36 +175,200 @@ function usCard(node: EmNode): HTMLElement {
   return box;
 }
 
-function mapCard(node: EmNode, options: Record<string, unknown>): HTMLElement {
-  // No map dependency in phase 1. This bundle is built single-file (vite
-  // singlefile) and inlines everything, so a CDN Leaflet cannot load and a
-  // bundled one costs ~150 KB for one embed type in a read-only viewer. A card
-  // that states the coordinates exactly and opens OSM is honest and instant;
-  // the interactive map is an increment, not a compromise.
+// Where each map embed's camera was left. The narrative view rebuilds its whole
+// DOM on every change (that is how N3 gets undo for free), so without this a
+// keystroke in the paragraph above would snap the reader's map back to its
+// starting frame. Keyed per block, module-level, never persisted: it is where
+// you were looking, not part of the document.
+const mapViews = new Map<string, OsmView>();
+
+/**
+ * The `map` view type: a real OSM map with the position on it.
+ *
+ * Tiles are only fetched once the block is on screen — a story with ten
+ * positions must not open ten map sessions the moment it is opened — and the
+ * card underneath keeps stating the numbers, because the exact coordinate and
+ * its frame are the data; the map is the reading of it.
+ */
+function mapCard(node: EmNode, options: Record<string, unknown>,
+                 key: string, doc: EmDocument | null): HTMLElement {
   const data = (node.data ?? {}) as Record<string, unknown>;
-  const lon = Number(data.shift_x ?? 0);
-  const lat = Number(data.shift_y ?? 0);
-  const epsg = data.epsg ?? 4326;
+  const geo = geoOf(data);
   const box = el("div", "nv-embed nv-map");
   box.appendChild(el("div", "nv-embed-kind", "map"));
-  if (!lat && !lon) {
+
+  if (!geo.ok) {
+    if (geo.reason === "needs-reprojection") {
+      // A projected frame — a UTM zone, a national grid: the normal case on an
+      // excavation. PROJ is on the Python side, so the bridge is asked (G1), and
+      // only once the block is on screen: a story with ten positions should not
+      // fire ten requests on open.
+      const { anchor } = geo;
+      const pending = el("div", "nv-embed-note",
+        `EPSG:${anchor.epsg} — riproiezione in corso…`);
+      box.appendChild(
+        el("div", "nv-embed-title",
+          `${anchor.x.toFixed(3)}, ${anchor.y.toFixed(3)} (EPSG:${anchor.epsg})`),
+      );
+      box.appendChild(pending);
+      onFirstVisible(box, () => {
+        void (async () => {
+          const out = await reprojectPoint(anchor.x, anchor.y, anchor.epsg);
+          if ("error" in out) {
+            // Never a guess. The numbers and the frame stay on screen, and the
+            // note says exactly what is missing.
+            pending.textContent =
+              `Le coordinate sono in EPSG:${anchor.epsg} e la riproiezione non ` +
+              `è disponibile (${out.error}). La posizione qui sopra resta ` +
+              `esatta: il bridge la porta sulla mappa quando c'è pyproj ` +
+              `(extra [geo]).`;
+            pending.classList.add("nv-geo-unavailable");
+            return;
+          }
+          // Same widget, same caption, same memory — only the coordinates came
+          // from somewhere else.
+          box.textContent = "";
+          box.appendChild(el("div", "nv-embed-kind", "map"));
+          drawMap(box, node, options, key, {
+            ok: true, lat: out.lat, lon: out.lon, epsg: anchor.epsg,
+            rotation: anchor.rotation,
+            note: `riproiettato da EPSG:${anchor.epsg} (pyproj)`,
+          }, doc);
+        })();
+      });
+      return box;
+    }
     box.appendChild(
-      el("div", "nv-embed-title", "the position node carries no coordinates"),
+      el("div", "nv-embed-title", "il nodo di posizione non porta coordinate"),
+    );
+    box.appendChild(
+      el("div", "nv-embed-note",
+        "un GeoPositionNode con shift_x / shift_y (o lat / lon) mostra qui la " +
+        "mappa e il punto."),
     );
     return box;
   }
-  const zoom = Number(options.zoom ?? 16);
-  box.appendChild(
-    el("div", "nv-embed-title", `${lat.toFixed(6)}, ${lon.toFixed(6)}`),
+
+  drawMap(box, node, options, key, geo, doc);
+  return box;
+}
+
+/** The map widget plus its caption, for a reference that is already in degrees.
+ *  Split out of `mapCard` because a reprojected reference arrives later and must
+ *  land in exactly the same UI — one place that draws a map, not two. */
+function drawMap(box: HTMLElement, node: EmNode,
+                 options: Record<string, unknown>, key: string,
+                 geo: Extract<GeoRef, { ok: true }>,
+                 doc: EmDocument | null): void {
+  const remembered = mapViews.get(key);
+  const zoom = remembered?.zoom ?? Number(options.zoom ?? 16);
+  const map = createOsmMap({
+    lat: geo.lat,
+    lon: geo.lon,
+    zoom,
+    // The pan is restored too, not just the zoom: re-centring on the marker
+    // after every keystroke would undo the reader's look around.
+    center: remembered ? { lat: remembered.lat, lon: remembered.lon } : undefined,
+    markerLabel: String(node.name || node.id),
+    onViewChange: (v) => mapViews.set(key, v),
+  });
+  box.appendChild(map.el);
+  const caption = el("div", "nv-map-caption");
+  onFirstVisible(map.el, () => {
+    map.activate();
+    // G3 — pose the SCENE, not just the point: the graph's own spatial proxies
+    // give a local extent, the anchor gives the azimuth and the origin, and the
+    // bridge returns the footprint already in degrees. Asked for only once the
+    // map is on screen, and silent when the graph has no geometry: most graphs
+    // do not, and a footprint invented for them would be a fabrication drawn at
+    // metre precision.
+    void (async () => {
+      if (!doc) return;
+      const placed = await georeferenceScene(doc);
+      // `null` = the graph has no geometry to place, which is the common case and
+      // says nothing worth saying. An ERROR is different: the graph HAS geometry
+      // and something about the anchor prevents placing it — most often an anchor
+      // in degrees, which cannot carry a metric footprint. That, the reader
+      // should see, because it is fixable.
+      if (!placed) return;
+      if ("error" in placed) {
+        const why = el("span", "nv-embed-note nv-geo-unavailable",
+          `impronta non disponibile: ${placed.error}`);
+        caption.appendChild(why);
+        return;
+      }
+      map.setFootprint(placed.corners);
+      // The marker moves onto the CENTROID: the shift is the anchor, and it may
+      // legitimately sit hundreds of metres from the monument.
+      map.setMarker(placed.centroid[1], placed.centroid[0]);
+      const size = el("span", "nv-embed-note",
+        `impronta ${placed.width.toFixed(1)} × ${placed.height.toFixed(1)} m` +
+        (placed.rotation ? `, azimut ${placed.rotation}°` : ", nord in alto"));
+      size.title =
+        "Impronta della scena sulla mappa: il rettangolo dell'estensione locale " +
+        "(dai proxy spaziali del grafo) ruotato per l'azimut, spostato " +
+        "sull'origine e riproiettato. Il puntino è sul centroide, non sullo " +
+        "shift — che è l'ancora, e può stare lontano dal monumento.";
+      caption.appendChild(size);
+    })();
+  });
+
+  caption.appendChild(
+    el("span", "nv-map-coords",
+      `${geo.lat.toFixed(6)}, ${geo.lon.toFixed(6)}`),
   );
-  box.appendChild(el("div", "nv-embed-note", `EPSG:${epsg}`));
+  caption.appendChild(
+    el("span", "nv-embed-note", geo.note ?? `EPSG:${geo.epsg}`),
+  );
   const a = document.createElement("a");
   a.className = "nv-embed-link";
-  a.href = `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lon}#map=${zoom}/${lat}/${lon}`;
+  a.href =
+    `https://www.openstreetmap.org/?mlat=${geo.lat}&mlon=${geo.lon}` +
+    `#map=${Math.round(zoom)}/${geo.lat}/${geo.lon}`;
   a.target = "_blank";
   a.rel = "noreferrer noopener";
-  a.textContent = "open in OpenStreetMap";
-  box.appendChild(a);
+  a.textContent = "apri in OpenStreetMap ↗";
+  a.addEventListener("click", (e) => e.stopPropagation());
+  caption.appendChild(a);
+  // The azimuth is part of the anchor: a scene rotated 27° from north is a
+  // different statement about the ground than one that is not, and the reader of
+  // a georeferenced narrative should be able to see which they are looking at.
+  if (geo.rotation)
+    caption.appendChild(
+      el("span", "nv-embed-note", `azimut ${geo.rotation}°`));
+  box.appendChild(caption);
+}
+
+/**
+ * The `scene3d` and `rm` view types: the 3D, in the chapter.
+ *
+ * One card for both, because the difference is what the embed POINTS AT, not how
+ * it is shown: a scene is the graph's published scene (or an RM standing for an
+ * epoch), an `rm` is one representation model. `resolve3d` walks from either to
+ * the Resource that holds the geometry, and the frame is ATON's — Heriverse for a
+ * published scene, ATON's preview app for a single model.
+ *
+ * When there is nothing to show, the card says which of the gaps it is: no
+ * reference in the graph, no server configured, or a file no web viewer can read.
+ */
+function scene3dCard(node: EmNode, doc: EmDocument | null,
+                     key: string, kind = "scene3d"): HTMLElement {
+  const ref = resolve3d(node, doc);
+  const box = el("div", "nv-embed nv-3d");
+  box.appendChild(el("div", "nv-embed-kind", kind));
+  box.appendChild(el("div", "nv-embed-title", String(node.name || node.id)));
+  const what = narrativeViewTypeDescription(kind);
+  if (what) box.title = what;
+  if (!isRef3D(ref)) {
+    box.classList.add("nv-pending");
+    box.appendChild(el("div", "nv-embed-note", ref.hint));
+    return box;
+  }
+  // An RM in a list of chapters is a smaller thing than the site's scene, and a
+  // reader scrolling past six of them should not meet six full-height stages.
+  box.appendChild(create3dEmbed(ref, {
+    key, auto: true, height: kind === "rm" ? 300 : 380,
+  }));
   return box;
 }
 
@@ -218,11 +390,19 @@ function notYetRendered(viewType: string, node: EmNode | null,
 function renderEmbed(
   block: NarrativeBlock,
   index: Map<string, EmNode>,
+  doc: EmDocument | null,
+  /** Stable identity of this block — `narrative:chapter:block:ref`. Lets an
+   *  embed with live state (a map's camera, a loaded 3D frame) survive the
+   *  view's rebuild without being written into the document. */
+  key: string,
   onReveal?: (nodeId: string) => void,
 ): HTMLElement {
   const ref = block.ref ?? "";
   const node = index.get(ref) ?? null;
-  const viewType = block.view_type ?? "";
+  // Read-tolerant (G1): a narrative saved with `epoch3d` renders as `scene3d`.
+  // Applied here rather than at load so nothing rewrites the document behind the
+  // author's back — the file is upgraded when they next save it, not on opening.
+  const viewType = canonicalViewType(block.view_type);
   let box: HTMLElement;
   if (!node) {
     box = unresolved(ref);
@@ -231,22 +411,42 @@ function renderEmbed(
   } else if (viewType === "us") {
     box = usCard(node);
   } else if (viewType === "map") {
-    box = mapCard(node, block.options ?? {});
+    box = mapCard(node, block.options ?? {}, key, doc);
+  } else if (viewType === "scene3d" || viewType === "rm") {
+    // `rm` renders through the same ATON embed (G2): a representation model IS a
+    // 3D asset, and there is one way this app shows 3D.
+    box = scene3dCard(node, doc, key, viewType);
   } else {
     box = notYetRendered(viewType || "embed", node, ref);
   }
   if (node && onReveal) {
-    box.classList.add("nv-clickable");
-    box.tabIndex = 0;
-    box.setAttribute("role", "button");
     const reveal = () => onReveal(node.id);
-    box.addEventListener("click", reveal);
-    box.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
+    // An embed you can DO something in cannot also be one big button: dragging
+    // a map or orbiting a scene would jump to the canvas and close the story.
+    // Those get an explicit way in instead — same gesture, stated.
+    if (viewType === "map" || viewType === "scene3d"
+        || viewType === "rm") {
+      const go = el("button", "nv-goto", "vai al nodo ↗") as HTMLButtonElement;
+      go.title =
+        `Seleziona «${String(node.name || node.id)}» sul canvas e chiudi la ` +
+        "narrativa.";
+      go.addEventListener("click", (e) => {
+        e.stopPropagation();
         reveal();
-      }
-    });
+      });
+      box.appendChild(go);
+    } else {
+      box.classList.add("nv-clickable");
+      box.tabIndex = 0;
+      box.setAttribute("role", "button");
+      box.addEventListener("click", reveal);
+      box.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          reveal();
+        }
+      });
+    }
   }
   return box;
 }
@@ -731,7 +931,8 @@ export function renderNarrativeView(
         ? (editor ? editableProse(block.text ?? "", (t) =>
             editor.setProse(ci, bi, t))
           : renderProse(block.text ?? ""))
-        : renderEmbed(block, index, onReveal);
+        : renderEmbed(block, index, doc,
+            `${current.id}:${ci}:${bi}:${block.ref ?? ""}`, onReveal);
       // Provenance rides with the paragraph in BOTH modes: knowing a machine
       // wrote this is not an authoring convenience, it is what the reader needs.
       const strip = block.block_type === "prose"
@@ -755,6 +956,7 @@ export function renderNarrativeView(
       row.appendChild(body);
       const tools = el("div", "nv-block-tools");
       if (block.block_type === "embed") {
+        const current = canonicalViewType(block.view_type);
         const sel = document.createElement("select");
         sel.className = "nv-viewtype";
         sel.title = "How this reference is shown";
@@ -762,7 +964,14 @@ export function renderNarrativeView(
           const o = document.createElement("option");
           o.value = vt;
           o.textContent = vt;
-          o.selected = vt === block.view_type;
+          // The datamodel's own definition, so the author reads what a view type
+          // means instead of inferring it from eleven one-word labels.
+          const what = narrativeViewTypeDescription(vt);
+          if (what) o.title = what;
+          // Compared against the CANONICAL name: a block still holding the
+          // retired `epoch3d` must show `scene3d` as its current selection, not
+          // fall through and silently look like `matrix` (the first option).
+          o.selected = vt === current;
           sel.appendChild(o);
         }
         sel.addEventListener("change", () =>

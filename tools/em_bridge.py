@@ -31,6 +31,37 @@ Endpoints:
     POST /resolve-resource ← {doc, resource_id} → {location: {kind,value,exists}}
                              (Resource layer — s3Dgraphy resources; R0/R1/R5;
                              501 if the active s3dgraphy predates it)
+    POST /reproject        ← {x, y, epsg_source, epsg_target?}  → {lon, lat}
+                           ← {points: [[x,y], …], epsg_source, …} → {points: […]}
+                             (G1 — EPSG → WGS84 via s3Dgraphy api.reproject, i.e.
+                             pyproj. Excavation coordinates are normally PROJECTED
+                             (UTM, national grids) and a web map needs degrees;
+                             this is the ONLY place that conversion happens, and
+                             it is not going to be reimplemented in TypeScript.
+                             The batch form builds one transformer for a whole
+                             footprint. 501 when the [geo] extra is not bundled —
+                             the map then refuses honestly rather than guessing.)
+    POST /georeference-scene
+                           ← {doc, points_local?, epsg_target?}
+                           → {points, centroid?, extent?, rotation, shift, …}
+                             (G3 — poses the scene on the ground: rotate by the
+                             graph's azimuth, add the shift, reproject. With no
+                             `points_local` it uses the extent DERIVED from the
+                             graph's own spatial proxies (SemanticShapeNode) and
+                             returns the four corners plus the centroid; with no
+                             proxies it returns extent=null and invents nothing.)
+    POST /resource-preview ← {resource_id, folder?, doc?, max_bytes?}
+                           → {resource_type, media_type, data_url|url|...}
+                             (N10 — bytes for a THUMBNAIL, by stable ID only. A
+                             browser cannot read a local file, and the Shelf must
+                             not learn filesystem paths: this resolves the id the
+                             same way everything else does — the folder manifest
+                             (R1) or the graph's resolver — and returns the bytes
+                             inline. The path is NEVER echoed back. Only images
+                             travel as bytes; anything else answers with its type
+                             so the UI can draw a typed placeholder, and remote
+                             resources answer with their URL so the browser
+                             fetches them directly.)
     POST /ingest-minio     ← {path, resource_id?} → {id, object_key, s3_uri}
     POST /presign          ← {id|object_key} → {object_key, http_url}
                              (shared MinIO object store — s3Dgraphy R2; config from
@@ -72,6 +103,7 @@ Needs s3Dgraphy importable (pandas + lxml) — use its checkout's venv python.
 from __future__ import annotations
 
 import argparse
+import base64
 import errno
 import json
 import os
@@ -257,6 +289,27 @@ def make_handler(api):
                     self._fail(400, f"invalid JSON body: {exc}")
                     return
                 self._resources(route, body)
+            elif route == "/resource-preview":
+                try:
+                    body = json.loads(raw.decode("utf-8")) if raw else {}
+                except Exception as exc:
+                    self._fail(400, f"invalid JSON body: {exc}")
+                    return
+                self._resource_preview(body)
+            elif route == "/reproject":
+                try:
+                    body = json.loads(raw.decode("utf-8")) if raw else {}
+                except Exception as exc:
+                    self._fail(400, f"invalid JSON body: {exc}")
+                    return
+                self._reproject(body)
+            elif route == "/georeference-scene":
+                try:
+                    body = json.loads(raw.decode("utf-8")) if raw else {}
+                except Exception as exc:
+                    self._fail(400, f"invalid JSON body: {exc}")
+                    return
+                self._georeference_scene(body)
             elif route in ("/ingest-minio", "/presign"):
                 try:
                     body = json.loads(raw.decode("utf-8")) if raw else {}
@@ -639,6 +692,453 @@ def make_handler(api):
             self.end_headers()
             self.wfile.write(out)
 
+        # ── coordinate reprojection (G1) ─────────────────────────────────────
+        # A thin adapter over s3Dgraphy's api.reproject / api.reproject_many.
+        #
+        # Why it is here at all: excavation coordinates are PROJECTED (a UTM zone,
+        # a national grid) with an EPSG code, and the OSM map wants degrees. That
+        # conversion needs PROJ, PROJ lives in pyproj, and pyproj is Python — so
+        # the map asks, and nothing about datums gets reimplemented in TypeScript
+        # where a wrong guess would put a site in the wrong hemisphere and look
+        # authoritative doing it.
+        #
+        # Two shapes, one op: a single point, or a batch (a footprint is four
+        # corners plus a centroid, and one transformer serves them all). 501 when
+        # the [geo] extra is absent, which the map turns into an honest refusal.
+        def _reproject(self, body):
+            if not hasattr(api, "reproject_many"):
+                self._fail(501, "reprojection unavailable — s3dgraphy is out of date")
+                return
+            try:
+                epsg_source = int(body["epsg_source"])
+            except (KeyError, TypeError, ValueError):
+                self._fail(400, "reproject needs an integer 'epsg_source'")
+                return
+            epsg_target = body.get("epsg_target", 4326)
+            try:
+                epsg_target = int(epsg_target)
+            except (TypeError, ValueError):
+                self._fail(400, "'epsg_target' must be an integer EPSG code")
+                return
+
+            batch = body.get("points")
+            if batch is None:
+                if "x" not in body or "y" not in body:
+                    self._fail(400, "reproject needs {x, y} or {points: [[x, y], …]}")
+                    return
+                try:
+                    pts = [(float(body["x"]), float(body["y"]))]
+                except (TypeError, ValueError):
+                    self._fail(400, "'x' and 'y' must be numbers")
+                    return
+            else:
+                if not isinstance(batch, list) or not batch:
+                    self._fail(400, "'points' must be a non-empty list of [x, y]")
+                    return
+                if len(batch) > 512:
+                    # A footprint is a handful of corners. A cap keeps one request
+                    # from turning into a projection service by accident.
+                    self._fail(400, "at most 512 points per request")
+                    return
+                try:
+                    pts = [(float(p[0]), float(p[1])) for p in batch]
+                except (TypeError, ValueError, IndexError):
+                    self._fail(400, "each point must be a [x, y] pair of numbers")
+                    return
+
+            try:
+                out = api.reproject_many(pts, epsg_source, epsg_target)
+            except api.MissingDependency as exc:
+                self._fail(501,
+                           f"reprojection unavailable — the 'geo' extra (pyproj) "
+                           f"is not bundled ({exc})")
+                return
+            except ValueError as exc:
+                # An unknown EPSG or a point outside the frame's domain: the
+                # client asked something impossible, and should hear which.
+                self._fail(400, f"reproject failed: {exc}")
+                return
+            except Exception as exc:  # pragma: no cover — surface to the UI
+                import traceback
+                traceback.print_exc()
+                self._fail(500, f"reproject failed: {exc}")
+                return
+
+            payload = {"ok": True, "epsg_source": epsg_source,
+                       "epsg_target": epsg_target,
+                       "points": [[x, y] for x, y in out]}
+            if batch is None:
+                # Single-point convenience: name the axes, so no caller has to
+                # remember whether [0] was longitude (it is).
+                x, y = out[0]
+                if epsg_target == 4326:
+                    payload["lon"], payload["lat"] = x, y
+                else:
+                    payload["x"], payload["y"] = x, y
+            self._json(payload)
+
+        # ── georeferencing a whole scene (G3) ────────────────────────────────
+        # Where /reproject answers "this point in degrees", this answers "the
+        # scene, posed": rotate by the graph's azimuth, add the origin, reproject.
+        # The extent it rotates is either given by the caller or DERIVED from the
+        # graph's own spatial proxies — never made up, so a graph with no geometry
+        # gets `extent: null` and the map draws a marker and nothing else.
+        def _georeference_scene(self, body):
+            if not hasattr(api, "georeference_scene"):
+                self._fail(501, "scene georeferencing unavailable — s3dgraphy is "
+                                "out of date")
+                return
+            doc = body.get("doc")
+            if doc is None:
+                self._fail(400, "georeference-scene needs the current 'doc' (em.json)")
+                return
+            try:
+                graph, warnings = api.load_emjson(doc)
+            except Exception as exc:
+                self._fail(400, f"em.json non leggibile: {exc}")
+                return
+            for w in warnings:
+                sys.stderr.write(f"  [bridge] warning: {w}\n")
+
+            epsg_target = body.get("epsg_target", 4326)
+            try:
+                epsg_target = int(epsg_target)
+            except (TypeError, ValueError):
+                self._fail(400, "'epsg_target' must be an integer EPSG code")
+                return
+
+            extent = None
+            points = body.get("points_local")
+            if points is None:
+                # No explicit extent: derive one from the graph. The corners come
+                # back in a documented winding (SW, SE, NE, NW) and the centroid
+                # LAST, so the caller reads them positionally without a schema.
+                extent = api.scene_extent(graph)
+                if extent is None:
+                    self._json({"ok": True, "extent": None, "points": [],
+                                "hint": "il grafo non porta geometria (nessun "
+                                        "SemanticShapeNode): niente impronta"})
+                    return
+                points = list(extent["corners"]) + [extent["centroid"]]
+            if not isinstance(points, list) or not points:
+                self._fail(400, "'points_local' must be a non-empty list of [x, y]")
+                return
+            if len(points) > 512:
+                self._fail(400, "at most 512 points per request")
+                return
+            try:
+                pts = [(float(p[0]), float(p[1])) for p in points]
+            except (TypeError, ValueError, IndexError):
+                self._fail(400, "each point must be a [x, y] pair of numbers")
+                return
+
+            try:
+                out = api.georeference_scene(graph, pts, epsg_target=epsg_target)
+            except api.MissingDependency as exc:
+                self._fail(501,
+                           f"reprojection unavailable — the 'geo' extra (pyproj) "
+                           f"is not bundled ({exc})")
+                return
+            except ValueError as exc:
+                self._fail(400, f"georeference-scene failed: {exc}")
+                return
+            except Exception as exc:  # pragma: no cover — surface to the UI
+                import traceback
+                traceback.print_exc()
+                self._fail(500, f"georeference-scene failed: {exc}")
+                return
+
+            payload = {"ok": True, **out}
+            if extent is not None:
+                # The LOCAL extent travels too: the UI shows the scene's size in
+                # metres, which degrees cannot state legibly.
+                payload["extent"] = extent
+                payload["centroid"] = out["points"][-1]
+                payload["corners"] = out["points"][:-1]
+            self._json(payload)
+
+        # ── resource previews (N10) ──────────────────────────────────────────
+        # Bytes for ONE resource's thumbnail, addressed by its STABLE ID.
+        #
+        # Why this exists at all: a browser cannot read a local file, and the
+        # Shelf must not learn filesystem paths — the whole point of the resource
+        # layer is that a resource is an id and a locator is an implementation
+        # detail. So the id comes in, the bytes go out, and the path is never in
+        # the response. What the page can address, it cannot enumerate: only ids
+        # the folder manifest or the posted graph already own resolve at all.
+        #
+        # Two resolutions, mirroring the two ID spaces that are really one:
+        #   · a scanned library/DosCo FOLDER — its `.em_resources_manifest.json`
+        #     (the record s3Dgraphy R1 writes and EMTools R4 shares) maps id →
+        #     rel_path. Read as the documented on-disk artefact it is, NOT by
+        #     importing s3dgraphy internals: this handler stays a thin adapter.
+        #     This is also how a HATTED Document previews — its node id IS the FS
+        #     stable id, so adoption pays off here for free.
+        #   · the GRAPH — `api.resolve_resource` (the resolver seam) for a
+        #     LinkNode, which may answer with a local path, an http URL, or s3.
+        #
+        # Only images travel as bytes. Everything else answers with its type and
+        # lets the UI draw a typed placeholder — a "preview" that shipped 40 MB of
+        # point cloud to draw a grey box would be worse than the grey box.
+        _PREVIEW_MAX_BYTES = 6 * 1024 * 1024
+        _MANIFEST_NAME = ".em_resources_manifest.json"
+        #: Longest edge of a generated thumbnail, in pixels (G2). 512 covers a
+        #: retina 52-pixel chip and a larger card without a second size.
+        _THUMB_PX = 512
+
+        def _manifest_rel_path(self, folder, rid):
+            """id → (abs_path, filename, resource_type) from the folder manifest,
+            or None. The path is confined to the folder: a manifest is data, and
+            data does not get to point outside its own directory."""
+            mpath = os.path.join(folder, Handler._MANIFEST_NAME)
+            if not os.path.isfile(mpath):
+                return None
+            try:
+                with open(mpath, encoding="utf-8") as fh:
+                    manifest = json.load(fh)
+            except Exception:
+                return None
+            for entry in manifest.get("entries", []):
+                if entry.get("id") != rid:
+                    continue
+                rel = entry.get("rel_path") or ""
+                full = os.path.realpath(os.path.join(folder, rel))
+                if not full.startswith(os.path.realpath(folder) + os.sep):
+                    return None
+                if not os.path.isfile(full):
+                    return None
+                return full, os.path.basename(full), entry.get("resource_type")
+            return None
+
+        def _resource_preview(self, body):
+            import mimetypes
+
+            rid = body.get("resource_id", "")
+            if not rid:
+                self._fail(400, "resource-preview needs a 'resource_id'")
+                return
+            max_bytes = int(body.get("max_bytes") or Handler._PREVIEW_MAX_BYTES)
+            max_bytes = max(1024, min(max_bytes, 32 * 1024 * 1024))
+            folder = body.get("folder") or ""
+            payload = {"ok": True, "resource_id": rid}
+            local = None
+
+            try:
+                if folder:
+                    hit = self._manifest_rel_path(folder, rid)
+                    if hit:
+                        local, filename, res_type = hit
+                        payload["filename"] = filename
+                        if res_type:
+                            payload["resource_type"] = res_type
+
+                if local is None and body.get("doc") is not None:
+                    if not hasattr(api, "resolve_resource"):
+                        self._fail(501, "resource layer unavailable — s3dgraphy "
+                                        "is out of date")
+                        return
+                    # A document the importer refuses is not a server error: it
+                    # is one row that cannot show a thumbnail. Failing the whole
+                    # request with a 500 would paint a red box over a picture.
+                    try:
+                        graph, warnings = api.load_emjson(body["doc"])
+                    except Exception as exc:
+                        payload["unresolved"] = True
+                        payload["hint"] = f"em.json non leggibile dal bridge: {exc}"
+                        self._json(payload)
+                        return
+                    for w in warnings:
+                        sys.stderr.write(f"  [bridge] warning: {w}\n")
+                    loc = api.resolve_resource(graph, rid) or {}
+                    kind, value = loc.get("kind"), loc.get("value") or ""
+                    if kind == "http_url":
+                        # Remote already: hand back the URL and let the browser
+                        # fetch it — proxying bytes we do not have to touch would
+                        # only add a hop and a copy.
+                        payload["url"] = value
+                        payload["filename"] = os.path.basename(
+                            value.split("?")[0].rstrip("/"))
+                        self._json(payload)
+                        return
+                    if kind == "s3_uri":
+                        url = self._presign_s3(value)
+                        if url:
+                            payload["url"] = url
+                        else:
+                            payload["needs_presign"] = True
+                        payload["filename"] = os.path.basename(value.rstrip("/"))
+                        self._json(payload)
+                        return
+                    if kind in ("local_path", "file_uri") and value:
+                        path = value[7:] if value.startswith("file://") else value
+                        if os.path.isfile(path):
+                            local = path
+                            payload["filename"] = os.path.basename(path)
+
+                if local is None:
+                    payload["unresolved"] = True
+                    payload["hint"] = (
+                        "l'id non risolve: se è una risorsa di cartella, fai "
+                        "prima Scan; se è del grafo, controlla il locator."
+                    )
+                    self._json(payload)
+                    return
+
+                media, _ = mimetypes.guess_type(local)
+                payload["media_type"] = media or "application/octet-stream"
+                size = os.path.getsize(local)
+                payload["bytes"] = size
+                thumb_px = int(body.get("thumb_px") or Handler._THUMB_PX)
+
+                if (media or "").startswith("image/"):
+                    # G2 — with Pillow, a real THUMBNAIL: the resize happens here
+                    # and only the small image travels, so a 7 MB orthophoto costs
+                    # a few tens of kB instead of 9 MB of base64. Without Pillow,
+                    # exactly the previous behaviour.
+                    thumb = self._thumbnail(local, thumb_px)
+                    if thumb is not None:
+                        raw, thumb_media, dims = thumb
+                        payload["media_type"] = thumb_media
+                        payload["thumbnail"] = True
+                        payload["thumb_bytes"] = len(raw)
+                        payload["dimensions"] = list(dims)
+                        payload["data_url"] = (
+                            f"data:{thumb_media};base64,"
+                            + base64.b64encode(raw).decode("ascii"))
+                        self._json(payload)
+                        return
+                    if size > max_bytes:
+                        # No thumbnail and the file is big: the honest answer is
+                        # the size, not a truncated image file that would decode to
+                        # garbage. Two reasons land here and they are not the same
+                        # thing — say which, or the hint sends the user to install
+                        # something they already have.
+                        payload["too_large"] = True
+                        payload["hint"] = (
+                            "il file non è decodificabile come immagine"
+                            if self._has_pillow()
+                            else "installa Pillow nel bridge per avere la "
+                                 "miniatura di immagini grandi")
+                        self._json(payload)
+                        return
+                    with open(local, "rb") as fh:
+                        raw = fh.read()
+                    payload["data_url"] = (
+                        f"data:{payload['media_type']};base64,"
+                        + base64.b64encode(raw).decode("ascii"))
+                    self._json(payload)
+                    return
+
+                if (media or "") == "application/pdf":
+                    # G2 — the first page, if a PDF engine happens to be present.
+                    page = self._pdf_first_page(local, thumb_px)
+                    if page is not None:
+                        raw, page_media = page
+                        payload["media_type"] = page_media
+                        payload["thumbnail"] = True
+                        payload["first_page"] = True
+                        payload["thumb_bytes"] = len(raw)
+                        payload["data_url"] = (
+                            f"data:{page_media};base64,"
+                            + base64.b64encode(raw).decode("ascii"))
+                        self._json(payload)
+                        return
+
+                # Not an image (and no page raster): the type is the preview.
+                payload["no_inline"] = True
+            except Exception as exc:  # pragma: no cover — surface to the UI
+                import traceback
+                traceback.print_exc()
+                self._fail(500, f"resource-preview failed: {exc}")
+                return
+            self._json(payload)
+
+        # ── thumbnails from OPTIONAL engines (G2) ─────────────────────────────
+        # Both of these return None when their library is absent, and the caller
+        # falls back to exactly what it did before. That is the whole contract: a
+        # bridge without Pillow behaves like yesterday's bridge, and one with it
+        # moves LESS data — which is the unusual and pleasant part. A 7 MB
+        # orthophoto used to be refused as "too large"; now it arrives as a ~40 kB
+        # JPEG, so adding the dependency reduces bandwidth instead of adding a
+        # feature at a cost.
+        @staticmethod
+        def _has_pillow():
+            try:
+                import PIL  # noqa: F401
+                return True
+            except ImportError:
+                return False
+
+        def _thumbnail(self, path, max_px):
+            """(bytes, media_type, (w, h)) downscaled with Pillow, or None."""
+            try:
+                from PIL import Image, ImageOps
+            except ImportError:
+                return None
+            try:
+                import io
+                with Image.open(path) as im:
+                    # EXIF orientation applied: a portrait photo from a camera is
+                    # stored landscape with a flag, and ignoring it shows every
+                    # field photo on its side.
+                    im = ImageOps.exif_transpose(im)
+                    im.thumbnail((max_px, max_px))
+                    dims = im.size
+                    buf = io.BytesIO()
+                    # Alpha survives as PNG; everything else becomes JPEG, which
+                    # for a photographic thumbnail is several times smaller.
+                    if im.mode in ("RGBA", "LA", "P"):
+                        im.convert("RGBA").save(buf, format="PNG", optimize=True)
+                        return buf.getvalue(), "image/png", dims
+                    im.convert("RGB").save(buf, format="JPEG", quality=82,
+                                           optimize=True)
+                    return buf.getvalue(), "image/jpeg", dims
+            except Exception as exc:
+                # A file Pillow cannot decode (a TIFF variant, a truncated scan)
+                # is not an error here: the caller draws a typed placeholder.
+                sys.stderr.write(f"  [bridge] thumbnail failed: {exc}\n")
+                return None
+
+        def _pdf_first_page(self, path, max_px):
+            """(bytes, media_type) raster of page 1, or None when no engine is
+            installed. PyMuPDF is tried first (one call), then pdf2image."""
+            try:
+                import fitz  # PyMuPDF
+            except ImportError:
+                fitz = None
+            if fitz is not None:
+                try:
+                    import io
+                    with fitz.open(path) as doc:
+                        if not doc.page_count:
+                            return None
+                        page = doc.load_page(0)
+                        rect = page.rect
+                        longest = max(rect.width, rect.height) or 1
+                        zoom = min(2.0, max_px / longest)
+                        pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
+                        return pix.tobytes("png"), "image/png"
+                except Exception as exc:
+                    sys.stderr.write(f"  [bridge] pdf first page failed: {exc}\n")
+                    return None
+            return None
+
+        def _presign_s3(self, s3_uri):
+            """s3://bucket/key → a temporary http URL, or None when the MinIO
+            extra is not bundled / the store is unreachable. Best effort: a
+            missing signature is a placeholder, not an error."""
+            if not hasattr(api, "presign_minio_resource"):
+                return None
+            rest = s3_uri[5:] if s3_uri.startswith("s3://") else s3_uri
+            key = rest.split("/", 1)[1] if "/" in rest else ""
+            if not key:
+                return None
+            try:
+                return api.presign_minio_resource(key, expires_seconds=3600).get(
+                    "http_url")
+            except Exception:
+                return None
+
         # em.json (JSON body) → GraphML (yEd), downloadable
         def _export_graphml(self, raw):
             try:
@@ -786,7 +1286,8 @@ def main() -> int:
         return 2
     print(f"em_bridge listening on http://{args.host}:{args.port} "
           f"(POST /graphml, /import-graphml, /export-ttl, /resolve-authority, "
-          f"/scan-resources, /list-resources, /resolve-resource, /ingest-minio, "
+          f"/scan-resources, /list-resources, /resolve-resource, "
+          f"/resource-preview, /reproject, /georeference-scene, /ingest-minio, "
           f"/presign, /detach-dtc, /inject-dtc, /bake-dtc; "
           f"GET /health, /resolve-authority) — Ctrl-C to stop")
     try:

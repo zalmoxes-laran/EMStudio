@@ -325,6 +325,72 @@ export function isVirtualType(nodeType: string | undefined): boolean {
   return ancestorsOf(nodeType).some((c) => c.includes("Virtual"));
 }
 
+/**
+ * The narrative embed view types, from the datamodel
+ * (`narrative_nodes.NarrativeNode.valid_view_types`).
+ *
+ * One vocabulary, owned by s3Dgraphy — not a hand-written list that has to be
+ * remembered when a term is renamed. Order is the datamodel's, which is the
+ * order the author sees in the menu.
+ */
+export function narrativeViewTypes(): string[] {
+  const dm = nodeDatamodel as unknown as {
+    narrative_nodes?: Record<string, { valid_view_types?: Record<string, string> }>;
+  };
+  const declared = dm.narrative_nodes?.NarrativeNode?.valid_view_types;
+  return declared ? Object.keys(declared) : [];
+}
+
+/** What the datamodel says a view type shows — straight into the tooltip of the
+ *  block's view-type picker, so the author reads the definition, not a guess. */
+export function narrativeViewTypeDescription(viewType: string): string {
+  const dm = nodeDatamodel as unknown as {
+    narrative_nodes?: Record<string, { valid_view_types?: Record<string, string> }>;
+  };
+  return dm.narrative_nodes?.NarrativeNode?.valid_view_types?.[viewType] ?? "";
+}
+
+// ── resource types (LinkNode) ────────────────────────────────────────────────
+// A resource's *kind* — image, document, 3d_model, … — is a vocabulary the
+// datamodel owns (`reference_nodes.LinkNode.resource_types`: kind → extensions),
+// and it is the same table `s3dgraphy.resources.classify_resource_type` reads on
+// the Python side. So: no second list of extensions in the UI. The previews
+// (N10) and the 3D embed (N9) both ask this.
+const RESOURCE_TYPES: Record<string, string[]> =
+  ((
+    nodeDatamodel as unknown as {
+      reference_nodes?: Record<string, { resource_types?: Record<string, string[]> }>;
+    }
+  ).reference_nodes?.LinkNode?.resource_types) ?? {};
+
+const EXT_TO_RESOURCE_TYPE = new Map<string, string>();
+for (const [kind, exts] of Object.entries(RESOURCE_TYPES))
+  for (const ext of exts) EXT_TO_RESOURCE_TYPE.set(ext.toLowerCase(), kind);
+
+/**
+ * Classify a filename / locator into an EM resource type, by extension.
+ *
+ * Mirrors `classify_resource_type` (s3Dgraphy): the extension table is the
+ * datamodel's, and "unknown" is a legitimate answer rather than a guess. Query
+ * strings and fragments are stripped first — a locator is not a filename.
+ */
+export function resourceTypeOfLocator(locator: string | undefined): string {
+  const clean = String(locator ?? "").split(/[?#]/)[0];
+  const base = clean.split(/[\\/]/).pop() ?? "";
+  if (!base.includes(".")) return "unknown";
+  const ext = base.slice(base.lastIndexOf(".") + 1).toLowerCase();
+  return EXT_TO_RESOURCE_TYPE.get(ext) ?? "unknown";
+}
+
+/** The resource types that are 3D geometry — read off the datamodel's own kind
+ *  names, so a new 3D kind added there is 3D here too. `proxy_model` (glb) and
+ *  `3d_model` (gltf/obj/…) both qualify; point clouds do not (ATON loads meshes
+ *  in the preview app, not e57/las). */
+export function is3dResourceType(resourceType: string | undefined): boolean {
+  const t = String(resourceType ?? "");
+  return Object.keys(RESOURCE_TYPES).includes(t) && /model/.test(t);
+}
+
 /** Union of the node classes (with ancestry) an edge type may connect —
  *  from the datamodel `allowed_connections`. Used to categorise edges
  *  (epoch / paradata / stratigraphic) without hardcoding edge names. */

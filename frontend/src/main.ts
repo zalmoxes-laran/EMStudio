@@ -1,5 +1,6 @@
 import "./style.css";
 import { applyFolding, buildMembership, MEMBERSHIP_EDGES } from "./folding";
+import { setBridgeResolver } from "./geo";
 import { renderInspector } from "./inspector";
 import { narrativesIn, renderNarrativeView } from "./narrative";
 import type { NarrativeEditor } from "./narrative";
@@ -20,6 +21,7 @@ import { buildNodeList } from "./nodelist";
 import { buildOverview } from "./overview";
 import { edgeStyle } from "./palette";
 import { buildPalette, SECTIONS } from "./palette-ui";
+import { createResourceThumb } from "./resource-preview";
 import {
   edgeAt,
   hitAddPhase,
@@ -2350,6 +2352,10 @@ async function bridgeUrl(): Promise<string> {
 const BRIDGE_UNREACHABLE =
   "GraphML transformer not reachable — the local sidecar may still be starting; " +
   "otherwise start it with ./dev.sh (or set EM_TRANSFORMER_URL to a server)";
+// `geo.ts` needs the bridge for reprojection (G1) but must not import main.ts.
+// Endpoint precedence stays owned here, in one place; the geo module is handed
+// the resolver rather than reconstructing it.
+setBridgeResolver(bridgeUrl);
 document.getElementById("btn-graphml")!.addEventListener("click", async () => {
   if (!store) {
     toast("Open a document first");
@@ -2577,6 +2583,11 @@ const setAiKeySave = document.getElementById(
 const setAiKeyClear = document.getElementById(
   "set-ai-key-clear") as HTMLButtonElement;
 const setAiKeyHint = document.getElementById("set-ai-key-hint")!;
+const setAtonBase = document.getElementById(
+  "set-aton-base") as HTMLInputElement;
+const setHeriverseApp = document.getElementById(
+  "set-heriverse-app") as HTMLInputElement;
+const setAtonSceneUrl = document.getElementById("set-aton-scene-url")!;
 
 for (const p of AI_PROVIDERS) {
   const o = document.createElement("option");
@@ -2768,6 +2779,17 @@ function refreshSyncUrlPreview(): void {
   const port = setPortInp.value.trim() || "8788";
   setUrlOut.textContent = `${proto}://${host}:${port}`;
 }
+// A worked example of the address being built, so a typo shows up here rather
+// than as an empty frame inside a chapter.
+function refreshAtonUrlPreview(): void {
+  const root = setAtonBase.value.trim().replace(/\/+$/, "");
+  const app = setHeriverseApp.value.trim().replace(/^\/+|\/+$/g, "")
+    || "a/heriverse";
+  setAtonSceneUrl.textContent = root
+    ? `${root}/${app}/?scene=<id>`
+    : "— nessun server: i blocchi 3D lo diranno";
+}
+
 function openSettings(): void {
   const s = getSettings();
   setToolSel.value = s.sync.tool;
@@ -2779,8 +2801,11 @@ function openSettings(): void {
   setAiProvider.value = s.ai.provider;
   setAiModel.value = s.ai.model;
   setAiKey.value = "";
+  setAtonBase.value = s.viewer.atonBase;
+  setHeriverseApp.value = s.viewer.heriverseApp;
   void refreshAiKeyState();
   refreshSyncUrlPreview();
+  refreshAtonUrlPreview();
   settingsModal.classList.remove("hidden");
 }
 function closeSettings(): void {
@@ -2788,6 +2813,8 @@ function closeSettings(): void {
 }
 for (const el of [setProtoSel, setHostInp, setPortInp])
   el.addEventListener("input", refreshSyncUrlPreview);
+for (const el of [setAtonBase, setHeriverseApp])
+  el.addEventListener("input", refreshAtonUrlPreview);
 (document.getElementById("btn-settings") as HTMLButtonElement).addEventListener(
   "click",
   openSettings,
@@ -2823,10 +2850,17 @@ settingsModal.addEventListener("click", (e) => {
       provider: setAiProvider.value || "claude",
       model: setAiModel.value.trim(),
     },
+    viewer: {
+      atonBase: setAtonBase.value.trim().replace(/\/+$/, ""),
+      heriverseApp:
+        setHeriverseApp.value.trim().replace(/^\/+|\/+$/g, "") || "a/heriverse",
+    },
   };
   saveSettings(next);
   closeSettings();
   refreshInspector(); // reflect the UUID-visibility toggle immediately
+  // A narrative on screen may hold 3D blocks that were waiting for exactly this.
+  refreshNarrativeView();
   toast(
     sync.connected
       ? "Sync settings saved — reconnect to apply"
@@ -2888,6 +2922,41 @@ function closeResources(): void {
   resourcesModal.classList.add("hidden");
 }
 
+// ── previews (N10) ────────────────────────────────────────────────────────────
+// Every asset row carries its own preview, lazily: the thumbnail fetches only
+// when the row is scrolled into view, addressed by the resource's STABLE ID (the
+// bridge resolves it through the folder manifest or the graph's resolver — the
+// page never sees a filesystem path). See `resource-preview.ts`.
+//
+// The folder is passed whenever the user has set one, because the FS manifest and
+// the graph share ONE id space: a hatted Document adopted its FS stable id, so it
+// previews from the same manifest the Shelf uses, with no extra machinery.
+function previewFolder(): string | undefined {
+  return resFolderInp.value.trim() || undefined;
+}
+
+/** A row: preview · label(+badges) · actions. */
+function resRow(thumb: HTMLElement | null, label: string,
+                sub?: string): { row: HTMLElement; main: HTMLElement } {
+  const row = document.createElement("div");
+  row.className = "res-row";
+  if (thumb) row.appendChild(thumb);
+  const main = document.createElement("div");
+  main.className = "res-row-main";
+  const title = document.createElement("span");
+  title.className = "res-row-title";
+  title.textContent = label;
+  main.appendChild(title);
+  if (sub) {
+    const s = document.createElement("span");
+    s.className = "res-row-sub";
+    s.textContent = sub;
+    main.appendChild(s);
+  }
+  row.appendChild(main);
+  return { row, main };
+}
+
 function renderResDocuments(): void {
   if (!store) return;
   const docs = store.doc.graph.nodes.filter(
@@ -2899,12 +2968,22 @@ function renderResDocuments(): void {
     resDocs.innerHTML = `<div class="res-empty">— no documents yet</div>`;
     return;
   }
+  const docJson = JSON.parse(store.toJSON());
   for (const d of docs) {
-    const row = document.createElement("div");
-    row.className = "res-row";
-    const label = document.createElement("span");
-    label.textContent = String(d.name || d.id.slice(0, 8));
-    row.appendChild(label);
+    const data = (d.data ?? {}) as Record<string, unknown>;
+    const locator = typeof data.url === "string" ? data.url : undefined;
+    const label = String(d.name || d.id.slice(0, 8));
+    const thumb = createResourceThumb({
+      resourceId: d.id,
+      folder: previewFolder(),
+      doc: docJson,
+      bridge: bridgeUrl,
+      declaredType: typeof data.resource_type === "string"
+        ? data.resource_type : undefined,
+      locator,
+      label,
+    });
+    const { row } = resRow(thumb, label);
     resDocs.appendChild(row);
   }
 }
@@ -2919,11 +2998,16 @@ function renderResShelf(): void {
     return;
   }
   for (const e of resLastShelf) {
-    const row = document.createElement("div");
-    row.className = "res-row";
-    const label = document.createElement("span");
-    label.textContent = `${e.filename}  ·  ${e.key_id}`;
-    row.appendChild(label);
+    // A Shelf entry is not (yet) a graph node, so its preview resolves through
+    // the FOLDER manifest alone — no em.json needs to travel per row.
+    const thumb = createResourceThumb({
+      resourceId: e.resource_id,
+      folder: previewFolder(),
+      bridge: bridgeUrl,
+      locator: e.filename,
+      label: e.filename,
+    });
+    const { row } = resRow(thumb, e.filename, e.key_id);
     const btn = document.createElement("button");
     btn.textContent = "→ Document";
     btn.title =
@@ -3018,12 +3102,22 @@ async function renderResLinks(): Promise<void> {
     resLinks.innerHTML = `<div class="res-empty">— no resources yet</div>`;
     return;
   }
+  const docJson = JSON.parse(store.toJSON());
   for (const r of rows) {
-    const row = document.createElement("div");
-    row.className = "res-row";
-    const label = document.createElement("span");
-    label.textContent = `${r.name || r.id.slice(0, 8)}  ·  ${r.kind}`;
-    row.appendChild(label);
+    const node = store.node(r.id);
+    const data = (node?.data ?? {}) as Record<string, unknown>;
+    const label = String(r.name || r.id.slice(0, 8));
+    const thumb = createResourceThumb({
+      resourceId: r.id,
+      folder: previewFolder(),
+      doc: docJson,
+      bridge: bridgeUrl,
+      declaredType: typeof data.resource_type === "string"
+        ? data.resource_type : undefined,
+      locator: r.locator,
+      label,
+    });
+    const { row } = resRow(thumb, label, r.kind);
     // Promote is offered only for LOCAL resources (a path we can upload);
     // already-remote (s3/http) resources have nothing to push.
     if (r.kind === "local_path" || r.kind === "file_uri") {

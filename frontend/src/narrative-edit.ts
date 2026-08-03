@@ -14,6 +14,7 @@
  */
 
 import type { DocumentStore } from "./model";
+import { narrativeViewTypes } from "./rules";
 import type { EmNode } from "./types";
 
 export interface EditableBlock {
@@ -31,22 +32,31 @@ export interface EditableChapter {
   blocks?: EditableBlock[];
 }
 
-/** The view types a user may choose from. Mirrors `NARRATIVE_VIEW_TYPES` in
- *  s3Dgraphy (`nodes/narrative_node.py`) — one vocabulary, and the datamodel
- *  owns it. */
-export const VIEW_TYPES = [
-  "matrix",
-  "epoch3d",
-  "us",
-  "rm",
-  "document",
-  "source",
-  "paradata",
-  "map",
-  "timeline",
-  "table",
-  "un_scene",
-] as const;
+/**
+ * The view types a user may choose from — READ FROM THE DATAMODEL.
+ *
+ * It used to be a hand-written copy of `NARRATIVE_VIEW_TYPES` (s3Dgraphy
+ * `nodes/narrative_node.py`) with a comment promising the datamodel owned it.
+ * The `epoch3d` → `scene3d` rename (G1) showed what that promise was worth: the
+ * vocabulary had to be edited in two places, and a stale copy here would have
+ * offered the author a term the model no longer accepts. It is now derived from
+ * the vendored `narrative_nodes.NarrativeNode.valid_view_types` (ADR-001 §1), so
+ * adding or renaming a term is one edit in s3Dgraphy plus `sync-datamodels.sh`.
+ */
+export const VIEW_TYPES: readonly string[] = narrativeViewTypes();
+
+/** Retired spellings → current name. Mirrors `NARRATIVE_VIEW_TYPE_ALIASES` in
+ *  s3Dgraphy: a narrative saved before the rename must still render, and be
+ *  written back under the current name. Read-tolerant, write-canonical. */
+const VIEW_TYPE_ALIASES: Record<string, string> = {
+  epoch3d: "scene3d",
+};
+
+/** The current name of a view type, translating retired spellings. */
+export function canonicalViewType(viewType: string | undefined): string {
+  const v = viewType ?? "";
+  return VIEW_TYPE_ALIASES[v] ?? v;
+}
 
 /**
  * The view a node gets when it is dropped in, before the author says otherwise.
