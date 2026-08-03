@@ -146,6 +146,44 @@ def _exit_when_orphaned(poll: float = 1.0) -> None:
     threading.Thread(target=_watch, daemon=True).start()
 
 
+def _ensure_proj_data() -> None:
+    """Point PROJ at its data directory when running FROZEN, if it needs help.
+
+    pyproj bundles PROJ inside its wheel and finds `proj_dir/share/proj` next to
+    its own package — which works in a PyInstaller build too, because
+    pyinstaller-hooks-contrib's `hook-pyproj` collects that directory. This is the
+    belt for the cases the hook cannot predict: an old hooks-contrib, or a
+    repackaged pyproj (Conda, Debian) that de-vendors the data elsewhere.
+
+    Two properties matter here. It **does not import pyproj** — that import is
+    lazy on purpose, and paying ~1 s of cold start on every launch to check a
+    directory would undo the reason it is lazy. And it **never overrides** a
+    PROJ_DATA the operator set deliberately.
+
+    Failure mode without this, when it is needed: reprojection works in dev and
+    fails only in the packaged app, with a PROJ error about missing datum grids —
+    the worst kind of difference to debug remotely. `docs/DEVELOPMENT.md` has the
+    post-build verification step that catches it.
+    """
+    if not getattr(sys, "frozen", False):
+        return
+    if os.environ.get("PROJ_DATA") or os.environ.get("PROJ_LIB"):
+        return
+    base = getattr(sys, "_MEIPASS", None) or os.path.dirname(sys.executable)
+    for rel in (
+        os.path.join("pyproj", "proj_dir", "share", "proj"),  # pip wheel layout
+        os.path.join("share", "proj"),                        # de-vendored (hook)
+        os.path.join("Library", "share", "proj"),             # de-vendored, Windows
+    ):
+        candidate = os.path.join(base, rel)
+        # proj.db is the file PROJ actually needs; a directory without it would
+        # be a worse answer than leaving the variable unset.
+        if os.path.isfile(os.path.join(candidate, "proj.db")):
+            os.environ["PROJ_DATA"] = candidate
+            os.environ.setdefault("PROJ_LIB", candidate)  # PROJ < 9 reads this
+            return
+
+
 def _load_s3dgraphy(s3dgraphy_src: "pathlib.Path | None"):
     """Put s3dgraphy on sys.path and return its access-API surface module
     (``s3dgraphy.api``, P1-F). All endpoints drive this surface — the bridge is
@@ -1250,6 +1288,8 @@ def main() -> int:
 
     if args.exit_with_parent:
         _exit_when_orphaned()
+
+    _ensure_proj_data()
 
     try:
         api = _load_s3dgraphy(args.s3dgraphy)

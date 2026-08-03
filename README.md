@@ -55,8 +55,17 @@ cargo install tauri-cli --locked   # first time only
 cd frontend && npm install         # first time only
 cd ../apps/desktop
 cargo tauri dev                    # run (dev, live reload)
+./build-bridge.sh                  # the Python sidecar, before packaging
 cargo tauri build                  # → .app / .dmg bundle to install
 ```
+
+The distributable app carries a frozen Python **sidecar** (`em-bridge`) that
+answers GraphML export, resource previews and coordinate reprojection. It is
+per-platform and per-architecture (PyInstaller does not cross-compile), and the
+reprojection needs pyproj's PROJ data inside the bundle — so building for
+macOS/Windows/Linux has a few real prerequisites and one verification step worth
+running. All of it: **[`docs/DEVELOPMENT.md` § Packaging the desktop
+app](docs/DEVELOPMENT.md#packaging-the-desktop-app-macos--windows--linux)**.
 
 **B. Zero-install browser file.** One self-contained HTML, works offline:
 
