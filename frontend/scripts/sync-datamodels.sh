@@ -62,9 +62,56 @@ mkdir -p "$DST/icons2d"
 # vector (`icons.ts::asset` tries .svg before .png) and there was simply nothing to
 # prefer. `nullglob` because a checkout may legitimately have one kind and not the
 # other, and an unmatched glob must not copy a literal `*.svg`.
-shopt -s nullglob
-cp "$CFG"/src/2D/*.png "$DST/icons2d/" 2>/dev/null || true
-cp "$CFG"/src/2D/*.svg "$DST/icons2d/" 2>/dev/null || true
+# Vendor the 2D icons — but only the ones the renderer can actually REACH.
+#
+# Every vendored byte is inlined as a data URL by the single-file build, so an
+# unreachable asset is pure bundle weight. Two conditions, both facts rather than
+# guesses (a size threshold would guess):
+#
+#  1. **A raster shadowed by its own vector is skipped.** `icons.ts::asset` tries
+#     `.svg` before `.png`, so a PNG beside its own SVG can never be reached. 16
+#     of them, 2.5 MB — including `SE.png` (1.3 MB) and `EMNarrative.png` (1.2 MB),
+#     which are illustrations rather than icons.
+#  2. **A basename that neither names a node type nor is declared by one is
+#     skipped.** Those are exactly `icons.ts`'s two lookup paths (name first, then
+#     the `em_visual_rules` declaration), plus its spelled-out aliases. Anything
+#     else is unreferenced artwork: today `EMNarrative.*` alone, 2.2 MB.
+#
+# Both rules are computed FROM the rules file, so adding an icon and declaring it
+# is enough — this script needs no edit.
+python3 - "$CFG" "$DST" <<'PYEOF'
+import json, pathlib, shutil, sys
+
+cfg, dst = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+styles = json.loads((cfg / "em_visual_rules.json").read_text())["node_styles"]
+
+reachable = set(styles)                       # named after a node type
+for style in styles.values():                 # or declared by one
+    if not isinstance(style, dict):
+        continue
+    for key in ("2d_file_vect", "2d_file_rast", "file_2d"):
+        path = style.get(key)
+        if isinstance(path, str):
+            reachable.add(pathlib.PurePath(path).stem)
+# Sharing that icons.ts spells out in FILE_ALIAS (BR → continuity, serUSVn/s →
+# serUSV): declared nowhere, deliberate all the same.
+reachable |= {"continuity", "serUSV"}
+
+src = cfg / "src/2D"
+out = dst / "icons2d"
+out.mkdir(parents=True, exist_ok=True)
+copied = skipped = 0
+for f in sorted(src.iterdir()):
+    if f.suffix.lower() not in (".svg", ".png"):
+        continue
+    shadowed = f.suffix.lower() == ".png" and (src / f"{f.stem}.svg").is_file()
+    if f.stem not in reachable or shadowed:
+        skipped += 1
+        continue
+    shutil.copy2(f, out / f.name)
+    copied += 1
+print(f"  icons2d          {copied} vendored, {skipped} unreachable/shadowed")
+PYEOF
 
 # The 2017 DTC glyphs. They live in s3Dgraphy — the single source — under
 # `src/2D/dtc/`, and `em_visual_rules.dtc_kinds[*].glyph` names them WITHOUT an

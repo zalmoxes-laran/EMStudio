@@ -695,8 +695,27 @@ export function render(
     }
 
     if (icon) {
-      const ih = Math.min(n.h, 30);
-      const iw = (icon.naturalWidth / icon.naturalHeight) * ih;
+      // POL2 · the icon is FITTED to the node box, preserving its aspect ratio.
+      //
+      // It used to be sized from the height alone (`min(n.h, 30)`) and the width
+      // left to follow — so a wide glyph in a narrow box spilled past the border
+      // and read as off-centre (E.D. saw it on `document_01`). Constraining both
+      // axes and taking the smaller scale is the standard "contain" fit: the icon
+      // never overflows, and because both axes shrink together it is never
+      // stretched either.
+      //
+      // NOTE (follow-up, not done here): the deeper ask was for the node BOX to
+      // take the icon's proportions — same height everywhere, width = height ×
+      // aspect. That is a LAYOUT change, not a drawing one: `n.w`/`n.h` come from
+      // em-core, they are what hit-testing and edge routing use, and node sizes
+      // sit under the determinism contract (invariant 7, the 8 layout tests).
+      // Doing it in the renderer alone would draw a box that clicks do not match.
+      const aspect = icon.naturalWidth / Math.max(1, icon.naturalHeight);
+      const maxH = Math.min(n.h, 30);
+      const maxW = n.w;
+      const scale = Math.min(maxH, maxW / aspect);
+      const ih = scale;
+      const iw = scale * aspect;
       const ix = n.x + n.w / 2 - iw / 2;
       const iy = n.y + n.h / 2 - ih / 2;
       ctx.drawImage(icon, ix, iy, iw, ih);
