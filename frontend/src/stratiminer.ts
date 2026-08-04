@@ -26,6 +26,19 @@
  * Both end at the same field: a path to em_data.xlsx, and one button that
  * converts it.
  *
+ * **The panel asks the question first (POL3).** The steps used to be numbered
+ * 1 · 2 · 3 as if everyone had to walk all three, so a user who already had a
+ * table met two AI-shaped steps before the one they needed — and the fact that
+ * the AI is *optional* was invisible. Now the first thing on screen is «how do
+ * you have the table?», with two answers that converge on one **Graph creator**:
+ *
+ *     by hand ────────────────────┐
+ *                                 ├──► em_data.xlsx ──► Graph creator ──► em.json
+ *     a folder of sources ─(AI)───┘
+ *
+ * A relabel and a reorder of the pieces that were already here: the extract, the
+ * prompt and the transform calls are untouched.
+ *
  * Why this is a panel and not a modal: the source folder and the table are
  * things you come back to across a working session — a modal would make the
  * pipeline feel like a one-shot import, which is exactly the reading the
@@ -80,6 +93,15 @@ export interface ImportResult {
  *  source folder is per-investigation, and silently reopening last week's path
  *  would be a worse default than an empty field. */
 export interface StratiMinerState {
+  /**
+   * Which answer to «how do you have the table?» is open (POL3).
+   *
+   * `manual` is the default because it is the honest one: the deterministic half
+   * is the tool, the AI half is an assistant for when the sources are a mess.
+   * Opening on the AI panel would suggest the model is a step you have to go
+   * through — the exact reading the intermediate table exists to prevent.
+   */
+  source: "manual" | "ai";
   folder: string;
   xlsxPath: string;
   language: string;
@@ -99,11 +121,13 @@ export interface StratiMinerState {
 }
 
 export function initialState(): StratiMinerState {
-  return { folder: "", xlsxPath: "", language: "", busy: "", report: "",
-           warnings: [], promptFallback: "" };
+  return { source: "manual", folder: "", xlsxPath: "", language: "", busy: "",
+           report: "", warnings: [], promptFallback: "" };
 }
 
 export interface StratiMinerHandlers {
+  /** Which answer to «how do you have the table?» the user picked (POL3). */
+  onSourceChange(value: "manual" | "ai"): void;
   onFolderChange(value: string): void;
   onXlsxChange(value: string): void;
   onLanguageChange(value: string): void;
@@ -132,17 +156,15 @@ function esc(s: string): string {
  * handful of fields, and a diffing scheme here would be more code than the
  * thing it optimises.
  *
- * **EMTree seam.** EMStudio is mono-graph today, so the produced document is
- * loaded the way Open… loads one — it replaces the current document. When the
- * EMTree workspace arrives (a multi-graph tab modelled on EMtools'
- * `em_tools.graphml_files` slots plus per-graph `auxiliary_files`), the produced
- * em.json should instead register as a NEW slot, carrying the source folder and
- * the em_data.xlsx as its two auxiliary files: they are what the graph was made
- * from, which is exactly what an aux file records. That is not built here on
- * purpose — inventing a second multi-graph model now, to be replaced when the
- * real one lands, is worse than one seam marked in the place that will need it.
- * The `sm-todo` line below says the same thing to the user, so the current
- * behaviour is not a surprise.
+ * **EMTree seam.** Half done, and the half that is done needed no code here: the
+ * produced document goes through `loadDocument`, which since ET1 registers every
+ * incoming graph as a workspace SLOT — so a StratiMiner run now opens beside the
+ * graphs you had open instead of replacing them. What is still missing is the
+ * other half: carrying the source folder and the em_data.xlsx along as the new
+ * slot's two `auxiliaryFiles`. They are what the graph was made from, which is
+ * exactly what an aux file records, but an aux file is only meaningful once the
+ * mapping and the bake exist (ET2). The `sm-todo` line below tells the user the
+ * same thing, so neither the current behaviour nor the gap is a surprise.
  */
 export function renderStratiMiner(host: HTMLElement, state: StratiMinerState,
                                   handlers: StratiMinerHandlers,
@@ -152,59 +174,86 @@ export function renderStratiMiner(host: HTMLElement, state: StratiMinerState,
   const canPrompt = state.folder.trim() !== "" && !busy;
   const canTransform = state.xlsxPath.trim() !== "" && !busy;
 
+  const ai = state.source === "ai";
+
   host.innerHTML = `
     <div class="sm-panel">
       <p class="sm-intro">
-        Build a graph from unstructured sources. The AI writes only the
-        <b>table</b> — <code>em_data.xlsx</code> — which you can open and check;
-        turning the table into a graph is a separate, deterministic step.
+        A graph is built from a <b>table</b> — <code>em_data.xlsx</code> — that
+        you can open and check. Where the table comes from is up to you; the AI,
+        when you use it, writes only the table and never the graph.
       </p>
 
-      <h4>1 · Source folder</h4>
-      <div class="sm-row">
-        <input id="sm-folder" type="text" spellcheck="false"
-               placeholder="/path/to/documents"
-               value="${esc(state.folder)}" />
-        <button id="sm-pick-folder" title="Choose a folder">…</button>
-        <!-- The BROWSER picker cannot give an absolute path (see onPickFolder):
-             it is a hidden input that fills in what it can, and the hint below
-             says so. On desktop the native dialog gives the real path. -->
-        <input id="sm-folder-file" type="file" webkitdirectory
-               class="sm-hidden-file" />
-      </div>
-      ${opts.native ? "" : `<span class="sm-hint">${
-        esc(t("stratiminer.browserPathHint"))}</span>`}
-      <label class="sm-lang">
-        Output language
-        <input id="sm-language" type="text" spellcheck="false"
-               placeholder="(each document's own)"
-               value="${esc(state.language)}" />
-      </label>
-
-      <h4>2 · Produce the table</h4>
-      <div class="sm-paths">
-        <div class="sm-path">
-          <button id="sm-extract" ${canExtract ? "" : "disabled"}>
-            ${state.busy === "extract" ? "Extracting…" : "Generate em_data.xlsx (AI)"}
-          </button>
-          <span class="sm-hint">
-            The bridge calls a frontier model and writes the workbook. Reads
-            text files, and PDFs when the <code>[pdf]</code> extra is
-            installed; it always lists which files it could not read, and why.
-          </span>
-        </div>
-        <div class="sm-path">
-          <button id="sm-prompt" ${canPrompt ? "" : "disabled"}>
-            ${state.busy === "prompt" ? "Copying…" : "Copy prompt for Cowork"}
-          </button>
-          <span class="sm-hint">
-            Run it in a session that can read the folder, then set the path
-            below. The answer for scans and anything Path A reports as unread.
-          </span>
-        </div>
+      <h4>How do you have the em_data.xlsx table?</h4>
+      <div class="sm-choice">
+        <label class="sm-opt${ai ? "" : " active"}">
+          <input type="radio" name="sm-source" value="manual"
+                 ${ai ? "" : "checked"} />
+          <span>I make it by hand</span>
+        </label>
+        <label class="sm-opt${ai ? " active" : ""}">
+          <input type="radio" name="sm-source" value="ai" ${ai ? "checked" : ""} />
+          <span>I generate it with the AI, from messy data</span>
+        </label>
       </div>
 
-      <h4>3 · Table → graph</h4>
+      ${ai ? `
+      <div class="sm-branch">
+        <h5>Source folder</h5>
+        <div class="sm-row">
+          <input id="sm-folder" type="text" spellcheck="false"
+                 placeholder="/path/to/documents"
+                 value="${esc(state.folder)}" />
+          <button id="sm-pick-folder" title="Choose a folder">…</button>
+          <!-- The BROWSER picker cannot give an absolute path (see onPickFolder):
+               it is a hidden input that fills in what it can, and the hint below
+               says so. On desktop the native dialog gives the real path. -->
+          <input id="sm-folder-file" type="file" webkitdirectory
+                 class="sm-hidden-file" />
+        </div>
+        ${opts.native ? "" : `<span class="sm-hint">${
+          esc(t("stratiminer.browserPathHint"))}</span>`}
+        <label class="sm-lang">
+          Output language
+          <input id="sm-language" type="text" spellcheck="false"
+                 placeholder="(each document's own)"
+                 value="${esc(state.language)}" />
+        </label>
+        <div class="sm-paths">
+          <div class="sm-path">
+            <button id="sm-extract" ${canExtract ? "" : "disabled"}>
+              ${state.busy === "extract" ? "Extracting…" : "Generate em_data.xlsx (AI)"}
+            </button>
+            <span class="sm-hint">
+              The bridge calls a frontier model and writes the workbook. Reads
+              text files, and PDFs when the <code>[pdf]</code> extra is
+              installed; it always lists which files it could not read, and why.
+            </span>
+          </div>
+          <div class="sm-path">
+            <button id="sm-prompt" ${canPrompt ? "" : "disabled"}>
+              ${state.busy === "prompt" ? "Copying…" : "Copy prompt for Cowork"}
+            </button>
+            <span class="sm-hint">
+              Run it in a session that can read the folder, then set the path
+              below. The answer for scans and anything the API path reports as
+              unread.
+            </span>
+          </div>
+        </div>
+        <span class="sm-hint">
+          The table it writes lands in the Graph creator below — review it first.
+        </span>
+      </div>` : `
+      <div class="sm-branch">
+        <span class="sm-hint">
+          Fill in the sheets yourself (units, epochs, claims) and point the Graph
+          creator at the file. Nothing else is needed: the conversion below is
+          the same one the AI path ends with.
+        </span>
+      </div>`}
+
+      <h4>Graph creator · em_data.xlsx → em.json</h4>
       <div class="sm-row">
         <input id="sm-xlsx" type="text" spellcheck="false"
                placeholder="/path/to/em_data.xlsx"
@@ -242,9 +291,9 @@ export function renderStratiMiner(host: HTMLElement, state: StratiMinerState,
       : ""}
 
       <p class="sm-todo">
-        The produced graph replaces the current document. Registering it as an
-        EMTree slot — with the folder and the table as auxiliary files — waits
-        for the EMTree workspace.
+        The produced graph opens as a new graph in the workspace (EMTree), beside
+        whatever you already had open. Attaching the source folder and the table
+        to it as auxiliary files still waits for the aux mapping.
       </p>
     </div>`;
 
@@ -254,6 +303,17 @@ export function renderStratiMiner(host: HTMLElement, state: StratiMinerState,
     if (el) el.addEventListener(ev, () => fn(el));
   };
 
+  // The two answers to «how do you have the table?» (POL3). Radios rather than
+  // two toggle buttons: they are mutually exclusive, and a radio group is the one
+  // control that says so to the keyboard and to a screen reader without extra work.
+  host.querySelectorAll<HTMLInputElement>('input[name="sm-source"]').forEach(
+    (radio) => radio.addEventListener("change", () => {
+      if (radio.checked)
+        handlers.onSourceChange(radio.value === "ai" ? "ai" : "manual");
+    }),
+  );
+  // Only the AI branch renders the folder/extract/prompt controls; `on` is a
+  // no-op when the element is absent, so the manual branch needs no special case.
   on<HTMLInputElement>("sm-folder", "change",
     (el) => handlers.onFolderChange(el.value));
   on<HTMLInputElement>("sm-xlsx", "change",

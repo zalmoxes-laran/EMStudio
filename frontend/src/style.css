@@ -1390,6 +1390,16 @@ body.sync-active #footer-brand #em-version {
 .ver-pop .ver-row span {
   color: #46505c;
 }
+/* a linked ontology (POL3): underlined on hover only, so the list still reads as
+   a table of versions and not as a page of links */
+.ver-pop .ver-row a.ver-link {
+  color: #46505c;
+  text-decoration: none;
+}
+.ver-pop .ver-row a.ver-link:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
 
 .pal-icon {
   width: 26px;
@@ -1620,6 +1630,13 @@ body.sync-active #footer-brand #em-version {
 
 #canvas.placing {
   cursor: crosshair;
+}
+
+/* palette item dragged over the canvas (DND1) — the drag image is the browser's,
+   so the only feedback we can give is on the target itself */
+#canvas.drop-target {
+  outline: 2px dashed var(--accent);
+  outline-offset: -3px;
 }
 
 #canvas.connecting {
@@ -2793,10 +2810,12 @@ body.sync-active #footer-brand #em-version {
 
 /* ── StratiMiner panel ──────────────────────────────────────────────────────
    Sits beside Inspector/Nodes/Log, so it inherits their scroll + padding
-   behaviour rather than defining its own. The three numbered steps are visually
-   separated because the ORDER is the feature: sources, then the reviewable
-   table, then the graph. A layout that let step 3 look reachable before step 2
-   would undo the reason the intermediate table exists. */
+   behaviour rather than defining its own.
+
+   POL3 reshaped this from three numbered steps into a QUESTION with two answers
+   converging on one Graph creator. The order is still the feature — the table
+   exists to be reviewed before it becomes a graph — but the numbering implied
+   all three steps were compulsory, which made the optional AI look mandatory. */
 #stratiminer {
   flex: 1;
   overflow-y: auto;
@@ -2819,6 +2838,51 @@ body.sync-active #footer-brand #em-version {
   color: #6b7684;
   border-bottom: 1px solid var(--border);
   padding-bottom: 3px;
+}
+
+/* The two answers, equal in weight (POL3): by hand is not a lesser way of having
+   a table, and the AI is not the default route through the panel. */
+.sm-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.sm-opt {
+  display: flex;
+  gap: 7px;
+  align-items: center;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.sm-opt:hover {
+  border-color: var(--accent);
+}
+
+.sm-opt.active {
+  border-color: var(--accent);
+  background: #f0f6ff;
+  font-weight: 600;
+}
+
+/* The chosen branch, indented under the question so it reads as its answer and
+   not as a fourth step. */
+.sm-branch {
+  margin: 0 0 4px 2px;
+  padding-left: 9px;
+  border-left: 2px solid var(--border);
+}
+
+.sm-branch h5 {
+  margin: 8px 0 4px;
+  font-size: 11px;
+  color: #6b7684;
+  font-weight: 600;
 }
 
 .sm-row {

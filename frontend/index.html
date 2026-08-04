@@ -256,6 +256,22 @@
               ><span data-i18n="settings.language">Language</span>
               <select id="set-language"></select>
             </label>
+            <!-- POL3: validation is an ACT, and it belongs where the reading
+                 happens. Hidden for a language already validated in the source
+                 (en/it) — there is nothing to tick. -->
+            <label class="settings-check hidden" id="set-lang-validate-row">
+              <input id="set-lang-validate" type="checkbox" />
+              <span data-i18n="settings.markValidated"
+                >I have read this translation — mark it validated</span
+              >
+            </label>
+            <p
+              class="settings-hint hidden"
+              id="set-lang-validate-hint"
+              data-i18n="settings.markValidatedHint"
+            >
+              Turns off the “AI draft” badge on this computer.
+            </p>
           </section>
           <section class="settings-sect">
             <h4 data-i18n="settings.liveSync">Live sync</h4>

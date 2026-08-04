@@ -100,8 +100,19 @@ export function emptyViewState(view: ViewKind = "matrix"): SlotViewState {
 /** One open graph. */
 export interface GraphSlot {
   id: string;
-  /** Shown in the tree. Derived from the document, or the file name. */
-  name: string;
+  /**
+   * FALLBACK label, used only while the document declares no `graph.name`
+   * (POL3). The name shown in the tree is `slotLabel(slot)` — read from the
+   * document — because the graph's name has exactly one home.
+   *
+   * Before, the slot carried its own `name` and renaming a row edited only that:
+   * the Inspector's "Graph · dataset info" kept showing the old name, and the two
+   * drifted apart with nothing to reconcile them. The earlier reasoning (a tab
+   * label is not the document's name, so two copies of one graph can be told
+   * apart) lost to the thing users actually do: they rename the graph, in
+   * whichever of the two places they happen to be looking at.
+   */
+  fallbackName: string;
   /** Absolute path on desktop; null for a browser drop or a new graph. */
   path: string | null;
   /**
@@ -111,6 +122,21 @@ export interface GraphSlot {
   store: DocumentStore;
   auxiliaryFiles: AuxiliaryFile[];
   viewState: SlotViewState;
+}
+
+/**
+ * The name of the graph in a slot — **the document is the single source** (POL3).
+ *
+ * A function and not a stored field on purpose: a stored copy is a thing that can
+ * be stale, and this one was. Everything that shows a graph's name (the tree, the
+ * unsaved-changes prompt, the window title) goes through here, so there is no
+ * second place to forget to update.
+ */
+export function slotLabel(slot: GraphSlot): string {
+  const declared = String(
+    (slot.store.doc.graph as Record<string, unknown>)["name"] ?? "",
+  ).trim();
+  return declared || slot.fallbackName;
 }
 
 /** The workspace. Pure state + queries; it renders nothing and touches no DOM. */
@@ -146,7 +172,7 @@ export class EMTree {
   add(store: DocumentStore, name: string, path: string | null = null): GraphSlot {
     const slot: GraphSlot = {
       id: crypto.randomUUID(),
-      name: this.uniqueName(name || "untitled"),
+      fallbackName: name || "untitled",
       path,
       store,
       auxiliaryFiles: [],
@@ -184,24 +210,21 @@ export class EMTree {
   }
 
   /**
-   * Disambiguate a name against the slots already open.
+   * Rename the graph in a slot. Writes the DOCUMENT, which is the only place the
+   * name lives (POL3) — so the Inspector's Name field shows it immediately, and
+   * so a rename is a document edit that has to be saved, like any other.
    *
-   * Two "New graph" in a row produced two rows reading `untitled graph`, with no
-   * way to tell which one the canvas was showing — the list stops being a list.
-   * Done here rather than at the call site because every caller can collide:
-   * two files of the same name from different folders do too.
+   * Empty input keeps the current name; an unchanged name is a **no-op**, not a
+   * rewrite: `updateGraphMeta` checkpoints and marks the document dirty, and
+   * pressing Escape out of the inline editor must not do either of those.
    */
-  private uniqueName(name: string): string {
-    if (!this.slots.some((s) => s.name === name)) return name;
-    for (let n = 2; ; n += 1) {
-      const candidate = `${name} ${n}`;
-      if (!this.slots.some((s) => s.name === candidate)) return candidate;
-    }
-  }
-
   rename(id: string, name: string): void {
     const slot = this.get(id);
-    if (slot) slot.name = name.trim() || slot.name;
+    if (!slot) return;
+    const next = name.trim();
+    if (!next || next === slotLabel(slot)) return;
+    slot.fallbackName = next; // stays in step for a doc that declares no name
+    slot.store.updateGraphMeta({ name: next });
   }
 
   /** Any slot with unsaved changes? Used before a destructive action. */
@@ -236,7 +259,22 @@ function esc(s: string): string {
 export function renderEMTree(host: HTMLElement, tree: EMTree,
                              handlers: EMTreeHandlers,
                              labels: (key: string) => string): void {
-  const rows = tree.slots.map((slot) => {
+  // Two graphs can legitimately carry the same name (two copies of one dataset,
+  // or two "untitled graph" from two News). The list still has to be a list, so
+  // the ambiguity is resolved HERE, at draw time, and never stored: a suffix
+  // computed from the current slots cannot go stale, whereas the old
+  // "untitled graph 2" written into the slot survived every later rename.
+  const rawLabels = tree.slots.map(slotLabel);
+  const seen = new Map<string, number>();
+  const displayNames = rawLabels.map((label) => {
+    const total = rawLabels.filter((l) => l === label).length;
+    if (total === 1) return label;
+    const n = (seen.get(label) ?? 0) + 1;
+    seen.set(label, n);
+    return `${label} (${n})`;
+  });
+
+  const rows = tree.slots.map((slot, i) => {
     const isActive = slot.id === tree.activeId;
     const nodes = slot.store.doc.graph?.nodes?.length ?? 0;
     const edges = slot.store.doc.graph?.edges?.length ?? 0;
@@ -245,7 +283,7 @@ export function renderEMTree(host: HTMLElement, tree: EMTree,
       <li class="et-slot${isActive ? " active" : ""}" data-id="${esc(slot.id)}">
         <button class="et-pick" data-id="${esc(slot.id)}"
                 title="${esc(slot.path ?? labels("emtree.noFile"))}">
-          <span class="et-name">${esc(slot.name)}${slot.store.dirty ? " •" : ""}</span>
+          <span class="et-name">${esc(displayNames[i])}${slot.store.dirty ? " •" : ""}</span>
           <span class="et-meta">${nodes} ${labels("emtree.nodes")} · ${edges} ${labels("emtree.edges")}</span>
         </button>
         <button class="et-close" data-close="${esc(slot.id)}"
@@ -298,7 +336,10 @@ export function renderEMTree(host: HTMLElement, tree: EMTree,
       const input = document.createElement("input");
       input.type = "text";
       input.className = "et-rename";
-      input.value = slot.name;
+      // the GRAPH's name, not the disambiguated display name: editing a field
+      // pre-filled with "untitled graph (2)" would write that suffix into the
+      // document, and the suffix is a fact about the list, not about the graph
+      input.value = slotLabel(slot);
       label.replaceWith(input);
       input.focus();
       input.select();
@@ -307,8 +348,10 @@ export function renderEMTree(host: HTMLElement, tree: EMTree,
       const commit = (keep: boolean): void => {
         if (done) return; // blur fires after Enter too
         done = true;
-        if (keep) handlers.onRename(slotId, input.value);
-        else handlers.onRename(slotId, slot.name); // re-render, unchanged
+        // Escape passes the CURRENT name back: `rename` no-ops on an unchanged
+        // name, so the round trip only re-renders the row (restoring the label
+        // element) without checkpointing or dirtying the document.
+        handlers.onRename(slotId, keep ? input.value : slotLabel(slot));
       };
       input.addEventListener("keydown", (keyEvent) => {
         if (keyEvent.key === "Enter") commit(true);

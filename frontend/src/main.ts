@@ -20,7 +20,12 @@ import { DocumentStore } from "./model";
 import { buildNodeList } from "./nodelist";
 import { buildOverview } from "./overview";
 import { edgeStyle } from "./palette";
-import { buildPalette, SECTIONS } from "./palette-ui";
+import {
+  buildPalette,
+  PALETTE_MIME,
+  SECTIONS,
+  type PaletteDragPayload,
+} from "./palette-ui";
 import { createResourceThumb } from "./resource-preview";
 import {
   edgeAt,
@@ -69,15 +74,17 @@ import {
   renderStratiMiner,
   unreadWarnings,
 } from "./stratiminer";
-import { EMTree, renderEMTree } from "./emtree";
+import { EMTree, renderEMTree, slotLabel } from "./emtree";
 import type { EMTreeHandlers } from "./emtree";
 import {
   coverage,
   getLocale,
   initI18n,
   isValidated,
+  isValidatedInBuild,
   LOCALES,
   setLocale,
+  setValidated,
   t,
 } from "./i18n";
 import type { Locale } from "./i18n";
@@ -360,21 +367,39 @@ verBtn.addEventListener("click", () => {
     d.textContent = t;
     pop.appendChild(d);
   };
-  const row = (label: string, ver: string, srcTitle?: string): void => {
+  const row = (
+    label: string,
+    ver: string,
+    srcTitle?: string,
+    href?: string,
+  ): void => {
     const r = document.createElement("div");
     r.className = "ver-row";
     if (srcTitle) r.title = srcTitle;
-    const s = document.createElement("span");
+    // An ontology whose `source` is a real URL becomes a link to its reference
+    // page; everything else stays text (POL3). The URL is NOT a hardcoded
+    // name→URL map: it is the datamodel's own `source` field (invariant 1), so
+    // adopting a new ontology release moves the link with the version instead of
+    // leaving a stale table behind in the UI.
+    const s = document.createElement(href ? "a" : "span");
     s.textContent = label;
+    if (href && s instanceof HTMLAnchorElement) {
+      s.href = href;
+      s.target = "_blank";
+      s.rel = "noopener noreferrer";
+      s.className = "ver-link";
+    }
     const v = document.createElement("b");
     v.textContent = ver;
     r.append(s, v);
     pop.appendChild(r);
   };
   sect("JSON config files");
+  // The JSON configs are FILES vendored in this build, not documents on the web:
+  // there is nothing to open, so they stay text.
   for (const c of b.configs) row(c.label, c.version);
   sect("Reference ontologies");
-  for (const o of b.ontologies) row(o.name, o.version, o.source);
+  for (const o of b.ontologies) row(o.name, o.version, o.source, o.href);
   document.body.appendChild(pop);
   const rect = verBtn.getBoundingClientRect();
   pop.style.left = Math.min(rect.left, window.innerWidth - 316) + "px";
@@ -1465,7 +1490,7 @@ function activateSlot(id: string, opts: { rebuildOnly?: boolean } = {}): void {
       fit();
     }
     updateBreadcrumb();
-    logInfo(t("toast.activeGraph", { name: target.name }));
+    logInfo(t("toast.activeGraph", { name: slotLabel(target) }));
   }
 }
 
@@ -3633,7 +3658,7 @@ const emtreeHandlers: EMTreeHandlers = {
     if (!slot) return;
     // Unsaved work is the one thing a close must not take silently.
     if (slot.store.dirty
-        && !confirm(t("emtree.unsaved", { name: slot.name }))) {
+        && !confirm(t("emtree.unsaved", { name: slotLabel(slot) }))) {
       return;
     }
     const nextId = emtree.remove(id);
@@ -3651,12 +3676,14 @@ const emtreeHandlers: EMTreeHandlers = {
   onOpen: () => void openDocument(),
   onNew: () => newDocument(),
   onRename: (id, name) => {
+    // POL3: renaming a row renames the GRAPH — `emtree.rename` writes
+    // `graph.name` in that slot's document, which is the single source. For the
+    // ACTIVE slot the store's change listener already refreshes the tree, the
+    // Inspector and the title; these calls cover the other case, a background
+    // slot renamed from the list (whose listener deliberately returns early).
     emtree.rename(id, name);
     refreshEMTree();
-    // The slot name is the workspace's label for this graph, NOT the document's
-    // `graph.name`: renaming a tab must not silently edit the file. The two can
-    // legitimately differ (two copies of one graph, told apart by tab), and the
-    // Inspector's Canvas panel is where `graph.name` is edited.
+    refreshInspector(); // the Inspector's Name field is the same fact
     updateWindowTitle();
   },
 };
@@ -3720,7 +3747,36 @@ function populateLanguageSelect(): void {
     return `<option value="${locale.code}">${locale.label}${suffix}</option>`;
   }).join("");
   select.value = getLocale();
+  refreshValidateToggle();
 }
+
+/**
+ * The "mark validated" tick, for the language currently in use (POL3).
+ *
+ * Offered only for a locale that is NOT already validated in the source: for
+ * `en`/`it` the row would be a control that cannot change anything, which reads
+ * as broken rather than as settled.
+ */
+function refreshValidateToggle(): void {
+  const row = document.getElementById("set-lang-validate-row");
+  const hint = document.getElementById("set-lang-validate-hint");
+  const box = document.getElementById("set-lang-validate") as HTMLInputElement | null;
+  if (!row || !hint || !box) return;
+  const code = getLocale();
+  const inBuild = isValidatedInBuild(code);
+  row.classList.toggle("hidden", inBuild);
+  hint.classList.toggle("hidden", inBuild);
+  box.checked = isValidated(code);
+}
+
+document.getElementById("set-lang-validate")?.addEventListener("change", (event) => {
+  const on = (event.target as HTMLInputElement).checked;
+  setValidated(getLocale(), on);
+  // The badge lives in the selector's own option labels, so the selector has to be
+  // rebuilt — which also re-reads the tick, keeping the two in step.
+  populateLanguageSelect();
+  toast(on ? t("settings.markValidated") : t("settings.aiDraft"));
+});
 
 function applyLanguage(code: Locale): void {
   setLocale(code);          // persists, sets dir/lang, re-translates the static DOM
@@ -3853,6 +3909,10 @@ async function smBridgeError(res: Response): Promise<string> {
 }
 
 const smHandlers: StratiMinerHandlers = {
+  // Switching branch does NOT clear the fields: someone who tried the AI path and
+  // fell back to writing the table by hand still has the folder they typed, and
+  // the xlsx path is the shared destination of both branches anyway.
+  onSourceChange: (v) => smSet({ source: v }),
   onFolderChange: (v) => smSet({ folder: v }),
   onXlsxChange: (v) => smSet({ xlsxPath: v }),
   onLanguageChange: (v) => smSet({ language: v }),
@@ -4377,11 +4437,62 @@ setupSearch(
 );
 
 // ---------- drag & drop ----------
-window.addEventListener("dragover", (e) => e.preventDefault());
+// FILE import, window-wide: dropping an em.json/GraphML anywhere in the app
+// loads it. Restricted to drags that actually carry FILES (DND1) — before, the
+// dragover accepted everything unconditionally, so the whole window declared
+// itself a valid drop target for any drag, and an internal palette drag never
+// reached the canvas: window's `drop` ran, found no file, and swallowed the
+// gesture. "Files" is the only thing readable during dragover (the payload is
+// not), which is why the test is on `types` and not on `files.length`.
+const carriesFiles = (e: DragEvent): boolean =>
+  !!e.dataTransfer?.types?.includes("Files");
+window.addEventListener("dragover", (e) => {
+  if (!carriesFiles(e)) return; // internal drag → leave it to the canvas
+  e.preventDefault();
+  if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+});
 window.addEventListener("drop", (e) => {
+  if (!carriesFiles(e)) return;
   e.preventDefault();
   const f = e.dataTransfer?.files?.[0];
   if (f) loadFile(f);
+});
+
+// PALETTE drag → instantiate at the cursor. Sibling of the click-to-arm gesture,
+// not a replacement: it reuses `placeNode`, so lane/epoch assignment, group
+// membership when inside a hypergraph, the DTC kind stamp and the qualia picker
+// all behave identically. Setting the placing* trio is how a drop "arms" the
+// same code path for one shot; placeNode's cancelPlacing clears it.
+const paletteDragPayload = (e: DragEvent): PaletteDragPayload | null => {
+  const raw = e.dataTransfer?.getData(PALETTE_MIME);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as PaletteDragPayload;
+  } catch {
+    return null; // a foreign drag claiming our MIME is not worth a crash
+  }
+};
+canvas.addEventListener("dragover", (e) => {
+  if (!e.dataTransfer?.types?.includes(PALETTE_MIME)) return;
+  e.preventDefault(); // without this the drop event never fires
+  e.dataTransfer.dropEffect = "copy";
+  canvas.classList.add("drop-target");
+});
+canvas.addEventListener("dragleave", () => canvas.classList.remove("drop-target"));
+canvas.addEventListener("drop", (e) => {
+  canvas.classList.remove("drop-target");
+  const p = paletteDragPayload(e);
+  if (!p) return; // not ours (a file drop bubbles on to the window handler)
+  e.preventDefault();
+  if (!store) {
+    toast("Open a document first");
+    return;
+  }
+  placingType = p.nodeType;
+  placingKind = p.kind ?? null;
+  placingIsResource = !!p.isResource;
+  const w = worldPos(e);
+  placeNode(w.x, w.y);
 });
 
 // ---------- canvas interactions ----------

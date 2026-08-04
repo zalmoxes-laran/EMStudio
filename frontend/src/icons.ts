@@ -38,6 +38,11 @@ const STYLE_KEY: Record<string, string> = {
   license: "LIC",
   embargo: "EMB",
   graph: "GRAPH",
+  // POL4: `narrative` was MISSING, which made its declaration unreadable — the
+  // lookup asked `node_styles["narrative"]`, found nothing, and silently fell
+  // back to the basename convention. Same failure shape as POL2's stale paths:
+  // no error, just the wrong (or in this case the superseded) drawing.
+  narrative: "NARR",
 };
 
 /** Icon files that several node types legitimately share. `BR` is drawn with
@@ -93,19 +98,22 @@ const urlCache = new Map<string, string | null>();
  *
  * Resolution order, and the reason it is this one:
  *
- *   1. an SVG or PNG named after the node type itself — the convention the
- *      shipped files actually follow, and the most specific answer;
- *   2. the same for a known shared file (`BR` → continuity, serUSVn/s → serUSV);
- *   3. whatever `em_visual_rules.json` declares, vector before raster.
+ *   1. whatever `em_visual_rules.json` DECLARES, vector before raster;
+ *   2. an SVG or PNG named after the node type itself — the convention most of
+ *      the shipped files follow;
+ *   3. the same for a known shared file (`BR` → continuity, serUSVn/s → serUSV).
  *
- * The declared paths come LAST on purpose, even though the datamodel is the
- * source of truth elsewhere. Two of them are wrong today: `USVn` and `USN` both
- * declare `src/2D/US.png`, so trusting the declaration first would hand USVn the
- * US icon — a regression caused by believing a field that is mistaken. Naming
- * beats declaration only where the declaration contradicts the file that is
- * plainly meant for this type; everywhere else the two agree and the order
- * makes no difference. The mismatch is reported in
- * `.claude/wip/icone-davvero-scoperte.md` for the datamodel to fix.
+ * The declaration came LAST until POL4, to protect against two wrong fields:
+ * `USVn` and `USN` both declare `src/2D/US.png`, and trusting that first would
+ * hand USVn the positive-US icon. But that protection now lives where it belongs —
+ * `declaredBasenames` refuses any declaration naming ANOTHER type's own file —
+ * so "name first" had stopped buying safety and started costing correctness: NARR
+ * declares `EMNarrative.svg` and kept getting `narrative.png`, the placeholder it
+ * was meant to replace, because the node_type is spelled `narrative`.
+ *
+ * MEASURED, not assumed: over all 56 node_type / style keys the two orders resolve
+ * to the SAME file everywhere except `narrative`. The datamodel's mismatches are
+ * reported in `.claude/wip/icone-davvero-scoperte.md`.
  *
  * Everything resolves to a bundled asset: the build inlines these as data URLs,
  * so there is no runtime fetch and no dependency on the file layout at runtime.
@@ -114,9 +122,9 @@ export function iconUrlFor(nodeType: string): string | null {
   const cached = urlCache.get(nodeType);
   if (cached !== undefined) return cached;
   const candidates = [
+    ...declaredBasenames(nodeType),
     nodeType,
     FILE_ALIAS[nodeType],
-    ...declaredBasenames(nodeType),
   ].filter(Boolean) as string[];
   let url: string | null = null;
   for (const base of candidates) {

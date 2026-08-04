@@ -11,6 +11,18 @@ export interface OntologyRef {
   name: string;
   version: string;
   source?: string;
+  /**
+   * The reference page to open, when there is one (POL3).
+   *
+   * Derived from the datamodel's own `source`, not from a name→URL table kept in
+   * the UI: seven of the nine sources ARE the official URL (cidoc-crm.org,
+   * w3.org/TR/prov-o), and the two that are not — HDT-O ("ECHOES deliverable
+   * D7.1…") and CRMs3D ("internal em.ttl … companion ontologies") — name a
+   * document that has no public page. Those stay unlinked instead of getting an
+   * invented URL: a link that guesses is worse than a line of text, because it
+   * looks authoritative.
+   */
+  href?: string;
 }
 export interface VersionBreakdown {
   emLanguage: string;
@@ -73,12 +85,17 @@ export function versionBreakdown(): VersionBreakdown {
   for (const [name, val] of Object.entries(raw)) {
     if (name.startsWith("_") || typeof val !== "object" || val === null) continue;
     const o = val as { version?: unknown; source?: unknown };
+    const source = typeof o.source === "string" ? o.source : undefined;
     ontologies.push({
       name,
       // Display form: see `displayOntologyVersion`. The datamodel's own string is
       // untouched — this is the only place that shortens it, and only for reading.
       version: displayOntologyVersion(s(o.version)),
-      source: typeof o.source === "string" ? o.source : undefined,
+      source,
+      // http(s) only: a `source` that is prose stays prose (see OntologyRef.href),
+      // and the scheme test also refuses a `javascript:`/`data:` URL sneaking in
+      // from a datamodel we do not author here.
+      href: source && /^https?:\/\//i.test(source) ? source : undefined,
     });
   }
   return { emLanguage, configs, ontologies };

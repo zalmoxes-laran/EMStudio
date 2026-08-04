@@ -322,6 +322,37 @@ function shapePath(
     case "rectangle":
       ctx.rect(x, y, w, h);
       break;
+    case "square": {
+      // A SQUARE inside the box (POL4, BR): side = the smaller dimension, centred.
+      // The box is 90×32 from em-core, so without this the "square" would be a
+      // rectangle — the very thing E.D. asked to stop seeing. Combined with
+      // `shape_scale` this is what makes BR read as punctuation.
+      const side = Math.min(w, h);
+      ctx.rect(x + (w - side) / 2, y + (h - side) / 2, side, side);
+      break;
+    }
+    case "corner_brackets": {
+      // Outline at the FOUR CORNERS only (POL4, USN): four L-shaped ticks, no
+      // continuous edge. Deliberately NOT a closed path — it must never be
+      // filled, and `fill()` on a closed corner path would paint the interior
+      // as if there were a surface, which is exactly what a negative unit does
+      // not have. The caller fills first and strokes after, so an unclosed
+      // subpath set is the whole trick.
+      const t = Math.min(w, h) * 0.34; // tick length: long enough to read at 26px
+      ctx.moveTo(x, y + t);
+      ctx.lineTo(x, y);
+      ctx.lineTo(x + t, y);
+      ctx.moveTo(x + w - t, y);
+      ctx.lineTo(x + w, y);
+      ctx.lineTo(x + w, y + t);
+      ctx.moveTo(x + w, y + h - t);
+      ctx.lineTo(x + w, y + h);
+      ctx.lineTo(x + w - t, y + h);
+      ctx.moveTo(x + t, y + h);
+      ctx.lineTo(x, y + h);
+      ctx.lineTo(x, y + h - t);
+      break;
+    }
     default: {
       // rounded_rectangle, roundrectangle, shield, chain, globe, model, …
       const r = Math.min(6, h / 2);
@@ -760,9 +791,28 @@ export function render(
       continue;
     }
 
-    shapePath(ctx, st.shape, n.x, n.y, n.w, n.h);
-    ctx.fillStyle = st.fill;
-    ctx.fill();
+    // POL4 · `shape_scale` shrinks the DRAWING inside the node box (BR = 0.7).
+    // 1 for every other type, so this is a no-op everywhere else. The box stays
+    // n.w × n.h: hit-testing, edge ports and routing all use it, and shrinking it
+    // here would draw a node that clicks and connectors do not follow (invariant
+    // 7 — per-type sizes belong to em-core).
+    const sw = n.w * st.shapeScale;
+    const sh = n.h * st.shapeScale;
+    const sx = n.x + (n.w - sw) / 2;
+    const sy = n.y + (n.h - sh) / 2;
+    if (st.shape === "corner_brackets") {
+      // the corner path is deliberately NOT closed (see shapePath), so it cannot
+      // be filled: fill the box, then stroke the corners over it
+      ctx.beginPath();
+      ctx.rect(sx, sy, sw, sh);
+      ctx.fillStyle = st.fill;
+      ctx.fill();
+      shapePath(ctx, st.shape, sx, sy, sw, sh);
+    } else {
+      shapePath(ctx, st.shape, sx, sy, sw, sh);
+      ctx.fillStyle = st.fill;
+      ctx.fill();
+    }
     // monochrome → black border only (see `mono`); fill untouched. Else EM colour.
     ctx.strokeStyle = borderCol;
     // thick coloured frame so US/USV/SF/… read like the historical EM icons.
@@ -782,7 +832,9 @@ export function render(
     ctx.setLineDash([]);
 
     if (n.id === state.selectedId || n.instanceOf === state.selectedId || n.id === state.hoverId) {
-      shapePath(ctx, st.shape, n.x - 2, n.y - 2, n.w + 4, n.h + 4);
+      // the halo hugs the DRAWN shape, not the box: a 90×32 outline around BR's
+      // 22px square would read as a selection of something else
+      shapePath(ctx, st.shape, sx - 2, sy - 2, sw + 4, sh + 4);
       ctx.strokeStyle = n.id === state.selectedId || n.instanceOf === state.selectedId ? ACCENT : "#7fb0f0";
       ctx.lineWidth = 2.2 / vp.scale;
       ctx.stroke();
@@ -792,9 +844,15 @@ export function render(
       const label = String(n.node.name || n.id);
       const fs = Math.min(11, n.h * 0.42);
       ctx.font = `${fs}px system-ui, sans-serif`;
-      ctx.fillStyle = st.textColor;
+      // A SHRUNKEN shape (BR) cannot hold its own name: `textColor` is computed
+      // from the fill, so over BR's black square it is near-white — and the name
+      // is far wider than 22 px, so most of it would land outside the square as
+      // white text on a white canvas, i.e. invisible. So a scaled shape captions
+      // BELOW the glyph in ink, the way a marker is annotated on a drawing.
+      const captionOutside = st.shapeScale < 1;
+      ctx.fillStyle = captionOutside ? "#1a1a1a" : st.textColor;
       ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
+      ctx.textBaseline = captionOutside ? "top" : "middle";
       const maxW = n.w - 8;
       let text = label;
       if (ctx.measureText(text).width > maxW) {
@@ -802,7 +860,11 @@ export function render(
           text = text.slice(0, -1);
         text += "…";
       }
-      ctx.fillText(text, n.x + n.w / 2, n.y + n.h / 2);
+      ctx.fillText(
+        text,
+        n.x + n.w / 2,
+        captionOutside ? sy + sh + 1 : n.y + n.h / 2,
+      );
     }
 
     // folded-group badge (count of hidden nodes)

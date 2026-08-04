@@ -17,6 +17,16 @@ export interface NodeStyle {
   textColor: string;
   /** label placement from the visual rules: "over" | "top_left" | "center" */
   labelPosition: string;
+  /**
+   * Fraction of the node box the SHAPE fills (`shape_scale`, POL4). 1 = the whole
+   * box, which is what every type but BR wants.
+   *
+   * A drawing-only shrink: the box itself still comes from em-core, so a scaled
+   * shape is smaller than its own hit area. That is why this is a fraction in the
+   * visual rules and not a size — a size would be a claim about layout, and layout
+   * is the engine's (invariant 7).
+   */
+  shapeScale: number;
 }
 
 export interface EdgeStyle {
@@ -34,6 +44,7 @@ interface RawNodeStyle {
     border_style?: string;
     border_width?: number;
     shape?: string;
+    shape_scale?: number;
     label_background?: string;
   };
 }
@@ -111,6 +122,7 @@ export function nodeStyle(nodeType?: string): NodeStyle {
     labelBackground: s.label_background,
     textColor: luminance(fill) > 0.45 ? "#1a1a1a" : "#f5f5f5",
     labelPosition: raw?.label_position ?? "over",
+    shapeScale: s.shape_scale ?? 1,
   };
   nodeCache.set(key, style);
   return style;

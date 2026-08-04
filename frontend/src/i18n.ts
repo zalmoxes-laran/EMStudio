@@ -135,6 +135,11 @@ const EN: Dict = {
     "separate: they travel with the document, not with the app.",
   "settings.translated": "translated",
   "settings.aiDraft": "AI draft, not yet validated",
+  "settings.markValidated": "I have read this translation — mark it validated",
+  "settings.markValidatedHint":
+    "Turns off the “AI draft” badge on this computer. Fixing a wrong term is " +
+    "still an edit to the dictionaries, and validating it for everyone is a " +
+    "change in the source.",
   "settings.liveSync": "Live sync",
   "settings.developer": "Developer",
   "settings.interaction": "Interaction",
@@ -221,6 +226,11 @@ const IT: Dict = {
     "narrativo sono un'altra cosa: viaggiano col documento, non con l'app.",
   "settings.translated": "tradotto",
   "settings.aiDraft": "bozza AI, non ancora validata",
+  "settings.markValidated": "Ho letto questa traduzione — segnala come validata",
+  "settings.markValidatedHint":
+    "Spegne l'etichetta «bozza AI» su questo computer. Correggere un termine " +
+    "sbagliato resta una modifica ai dizionari, e validarla per tutti è una " +
+    "modifica nel codice.",
   "settings.liveSync": "Sincronizzazione live",
   "settings.developer": "Sviluppo",
   "settings.interaction": "Interazione",
@@ -328,6 +338,12 @@ const EL: Dict = {
     "κείμενο είναι ξεχωριστά: ταξιδεύουν με το έγγραφο, όχι με την εφαρμογή.",
   "settings.translated": "μεταφρασμένο",
   "settings.aiDraft": "πρόχειρο AI, δεν έχει επικυρωθεί ακόμη",
+  "settings.markValidated":
+    "Διάβασα αυτή τη μετάφραση — σημείωσέ την ως επικυρωμένη",
+  "settings.markValidatedHint":
+    "Σβήνει την ένδειξη «πρόχειρο AI» σε αυτόν τον υπολογιστή. Η διόρθωση ενός " +
+    "λανθασμένου όρου παραμένει αλλαγή στα λεξικά, και η επικύρωση για όλους " +
+    "είναι αλλαγή στον πηγαίο κώδικα.",
   "settings.liveSync": "Ζωντανός συγχρονισμός",
   "settings.developer": "Ανάπτυξη",
   "settings.interaction": "Αλληλεπίδραση",
@@ -410,6 +426,10 @@ const HE: Dict = {
     "עם האפליקציה.",
   "settings.translated": "מתורגם",
   "settings.aiDraft": "טיוטת AI, עדיין לא אומתה",
+  "settings.markValidated": "קראתי את התרגום הזה — סמן אותו כמאומת",
+  "settings.markValidatedHint":
+    "מכבה את תווית «טיוטת AI» במחשב הזה. תיקון מונח שגוי הוא עדיין שינוי " +
+    "במילונים, ואימות עבור כולם הוא שינוי בקוד המקור.",
   "settings.liveSync": "סנכרון חי",
   "settings.developer": "פיתוח",
   "settings.interaction": "אינטראקציה",
@@ -496,6 +516,11 @@ const ES: Dict = {
     "narrativo son otra cosa: viajan con el documento, no con la aplicación.",
   "settings.translated": "traducido",
   "settings.aiDraft": "borrador de IA, aún sin validar",
+  "settings.markValidated": "He leído esta traducción — márcala como validada",
+  "settings.markValidatedHint":
+    "Apaga la etiqueta «borrador de IA» en este ordenador. Corregir un término " +
+    "equivocado sigue siendo una edición de los diccionarios, y validarla para " +
+    "todos es un cambio en el código fuente.",
   "settings.liveSync": "Sincronización en vivo",
   "settings.developer": "Desarrollo",
   "settings.interaction": "Interacción",
@@ -580,6 +605,12 @@ const PL: Dict = {
     "podróżują z dokumentem, nie z aplikacją.",
   "settings.translated": "przetłumaczone",
   "settings.aiDraft": "wersja robocza AI, jeszcze niezweryfikowana",
+  "settings.markValidated":
+    "Przeczytałem to tłumaczenie — oznacz je jako zweryfikowane",
+  "settings.markValidatedHint":
+    "Wyłącza znacznik „wersja robocza AI” na tym komputerze. Poprawienie błędnego " +
+    "terminu to nadal zmiana w słownikach, a weryfikacja dla wszystkich to " +
+    "zmiana w kodzie źródłowym.",
   "settings.liveSync": "Synchronizacja na żywo",
   "settings.developer": "Programowanie",
   "settings.interaction": "Interakcja",
@@ -666,6 +697,11 @@ const RO: Dict = {
     "altceva: călătoresc cu documentul, nu cu aplicația.",
   "settings.translated": "tradus",
   "settings.aiDraft": "ciornă AI, încă nevalidată",
+  "settings.markValidated": "Am citit această traducere — marchează-o ca validată",
+  "settings.markValidatedHint":
+    "Stinge eticheta „ciornă AI” pe acest calculator. Corectarea unui termen " +
+    "greșit rămâne o modificare a dicționarelor, iar validarea pentru toți este " +
+    "o modificare în codul sursă.",
   "settings.liveSync": "Sincronizare live",
   "settings.developer": "Dezvoltare",
   "settings.interaction": "Interacțiune",
@@ -755,6 +791,11 @@ const FR: Dict = {
     "l'application.",
   "settings.translated": "traduit",
   "settings.aiDraft": "brouillon IA, pas encore validé",
+  "settings.markValidated": "J'ai lu cette traduction — marque-la comme validée",
+  "settings.markValidatedHint":
+    "Éteint l'étiquette « brouillon IA » sur cet ordinateur. Corriger un terme " +
+    "erroné reste une modification des dictionnaires, et la valider pour tout le " +
+    "monde est une modification du code source.",
   "settings.liveSync": "Synchronisation en direct",
   "settings.developer": "Développement",
   "settings.interaction": "Interaction",
@@ -783,8 +824,64 @@ const FR: Dict = {
  */
 const VALIDATED: ReadonlySet<Locale> = new Set<Locale>(["en", "it"]);
 
+/**
+ * Locales validated **in the UI**, by the person using this build (POL3).
+ *
+ * Validation is an act, and it belongs where the reading happens: you switch to
+ * Greek, read the chrome, and say so on the spot. Requiring a source edit to
+ * record that meant the badge outlived the reading.
+ *
+ * Two things this deliberately is NOT:
+ *
+ *  * **not a translation fix** — the strings live in the dictionaries above, and
+ *    correcting one is still a source change. This only records that a human
+ *    looked.
+ *  * **not shipped to anyone else** — it is this machine's localStorage. The
+ *    durable claim, the one every user of a build gets, is still a code move into
+ *    `VALIDATED`. So the two together read as "E.D. validated this for everyone"
+ *    (the set) and "I validated this for me" (here), which are different facts and
+ *    should not collapse into one.
+ *
+ * `en`/`it` are already in the set and are not offered as toggles: un-validating
+ * the reference language would be a UI that argues with the code.
+ */
+const VALIDATED_KEY = "emstudio.validatedLocales";
+
+function readUserValidated(): Set<Locale> {
+  try {
+    const raw = localStorage.getItem(VALIDATED_KEY);
+    if (!raw) return new Set();
+    const list = JSON.parse(raw) as unknown;
+    if (!Array.isArray(list)) return new Set();
+    // filter against the known locales: a stale key from an older build must not
+    // resurrect a code this build no longer has
+    return new Set(list.filter((c): c is Locale => typeof c === "string" && c in DICTS));
+  } catch {
+    return new Set(); // private mode / malformed value: nothing is validated
+  }
+}
+
+let userValidated: Set<Locale> = new Set();
+
 export function isValidated(code: Locale): boolean {
+  return VALIDATED.has(code) || userValidated.has(code);
+}
+
+/** True when the code is validated in the SOURCE — so the UI cannot un-tick it. */
+export function isValidatedInBuild(code: Locale): boolean {
   return VALIDATED.has(code);
+}
+
+/** Record (or withdraw) the in-UI validation of a locale. Persisted. */
+export function setValidated(code: Locale, on: boolean): void {
+  if (!(code in DICTS) || VALIDATED.has(code)) return;
+  if (on) userValidated.add(code);
+  else userValidated.delete(code);
+  try {
+    localStorage.setItem(VALIDATED_KEY, JSON.stringify([...userValidated]));
+  } catch {
+    /* not fatal: the mark just won't survive a reload */
+  }
 }
 
 const DICTS: Record<Locale, Dict> = {
@@ -923,6 +1020,10 @@ export function applyStaticTranslations(root: ParentNode = document): void {
 
 /** Called once at boot, before the first render. */
 export function initI18n(): void {
+  // Read here and not at module scope: `readUserValidated` filters against
+  // `DICTS`, which is declared below the validation block — touching it during
+  // module initialisation would hit the temporal dead zone.
+  userValidated = readUserValidated();
   applyDocumentDirection();
   applyStaticTranslations();
 }
