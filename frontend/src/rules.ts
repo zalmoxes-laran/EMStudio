@@ -28,6 +28,51 @@ const EDGE_TYPES = (
   connections as { edge_types: Record<string, EdgeTypeDef> }
 ).edge_types;
 
+/**
+ * Per-node-type narrowing of the class-level edge rules
+ * (`node_type_restrictions`, connections datamodel 1.6.3 — POL5).
+ *
+ * The edge rules are stated by CLASS, so a subtype inherits everything its parent
+ * may connect. This is how a subtype says LESS: `USN`, the NEUTRAL stratigraphic
+ * unit (a risparmio — a window or door opening, the volume of a room), takes
+ * `is_after` and nothing else, because a void cannot cut, fill, abut or bond.
+ *
+ * Absent block → no narrowing, which is why a consumer that ignores this simply
+ * offers more instead of breaking.
+ */
+const NODE_RESTRICTIONS = (
+  connections as {
+    node_type_restrictions?: Record<
+      string,
+      { allowed_edges?: string[]; scope?: string }
+    >;
+  }
+).node_type_restrictions ?? {};
+
+/**
+ * The edges the restriction GOVERNS: relations between two stratigraphic units.
+ *
+ * Read off the data rather than listed here: the eleven unit-to-unit relations
+ * (`is_after`, `cuts`, `fills`, `abuts`, `overlies`, `bonded_to`, `equals`, …) all
+ * declare the BASE class `StratigraphicNode` on both endpoints, while everything
+ * else names either other families (paradata, epochs, groups) or concrete
+ * subclasses. `is_part_of` is the interesting case: it enumerates subclasses, and
+ * NeutralStratigraphicUnit is not among them — so containment was already closed
+ * to a USN by the ordinary rules and needs no exception here.
+ *
+ * Paradata and membership stay OPEN, deliberately: a risparmio is measured,
+ * documented and dated like any other unit.
+ */
+const STRAT_BASE_CLASS = "StratigraphicNode";
+function isUnitToUnitEdge(def: EdgeTypeDef): boolean {
+  const ac = def.allowed_connections;
+  return (
+    !!ac &&
+    !!ac.source?.includes(STRAT_BASE_CLASS) &&
+    !!ac.target?.includes(STRAT_BASE_CLASS)
+  );
+}
+
 const CLASS_ENTRIES = (
   nodeRegistry as unknown as { node_types: Record<string, NodeTypeEntry> }
 ).node_types;
@@ -265,7 +310,17 @@ export function allowedEdgeTypes(
     if (name === GENERIC_EDGE) continue;
     const ac = def.allowed_connections;
     if (!ac) continue;
-    if (intersects(ac.source, sa) && intersects(ac.target, ta)) out.push(name);
+    if (!intersects(ac.source, sa) || !intersects(ac.target, ta)) continue;
+    // POL5 · a restricted type narrows the unit-to-unit relations, at EITHER end:
+    // "USN cuts US" is as wrong as "US cuts USN".
+    if (isUnitToUnitEdge(def)) {
+      const blocked = [sourceType, targetType].some((t) => {
+        const allow = t ? NODE_RESTRICTIONS[t]?.allowed_edges : undefined;
+        return !!allow && !allow.includes(name);
+      });
+      if (blocked) continue;
+    }
+    out.push(name);
   }
   return out;
 }

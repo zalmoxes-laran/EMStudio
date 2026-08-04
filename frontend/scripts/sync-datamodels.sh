@@ -68,10 +68,15 @@ mkdir -p "$DST/icons2d"
 # unreachable asset is pure bundle weight. Two conditions, both facts rather than
 # guesses (a size threshold would guess):
 #
-#  1. **A raster shadowed by its own vector is skipped.** `icons.ts::asset` tries
-#     `.svg` before `.png`, so a PNG beside its own SVG can never be reached. 16
-#     of them, 2.5 MB — including `SE.png` (1.3 MB) and `EMNarrative.png` (1.2 MB),
-#     which are illustrations rather than icons.
+#  1. **The pair is resolved the way `icons.ts::asset` resolves it.** By default
+#     that is vector-before-raster, so a PNG beside its own SVG can never be
+#     reached: 16 of them, 2.5 MB. POL5 added the exception, and it is the
+#     datamodel's own: a type carrying `2d_icon_prefer: "raster"` (NARR, SE — two
+#     stipple ILLUSTRATIONS of 617 and 284 KB) is resolved the other way round, so
+#     for those the SVG is the unreachable one. The flag is read here and in
+#     `icons.ts`; if only one of the two honoured it, the build would inline a file
+#     the renderer never asks for — which is exactly what happened before this rule
+#     existed and cost 604 KB.
 #  2. **A basename that neither names a node type nor is declared by one is
 #     skipped.** Those are exactly `icons.ts`'s two lookup paths (name first, then
 #     the `em_visual_rules` declaration), plus its spelled-out aliases. Anything
@@ -86,6 +91,7 @@ cfg, dst = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
 styles = json.loads((cfg / "em_visual_rules.json").read_text())["node_styles"]
 
 reachable = set(styles)                       # named after a node type
+raster_only = set()                           # stems where the SVG is unreachable
 for style in styles.values():                 # or declared by one
     if not isinstance(style, dict):
         continue
@@ -93,6 +99,13 @@ for style in styles.values():                 # or declared by one
         path = style.get(key)
         if isinstance(path, str):
             reachable.add(pathlib.PurePath(path).stem)
+    # POL5: the datamodel says which of the pair is the icon. `icons.ts` reads the
+    # same field, so the copied file and the drawn file are one decision.
+    if style.get("2d_icon_prefer") == "raster":
+        for key in ("2d_file_rast", "file_2d", "2d_file_vect"):
+            path = style.get(key)
+            if isinstance(path, str):
+                raster_only.add(pathlib.PurePath(path).stem)
 # Sharing that icons.ts spells out in FILE_ALIAS (BR → continuity, serUSVn/s →
 # serUSV): declared nowhere, deliberate all the same.
 reachable |= {"continuity", "serUSV"}
@@ -104,7 +117,13 @@ copied = skipped = 0
 for f in sorted(src.iterdir()):
     if f.suffix.lower() not in (".svg", ".png"):
         continue
-    shadowed = f.suffix.lower() == ".png" and (src / f"{f.stem}.svg").is_file()
+    ext = f.suffix.lower()
+    if f.stem in raster_only:
+        # the pair is resolved raster-first for this type → the vector is the
+        # unreachable half (and it is the heavy one, which is the whole point)
+        shadowed = ext == ".svg" and (src / f"{f.stem}.png").is_file()
+    else:
+        shadowed = ext == ".png" and (src / f"{f.stem}.svg").is_file()
     if f.stem not in reachable or shadowed:
         skipped += 1
         continue

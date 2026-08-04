@@ -27,6 +27,16 @@ export interface NodeStyle {
    * is the engine's (invariant 7).
    */
   shapeScale: number;
+  /**
+   * `"square"` when the shape's bounding box must be square — the drawing takes
+   * `min(w, h)` on both axes (POL5, BR).
+   *
+   * Without it a `diamond` in a 90×32 box is a flattened lozenge, not a rhombus;
+   * BR's silhouette is the language's continuity marker and it has to stay
+   * equilateral. In the rules and not in a renderer for the usual reason: it is a
+   * fact about how the EM language looks.
+   */
+  shapeBox?: "square";
 }
 
 export interface EdgeStyle {
@@ -45,6 +55,7 @@ interface RawNodeStyle {
     border_width?: number;
     shape?: string;
     shape_scale?: number;
+    shape_bbox?: string;
     label_background?: string;
   };
 }
@@ -123,6 +134,7 @@ export function nodeStyle(nodeType?: string): NodeStyle {
     textColor: luminance(fill) > 0.45 ? "#1a1a1a" : "#f5f5f5",
     labelPosition: raw?.label_position ?? "over",
     shapeScale: s.shape_scale ?? 1,
+    shapeBox: s.shape_bbox === "square" ? "square" : undefined,
   };
   nodeCache.set(key, style);
   return style;

@@ -53,12 +53,30 @@ const FILE_ALIAS: Record<string, string> = {
   serUSVs: "serUSV",
 };
 
-function asset(basename: string): string | null {
-  return (
-    ICON_FILES[`./assets/icons2d/${basename}.svg`] ??
-    ICON_FILES[`./assets/icons2d/${basename}.png`] ??
-    null
-  );
+function asset(basename: string, rasterFirst = false): string | null {
+  const svg = ICON_FILES[`./assets/icons2d/${basename}.svg`] ?? null;
+  const png = ICON_FILES[`./assets/icons2d/${basename}.png`] ?? null;
+  // Vector first, EXCEPT where the datamodel says otherwise (see preferRaster).
+  return rasterFirst ? (png ?? svg) : (svg ?? png);
+}
+
+/**
+ * `2d_icon_prefer: "raster"` — the datamodel's own answer to "which of the two
+ * files is the icon?" (POL5).
+ *
+ * Two node types declare a vector that is an ILLUSTRATION rather than a glyph:
+ * NARR (EMNarrative.svg, 617 KB) and SE (SE.svg, 284 KB), both stipple traces of
+ * a drawing. Nothing here draws a 2D icon taller than 30 px, so the vector buys
+ * nothing and costs, in this delivery, its full weight inlined as a data URL.
+ *
+ * A FLAG and not a size rule: "big" would be a guess, and POL2 refused a size
+ * threshold for exactly that reason. This way the decision is E.D.'s, recorded
+ * where the rest of the type's look is recorded, and the vendor script reads the
+ * same field — so what gets copied and what gets drawn cannot disagree.
+ */
+function preferRaster(nodeType: string): boolean {
+  const entry = styleEntries[STYLE_KEY[nodeType] ?? nodeType];
+  return entry?.["2d_icon_prefer"] === "raster";
 }
 
 const styleEntries = (rules as unknown as {
@@ -126,9 +144,10 @@ export function iconUrlFor(nodeType: string): string | null {
     nodeType,
     FILE_ALIAS[nodeType],
   ].filter(Boolean) as string[];
+  const rasterFirst = preferRaster(nodeType);
   let url: string | null = null;
   for (const base of candidates) {
-    url = asset(base);
+    url = asset(base, rasterFirst);
     if (url) break;
   }
   urlCache.set(nodeType, url);

@@ -1,3 +1,5 @@
+import { nodeStyle } from "./palette";
+import { drawBoxOf, drawsAsGlyph, pointInShape } from "./shape-geom";
 import type { EmEdge, EmNode } from "./types";
 
 export interface SceneNode {
@@ -198,7 +200,31 @@ export function hitHandle(
 export function hitTest(scene: Scene, wx: number, wy: number): SceneNode | null {
   for (let i = scene.nodes.length - 1; i >= 0; i--) {
     const n = scene.nodes[i];
-    if (wx >= n.x && wx <= n.x + n.w && wy >= n.y && wy <= n.y + n.h) return n;
+    if (wx < n.x || wx > n.x + n.w || wy < n.y || wy > n.y + n.h) continue;
+    if (pointInNodeShape(n, wx, wy)) return n;
   }
   return null;
+}
+
+/**
+ * Inside the node's SILHOUETTE, not merely inside its box (EM1).
+ *
+ * The box test alone was right while every type filled its box and wrong the
+ * moment they stopped: a click 30 px to the right of BR's 22 px rhombus selected
+ * it, and the corner of a triangle's box selected an SE that was not drawn there.
+ * The geometry comes from `shape-geom.ts` — the same vertices the renderer
+ * strokes — so what you can click is what you can see, by construction.
+ *
+ * ICON nodes keep the box, and that is deliberate: their drawing is an image
+ * fitted into the box, and its fitted rect is only known once the image has
+ * DECODED (`naturalWidth`). Deriving the hit area from it would make the target
+ * change shape as icons load, which is worse than a target slightly larger than
+ * the glyph. The box-vs-icon-proportions question is the POL2 §4 follow-up and
+ * needs the aspect ratio declared in the datamodel, not read off a bitmap.
+ */
+function pointInNodeShape(n: SceneNode, wx: number, wy: number): boolean {
+  const type = n.node.node_type;
+  if (drawsAsGlyph(type)) return true; // box, see above
+  const st = nodeStyle(type);
+  return pointInShape(st.shape, drawBoxOf(st, n), wx, wy);
 }

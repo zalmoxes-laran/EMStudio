@@ -43,9 +43,17 @@ pub struct LayoutOptions {
     // Swimlanes
     pub lane_min_insets: f64,
     pub compact_lanes: bool,
-    // Node geometry defaults (until per-type sizes come from the palette)
+    // Node geometry: the DEFAULT box, plus the per-type departures from it.
     pub default_node_w: f64,
     pub default_node_h: f64,
+    /// Per-node-type box geometry from the vendored visual rules (EM1).
+    ///
+    /// Empty means "every leaf gets the default box", which is what the engine
+    /// did before EM1 and what every test that does not care about types still
+    /// exercises. Populated by `Default` from `geometry::type_boxes()`, so all
+    /// three deliveries (CLI, WASM, desktop) compute the same boxes — the
+    /// determinism contract does not survive a table each caller supplies.
+    pub type_boxes: crate::geometry::TypeBoxes,
     // Crossing-minimisation sweeps
     pub barycenter_sweeps: u32,
 }
@@ -72,6 +80,7 @@ impl Default for LayoutOptions {
             compact_lanes: true,
             default_node_w: 90.0,
             default_node_h: 32.0,
+            type_boxes: crate::geometry::type_boxes(),
             barycenter_sweeps: 4,
         }
     }
@@ -399,6 +408,11 @@ pub fn compute_with_sketch(
         folded: &'a std::collections::BTreeSet<usize>,
         node_w: f64,
         node_h: f64,
+        /// Per-type box departures (EM1). Read via `geometry::box_for`, so a type
+        /// that declares nothing keeps `node_w × node_h` exactly as before.
+        type_boxes: &'a crate::geometry::TypeBoxes,
+        /// node index → node_type, to look the table up without the Graph
+        node_types: &'a [String],
         gap_x: f64,
         pitch: f64,
         group_pad: f64,
@@ -435,7 +449,16 @@ pub fn compute_with_sketch(
                     Some(inner),
                 ));
             } else {
-                item_dims.push((m, ctx.node_w, ctx.node_h, None));
+                // EM1 · a LEAF takes its type's box. A group keeps the box its
+                // contents need (above): shrinking a container would clip the
+                // members the engine just placed inside it.
+                let (bw, bh) = crate::geometry::box_for(
+                    ctx.type_boxes,
+                    ctx.node_types[m].as_str(),
+                    ctx.node_w,
+                    ctx.node_h,
+                );
+                item_dims.push((m, bw, bh, None));
             }
         }
         let index_of: std::collections::HashMap<usize, usize> = item_dims
@@ -805,6 +828,9 @@ pub fn compute_with_sketch(
         ctx.gap_x
     }
 
+    // node_type per index, for the per-type box lookup (EM1)
+    let node_types: Vec<String> =
+        graph.nodes.iter().map(|n| n.node_type.clone()).collect();
     let ctx = Ctx {
         down: &down,
         sym_pairs: &sym_pairs,
@@ -814,6 +840,8 @@ pub fn compute_with_sketch(
         folded: &folded_ix,
         node_w,
         node_h,
+        type_boxes: &opts.type_boxes,
+        node_types: &node_types,
         gap_x,
         pitch,
         group_pad,

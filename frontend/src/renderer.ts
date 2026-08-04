@@ -13,6 +13,7 @@ import {
   type EdgeRoute,
 } from "./routing";
 import { BAND_GAP } from "./scene";
+import { drawBoxOf, shapePath } from "./shape-geom";
 import type { Scene, Viewport } from "./scene";
 
 export interface ConnectDrag {
@@ -236,130 +237,10 @@ function drawGroupContainer(
   }
 }
 
-function shapePath(
-  ctx: CanvasRenderingContext2D,
-  shape: string,
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-): void {
-  ctx.beginPath();
-  switch (shape) {
-    case "ellipse":
-    case "circle":
-      ctx.ellipse(x + w / 2, y + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2);
-      break;
-    case "hexagon": {
-      const c = Math.min(w * 0.2, h);
-      ctx.moveTo(x + c, y);
-      ctx.lineTo(x + w - c, y);
-      ctx.lineTo(x + w, y + h / 2);
-      ctx.lineTo(x + w - c, y + h);
-      ctx.lineTo(x + c, y + h);
-      ctx.lineTo(x, y + h / 2);
-      ctx.closePath();
-      break;
-    }
-    case "parallelogram": {
-      const k = w * 0.18;
-      ctx.moveTo(x + k, y);
-      ctx.lineTo(x + w, y);
-      ctx.lineTo(x + w - k, y + h);
-      ctx.lineTo(x, y + h);
-      ctx.closePath();
-      break;
-    }
-    case "octagon": {
-      const c = Math.min(w, h) * 0.29;
-      ctx.moveTo(x + c, y);
-      ctx.lineTo(x + w - c, y);
-      ctx.lineTo(x + w, y + c);
-      ctx.lineTo(x + w, y + h - c);
-      ctx.lineTo(x + w - c, y + h);
-      ctx.lineTo(x + c, y + h);
-      ctx.lineTo(x, y + h - c);
-      ctx.lineTo(x, y + c);
-      ctx.closePath();
-      break;
-    }
-    case "diamond":
-      ctx.moveTo(x + w / 2, y);
-      ctx.lineTo(x + w, y + h / 2);
-      ctx.lineTo(x + w / 2, y + h);
-      ctx.lineTo(x, y + h / 2);
-      ctx.closePath();
-      break;
-    case "triangle":
-      ctx.moveTo(x + w / 2, y);
-      ctx.lineTo(x + w, y + h);
-      ctx.lineTo(x, y + h);
-      ctx.closePath();
-      break;
-    case "pentagon":
-      ctx.moveTo(x + w / 2, y);
-      ctx.lineTo(x + w, y + h * 0.4);
-      ctx.lineTo(x + w * 0.8, y + h);
-      ctx.lineTo(x + w * 0.2, y + h);
-      ctx.lineTo(x, y + h * 0.4);
-      ctx.closePath();
-      break;
-    case "star": {
-      const cx = x + w / 2,
-        cy = y + h / 2,
-        R = Math.min(w, h) / 2,
-        r = R * 0.45;
-      for (let i = 0; i < 10; i++) {
-        const a = -Math.PI / 2 + (i * Math.PI) / 5;
-        const rad = i % 2 === 0 ? R : r;
-        const px = cx + rad * Math.cos(a),
-          py = cy + rad * Math.sin(a);
-        i === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
-      }
-      ctx.closePath();
-      break;
-    }
-    case "rectangle":
-      ctx.rect(x, y, w, h);
-      break;
-    case "square": {
-      // A SQUARE inside the box (POL4, BR): side = the smaller dimension, centred.
-      // The box is 90×32 from em-core, so without this the "square" would be a
-      // rectangle — the very thing E.D. asked to stop seeing. Combined with
-      // `shape_scale` this is what makes BR read as punctuation.
-      const side = Math.min(w, h);
-      ctx.rect(x + (w - side) / 2, y + (h - side) / 2, side, side);
-      break;
-    }
-    case "corner_brackets": {
-      // Outline at the FOUR CORNERS only (POL4, USN): four L-shaped ticks, no
-      // continuous edge. Deliberately NOT a closed path — it must never be
-      // filled, and `fill()` on a closed corner path would paint the interior
-      // as if there were a surface, which is exactly what a negative unit does
-      // not have. The caller fills first and strokes after, so an unclosed
-      // subpath set is the whole trick.
-      const t = Math.min(w, h) * 0.34; // tick length: long enough to read at 26px
-      ctx.moveTo(x, y + t);
-      ctx.lineTo(x, y);
-      ctx.lineTo(x + t, y);
-      ctx.moveTo(x + w - t, y);
-      ctx.lineTo(x + w, y);
-      ctx.lineTo(x + w, y + t);
-      ctx.moveTo(x + w, y + h - t);
-      ctx.lineTo(x + w, y + h);
-      ctx.lineTo(x + w - t, y + h);
-      ctx.moveTo(x + t, y + h);
-      ctx.lineTo(x, y + h);
-      ctx.lineTo(x, y + h - t);
-      break;
-    }
-    default: {
-      // rounded_rectangle, roundrectangle, shield, chain, globe, model, …
-      const r = Math.min(6, h / 2);
-      ctx.roundRect(x, y, w, h, r);
-    }
-  }
-}
+// The shape geometry moved to `shape-geom.ts` (EM1): the canvas path and the
+// hit test are now built from ONE set of vertices, so the drawn silhouette and
+// the clickable one cannot drift. `shapePath` below is that module's, called with
+// the DRAWING box (shape_scale / shape_bbox applied) instead of x/y/w/h.
 
 // "Arrows point DOWN": a directed edge means source-above-target. An edge that
 // points UP (target above source) conflicts with the lane chronology (e.g. an
@@ -791,15 +672,16 @@ export function render(
       continue;
     }
 
-    // POL4 · `shape_scale` shrinks the DRAWING inside the node box (BR = 0.7).
-    // 1 for every other type, so this is a no-op everywhere else. The box stays
-    // n.w × n.h: hit-testing, edge ports and routing all use it, and shrinking it
-    // here would draw a node that clicks and connectors do not follow (invariant
-    // 7 — per-type sizes belong to em-core).
-    const sw = n.w * st.shapeScale;
-    const sh = n.h * st.shapeScale;
-    const sx = n.x + (n.w - sw) / 2;
-    const sy = n.y + (n.h - sh) / 2;
+    // POL4/POL5 · the DRAWING box, from the visual rules: `shape_scale` shrinks it
+    // inside the node box (BR = 0.7), `shape_bbox: square` makes it square so a
+    // diamond is a rhombus and not a lozenge flattened by the 90×32 node. Both are
+    // no-ops for every other type. The node box stays n.w × n.h: hit-testing, edge
+    // ports and routing all use it, and shrinking it here would draw a node that
+    // clicks and connectors do not follow (invariant 7 — per-type sizes are
+    // em-core's, and EM1 is where they land).
+    // ONE geometry, shared with the hit test (EM1 · shape-geom.ts)
+    const box = drawBoxOf(st, n);
+    const { x: sx, y: sy, w: sw, h: sh } = box;
     if (st.shape === "corner_brackets") {
       // the corner path is deliberately NOT closed (see shapePath), so it cannot
       // be filled: fill the box, then stroke the corners over it
@@ -807,9 +689,9 @@ export function render(
       ctx.rect(sx, sy, sw, sh);
       ctx.fillStyle = st.fill;
       ctx.fill();
-      shapePath(ctx, st.shape, sx, sy, sw, sh);
+      shapePath(ctx, st.shape, box);
     } else {
-      shapePath(ctx, st.shape, sx, sy, sw, sh);
+      shapePath(ctx, st.shape, box);
       ctx.fillStyle = st.fill;
       ctx.fill();
     }
@@ -834,7 +716,7 @@ export function render(
     if (n.id === state.selectedId || n.instanceOf === state.selectedId || n.id === state.hoverId) {
       // the halo hugs the DRAWN shape, not the box: a 90×32 outline around BR's
       // 22px square would read as a selection of something else
-      shapePath(ctx, st.shape, sx - 2, sy - 2, sw + 4, sh + 4);
+      shapePath(ctx, st.shape, { x: sx - 2, y: sy - 2, w: sw + 4, h: sh + 4 });
       ctx.strokeStyle = n.id === state.selectedId || n.instanceOf === state.selectedId ? ACCENT : "#7fb0f0";
       ctx.lineWidth = 2.2 / vp.scale;
       ctx.stroke();
@@ -939,7 +821,8 @@ export function render(
       if (t) {
         ctx.strokeStyle = c;
         ctx.lineWidth = 3 / vp.scale;
-        shapePath(ctx, nodeStyle(t.node.node_type).shape, t.x - 3, t.y - 3, t.w + 6, t.h + 6);
+        shapePath(ctx, nodeStyle(t.node.node_type).shape,
+                  { x: t.x - 3, y: t.y - 3, w: t.w + 6, h: t.h + 6 });
         ctx.stroke();
       }
     }

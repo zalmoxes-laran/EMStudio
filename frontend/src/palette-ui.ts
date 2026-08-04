@@ -42,7 +42,11 @@ export interface PaletteDragPayload {
 export const SECTIONS: Section[] = [
   {
     label: "Stratigraphic",
-    types: ["US", "USVn", "USVs", "USD", "TSU", "USN", "SE", "BR"],
+    // POL5: the two VOIDS sit side by side on purpose — `USN` is the neutral one
+    // (a risparmio: window, door, room) and `USNeg` the negative/destructive one
+    // (displayed `US-`). They were one type until 2026-08-04, and the palette is
+    // where the difference has to be visible or nobody will use the right one.
+    types: ["US", "USVn", "USVs", "USD", "TSU", "USN", "USNeg", "SE", "BR"],
   },
   { label: "Special finds", types: ["SF", "VSF", "RSF"] },
   { label: "Series", types: ["serSU", "serUSVn", "serUSVs", "serUSD"] },
@@ -179,13 +183,6 @@ function swatch(nodeType: string): HTMLCanvasElement {
       ctx.lineTo(1, 15);
       ctx.closePath();
       break;
-    case "square": {
-      // POL4 · centred square, and `shape_scale` applies here too so BR reads in
-      // the palette the way it reads on the canvas (small, not box-filling)
-      const side = 14 * st.shapeScale;
-      ctx.rect(13 - side / 2, 8 - side / 2, side, side);
-      break;
-    }
     case "corner_brackets": {
       // POL4 · four L ticks, no continuous edge; unclosed on purpose so the fill
       // below paints nothing (a filled corner would invent the surface a

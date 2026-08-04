@@ -10,6 +10,7 @@
 pub mod model;
 pub mod emjson;
 pub mod validation;
+pub mod geometry;
 pub mod layout;
 
 pub use model::{Document, Edge, Graph, Layout, Node};
