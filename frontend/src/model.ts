@@ -814,6 +814,76 @@ export class DocumentStore {
     return true;
   }
 
+  /**
+   * Move a PHASE one slot up (dir −1) or down (dir +1) among its siblings.
+   * Returns false when the move would be meaningless — see below.
+   *
+   * **Phases are ordered by their DATE, not by an order field.** The Matrix builds
+   * the sub-band stack by sorting a parent's phases on `start_time`, newest on
+   * top (`views/matrix.ts`, `collect`); only UNDATED phases fall back to the order
+   * of their `has_sub_epoch` edges, which is what this method swaps.
+   *
+   * So: for undated phases — the normal case right after creating them — this is
+   * the reorder the user expects. For a DATED phase it would be a no-op, because
+   * the sort puts it straight back. **Refused rather than silently ignored**, on
+   * the same principle as `reorderEpoch` refusing a non-empty epoch: a button that
+   * looks like it worked and did nothing is worse than one that says no. The
+   * caller shows the buttons disabled, and the way to move a dated phase is to
+   * change its date.
+   *
+   * Edge order — not a layout field — because a phase sequence IS chronological
+   * information about the site, unlike lane y or a camera position: it belongs in
+   * the document.
+   */
+  reorderPhase(phaseId: string, dir: -1 | 1): boolean {
+    const parent = this.parentEpoch(phaseId);
+    if (!parent) return false; // not a phase
+    const siblings = this.epochPhases(parent);
+    if (siblings.length < 2) return false;
+    const dated = (id: string): boolean => this.startOf(id) != null;
+    const i = siblings.indexOf(phaseId);
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= siblings.length) return false;
+    // Either endpoint dated → the date decides, and the swap would be undone by
+    // the sort. Say no.
+    if (dated(phaseId) || dated(siblings[j])) return false;
+
+    // Swap the two `has_sub_epoch` edges in place, which is what the undated
+    // fallback order reads.
+    const edges = this.doc.graph.edges;
+    const at = (target: string): number =>
+      edges.findIndex(
+        (e) => e.edge_type === "has_sub_epoch" &&
+          e.source === parent && e.target === target,
+      );
+    const ei = at(phaseId);
+    const ej = at(siblings[j]);
+    if (ei < 0 || ej < 0) return false;
+    this.checkpoint();
+    [edges[ei], edges[ej]] = [edges[ej], edges[ei]];
+    this.emit();
+    return true;
+  }
+
+  /** Does this epoch/phase declare a start date? Public because the UI needs to
+   *  EXPLAIN why a reorder is refused, and `startOf` is an internal accessor —
+   *  the question the interface asks is "is it dated", not "what is its start". */
+  isDated(epochId: string): boolean {
+    return this.startOf(epochId) != null;
+  }
+
+  /** True when this phase can be moved in direction `dir` — drives whether the
+   *  inspector offers the button at all, so the answer comes from one place. */
+  canReorderPhase(phaseId: string, dir: -1 | 1): boolean {
+    const parent = this.parentEpoch(phaseId);
+    if (!parent) return false;
+    const siblings = this.epochPhases(parent);
+    const i = siblings.indexOf(phaseId);
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= siblings.length) return false;
+    return this.startOf(phaseId) == null && this.startOf(siblings[j]) == null;
+  }
+
   /** Reorder the top-level swimlanes newest-first by start_time (undated → tail,
    *  stable). Layout-only, like reorderEpoch — NOT gated by isEpochEmpty because
    *  this is canonicalisation, not an arbitrary move; the caller runs a

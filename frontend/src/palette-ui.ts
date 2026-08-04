@@ -42,8 +42,18 @@ export const SECTIONS: Section[] = [
     ],
   },
   {
+    // `EpochNode` is deliberately ABSENT (POL1, 2026-08-04). An epoch is a
+    // swimlane, not a node you drop somewhere: it is created with the `+` in
+    // Matrix view, which also gives it a chronological slot. Offering it here too
+    // meant two gestures for one thing — and the palette gesture had to be
+    // special-cased into "actually, add a lane at the top", which is not what a
+    // palette click looks like it does.
+    //
+    // This list is the AUTHORING SURFACE, not the datamodel: the datamodel still
+    // declares EpochNode (invariant 1), and the app still creates, renders and
+    // validates epochs. What changed is only what the palette offers.
     label: "Context",
-    types: ["EpochNode", "author", "author_ai", "link", "license", "embargo"],
+    types: ["author", "author_ai", "link", "license", "embargo"],
   },
 ];
 
@@ -209,30 +219,35 @@ export function buildPalette(
     buttons.set(opts?.key ?? t, b);
   };
 
-  for (const section of SECTIONS) {
-    const h = document.createElement("div");
-    h.className = "pal-sect";
-    h.textContent = section.label;
-    root.appendChild(h);
-    for (const t of section.types) makeItem(t, root);
-  }
-
-  // A gated, collapsed "advanced" section BELOW the stratigrapher palette (which
-  // stays byte-unchanged). Mirrors the HDT-O gating.
-  const gatedSection = (
+  /**
+   * A collapsible section. ONE mechanism for all of them (POL1).
+   *
+   * Before, only HDT-O and DTC collapsed and the six stratigraphic sections were
+   * plain headings — so the palette taught two different things about what a
+   * heading is. `startOpen` is the only difference that remains: the stratigraphic
+   * surface is what the tool is for and opens expanded, the advanced layers stay
+   * folded until asked for.
+   *
+   * The open/closed state is per session and not persisted: a palette that
+   * remembered being collapsed would greet a returning user with an empty-looking
+   * sidebar and no clue why.
+   */
+  const collapsibleSection = (
     label: string,
     title: string,
     fill: (wrap: HTMLElement) => void,
+    startOpen: boolean,
   ): void => {
     const toggle = document.createElement("button");
     toggle.className = "pal-sect pal-sect-toggle";
     const wrap = document.createElement("div");
-    let open = false;
+    let open = startOpen;
     const paint = (): void => {
       toggle.textContent = `${open ? "▾" : "▸"} ${label}`;
       wrap.style.display = open ? "" : "none";
+      toggle.setAttribute("aria-expanded", String(open));
     };
-    toggle.title = title;
+    if (title) toggle.title = title;
     toggle.addEventListener("click", () => {
       open = !open;
       paint();
@@ -242,6 +257,24 @@ export function buildPalette(
     fill(wrap);
     paint();
   };
+
+  for (const section of SECTIONS) {
+    collapsibleSection(
+      section.label,
+      "",
+      (wrap) => {
+        for (const t of section.types) makeItem(t, wrap);
+      },
+      true,
+    );
+  }
+
+  // The gated advanced layers use the same mechanism, folded by default.
+  const gatedSection = (
+    label: string,
+    title: string,
+    fill: (wrap: HTMLElement) => void,
+  ): void => collapsibleSection(label, title, fill, false);
 
   // Gated HDT-O authoring layer (ECHOES D7.1). Types from the datamodel's
   // `hdto_nodes` section; items show the human label.

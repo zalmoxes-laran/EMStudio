@@ -57,7 +57,23 @@ cp "$CFG/s3Dgraphy_node_datamodel.json" "$DST/"
 cp "$CFG/node_registry.generated.json" "$DST/"
 cp "$CFG/em_qualia_types.json" "$DST/"
 mkdir -p "$DST/icons2d"
-cp "$CFG"/src/2D/*.png "$DST/icons2d/"
+# BOTH raster and vector. Only `*.png` was copied here, which is why EMStudio drew
+# no SVG icons even after 28 of them shipped in s3Dgraphy: the renderer prefers
+# vector (`icons.ts::asset` tries .svg before .png) and there was simply nothing to
+# prefer. `nullglob` because a checkout may legitimately have one kind and not the
+# other, and an unmatched glob must not copy a literal `*.svg`.
+shopt -s nullglob
+cp "$CFG"/src/2D/*.png "$DST/icons2d/" 2>/dev/null || true
+cp "$CFG"/src/2D/*.svg "$DST/icons2d/" 2>/dev/null || true
+
+# The 2017 DTC glyphs. They live in s3Dgraphy — the single source — under
+# `src/2D/dtc/`, and `em_visual_rules.dtc_kinds[*].glyph` names them WITHOUT an
+# extension, so the vendored basenames must match the glyph names exactly.
+# Before POL2 these files existed only inside EMStudio, copied in by hand: a second
+# source of truth that nothing kept in step with the rules that reference it.
+mkdir -p "$DST/dtc-glyphs"
+cp "$CFG"/src/2D/dtc/*.svg "$DST/dtc-glyphs/" 2>/dev/null || true
+shopt -u nullglob
 
 echo "synced from $CFG:"
 python3 - "$CFG" <<'EOF'

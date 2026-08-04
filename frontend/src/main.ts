@@ -69,6 +69,18 @@ import {
   renderStratiMiner,
   unreadWarnings,
 } from "./stratiminer";
+import { EMTree, renderEMTree } from "./emtree";
+import type { EMTreeHandlers } from "./emtree";
+import {
+  coverage,
+  getLocale,
+  initI18n,
+  isValidated,
+  LOCALES,
+  setLocale,
+  t,
+} from "./i18n";
+import type { Locale } from "./i18n";
 import type {
   ExtractResult,
   ImportResult,
@@ -117,7 +129,14 @@ declare global {
 }
 
 // ---------- state ----------
+// THE ACTIVE GRAPH. Still a single module-level pointer, still read directly by
+// every consumer in this file — which is exactly why the mono→multi jump (ET1)
+// did not require touching them: `emtree` below owns *which* document this is,
+// and nothing else had to learn that there is more than one.
 let store: DocumentStore | null = null;
+// The workspace: every open graph, one active (see emtree.ts). The active slot's
+// store IS `store` above; there is no second copy of the truth.
+const emtree = new EMTree();
 // Absolute path of the currently-open file on desktop (Tauri). null =
 // no file yet (Save falls back to Save As) or running in a browser.
 let currentFilePath: string | null = null;
@@ -240,10 +259,15 @@ const dirtyDot = document.getElementById("dirty-dot")!;
 const sidePanel = document.getElementById("side")!;
 const tabInspector = document.getElementById("tab-inspector") as HTMLButtonElement;
 const tabNodes = document.getElementById("tab-nodes") as HTMLButtonElement;
+const tabEmtree = document.getElementById("tab-emtree") as HTMLButtonElement;
 const tabStratiminer = document.getElementById(
   "tab-stratiminer",
 ) as HTMLButtonElement;
 const tabLog = document.getElementById("tab-log") as HTMLButtonElement;
+const emtreeEl = document.getElementById("emtree") as HTMLDivElement;
+// POL1: the always-present "+ epoch" for Matrix view. Declared up here with the
+// other element refs because `updateToolbar` (much earlier in the file) toggles it.
+const btnAddEpoch = document.getElementById("btn-add-epoch") as HTMLButtonElement;
 const stratiminerEl = document.getElementById("stratiminer") as HTMLDivElement;
 const nodelistEl = document.getElementById("nodelist")!;
 const logpanelEl = document.getElementById("logpanel")!;
@@ -631,6 +655,14 @@ function refreshInspector(): void {
         if (store!.reorderEpoch(epochId, dir))
           void runLayout(false).then(() => select(epochId));
       },
+      onReorderPhase: (phaseId, dir) => {
+        // Same shape as the epoch reorder: change the order, then a from-sketch
+        // relayout so the sub-bands and their members follow. `reorderPhase`
+        // refuses a dated phase (its date decides the stack), so a false here is
+        // the model saying no, not a failure to report.
+        if (store!.reorderPhase(phaseId, dir))
+          void runLayout(false).then(() => select(phaseId));
+      },
       onAssignEpoch: (nodeId, epochId) => {
         store!.setFirstEpoch([nodeId], epochId);
         // re-home + reflow are view-side, but a fresh em-core layout gives the
@@ -904,6 +936,14 @@ function updateToolbar(): void {
   btnUndo.disabled = !store?.canUndo;
   btnRedo.disabled = !store?.canRedo;
   dirtyDot.classList.toggle("hidden", !store?.dirty);
+  // POL1: the two canvas overlays that only mean something with a document.
+  // The filter panel filters nothing without a graph, and an enabled control that
+  // does nothing is a worse answer than an absent one; the epoch "+" belongs to
+  // Matrix, which is the EM mode.
+  btnAddEpoch.classList.toggle("hidden", !store || view !== "matrix");
+  btnViewProps.classList.toggle("hidden", !store);
+  if (!store && filterPanelOpen()) closeFilterPanel();
+  paintColumnToggles(); // the right handle appears with the side panel
   updateWindowTitle();
 }
 
@@ -1290,7 +1330,143 @@ function setView(v: ViewKind): void {
     updateInfo();
   }
   updateLegend();
+  // The "+ epoch" overlay is Matrix-only, so switching view has to re-evaluate it.
+  updateToolbar();
   fit();
+}
+
+/** A slot's label: the document's own name if it declares one, else the source. */
+function slotNameFor(d: EmDocument, sourceName: string): string {
+  const g = d.graph as Record<string, unknown>;
+  const declared = (g["name"] as string | undefined)?.trim();
+  if (declared) return declared;
+  // Strip the extension from a file name — "TempluMare.em.json" reads better as
+  // "TempluMare" in a list of open graphs.
+  return sourceName.replace(/\.(em\.json|json|graphml|xlsx)$/i, "");
+}
+
+/**
+ * Wire a store's listeners. Called once per slot, at load.
+ *
+ * Per SLOT and not per activation: a listener added on every switch would fire
+ * as many times as the graph had been activated, so one edit would rebuild the
+ * scene five times and push five ops down the sync channel.
+ */
+function wireStore(s: DocumentStore): void {
+  s.onChange(() => {
+    // Guard: a background slot must not redraw the canvas. Today only the active
+    // store is ever mutated (edits go through the active document), but the sync
+    // channel and a future aux bake could touch another one, and the symptom of
+    // that would be the canvas flickering to a graph nobody selected.
+    if (s !== store) return;
+    recomputeHiddenFromCircles(); // keep hidden sets in sync with new types
+    buildScenes();
+    if (filterPanelOpen()) renderCirclesPanel(); // refresh circle counts
+    if (inContext()) {
+      contextScene = contextSceneFor(contextStack[contextStack.length - 1]);
+    }
+    updateInfo();
+    updateLegend();
+    updateToolbar();
+    refreshInspector();
+    refreshNarrativeView();   // embeds are references: a graph edit shows here
+    nodeList.refresh();
+    refreshEMTree();          // node/edge counts and the dirty dot live there
+    draw();
+  });
+  // forward local graph mutations to a connected peer (op-log, ADR-002 §2).
+  // Remote-applied ops don't re-emit (DocumentStore suppresses), so no echo.
+  s.onOp((op) => {
+    if (s !== store) return;
+    sync.sendOp(op);
+  });
+}
+
+/**
+ * Make a slot the active graph.
+ *
+ * This is the ONE place where "which graph?" changes, and the whole ET1 design
+ * rests on that: `store` is reassigned here and every consumer reads it directly,
+ * so none of them needed to learn about slots.
+ *
+ * View state travels WITH the slot (`graphOverrides`, the current view, collapsed
+ * phase lanes) — swapped out on the way out and in on the way in. Without that,
+ * switching tabs would silently discard the user's manual drags, which is the
+ * first thing anyone would notice and the last thing they would suspect.
+ *
+ * `rebuildOnly` is set by `loadDocument`, which does its own logging and its own
+ * layout decision afterwards; a plain switch does neither.
+ */
+function activateSlot(id: string, opts: { rebuildOnly?: boolean } = {}): void {
+  const outgoing = emtree.active();
+  const target = emtree.get(id);
+  if (!target) return;
+
+  // Park the outgoing slot's view state — unless the outgoing slot IS the target
+  // (loadDocument's first activation, where `add` already made it active).
+  if (outgoing && outgoing.id !== id) {
+    outgoing.viewState = {
+      view,
+      graphOverrides: new Map(graphOverrides),
+      phasesCollapsed: new Set(phasesCollapsed),
+      camera: {
+        matrix: { ...viewports.matrix },
+        graph: { ...viewports.graph },
+      },
+    };
+  }
+  emtree.setActive(id);
+
+  store = target.store;
+  currentFilePath = target.path; // desktop: Save writes back to THIS slot's file
+
+  // Transient state that belongs to the app, not to a graph: a selection or a
+  // hypergraph breadcrumb from another document means nothing here.
+  contextStack = [];
+  contextScene = null;
+  hoverId = null;
+  selectedId = null;
+  matrixViewLayout = null; // derived from filters; recomputed for this document
+
+  graphOverrides.clear();
+  for (const [nodeId, position] of target.viewState.graphOverrides) {
+    graphOverrides.set(nodeId, position);
+  }
+  phasesCollapsed.clear();
+  for (const epoch of target.viewState.phasesCollapsed) {
+    phasesCollapsed.add(epoch);
+  }
+
+  recomputeHiddenFromCircles(); // derive hidden types for this document
+  buildScenes();
+  select(null);
+  nodeList.refresh();
+  updateToolbar();
+  refreshInspector();
+  refreshNarrativeView();
+  refreshEMTree();
+  selectedNarrativeId = null; // a chapter selection belongs to its document
+  if (!opts.rebuildOnly) {
+    // A switch restores the view the slot was left in; a load lets
+    // `loadDocument` decide (it may need a fresh em-core layout first).
+    setView(target.viewState.view);
+    // Restore this graph's camera, or frame it if it has never been shown. The
+    // viewports are shared per view KIND, so without this the incoming graph
+    // inherits the outgoing one's pan and zoom — a 17-node document arriving at a
+    // 215-node document's scale is off screen, and looks like a broken switch.
+    const camera = target.viewState.camera[target.viewState.view];
+    if (camera) {
+      const viewport = viewports[target.viewState.view];
+      viewport.x = camera.x;
+      viewport.y = camera.y;
+      viewport.scale = camera.scale;
+      draw();
+    } else {
+      fit();
+    }
+    updateBreadcrumb();
+    logInfo(t("toast.activeGraph", { name: target.name }));
+  }
 }
 
 function loadDocument(
@@ -1311,43 +1487,22 @@ function loadDocument(
   // whole Blender sync snapshot) unrendered. Only the boxes would show.
   const hadStoredPositions =
     Object.keys(d.layout?.positions ?? {}).length > 0;
-  store = new DocumentStore(d);
+  const loaded = new DocumentStore(d);
   // every epoch always carries its temporal ParadataNodeGroup — ensure it now,
   // silently (before the change/op listeners are wired) so it neither pushes to
   // a sync host nor lands on the undo stack.
-  store.ensureAllEpochParadata();
-  store.onChange(() => {
-    recomputeHiddenFromCircles(); // keep hidden sets in sync with new types
-    buildScenes();
-    if (filterPanelOpen()) renderCirclesPanel(); // refresh circle counts
-    if (inContext()) {
-      contextScene = contextSceneFor(contextStack[contextStack.length - 1]);
-    }
-    updateInfo();
-    updateLegend();
-    updateToolbar();
-    refreshInspector();
-    refreshNarrativeView();   // embeds are references: a graph edit shows here
-    nodeList.refresh();
-    draw();
-  });
-  // forward local graph mutations to a connected peer (op-log, ADR-002 §2).
-  // Remote-applied ops don't re-emit (DocumentStore suppresses), so no echo.
-  store.onOp((op) => sync.sendOp(op));
-  contextStack = [];
-  contextScene = null;
-  hoverId = null;
-  selectedId = null;
+  loaded.ensureAllEpochParadata();
+  wireStore(loaded);
+  // ET1: the document becomes a SLOT in the workspace, and `add` activates it.
+  // Every entry point — Open, New, a drop, GraphML import, Blender sync,
+  // StratiMiner — already came through here, so all of them get a slot from this
+  // one line. (That closes the TODO SM1 left behind: a StratiMiner graph is now a
+  // workspace slot rather than a document that replaced whatever was open.)
+  const slot = emtree.add(loaded, slotNameFor(d, sourceName), path);
+  activateSlot(slot.id, { rebuildOnly: true });
   chronoBannerDismissed = false; // re-evaluate chronology for the new document
-  recomputeHiddenFromCircles(); // derive hidden types for the current view
-  graphOverrides.clear(); // graph-view drags don't carry across documents
-  matrixViewLayout = null; // stale for the new document
-  buildScenes();
-  select(null);
   dropHint.classList.add("hidden");
   sidePanel.classList.remove("hidden");
-  nodeList.refresh();
-  updateToolbar();
   updateBreadcrumb();
   // Matrix needs stored node POSITIONS. A doc may carry a layout object with
   // NO usable positions — a fresh graph, or a Blender sync snapshot (its emjson
@@ -1478,6 +1633,18 @@ function newDocument(): void {
     layout: { canvas: { width: 1200, height: 800 }, swimlanes: [], positions: {} },
   };
   loadDocument(doc, "new graph");
+  // A default epoch, because in EM an epoch is the CONTAINER a unit goes into:
+  // without one the palette accepts a click and nothing can be placed, which
+  // reads as a broken tool rather than as a missing prerequisite (E.D., from real
+  // use). "Epoch 1" is a starting point, not a claim — it carries no dates.
+  //
+  // Only for a NEW document, and only in EM mode. `loadDocument` on an empty doc
+  // has no stored positions, so it runs a fresh layout and lands in Matrix — the
+  // EM mode — every time; a graph-mode user who wants no lanes can delete it,
+  // which is one gesture, whereas discovering you need one is not.
+  if (store && view === "matrix" && store.topEpochIds().length === 0) {
+    addEpochEmMode();
+  }
   info.textContent = "new empty graph";
 }
 
@@ -3411,25 +3578,167 @@ btnViewProps.addEventListener("click", () => {
 });
 
 // side panel tabs
-type SideTab = "inspector" | "nodes" | "stratiminer" | "log";
+type SideTab = "inspector" | "nodes" | "emtree" | "stratiminer" | "log";
 let activeTab: SideTab = "inspector";
 function showTab(which: SideTab): void {
   activeTab = which;
   tabInspector.classList.toggle("active", which === "inspector");
   tabNodes.classList.toggle("active", which === "nodes");
+  tabEmtree.classList.toggle("active", which === "emtree");
   tabStratiminer.classList.toggle("active", which === "stratiminer");
   tabLog.classList.toggle("active", which === "log");
   inspector.classList.toggle("hidden", which !== "inspector");
   nodelistEl.classList.toggle("hidden", which !== "nodes");
+  emtreeEl.classList.toggle("hidden", which !== "emtree");
   stratiminerEl.classList.toggle("hidden", which !== "stratiminer");
   logpanelEl.classList.toggle("hidden", which !== "log");
   if (which === "log") refreshLogPanel();
   if (which === "stratiminer") refreshStratiMiner();
+  if (which === "emtree") refreshEMTree();
 }
 tabInspector.addEventListener("click", () => showTab("inspector"));
 tabNodes.addEventListener("click", () => showTab("nodes"));
+tabEmtree.addEventListener("click", () => showTab("emtree"));
 tabStratiminer.addEventListener("click", () => showTab("stratiminer"));
 tabLog.addEventListener("click", () => showTab("log"));
+
+// ── EMTree ────────────────────────────────────────────────────────────────────
+
+function refreshEMTree(): void {
+  if (activeTab !== "emtree") return; // rebuilt on show; no work while hidden
+  // The panel asks for its text by key and `t` resolves it in the active
+  // language: ET1 already went through a key lookup, so I18N1 was this one line.
+  renderEMTree(emtreeEl, emtree, emtreeHandlers, t);
+}
+
+/**
+ * Open the workspace tab even with no document loaded.
+ *
+ * Same reasoning as StratiMiner's empty-state entry: the side panel appears only
+ * once a graph is open, and the tree is where you go to OPEN one. Reached from the
+ * empty-state hint.
+ */
+function openEMTree(): void {
+  sidePanel.classList.remove("hidden");
+  showTab("emtree");
+}
+
+const emtreeHandlers: EMTreeHandlers = {
+  onActivate: (id) => {
+    if (id === emtree.activeId) return;
+    activateSlot(id);
+  },
+  onRemove: (id) => {
+    const slot = emtree.get(id);
+    if (!slot) return;
+    // Unsaved work is the one thing a close must not take silently.
+    if (slot.store.dirty
+        && !confirm(t("emtree.unsaved", { name: slot.name }))) {
+      return;
+    }
+    const nextId = emtree.remove(id);
+    if (nextId) {
+      // The neighbour becomes active. `activateSlot` refuses a no-op switch, so
+      // force the swap by clearing our idea of "current" first — remove() has
+      // already moved `activeId`, and the store still points at the closed slot.
+      store = null;
+      activateSlot(nextId);
+    } else {
+      closeWorkspace();
+    }
+    refreshEMTree();
+  },
+  onOpen: () => void openDocument(),
+  onNew: () => newDocument(),
+  onRename: (id, name) => {
+    emtree.rename(id, name);
+    refreshEMTree();
+    // The slot name is the workspace's label for this graph, NOT the document's
+    // `graph.name`: renaming a tab must not silently edit the file. The two can
+    // legitimately differ (two copies of one graph, told apart by tab), and the
+    // Inspector's Canvas panel is where `graph.name` is edited.
+    updateWindowTitle();
+  },
+};
+
+/** The last graph was closed: back to the empty canvas, without a stale view. */
+function closeWorkspace(): void {
+  store = null;
+  currentFilePath = null;
+  contextStack = [];
+  contextScene = null;
+  hoverId = null;
+  selectedId = null;
+  selectedIds = new Set();
+  selectedNarrativeId = null;
+  matrixViewLayout = null;
+  graphOverrides.clear();
+  phasesCollapsed.clear();
+  scenes.matrix = null;
+  scenes.graph = null;
+  dropHint.classList.remove("hidden");
+  info.textContent = t("toast.openOrDrop");
+  select(null);
+  nodeList.refresh();
+  updateToolbar();
+  updateBreadcrumb();
+  updateLegend();
+  refreshInspector();
+  refreshNarrativeView();
+  draw();
+  logInfo(t("toast.workspaceEmpty"));
+}
+
+// ── language ──────────────────────────────────────────────────────────────────
+//
+// The selector, and what happens on a switch. Two kinds of string need two
+// treatments and that is the whole design:
+//
+//  * **static chrome** (toolbar, tabs, Settings) carries `data-i18n` in the HTML
+//    and is re-translated in place by `applyStaticTranslations`. Rewriting the
+//    toolbar as TS just to make it translatable would have been a large change
+//    for nothing; an attribute per element is the smaller promise.
+//  * **rendered panels** (EMTree, StratiMiner, the inspector) call `t()` while
+//    they build, so they only need re-rendering.
+function populateLanguageSelect(): void {
+  const select = document.getElementById("set-language") as HTMLSelectElement | null;
+  if (!select) return;
+  select.innerHTML = LOCALES.map((locale) => {
+    // Two different facts, in order of what a reader needs to know:
+    //  · not validated → say so. All six drafts answer 100% of the keys, so a
+    //    percentage would now read as "finished" and hide the thing that matters:
+    //    nobody has checked the terminology yet.
+    //  · incomplete → the percentage, because then English shows through and
+    //    somebody picking that language deserves to know why it barely changed.
+    let suffix = "";
+    if (!isValidated(locale.code)) {
+      suffix = ` — ${t("settings.aiDraft")}`;
+    } else {
+      const done = Math.round(coverage(locale.code) * 100);
+      if (done < 100) suffix = ` — ${done}% ${t("settings.translated")}`;
+    }
+    return `<option value="${locale.code}">${locale.label}${suffix}</option>`;
+  }).join("");
+  select.value = getLocale();
+}
+
+function applyLanguage(code: Locale): void {
+  setLocale(code);          // persists, sets dir/lang, re-translates the static DOM
+  populateLanguageSelect(); // the percentages carry a translated word themselves
+  // Everything that renders its own text:
+  refreshEMTree();
+  refreshStratiMiner();
+  refreshInspector();
+  nodeList.refresh();
+  refreshNarrativeView();
+  updateLegend();
+  updateToolbar();
+  draw();                   // the canvas draws no chrome, but the legend feeds it
+}
+
+document.getElementById("set-language")?.addEventListener("change", (event) => {
+  applyLanguage((event.target as HTMLSelectElement).value as Locale);
+});
 
 // ── StratiMiner ───────────────────────────────────────────────────────────────
 //
@@ -3462,6 +3771,67 @@ document
     e.stopPropagation();
     openStratiMiner();
   });
+document.getElementById("drop-hint-emtree")?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  openEMTree();
+});
+
+// POL1 · the one epoch gesture. Adds at the TOP of the stack (newest), which is
+// where an undated epoch belongs until the chronology sorts it in — the same
+// `addEpochEmMode` the between-lanes "+" uses, so there is one code path and one
+// behaviour rather than a palette special case beside it.
+btnAddEpoch.addEventListener("click", (e) => {
+  e.stopPropagation(); // the button sits over the canvas
+  if (!store) return;
+  addEpochEmMode();
+});
+
+// ── POL1 · collapsing the side columns ────────────────────────────────────────
+//
+// A stratigraphic matrix is wide, and on a laptop the two columns cost most of
+// the canvas. The handle sits on the column's own edge so there is nothing to
+// hunt for when you want it back, and the arrow always points at what will
+// happen: `‹` folds the left column away, `›` brings it back.
+//
+// Session-only, not persisted: a collapsed palette restored on next launch would
+// greet the user with a tool that appears to have lost its palette.
+const collapseLeftBtn = document.getElementById("collapse-left") as HTMLButtonElement;
+const collapseRightBtn = document.getElementById("collapse-right") as HTMLButtonElement;
+const leftCol = document.getElementById("left-col")!;
+let leftCollapsed = false;
+let rightCollapsed = false;
+
+/** Arrows, titles, and whether the right handle is offered at all. Cheap: safe to
+ *  call from `updateToolbar`, which runs on every state change. */
+function paintColumnToggles(): void {
+  leftCol.classList.toggle("collapsed", leftCollapsed);
+  collapseLeftBtn.textContent = leftCollapsed ? "›" : "‹";
+  collapseLeftBtn.title = t(leftCollapsed ? "layout.showLeft" : "layout.hideLeft");
+
+  sidePanel.classList.toggle("collapsed", rightCollapsed);
+  collapseRightBtn.textContent = rightCollapsed ? "‹" : "›";
+  collapseRightBtn.title = t(rightCollapsed ? "layout.showRight" : "layout.hideRight");
+  // The right handle only makes sense once the side panel exists — with no
+  // document open there is nothing to reveal.
+  collapseRightBtn.classList.toggle(
+    "hidden", sidePanel.classList.contains("hidden"));
+}
+
+/** The collapse itself: repaint, then resize the canvas, which is sized from its
+ *  container. Kept apart from `paintColumnToggles` so the frequent caller does not
+ *  schedule a redraw on every toolbar update. */
+function toggleColumn(which: "left" | "right"): void {
+  if (which === "left") leftCollapsed = !leftCollapsed;
+  else rightCollapsed = !rightCollapsed;
+  paintColumnToggles();
+  requestAnimationFrame(() => {
+    resizeCanvas();
+    draw();
+  });
+}
+
+collapseLeftBtn.addEventListener("click", () => toggleColumn("left"));
+collapseRightBtn.addEventListener("click", () => toggleColumn("right"));
 
 function smSet(patch: Partial<typeof smState>): void {
   smState = { ...smState, ...patch };
@@ -4952,6 +5322,17 @@ void onForeignBridge((message) => {
 });
 
 // ---------- boot ----------
+// Language FIRST: `initI18n` sets `dir`/`lang` on <html> and translates the
+// static chrome before anything is rendered. Doing it after the first render
+// would show a frame of English (or an LTR frame in Hebrew) and then flip.
+initI18n();
+populateLanguageSelect();
+// Evaluate the empty state ONCE at boot. Without this, the canvas overlays kept
+// whatever the markup said until the first document arrived — so the filter
+// button sat there, enabled, filtering nothing (POL1 point 8 was only half true:
+// the rule was right, it just never ran before the first load).
+updateToolbar();
+
 // Start from an EMPTY canvas (more natural than auto-loading a sample): use
 // New, Open…, drop a file, or Sync. __EM_TEST_DATA__ still injects a fixture
 // for automated tests.

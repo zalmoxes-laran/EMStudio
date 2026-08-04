@@ -24,6 +24,7 @@ export interface InspectorCallbacks {
   onDeleteEpoch: (epochId: string) => void;
   /** move an (empty) epoch's swimlane up (-1) / down (+1), then relayout */
   onReorderEpoch: (epochId: string, dir: -1 | 1) => void;
+  onReorderPhase: (phaseId: string, dir: -1 | 1) => void;
   /** attribute a unit to an epoch or one of its phases (retargets has_first_epoch) */
   onAssignEpoch: (nodeId: string, epochId: string) => void;
   /** pin/unpin a node's position (layout engine keeps pinned nodes in place) */
@@ -462,6 +463,34 @@ export function renderInspector(
       pb.addEventListener("click", () => cb.onJump(parentEpoch));
       row.appendChild(pb);
       root.appendChild(row);
+      // POL1: phases move like epochs. They did not, which made the sub-band
+      // stack feel frozen — the only way to change it was to date the phases.
+      //
+      // Disabled when the phase (or the sibling it would swap with) HAS a date:
+      // the band stack is sorted on `start_time`, so the move would be undone
+      // immediately. `store.canReorderPhase` owns that rule, so the button and
+      // the action cannot disagree about when it is possible.
+      const phBar = el("div", "insp-actions");
+      const phUp = el("button", "insp-btn", "▲ Move up") as HTMLButtonElement;
+      const phDown = el("button", "insp-btn", "▼ Move down") as HTMLButtonElement;
+      for (const [b, dir] of [
+        [phUp, -1],
+        [phDown, 1],
+      ] as const) {
+        const can = store.canReorderPhase(nodeId, dir);
+        b.disabled = !can;
+        b.title = can
+          ? `Move this phase ${dir < 0 ? "up (newer)" : "down (older)"}`
+          : store.isDated(nodeId)
+            ? "This phase is dated — its position follows its date. Change the " +
+              "date to move it."
+            : "No sibling phase in that direction";
+        b.addEventListener("click", () => cb.onReorderPhase(nodeId, dir));
+      }
+      phBar.appendChild(phUp);
+      phBar.appendChild(phDown);
+      root.appendChild(phBar);
+
       const delBar = el("div", "insp-actions");
       const delPh = el("button", "insp-btn danger", "Delete phase") as HTMLButtonElement;
       delPh.title = "Remove this phase; its units move to a chosen epoch";

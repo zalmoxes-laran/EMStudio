@@ -33,6 +33,10 @@
  */
 
 import type { EmDocument } from "./types";
+// i18n is a leaf module (imports nothing), so this cannot cycle. Only the new
+// browser-path hint goes through it for now — converting the rest of this
+// panel's strings is the I18N1 follow-up.
+import { t } from "./i18n";
 
 /** `POST /stratiminer-prompt` — Path B. */
 export interface PromptResult {
@@ -161,8 +165,15 @@ export function renderStratiMiner(host: HTMLElement, state: StratiMinerState,
         <input id="sm-folder" type="text" spellcheck="false"
                placeholder="/path/to/documents"
                value="${esc(state.folder)}" />
-        ${opts.native ? '<button id="sm-pick-folder" title="Choose a folder">…</button>' : ""}
+        <button id="sm-pick-folder" title="Choose a folder">…</button>
+        <!-- The BROWSER picker cannot give an absolute path (see onPickFolder):
+             it is a hidden input that fills in what it can, and the hint below
+             says so. On desktop the native dialog gives the real path. -->
+        <input id="sm-folder-file" type="file" webkitdirectory
+               class="sm-hidden-file" />
       </div>
+      ${opts.native ? "" : `<span class="sm-hint">${
+        esc(t("stratiminer.browserPathHint"))}</span>`}
       <label class="sm-lang">
         Output language
         <input id="sm-language" type="text" spellcheck="false"
@@ -198,7 +209,9 @@ export function renderStratiMiner(host: HTMLElement, state: StratiMinerState,
         <input id="sm-xlsx" type="text" spellcheck="false"
                placeholder="/path/to/em_data.xlsx"
                value="${esc(state.xlsxPath)}" />
-        ${opts.native ? '<button id="sm-pick-xlsx" title="Choose the xlsx">…</button>' : ""}
+        <button id="sm-pick-xlsx" title="Choose the xlsx">…</button>
+        <input id="sm-xlsx-file" type="file" accept=".xlsx"
+               class="sm-hidden-file" />
       </div>
       <button id="sm-transform" class="sm-primary"
               ${canTransform ? "" : "disabled"}>
@@ -257,11 +270,40 @@ export function renderStratiMiner(host: HTMLElement, state: StratiMinerState,
   if (handlers.onSavePrompt) {
     on("sm-prompt-save", "click", () => handlers.onSavePrompt?.());
   }
-  if (handlers.onPickFolder) {
+  // The pickers exist in BOTH deliveries, and the difference is what they can
+  // deliver rather than whether they are offered:
+  //
+  //  * **desktop** — the native dialog returns a real absolute path, which is
+  //    exactly what the bridge needs (it reads the folder server-side).
+  //  * **browser** — `<input type=file>` deliberately withholds the path; all it
+  //    exposes is a name (and `webkitRelativePath`'s first segment for a
+  //    directory). So it prefills what it can and the hint says the path may need
+  //    completing. Hiding the button instead would leave a text field with no
+  //    affordance at all, which is worse than a partial one that explains itself.
+  const wireFallback = (buttonId: string, inputId: string,
+                        onPicked: (value: string) => void): void => {
+    const fileInput = host.querySelector<HTMLInputElement>(`#${inputId}`);
+    on(buttonId, "click", () => fileInput?.click());
+    fileInput?.addEventListener("change", () => {
+      const file = fileInput.files?.[0];
+      if (!file) return;
+      // For a directory pick, `webkitRelativePath` is "<folder>/<file>"; the first
+      // segment is the only thing the browser tells us about the folder.
+      const relative = (file as File & { webkitRelativePath?: string })
+        .webkitRelativePath;
+      onPicked(relative ? relative.split("/")[0] : file.name);
+      fileInput.value = ""; // so picking the same thing again still fires
+    });
+  };
+
+  if (opts.native) {
     on("sm-pick-folder", "click", () => handlers.onPickFolder?.());
-  }
-  if (handlers.onPickXlsx) {
     on("sm-pick-xlsx", "click", () => handlers.onPickXlsx?.());
+  } else {
+    wireFallback("sm-pick-folder", "sm-folder-file",
+      (v) => handlers.onFolderChange(v));
+    wireFallback("sm-pick-xlsx", "sm-xlsx-file",
+      (v) => handlers.onXlsxChange(v));
   }
 }
 

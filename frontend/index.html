@@ -39,44 +39,44 @@
         <span id="app-version" class="app-ver" title="EMStudio build version"></span>
       </span>
       <div class="dropdown" id="dd-file">
-        <button class="dd-toggle" title="File operations">File ▾</button>
+        <button class="dd-toggle" title="File operations"><span data-i18n="toolbar.file">File</span> ▾</button>
         <div class="dd-menu hidden">
-          <button id="btn-new" title="New empty .em.json">New</button>
-          <button id="btn-open" title="Open an .em.json file">Open…</button>
+          <button id="btn-new" title="New empty .em.json" data-i18n="toolbar.new">New</button>
+          <button id="btn-open" title="Open an .em.json file" data-i18n="toolbar.open">Open…</button>
           <button
             id="btn-import-graphml"
             title="Import a yEd GraphML file (needs the local dev bridge — see dev.sh)"
           >
-            Import GraphML…
+            <span data-i18n="toolbar.importGraphml">Import GraphML…</span>
           </button>
-          <button id="btn-save" title="Save .em.json (⌘S)">Save</button>
-          <button id="btn-save-as" title="Save .em.json to a new file (⇧⌘S)">Save As…</button>
+          <button id="btn-save" title="Save .em.json (⌘S)" data-i18n="toolbar.save">Save</button>
+          <button id="btn-save-as" title="Save .em.json to a new file (⇧⌘S)" data-i18n="toolbar.saveAs">Save As…</button>
         </div>
       </div>
       <div class="dropdown" id="dd-export">
-        <button class="dd-toggle" title="Export">Export ▾</button>
+        <button class="dd-toggle" title="Export"><span data-i18n="toolbar.export">Export</span> ▾</button>
         <div class="dd-menu hidden">
           <button id="btn-svg" title="Export current view as SVG">SVG</button>
           <button id="btn-graphml" title="Export as yEd GraphML (needs the local dev bridge — see dev.sh)">GraphML</button>
           <button id="btn-ttl" title="Export as RDF/CIDOC Turtle (.ttl) via the s3Dgraphy projection">Turtle (.ttl)</button>
         </div>
       </div>
-      <button id="btn-sync" title="Connect to Blender/EMtools for live selection sync (ADR-002)">Sync</button>
-      <button id="btn-resources" title="Resources: the shared Resource layer (Documents · RM · DTC · Shelf) via the bridge">Resources</button>
-      <button id="btn-settings" title="Settings (sync target, …)" aria-label="Settings">⚙</button>
+      <button id="btn-sync" title="Connect to Blender/EMtools for live selection sync (ADR-002)" data-i18n="toolbar.sync">Sync</button>
+      <button id="btn-resources" title="Resources: the shared Resource layer (Documents · RM · DTC · Shelf) via the bridge" data-i18n="toolbar.resources">Resources</button>
+      <button id="btn-settings" data-i18n-title="toolbar.settings" aria-label="Settings">⚙</button>
       <span id="dirty-dot" class="hidden" title="unsaved changes">●</span>
       <span class="tb-sep"></span>
-      <button id="btn-undo" title="Undo (⌘Z)" disabled>↺</button>
-      <button id="btn-redo" title="Redo (⇧⌘Z)" disabled>↻</button>
+      <button id="btn-undo" data-i18n-title="toolbar.undo" disabled>↺</button>
+      <button id="btn-redo" data-i18n-title="toolbar.redo" disabled>↻</button>
       <span class="tb-sep"></span>
       <div id="view-toggle" role="group">
-        <button id="btn-matrix" class="active">Matrix</button>
-        <button id="btn-graph">Graph</button>
+        <button id="btn-matrix" class="active" data-i18n="toolbar.matrix">Matrix</button>
+        <button id="btn-graph" data-i18n="toolbar.graph">Graph</button>
         <button
           id="btn-narrative"
           title="Narrative — the graph read as a story (chapters, prose, live embeds)"
         >
-          Narrative
+          <span data-i18n="toolbar.narrative">Narrative</span>
         </button>
       </div>
       <select
@@ -95,11 +95,11 @@
       >
         Edit
       </button>
-      <button id="btn-fit" title="Fit to view (0)">Fit</button>
-      <button id="btn-layout" title="Recompute the swimlane layout (em-core, same engine as the CLI)">Layout</button>
+      <button id="btn-fit" title="Fit to view (0)" data-i18n="toolbar.fit">Fit</button>
+      <button id="btn-layout" title="Recompute the swimlane layout (em-core, same engine as the CLI)" data-i18n="toolbar.layout">Layout</button>
       <input type="file" id="file-input" accept=".json,.em.json" hidden />
       <div id="search-wrap">
-        <input id="search" type="search" placeholder="Search nodes…" autocomplete="off" />
+        <input id="search" type="search" placeholder="Search nodes…" data-i18n-placeholder="toolbar.search" autocomplete="off" />
         <div id="search-results" class="hidden"></div>
       </div>
     </header>
@@ -108,6 +108,11 @@
         <aside id="palette" title="Click a type, then click the canvas to place it"></aside>
         <div id="legend" class="hidden"></div>
       </div>
+      <!-- POL1: collapse the side columns. On the EDGE of each column rather than
+           in the toolbar: the handle is where the thing it hides is, so there is
+           nothing to hunt for when you want the canvas back. The arrow always
+           points at what will happen. -->
+      <button id="collapse-left" class="col-toggle" data-i18n-title="layout.hideLeft">‹</button>
       <div id="canvas-wrap">
         <canvas id="canvas"></canvas>
         <div id="chrono-banner" class="hidden"></div>
@@ -116,11 +121,15 @@
              not, which is exactly the moment its panel would otherwise be
              unreachable (the side panel only appears once a document is open). -->
         <div id="drop-hint">
-          <span>Drop an <b>.em.json</b> file here</span>
+          <span data-i18n-html="empty.drop">Drop an <b>.em.json</b> file here</span>
           <span class="dh-alt">
-            or
-            <button id="drop-hint-stratiminer" type="button">
+            <span data-i18n="empty.or">or</span>
+            <button id="drop-hint-stratiminer" type="button" data-i18n="empty.stratiminer">
               build one from your sources
+            </button>
+            ·
+            <button id="drop-hint-emtree" type="button" data-i18n="empty.emtree">
+              open the workspace
             </button>
           </span>
         </div>
@@ -145,6 +154,20 @@
             <path d="M2.5 3.5 H13.5 L9.5 8.5 V12.5 L6.5 14 V8.5 Z" />
           </svg>
         </button>
+        <!-- POL1: ONE gesture for adding an epoch, and it is always here. The
+             first epoch used to come from the palette and the later ones from a
+             hover-only "+" between lanes — two gestures for one thing, and the
+             first was invisible until you thought to look in the palette. This
+             button is shown whenever Matrix view has a document, including when
+             there are no lanes at all. -->
+        <button
+          id="btn-add-epoch"
+          class="hidden"
+          data-i18n-title="matrix.addEpoch"
+          aria-label="Add epoch"
+        >
+          + <span data-i18n="matrix.epoch">epoch</span>
+        </button>
         <div id="filter-panel" class="hidden"></div>
         <div id="toast" class="hidden"></div>
         <!-- N2: the narrative view is an OVERLAY over the canvas, not a third
@@ -155,22 +178,30 @@
         <div id="narrative-view" class="hidden"></div>
         <canvas id="overview" title="Overview — click to move the viewport"></canvas>
       </div>
+      <button id="collapse-right" class="col-toggle hidden" data-i18n-title="layout.hideRight">›</button>
       <aside id="side" class="hidden">
         <div id="side-tabs">
-          <button id="tab-inspector" class="active">Inspector</button>
-          <button id="tab-nodes">Nodes</button>
+          <button id="tab-inspector" class="active" data-i18n="tab.inspector">Inspector</button>
+          <button id="tab-nodes" data-i18n="tab.nodes">Nodes</button>
+          <button
+            id="tab-emtree"
+            title="EMTree: the graphs open in this workspace, and their auxiliary files"
+          >
+            <span data-i18n="tab.emtree">EMTree</span>
+          </button>
           <button
             id="tab-stratiminer"
             title="StratiMiner: build a graph from a folder of unstructured sources, via the reviewable em_data.xlsx table"
           >
-            StratiMiner
+            <span data-i18n="tab.stratiminer">StratiMiner</span>
           </button>
-          <button id="tab-log" title="Document warnings and activity log">
-            Log
+          <button id="tab-log" data-i18n-title="tab.logTitle">
+            <span data-i18n="tab.log">Log</span>
           </button>
         </div>
         <div id="inspector"></div>
         <div id="nodelist" class="hidden"></div>
+        <div id="emtree" class="hidden"></div>
         <div id="stratiminer" class="hidden"></div>
         <div id="logpanel" class="hidden"></div>
       </aside>
@@ -209,12 +240,25 @@
     <div id="settings-modal" class="modal hidden">
       <div class="modal-card">
         <div class="modal-head">
-          <span>Settings</span>
-          <button id="settings-close" class="modal-x" title="Close">✕</button>
+          <span data-i18n="settings.title">Settings</span>
+          <button id="settings-close" class="modal-x" data-i18n-title="settings.close">✕</button>
         </div>
         <div class="modal-body">
+          <!-- Language first: it changes every other label in this dialog, so
+               having to scroll past the sync ports to find it would be odd. -->
           <section class="settings-sect">
-            <h4>Live sync</h4>
+            <h4 data-i18n="settings.language">Language</h4>
+            <p class="settings-hint" data-i18n="settings.languageHint">
+              The language of this interface. Node labels and narrative text are
+              separate: they travel with the document, not with the app.
+            </p>
+            <label
+              ><span data-i18n="settings.language">Language</span>
+              <select id="set-language"></select>
+            </label>
+          </section>
+          <section class="settings-sect">
+            <h4 data-i18n="settings.liveSync">Live sync</h4>
             <p class="settings-hint">
               Where EMStudio connects for live sync (ADR-002). The chosen tool
               is the <b>host</b> and runs the WebSocket server; EMStudio is the
@@ -250,14 +294,14 @@
             </p>
           </section>
           <section class="settings-sect">
-            <h4>Interaction</h4>
+            <h4 data-i18n="settings.interaction">Interaction</h4>
             <label class="settings-check">
               <input id="set-edge-tooltips" type="checkbox" />
               Show connector tooltip on hover — on by default
             </label>
           </section>
           <section class="settings-sect">
-            <h4>AI provider</h4>
+            <h4 data-i18n="settings.aiProvider">AI provider</h4>
             <p class="settings-hint">
               Chi scrive le bozze narrative. La chiave non viene <b>mai</b>
               salvata dal frontend: nell'app desktop finisce nel
@@ -297,7 +341,7 @@
             <p class="settings-hint" id="set-ai-key-hint"></p>
           </section>
           <section class="settings-sect">
-            <h4>Visualizzatore 3D</h4>
+            <h4 data-i18n="settings.viewer">3D viewer</h4>
             <p class="settings-hint">
               Dove vive il 3D. EMStudio non incorpora un motore 3D: le scene
               sono di <b>ATON</b>, e <b>Heriverse</b> è la web-app ATON che
@@ -329,7 +373,7 @@
             </p>
           </section>
           <section class="settings-sect">
-            <h4>Developer</h4>
+            <h4 data-i18n="settings.developer">Developer</h4>
             <label class="settings-check">
               <input id="set-dev-uuid" type="checkbox" />
               Show node UUIDs (inspector) — off by default
@@ -337,8 +381,8 @@
           </section>
         </div>
         <div class="modal-foot">
-          <button id="settings-cancel">Cancel</button>
-          <button id="settings-save" class="primary">Save</button>
+          <button id="settings-cancel" data-i18n="settings.cancel">Cancel</button>
+          <button id="settings-save" class="primary" data-i18n="settings.save">Save</button>
         </div>
       </div>
     </div>
