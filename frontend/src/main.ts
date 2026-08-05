@@ -17,6 +17,19 @@ import {
   versionBanner,
 } from "./logpanel";
 import { DocumentStore } from "./model";
+import {
+  initialName,
+  nameStatusMap,
+  renameOnAttach,
+  type NameCheck,
+} from "./naming";
+import {
+  applyTheme,
+  storeMode,
+  storedMode,
+  watchSystemTheme,
+  type ThemeMode,
+} from "./theme";
 import { buildNodeList } from "./nodelist";
 import { buildOverview } from "./overview";
 import { edgeStyle } from "./palette";
@@ -333,6 +346,26 @@ function setModeIndicator(sidecar: boolean): void {
   }
 }
 setModeIndicator(false);
+
+// ---------- theme (DARK1) ----------
+// Applied BEFORE the first draw: `applyTheme` stamps `data-theme` for the CSS and
+// sets the canvas palette for the renderer, which cannot read CSS variables.
+// The stored preference wins; with none, `auto` follows the system.
+applyTheme(storedMode());
+const setThemeSel = document.getElementById("set-theme") as HTMLSelectElement;
+setThemeSel.value = storedMode();
+setThemeSel.addEventListener("change", () => {
+  const mode = setThemeSel.value as ThemeMode;
+  storeMode(mode);
+  applyTheme(mode);
+  // the canvas does not repaint itself, and the overview lives on its own canvas
+  draw();
+});
+// While the preference is `auto`, follow the system live (matchMedia, not a poll).
+watchSystemTheme(() => {
+  setThemeSel.value = storedMode();
+  draw();
+});
 let verPop: HTMLDivElement | null = null;
 function closeVerPop(): void {
   verPop?.remove();
@@ -484,6 +517,7 @@ function draw(): void {
       editable: true,
       insertBoundary: view === "matrix" ? hoverInsertBoundary : null,
       monochrome,
+      nameStatus, // NAME1: orange/red labels, one answer shared with the menu
     },
     w,
     h,
@@ -1385,6 +1419,7 @@ function wireStore(s: DocumentStore): void {
     // that would be the canvas flickering to a graph nobody selected.
     if (s !== store) return;
     recomputeHiddenFromCircles(); // keep hidden sets in sync with new types
+    refreshNameStatus();          // NAME1: label colours follow the graph
     buildScenes();
     if (filterPanelOpen()) renderCirclesPanel(); // refresh circle counts
     if (inContext()) {
@@ -1943,7 +1978,11 @@ function placeNode(wx: number, wy: number): void {
   }
   // id = UUID (identity, collision-free across tools); name = human label
   const id = store.newId();
-  const name = store.freshLabel(placingType);
+  // NAME1 · the paradata chain has a convention (D.<n> / <doc>.<ord> / C.<n>);
+  // every other type keeps the store's generic fresh label. A new extractor is
+  // born unattached, so it gets a Temp name and is numbered when the
+  // `extracted_from` edge appears — see `createEdge`.
+  const name = initialName(store.doc, placingType) ?? store.freshLabel(placingType);
   const w = isGroupType(placingType) ? 120 : 90;
   const h = 30;
   const node: EmNode = { id, name, node_type: placingType, description: "" };
@@ -2175,6 +2214,15 @@ function createEdge(source: string, target: string, edgeType: string): void {
   toast(
     `${store.node(source)?.name || source} — ${edgeTypeLabel(edgeType)} → ${store.node(target)?.name || target}`,
   );
+  // NAME1 · attaching an extractor to a document is what NAMES it. EMStudio has
+  // no "create from the document's handle and name it on the way" path — the
+  // connect gesture creates the node first and the edge second — so the edge is
+  // the trigger, which also covers an extractor attached by hand later.
+  const renamed = renameOnAttach(store.doc, source);
+  if (renamed) {
+    store.updateNode(source, { name: renamed });
+    toast(`numbered ${renamed}`);
+  }
 }
 
 function showEdgeMenu(
@@ -2232,7 +2280,7 @@ function createNodeAt(type: string, wx: number, wy: number): string | null {
     return store.addEpoch(undefined, { x: wx - w / 2, y: wy - h / 2, w, h }).id;
   }
   const id = store.newId();
-  const name = store.freshLabel(type);
+  const name = initialName(store.doc, type) ?? store.freshLabel(type);
   const w = isGroupType(type) ? 120 : 90;
   const h = 30;
   const node = { id, name, node_type: type, description: "" };
@@ -2554,6 +2602,40 @@ document.querySelectorAll<HTMLElement>(".dropdown").forEach((dd) => {
 document.addEventListener("click", closeAllDropdowns);
 
 const fileInput = document.getElementById("file-input") as HTMLInputElement;
+/**
+ * AUX1 · the auxiliary-file picker of the active slot.
+ *
+ * A second input rather than reusing `fileInput`: that one LOADS a document, and
+ * one input serving two meanings is how a picked xlsx ends up replacing the graph.
+ */
+const auxFileInput = document.getElementById(
+  "aux-file-input",
+) as HTMLInputElement;
+auxFileInput.addEventListener("change", () => {
+  const f = auxFileInput.files?.[0];
+  auxFileInput.value = ""; // so picking the same file again still fires
+  const slot = emtree.active();
+  if (!f || !slot) return;
+  const rel = (f as File & { webkitRelativePath?: string }).webkitRelativePath;
+  // Guess the TYPE from the extension, and only as a starting point: the dropdown
+  // in the detail panel is what decides, because the same .xlsx can be an EMdb
+  // workbook or a source list and no extension can tell them apart.
+  const lower = f.name.toLowerCase();
+  const fileType = lower.endsWith(".sqlite") || lower.endsWith(".db")
+    ? "pyarchinit"
+    : "emdb_xlsx";
+  slot.auxiliaryFiles.push({
+    id: crypto.randomUUID(),
+    name: f.name,
+    kind: "local",
+    locator: rel || f.name,
+    fileType,
+    baked: false,
+    expanded: true, // opened on arrival: the type usually needs correcting
+  });
+  refreshEMTree();
+  toast(`${f.name} attached to ${slotLabel(slot)} — volatile until baked`);
+});
 document
   .getElementById("btn-new")!
   .addEventListener("click", async () => {
@@ -2832,6 +2914,9 @@ const setDevUuid = document.getElementById("set-dev-uuid") as HTMLInputElement;
 const setEdgeTips = document.getElementById(
   "set-edge-tooltips",
 ) as HTMLInputElement;
+const setStrictDocNames = document.getElementById(
+  "set-strict-doc-names",
+) as HTMLInputElement;
 const setAiProvider = document.getElementById(
   "set-ai-provider") as HTMLSelectElement;
 const setAiModel = document.getElementById("set-ai-model") as HTMLInputElement;
@@ -3067,6 +3152,7 @@ function openSettings(): void {
   setPortInp.value = String(s.sync.port);
   setDevUuid.checked = s.developer.showNodeIds;
   setEdgeTips.checked = s.interaction.edgeTooltips;
+  setStrictDocNames.checked = s.interaction.strictDocumentNames;
   setAiProvider.value = s.ai.provider;
   setAiModel.value = s.ai.model;
   setAiKey.value = "";
@@ -3113,7 +3199,10 @@ settingsModal.addEventListener("click", (e) => {
       port,
     },
     developer: { showNodeIds: setDevUuid.checked },
-    interaction: { edgeTooltips: setEdgeTips.checked },
+    interaction: {
+      edgeTooltips: setEdgeTips.checked,
+      strictDocumentNames: setStrictDocNames.checked,
+    },
     // provider + model only — the key is never part of what gets persisted
     ai: {
       provider: setAiProvider.value || "claude",
@@ -3722,6 +3811,47 @@ const emtreeHandlers: EMTreeHandlers = {
   },
   onOpen: () => void openDocument(),
   onNew: () => newDocument(),
+  // AUX1 · auxiliary files live on the SLOT and never in em.json, so every one of
+  // these mutates `slot.auxiliaryFiles` and re-renders the tree — none of them
+  // touches `store`, which is what keeps an un-baked aux out of a shared document.
+  onAuxAdd: () => {
+    const slot = emtree.active();
+    if (!slot) {
+      toast("Open a graph first");
+      return;
+    }
+    // The BROWSER picker cannot give an absolute path (same limit as StratiMiner's
+    // folder field): it gives a name, and `webkitRelativePath`'s first segment for
+    // a directory. On desktop the native dialog gives the real path. Either way
+    // the locator is what a future mapping will resolve — nothing reads it today.
+    auxFileInput.click();
+  },
+  onAuxRemove: (auxId) => {
+    const slot = emtree.active();
+    if (!slot) return;
+    const i = slot.auxiliaryFiles.findIndex((f) => f.id === auxId);
+    if (i < 0) return;
+    const [gone] = slot.auxiliaryFiles.splice(i, 1);
+    refreshEMTree();
+    toast(`removed ${gone.name} (the document is untouched)`);
+  },
+  onAuxToggle: (auxId) => {
+    const f = emtree.active()?.auxiliaryFiles.find((x) => x.id === auxId);
+    if (!f) return;
+    f.expanded = !f.expanded;
+    refreshEMTree();
+  },
+  onAuxTypeChange: (auxId, fileType) => {
+    const f = emtree.active()?.auxiliaryFiles.find((x) => x.id === auxId);
+    if (!f) return;
+    f.fileType = fileType;
+    refreshEMTree();
+  },
+  onAuxBake: () => {
+    // The button is rendered disabled (see `bakeBlocker`); this exists so the
+    // handler is not a hole if it is ever enabled without reading the section.
+    toast("bake: mapping still to come (ET2)");
+  },
   onRename: (id, name) => {
     // POL3: renaming a row renames the GRAPH — `emtree.rename` writes
     // `graph.name` in that slot's document, which is the single source. For the
@@ -3734,6 +3864,28 @@ const emtreeHandlers: EMTreeHandlers = {
     updateWindowTitle();
   },
 };
+
+/**
+ * Name problems in the active document, keyed by node id (NAME1).
+ *
+ * Computed ONCE per document change and read by the renderer (label colour) and
+ * the context menu (the rename entry), so the two cannot disagree about what is
+ * wrong. Recomputing per draw would also work — `naming.ts` is pure and the graph
+ * is the only input — but the answer only changes when the graph does.
+ *
+ * There is no cache to invalidate: renaming a document makes its extractors
+ * inconsistent, and that shows up because the map is rebuilt from the graph, not
+ * patched.
+ */
+let nameStatus: Map<string, NameCheck> = new Map();
+
+function namingOpts(): { strictDocumentNames: boolean } {
+  return { strictDocumentNames: getSettings().interaction.strictDocumentNames };
+}
+
+function refreshNameStatus(): void {
+  nameStatus = store ? nameStatusMap(store.doc, namingOpts()) : new Map();
+}
 
 /** The last graph was closed: back to the empty canvas, without a stale view. */
 function closeWorkspace(): void {
@@ -5308,6 +5460,26 @@ function showContextMenu(clientX: number, clientY: number): void {
   header.className = "ctx-header";
   header.textContent = `${ids.length} node${ids.length > 1 ? "s" : ""} selected`;
   menu.appendChild(header);
+  // NAME1 · a name that breaks the convention gets a one-click fix, and the
+  // suggestion is the same one the orange/red label is complaining about (both
+  // read `nameStatus`). Only for a single selection: renaming several nodes to
+  // "the next free name" in one gesture would need an order nobody chose.
+  if (ids.length === 1) {
+    const check = nameStatus.get(ids[0]);
+    if (check?.suggestion) {
+      const b = document.createElement("button");
+      b.textContent = `Rinomina a "${check.suggestion}"`;
+      if (check.reason) b.title = check.reason;
+      b.onclick = () => {
+        const from = store!.node(ids[0])?.name ?? "";
+        // the display NAME changes; the id stays the UUID it always was
+        store!.updateNode(ids[0], { name: check.suggestion! });
+        hideContextMenu();
+        toast(`${from || ids[0]} → ${check.suggestion}`);
+      };
+      menu.appendChild(b);
+    }
+  }
   if (targets.length) {
     for (const t of targets) {
       const b = document.createElement("button");

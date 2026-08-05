@@ -1,5 +1,6 @@
 // Overview minimap: scaled-down picture of the whole scene with the current
 // viewport rectangle; click/drag to move the view.
+import { canvasTheme } from "./theme";
 import { nodeStyle } from "./palette";
 import { sceneBounds, type Scene, type Viewport } from "./scene";
 
@@ -58,7 +59,7 @@ export function buildOverview(
       oy = PAD - b.y * scale + (H - PAD * 2 - b.h * scale) / 2;
 
       for (const lane of scene.lanes) {
-        ctx.fillStyle = "#E4EDF7";
+        ctx.fillStyle = canvasTheme().laneA; // DARK1: the lanes of the minimap are the lanes
         ctx.fillRect(ox + b.x * scale, oy + lane.y * scale, b.w * scale, lane.height * scale);
       }
       for (const n of scene.nodes) {
@@ -75,7 +76,7 @@ export function buildOverview(
       const wy = -vp.y / vp.scale;
       const ww = viewW / vp.scale;
       const wh = viewH / vp.scale;
-      ctx.strokeStyle = "#1F6FEB";
+      ctx.strokeStyle = canvasTheme().accent;
       ctx.lineWidth = 1.5;
       ctx.strokeRect(ox + wx * scale, oy + wy * scale, ww * scale, wh * scale);
     },

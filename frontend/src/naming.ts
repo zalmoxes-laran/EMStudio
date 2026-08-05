@@ -1,0 +1,349 @@
+/**
+ * Naming rules for the paradata chain — pure functions over an em.json document.
+ *
+ * The EM domain has a naming convention for these three types, and it carries
+ * meaning: an extractor called `D.10.2` says *"the second extraction made from
+ * document D.10"*, so the name is a readable statement about provenance and a
+ * wrong one is a wrong statement. Before this module the app named them
+ * `extractor_01` (`DocumentStore.freshLabel`), which says nothing.
+ *
+ *   Document  `D.<n>`            — D.1, D.10, …           (unique, non-empty)
+ *   Extractor `<documentName>.<ordinal>`                   (ordinal unique per document)
+ *   Extractor `Temp<n>`          — while not yet attached to a document
+ *   Combiner  `C.<n>`            — C.1, C.2, …             (unique)
+ *
+ * # Which edge means what (INSPECTED, not guessed)
+ *
+ * From `s3Dgraphy_connections_datamodel.json`:
+ *
+ * * **`extracted_from`** — `ExtractorNode → DocumentNode`, *"information is
+ *   derived from a particular source"*. This is the document an extractor
+ *   extracts FROM, so it is the one the name derives from.
+ * * `has_visual_reference` also joins the two, but its source list is
+ *   `[CombinerNode, ExtractorNode, ParadataNode, PropertyNode]` and it means
+ *   *"has an associated visual reference"* — an illustration, not a provenance.
+ *   Naming from it would rename an extractor because someone attached a picture.
+ * * **`combines`** — `CombinerNode → ExtractorNode`: a combiner's sources. Not
+ *   used for the name (a combiner is `C.<n>`, independent of its sources) but
+ *   recorded here because it is the other half of the chain and the next reader
+ *   will look for it.
+ *
+ * Everything here is a QUESTION about a document, never a change to one: no DOM,
+ * no store, no settings lookup — the strict-naming flag arrives as an argument.
+ * That is what makes `scripts/check-naming.mjs` able to exercise it.
+ */
+
+/** The minimum an em.json needs to answer a naming question. */
+export interface NamingDoc {
+  graph: {
+    nodes: { id: string; node_type: string; name?: string | null }[];
+    /**
+     * `edge_type` is optional because em.json allows an edge without one (the
+     * importer's generic fallback). An untyped edge simply is not the
+     * `extracted_from` we are looking for, so nothing needs a special case.
+     */
+    edges?: { source: string; target: string; edge_type?: string }[];
+  };
+}
+
+/** The edge that says "this extractor extracts from that document". */
+export const EXTRACTED_FROM = "extracted_from";
+/** The edge that says "this combiner combines those extractors". */
+export const COMBINES = "combines";
+
+export type NameStatus = "ok" | "warn" | "dup";
+
+export interface NameCheck {
+  status: NameStatus;
+  /** The name the node should have — a correct one, or the next free one. */
+  suggestion?: string;
+  /** Why, in one phrase, for the tooltip and the context-menu entry. */
+  reason?: string;
+}
+
+export interface NamingOptions {
+  /**
+   * `D.<n>` is imposed on documents (default). When false a document may be
+   * named freely — still unique and non-empty, but no format warning.
+   *
+   * A parameter and not a module-level read: `naming.ts` must stay answerable
+   * from a test without a settings store.
+   */
+  strictDocumentNames: boolean;
+}
+
+export const DEFAULT_NAMING: NamingOptions = { strictDocumentNames: true };
+
+const DOC_RE = /^D\.(\d+)$/;
+const COMBINER_RE = /^C\.(\d+)$/;
+const TEMP_RE = /^Temp(\d+)$/;
+
+function nameOf(n: { name?: string | null }): string {
+  return String(n.name ?? "").trim();
+}
+
+function nodesOfType(doc: NamingDoc, type: string) {
+  return doc.graph.nodes.filter((n) => n.node_type === type);
+}
+
+/** Smallest positive integer not in `used`. */
+function firstFree(used: Set<number>): number {
+  let i = 1;
+  while (used.has(i)) i += 1;
+  return i;
+}
+
+/**
+ * The document an extractor extracts from, via `extracted_from`.
+ *
+ * When an extractor points at SEVERAL documents the first edge in document order
+ * wins, deterministically. That is a legal graph (an extraction can cite more
+ * than one source) and the name can only carry one, so the rule is stated rather
+ * than left to chance.
+ */
+export function documentOfExtractor(
+  doc: NamingDoc,
+  extractorId: string,
+): { id: string; name: string } | null {
+  const byId = new Map(doc.graph.nodes.map((n) => [n.id, n]));
+  for (const e of doc.graph.edges ?? []) {
+    if (e.edge_type !== EXTRACTED_FROM || e.source !== extractorId) continue;
+    const target = byId.get(e.target);
+    if (target?.node_type === "document") {
+      return { id: target.id, name: nameOf(target) };
+    }
+  }
+  return null;
+}
+
+/** Extractor ids attached to a given document id. */
+export function extractorsOfDocument(doc: NamingDoc, documentId: string): string[] {
+  const out: string[] = [];
+  for (const e of doc.graph.edges ?? []) {
+    if (e.edge_type === EXTRACTED_FROM && e.target === documentId) out.push(e.source);
+  }
+  return out;
+}
+
+/**
+ * The next free ordinal for extractors of a document, by NAME.
+ *
+ * Reads the ordinals off the existing names rather than counting nodes: with
+ * `D.10.1` and `D.10.3` present the answer is 2, and filling the hole is right —
+ * a document's extractors are a set of numbered extractions, not a sequence, and
+ * jumping to 4 would suggest a `D.10.2` exists somewhere.
+ */
+export function nextExtractorOrdinal(doc: NamingDoc, documentName: string): number {
+  const base = documentName.trim();
+  if (!base) return 1;
+  const prefix = `${base}.`;
+  const used = new Set<number>();
+  for (const n of nodesOfType(doc, "extractor")) {
+    const nm = nameOf(n);
+    if (!nm.startsWith(prefix)) continue;
+    const tail = nm.slice(prefix.length);
+    if (/^\d+$/.test(tail)) used.add(Number(tail));
+  }
+  return firstFree(used);
+}
+
+/**
+ * The name an extractor SHOULD have, or null when it is attached to no document
+ * (or to one whose own name is empty — then there is nothing to derive from and
+ * the extractor keeps a temporary name).
+ *
+ * When the extractor already carries a valid ordinal for that document it keeps
+ * it: re-deriving would renumber a node every time the graph is checked.
+ */
+export function deriveExtractorName(
+  doc: NamingDoc,
+  extractorId: string,
+): string | null {
+  const parent = documentOfExtractor(doc, extractorId);
+  if (!parent || !parent.name) return null;
+  const self = doc.graph.nodes.find((n) => n.id === extractorId);
+  const current = self ? nameOf(self) : "";
+  const prefix = `${parent.name}.`;
+  if (current.startsWith(prefix) && /^\d+$/.test(current.slice(prefix.length))) {
+    const taken = doc.graph.nodes.some(
+      (n) => n.id !== extractorId && nameOf(n) === current,
+    );
+    if (!taken) return current; // already right, and not somebody else's name
+  }
+  return `${parent.name}.${nextExtractorOrdinal(doc, parent.name)}`;
+}
+
+/** Next free `C.<n>`. */
+export function deriveCombinerName(doc: NamingDoc): string {
+  const used = new Set<number>();
+  for (const n of doc.graph.nodes) {
+    const m = COMBINER_RE.exec(nameOf(n));
+    if (m) used.add(Number(m[1]));
+  }
+  return `C.${firstFree(used)}`;
+}
+
+/** Next free `D.<n>`. */
+export function nextDocumentName(doc: NamingDoc): string {
+  const used = new Set<number>();
+  for (const n of doc.graph.nodes) {
+    const m = DOC_RE.exec(nameOf(n));
+    if (m) used.add(Number(m[1]));
+  }
+  return `D.${firstFree(used)}`;
+}
+
+/** Next free `Temp<n>` — an extractor that has no document yet. */
+export function nextTempName(doc: NamingDoc): string {
+  const used = new Set<number>();
+  for (const n of doc.graph.nodes) {
+    const m = TEMP_RE.exec(nameOf(n));
+    if (m) used.add(Number(m[1]));
+  }
+  return `Temp${firstFree(used)}`;
+}
+
+/**
+ * The name to give a NEW node of one of the three types.
+ *
+ * Called at creation, when the node usually has no edges yet: an extractor born
+ * unattached gets `Temp<n>`, and it is the moment the `extracted_from` edge
+ * appears that gives it its real name (see `renameOnAttach`).
+ */
+export function initialName(doc: NamingDoc, nodeType: string, nodeId?: string): string | null {
+  if (nodeType === "combiner") return deriveCombinerName(doc);
+  if (nodeType === "document") return nextDocumentName(doc);
+  if (nodeType === "extractor") {
+    const derived = nodeId ? deriveExtractorName(doc, nodeId) : null;
+    return derived ?? nextTempName(doc);
+  }
+  return null; // every other type keeps the store's own fresh label
+}
+
+/** True when this type takes part in the convention at all. */
+export function isNamedType(nodeType: string | undefined): boolean {
+  return nodeType === "extractor" || nodeType === "combiner" || nodeType === "document";
+}
+
+/**
+ * Status of one node's name: `ok`, `warn` (malformed, inconsistent, still
+ * temporary) or `dup` (another node has the same name).
+ *
+ * `dup` outranks `warn`: two nodes with one name is the failure that makes a
+ * matrix unreadable, and it is also the only one a reader cannot spot by looking
+ * at a single node.
+ */
+export function computeNameStatus(
+  doc: NamingDoc,
+  nodeId: string,
+  opts: NamingOptions = DEFAULT_NAMING,
+): NameCheck {
+  const node = doc.graph.nodes.find((n) => n.id === nodeId);
+  if (!node || !isNamedType(node.node_type)) return { status: "ok" };
+  const name = nameOf(node);
+
+  // empty is an error for all three types, whatever the flag says
+  if (!name) {
+    return {
+      status: "warn",
+      suggestion: initialName(doc, node.node_type, nodeId) ?? undefined,
+      reason: "the name is empty",
+    };
+  }
+
+  // duplicates first
+  const twin = doc.graph.nodes.find((n) => n.id !== nodeId && nameOf(n) === name);
+  if (twin) {
+    const suggestion =
+      node.node_type === "extractor"
+        ? (deriveExtractorName(doc, nodeId) ?? nextTempName(doc))
+        : node.node_type === "combiner"
+          ? deriveCombinerName(doc)
+          : nextDocumentName(doc);
+    return {
+      status: "dup",
+      suggestion,
+      reason: `"${name}" is already used by another node`,
+    };
+  }
+
+  if (node.node_type === "document") {
+    if (!opts.strictDocumentNames || DOC_RE.test(name)) return { status: "ok" };
+    return {
+      status: "warn",
+      suggestion: nextDocumentName(doc),
+      reason: `a document should be named D.<n> (strict naming is on)`,
+    };
+  }
+
+  if (node.node_type === "combiner") {
+    if (COMBINER_RE.test(name)) return { status: "ok" };
+    return {
+      status: "warn",
+      suggestion: deriveCombinerName(doc),
+      reason: "a combiner should be named C.<n>",
+    };
+  }
+
+  // extractor
+  const derived = deriveExtractorName(doc, nodeId);
+  if (!derived) {
+    // no document yet → a temporary name is the CORRECT state, not a problem…
+    if (TEMP_RE.test(name)) {
+      return {
+        status: "warn",
+        reason: "temporary name — attach it to a document to number it",
+      };
+    }
+    // …but anything else is a name that claims a provenance it does not have
+    return {
+      status: "warn",
+      suggestion: nextTempName(doc),
+      reason: "not attached to a document: the name should be Temp<n>",
+    };
+  }
+  if (name === derived) return { status: "ok" };
+  const parent = documentOfExtractor(doc, nodeId);
+  return {
+    status: "warn",
+    suggestion: derived,
+    reason: `extracted from ${parent?.name ?? "a document"}: the name should be ${derived}`,
+  };
+}
+
+/**
+ * Every node whose name needs attention, for a whole-document pass.
+ *
+ * Used by the renderer (label colour) and by the context menu, so both read one
+ * answer instead of computing their own.
+ */
+export function nameStatusMap(
+  doc: NamingDoc,
+  opts: NamingOptions = DEFAULT_NAMING,
+): Map<string, NameCheck> {
+  const out = new Map<string, NameCheck>();
+  for (const n of doc.graph.nodes) {
+    if (!isNamedType(n.node_type)) continue;
+    const check = computeNameStatus(doc, n.id, opts);
+    if (check.status !== "ok") out.set(n.id, check);
+  }
+  return out;
+}
+
+/**
+ * The rename an `extracted_from` edge implies, or null when nothing should change.
+ *
+ * This is the trigger the convention actually hangs on: EMStudio has no
+ * "create a node from the document's handle and name it on the way" path — the
+ * connect gesture creates the node first and the edge second (`finishConnect` →
+ * `createNodeAt`). So the extractor is born `Temp<n>` and gets its real name the
+ * instant it is attached, which is also the right behaviour for an extractor a
+ * user attaches by hand ten minutes later.
+ */
+export function renameOnAttach(doc: NamingDoc, extractorId: string): string | null {
+  const node = doc.graph.nodes.find((n) => n.id === extractorId);
+  if (!node || node.node_type !== "extractor") return null;
+  const derived = deriveExtractorName(doc, extractorId);
+  if (!derived) return null;
+  return nameOf(node) === derived ? null : derived;
+}

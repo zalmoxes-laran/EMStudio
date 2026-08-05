@@ -45,20 +45,94 @@ import type { ViewKind } from "./types";
  *    own auth, so the shape here is deliberately minimal: what it is and where it
  *    came from, nothing about how to read it.
  *
- * TODO(ET2): the mapping (xlsx / pyArchInit / XML → nodes) and the bake step.
- * TODO(ET3): the non-local sources + "promote to MinIO".
+ * AUX1 (2026-08-05) built the SECTION: the per-slot list, the five types, add /
+ * remove / expand, and the volatile-vs-baked state. What is still missing is the
+ * part that needs an importer:
+ *
+ * TODO(ET2): the MAPPING and the bake — turning an xlsx row or a pyArchInit
+ *   record into nodes, and merging them into the active graph. No importer is
+ *   wired: `s3dgraphy` has `mapped_xlsx_importer`, `pyarchinit_importer` and
+ *   `unified_xlsx_importer`, and the bridge exposes `/import-em-data`, but that
+ *   one BUILDS a document rather than merging into one — a bake is a merge, and
+ *   inventing it here would be inventing the semantics of the merge too.
+ * TODO(ET3): the non-local sources (StratiGraph Catalog, HDT Catalog, MinIO) +
+ *   "promote to MinIO". `kind` is already the field that will say which.
  */
+/**
+ * What KIND of source an auxiliary file is — the five EMtools types
+ * (`em_setup/properties.py::AuxiliaryFileProperties.file_type`), same tokens so
+ * the two tools name the same thing the same way and a future exchange needs no
+ * translation table.
+ */
+export type AuxFileType =
+  | "emdb_xlsx"
+  | "pyarchinit"
+  | "dosco"
+  | "source_list"
+  | "resource_collection";
+
+/** The five types with their labels and what they are for (shown in the UI). */
+export const AUX_FILE_TYPES: {
+  value: AuxFileType;
+  label: string;
+  hint: string;
+  /** a folder rather than a file — the picker and the detail panel differ */
+  folder?: boolean;
+}[] = [
+  {
+    value: "emdb_xlsx",
+    label: "EMdb Excel",
+    hint: "Excel workbook in an EMdb format — units, epochs, claims.",
+  },
+  {
+    value: "pyarchinit",
+    label: "pyArchInit",
+    hint: "pyArchInit database (SQLite/PostGIS): the excavation's own records.",
+  },
+  {
+    value: "dosco",
+    label: "DosCo",
+    hint: "Documentation folder harvested for document files.",
+    folder: true,
+  },
+  {
+    value: "source_list",
+    label: "Source list",
+    hint: "Excel list of sources for document / extractor / combiner nodes.",
+  },
+  {
+    value: "resource_collection",
+    label: "Resource collection",
+    hint: "Folder of multimodal resources (images, documents) linked to nodes.",
+    folder: true,
+  },
+];
+
 export interface AuxiliaryFile {
   id: string;
   name: string;
   /** Where it lives. `local` is the only one P0 would accept. */
   kind: "local" | "catalog" | "hdt" | "minio";
   locator: string;
+  /** Which of the five source kinds this is (AUX1). */
+  fileType: AuxFileType;
   /**
    * False until a bake has written its content into the graph. Kept on the slot,
    * never in the document, precisely so that an un-baked aux cannot travel.
    */
   baked: boolean;
+  /**
+   * Per-type options — a mapping name, a table choice, a resource folder.
+   *
+   * A free object and not a class per type on purpose: EMtools needs one Blender
+   * property per option because its UI is declarative, while here the detail
+   * panel is drawn from `AUX_FILE_TYPES` and the options a type actually uses are
+   * whatever ET2's mapping ends up needing. Typing them now would be inventing
+   * the mapping's shape before the mapping exists.
+   */
+  options?: Record<string, unknown>;
+  /** open in the detail panel (view state, per session) */
+  expanded?: boolean;
 }
 
 /**
@@ -243,11 +317,134 @@ export interface EMTreeHandlers {
   onNew(): void;
   /** Inline rename from the tree (POL1): double-click the name. */
   onRename(id: string, name: string): void;
+  /** AUX1 — auxiliary files of the ACTIVE slot. The tree renders, main.ts acts. */
+  onAuxAdd?(): void;
+  onAuxRemove?(auxId: string): void;
+  onAuxToggle?(auxId: string): void;
+  onAuxTypeChange?(auxId: string, fileType: AuxFileType): void;
+  onAuxBake?(auxId: string): void;
 }
 
 function esc(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;");
+}
+
+/**
+ * The AUXILIARY FILES section of the ACTIVE slot — the EMtools section, reproposed.
+ *
+ * EMtools draws this as a `template_list` per graph with an active index, add /
+ * remove buttons and a per-file detail panel when `expanded`
+ * (`em_setup/ui.py`, ~line 950). Here the same thing without the Blender idiom:
+ * a list of rows, each its own expander, so several can be open at once and the
+ * panel needs no "active index" to be kept in step with the selection.
+ *
+ * For the ACTIVE slot only, and that is the point of the whole feature: an aux
+ * file belongs to a graph, and the tree is where "which graph" is decided.
+ *
+ * Every row states whether it is **volatile** or **baked**, because that is the
+ * invariant a user has to be able to see: nothing here is in the document until a
+ * bake puts it there, so sharing an em.json does not share somebody's database.
+ */
+function auxSection(tree: EMTree, labels: (key: string) => string): string {
+  const slot = tree.active();
+  if (!slot) return "";
+  const rows = slot.auxiliaryFiles.map((f) => {
+    const type = AUX_FILE_TYPES.find((t) => t.value === f.fileType);
+    const state = f.baked ? "baked" : "volatile";
+    return `
+      <li class="aux-row${f.expanded ? " open" : ""}" data-aux="${esc(f.id)}">
+        <button class="aux-head" data-aux-toggle="${esc(f.id)}"
+                title="${esc(type?.hint ?? "")}">
+          <span class="aux-caret">${f.expanded ? "▾" : "▸"}</span>
+          <span class="aux-name">${esc(f.name)}</span>
+          <span class="aux-type">${esc(type?.label ?? f.fileType)}</span>
+          <span class="aux-badge aux-${state}">${state}</span>
+        </button>
+        <button class="aux-del" data-aux-remove="${esc(f.id)}"
+                title="Remove this auxiliary file (the document is untouched)">×</button>
+        ${f.expanded ? auxDetail(f) : ""}
+      </li>`;
+  }).join("");
+  return `
+    <div class="aux-sect">
+      <div class="aux-sect-head">
+        <span>Auxiliary files</span>
+        <button id="aux-add" title="Attach a local file or folder to this graph">+ add</button>
+      </div>
+      ${slot.auxiliaryFiles.length
+        ? `<ul class="aux-list">${rows}</ul>`
+        : `<p class="aux-empty">${esc(labels("emtree.noAux"))} — sources attached
+             to this graph, mapped on the fly. Nothing is written into the
+             em.json until you bake it.</p>`}
+    </div>`;
+}
+
+/** The per-file detail panel: type, locator, options, bake. */
+function auxDetail(f: AuxiliaryFile): string {
+  const type = AUX_FILE_TYPES.find((t) => t.value === f.fileType);
+  const options = Object.entries(f.options ?? {});
+  return `
+    <div class="aux-detail">
+      <label class="aux-field">
+        <span>Type</span>
+        <select data-aux-type="${esc(f.id)}">
+          ${AUX_FILE_TYPES.map((t) =>
+            `<option value="${t.value}"${t.value === f.fileType ? " selected" : ""}
+             >${esc(t.label)}</option>`).join("")}
+        </select>
+      </label>
+      <p class="aux-hint">${esc(type?.hint ?? "")}</p>
+      <label class="aux-field">
+        <span>${type?.folder ? "Folder" : "Path"}</span>
+        <input type="text" value="${esc(f.locator)}" readonly
+               title="${esc(f.locator)}" />
+      </label>
+      <p class="aux-hint">
+        Source: <b>${esc(f.kind)}</b>${f.kind === "local"
+          ? " — the StratiGraph Catalog, the HDT Catalog and MinIO are ET3."
+          : ""}
+      </p>
+      ${options.length
+        ? `<p class="aux-hint">Options: ${esc(
+            options.map(([k, v]) => `${k}=${String(v)}`).join(" · "),
+          )}</p>`
+        : ""}
+      <div class="aux-actions">
+        <button data-aux-bake="${esc(f.id)}" disabled
+                title="TODO(ET2): mapping/import. ${esc(bakeBlocker(f.fileType))}"
+          >Bake into the graph</button>
+        <span class="aux-hint">${f.baked
+          ? "baked — its content is in the document"
+          : "volatile — not in the document"}</span>
+      </div>
+    </div>`;
+}
+
+/**
+ * Why a bake is not available for this type — the specific reason, not a generic
+ * TODO, so nobody re-investigates from scratch.
+ *
+ * No importer is wired anywhere: what exists is listed here per type, and in every
+ * case the missing piece is the same one — a MERGE into an existing graph. The
+ * bridge's `/import-em-data` builds a document from an xlsx; `/scan-resources`
+ * lists a folder's resources. Neither adds nodes to the graph you are looking at,
+ * and deciding what "adding" means (match by name? by id? overwrite?) is the ET2
+ * decision, not an implementation detail to guess.
+ */
+function bakeBlocker(fileType: AuxFileType): string {
+  switch (fileType) {
+    case "emdb_xlsx":
+      return "s3dgraphy has mapped_xlsx_importer and the bridge has /import-em-data, but that BUILDS a document — merging into this graph is ET2.";
+    case "pyarchinit":
+      return "s3dgraphy has pyarchinit_importer, but the bridge does not expose it yet.";
+    case "source_list":
+      return "s3dgraphy has source_text/unified_xlsx_importer; the mapping to document/extractor/combiner nodes is ET2.";
+    case "dosco":
+      return "harvesting a documentation folder into document nodes is ET2.";
+    case "resource_collection":
+      return "the bridge's /scan-resources lists a folder (see the Resources panel); attaching them as a baked aux is ET2.";
+  }
 }
 
 /**
@@ -307,6 +504,7 @@ export function renderEMTree(host: HTMLElement, tree: EMTree,
       ${tree.slots.length
         ? `<ul class="et-slots">${rows}</ul>`
         : `<p class="et-empty">${esc(labels("emtree.empty"))}</p>`}
+      ${auxSection(tree, labels)}
       <p class="et-todo">${esc(labels("emtree.auxNote"))}</p>
     </div>`;
 
@@ -363,6 +561,28 @@ export function renderEMTree(host: HTMLElement, tree: EMTree,
       input.addEventListener("blur", () => commit(true));
     });
   });
+  // AUX1 · the auxiliary-files section of the active slot. `main.ts` owns the
+  // actions (it has the file picker and the store); the tree only reports them.
+  host.querySelector<HTMLButtonElement>("#aux-add")
+    ?.addEventListener("click", () => handlers.onAuxAdd?.());
+  host.querySelectorAll<HTMLElement>("[data-aux-toggle]").forEach((el) => {
+    el.addEventListener("click", () =>
+      handlers.onAuxToggle?.(el.dataset.auxToggle!));
+  });
+  host.querySelectorAll<HTMLElement>("[data-aux-remove]").forEach((el) => {
+    el.addEventListener("click", (event) => {
+      event.stopPropagation(); // the row header is a button too
+      handlers.onAuxRemove?.(el.dataset.auxRemove!);
+    });
+  });
+  host.querySelectorAll<HTMLSelectElement>("[data-aux-type]").forEach((el) => {
+    el.addEventListener("change", () =>
+      handlers.onAuxTypeChange?.(el.dataset.auxType!, el.value as AuxFileType));
+  });
+  host.querySelectorAll<HTMLButtonElement>("[data-aux-bake]").forEach((el) => {
+    el.addEventListener("click", () => handlers.onAuxBake?.(el.dataset.auxBake!));
+  });
+
   host.querySelectorAll<HTMLButtonElement>(".et-close").forEach((button) => {
     button.addEventListener("click", (event) => {
       // The row is a button too; without this the close also re-activates.

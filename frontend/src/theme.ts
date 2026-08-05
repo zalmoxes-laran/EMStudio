@@ -1,0 +1,211 @@
+/**
+ * The two themes, and the ONE place the canvas gets its colours from (DARK1).
+ *
+ * The chrome is CSS (`style.css`, `:root` + `[data-theme="dark"]`); a canvas
+ * cannot read CSS variables, so the renderer needs the same palette as an object.
+ * The keys mirror the CSS token names on purpose: a colour changed on one side is
+ * findable on the other, and the two cannot drift into "nearly the same grey".
+ *
+ * # What is NOT in here, and why it matters
+ *
+ * The **semantic colours of the EM language** — the fill and border of a US, the
+ * teal of an SE, the group title tabs, the document variant colours — come from
+ * `em_visual_rules` (s3Dgraphy) and never from a theme. They are DATA about the
+ * language, not decoration: a US is that red in both themes, or the two themes
+ * would disagree about what the drawing means, and a screenshot from one would
+ * mislead a reader of the other.
+ *
+ * So the theme supplies what is AROUND them: canvas, lanes, panel chrome drawn on
+ * the canvas, label ink, selection rings, the connect handle, the group container
+ * wash. Where a semantic fill needs help to stay readable (a label ON a coloured
+ * node), the theme adapts the LABEL, never the fill — see `labelOn`.
+ */
+
+export type ThemeMode = "light" | "dark" | "auto";
+export type ThemeName = "light" | "dark";
+
+export interface CanvasTheme {
+  /** page behind everything the canvas draws */
+  canvasBg: string;
+  /** alternating swimlane bands (matrix view) */
+  laneA: string;
+  laneB: string;
+  /** the hairline between two bands */
+  laneLine: string;
+  /** lane label chip + its ink */
+  laneChip: string;
+  laneChipInk: string;
+  /** default label ink on the canvas background */
+  labelInk: string;
+  /** muted canvas text (band names, counts, hints) */
+  labelMuted: string;
+  /** selection / hover accents */
+  accent: string;
+  selectSoft: string;
+  hoverSoft: string;
+  /** group container: body wash, dashed border, header tint fallback */
+  groupBody: string;
+  groupBorder: string;
+  groupHeaderFallback: string;
+  groupHeaderInk: string;
+  /** connect handle (the bullet on a node's right edge) */
+  handleFill: string;
+  handleRing: string;
+  /** edge ink when an edge type declares none */
+  edgeDefault: string;
+  /** the neutral fill a node falls back to when the rules give none */
+  nodeFallbackFill: string;
+  /** ink for a label drawn ON a coloured (semantic) fill — see labelOn() */
+  onLight: string;
+  onDark: string;
+}
+
+const LIGHT: CanvasTheme = {
+  canvasBg: "#FBFCFE",
+  laneA: "#EDF3FA",
+  laneB: "#F7FAFD",
+  laneLine: "#D5E0EC",
+  laneChip: "#FFFFFFE6",
+  laneChipInk: "#2c4a6e",
+  labelInk: "#1a1a1a",
+  labelMuted: "#46505c",
+  accent: "#1F6FEB",
+  selectSoft: "#5b9bf0",
+  hoverSoft: "#a9c9f5",
+  groupBody: "rgba(190,196,204,0.25)",
+  groupBorder: "#000000",
+  groupHeaderFallback: "#F6D7A4",
+  groupHeaderInk: "#4a3317",
+  handleFill: "#ffffff",
+  handleRing: "#9aa7b5",
+  edgeDefault: "#888888",
+  nodeFallbackFill: "#FFFFFF",
+  onLight: "#1a1a1a",
+  onDark: "#f5f5f5",
+};
+
+/**
+ * Dark values chosen for CONTRAST against the semantic fills, not for taste.
+ *
+ * The EM palette is made of light fills with saturated borders (a US is #F0F0F0
+ * inside #9B3333), so on a dark canvas the nodes read as bright cards — which is
+ * what makes the matrix legible. What had to move is everything that was near-white
+ * by default: the lane bands, the lane chip, the handle, the group wash.
+ */
+const DARK: CanvasTheme = {
+  canvasBg: "#121821",
+  laneA: "#1A222D",
+  laneB: "#151C25",
+  laneLine: "#2A3644",
+  laneChip: "#1E2632F2",
+  laneChipInk: "#bcd2ee",
+  labelInk: "#e3e8ef",
+  labelMuted: "#b3bcc8",
+  accent: "#4C8DFF",
+  selectSoft: "#6ea6ff",
+  hoverSoft: "#3f5f8a",
+  groupBody: "rgba(120,132,148,0.20)",
+  groupBorder: "#8b95a3",
+  groupHeaderFallback: "#6b5324",
+  groupHeaderInk: "#f2e2c4",
+  handleFill: "#1E2632",
+  handleRing: "#8b95a3",
+  edgeDefault: "#7c8794",
+  nodeFallbackFill: "#242C38",
+  onLight: "#1a1a1a",
+  onDark: "#f5f5f5",
+};
+
+export const THEMES: Record<ThemeName, CanvasTheme> = { light: LIGHT, dark: DARK };
+
+let active: ThemeName = "light";
+
+export function canvasTheme(): CanvasTheme {
+  return THEMES[active];
+}
+
+export function activeTheme(): ThemeName {
+  return active;
+}
+
+/** Set the palette the renderer will use. The DOM side is `applyTheme`. */
+export function setCanvasTheme(name: ThemeName): void {
+  active = name;
+}
+
+/**
+ * Ink for a label drawn ON a semantic fill.
+ *
+ * The fill comes from the datamodel and does not change with the theme, so the
+ * readable ink is decided by the FILL's luminance and not by the theme — which is
+ * why this takes the fill and not the theme name. A white-ish US keeps black text
+ * in dark mode, because the node itself is still white-ish.
+ */
+export function labelOn(fill: string, t: CanvasTheme = canvasTheme()): string {
+  const h = fill.replace("#", "");
+  if (h.length < 6) return t.onLight;
+  const r = parseInt(h.slice(0, 2), 16) / 255;
+  const g = parseInt(h.slice(2, 4), 16) / 255;
+  const b = parseInt(h.slice(4, 6), 16) / 255;
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.45 ? t.onLight : t.onDark;
+}
+
+const STORAGE_KEY = "emstudio.theme";
+
+/** The stored preference, or `auto` when there is none. */
+export function storedMode(): ThemeMode {
+  try {
+    const v = localStorage.getItem(STORAGE_KEY);
+    if (v === "light" || v === "dark" || v === "auto") return v;
+  } catch {
+    /* private mode: fall through to auto */
+  }
+  return "auto";
+}
+
+export function storeMode(mode: ThemeMode): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, mode);
+  } catch {
+    /* not fatal: the choice just won't survive a reload */
+  }
+}
+
+/** What `auto` resolves to right now. */
+export function systemTheme(): ThemeName {
+  return typeof matchMedia === "function" &&
+    matchMedia("(prefers-color-scheme: dark)").matches
+    ? "dark"
+    : "light";
+}
+
+export function resolveMode(mode: ThemeMode): ThemeName {
+  return mode === "auto" ? systemTheme() : mode;
+}
+
+/**
+ * Apply a mode: stamp `data-theme` on `<html>` (the CSS side) and set the canvas
+ * palette (the renderer side). Returns the resolved theme so the caller can
+ * redraw — the canvas will not repaint itself.
+ */
+export function applyTheme(mode: ThemeMode): ThemeName {
+  const name = resolveMode(mode);
+  document.documentElement.setAttribute("data-theme", name);
+  setCanvasTheme(name);
+  return name;
+}
+
+/**
+ * Follow the system while the preference is `auto`.
+ *
+ * `matchMedia` and not a poll: the OS tells us, and the listener is registered
+ * once. The callback re-reads the stored mode every time so that switching to an
+ * explicit Light/Dark stops the following without unregistering anything.
+ */
+export function watchSystemTheme(onChange: (name: ThemeName) => void): void {
+  if (typeof matchMedia !== "function") return;
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+    if (storedMode() !== "auto") return;
+    onChange(applyTheme("auto"));
+  });
+}

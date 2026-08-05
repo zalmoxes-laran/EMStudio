@@ -14,6 +14,7 @@ import {
 } from "./routing";
 import { BAND_GAP } from "./scene";
 import { drawBoxOf, handleAnchor, shapePath } from "./shape-geom";
+import { canvasTheme, labelOn } from "./theme";
 import type { Scene, Viewport } from "./scene";
 
 export interface ConnectDrag {
@@ -49,6 +50,34 @@ export interface RenderState {
   /** monochrome (B/W) mode: every node draws with a black border + white fill
    *  (shapes disambiguate; the pre-EM-1.3 look). Explicit user toggle. */
   monochrome?: boolean;
+  /**
+   * Nodes whose NAME breaks the paradata convention (NAME1), keyed by id:
+   * `"warn"` = malformed / inconsistent / still temporary, `"dup"` = the name is
+   * somebody else's. Computed once per document change in `main.ts` from the pure
+   * `naming.ts`, so the label colour and the context-menu suggestion are the same
+   * answer. Absent for every node that is fine, which is most of them.
+   */
+  nameStatus?: Map<string, { status: "ok" | "warn" | "dup" }> | null;
+}
+
+/** Label ink for a node: default, ORANGE when its name has a problem, RED when
+ *  the name is a duplicate (NAME1).
+ *
+ *  The ONE place that decides it. The four label call sites below (document
+ *  sheet, property annotation, icon glyph, shape) each had their own colour
+ *  literal, and a fifth would have been added without noticing; now they ask.
+ *
+ *  Semantic colours, not theme colours: a name problem is a fact about the
+ *  document and reads the same in any future theme. */
+function labelInk(
+  state: RenderState,
+  nodeId: string,
+  fallback: string,
+): string {
+  const st = state.nameStatus?.get(nodeId)?.status;
+  if (st === "dup") return "#C62828"; // red — two nodes claim one name
+  if (st === "warn") return "#C77700"; // orange — malformed or inconsistent
+  return fallback;
 }
 
 // per-scene route cache (scenes are rebuilt on every document mutation)
@@ -114,10 +143,16 @@ export function edgeAt(
   return best;
 }
 
-const LANE_COLORS = ["#EDF3FA", "#F7FAFD"];
-const ACCENT = "#1F6FEB";
-const GROUP_HEADER_FILL = "#F6D7A4"; // yEd folder tab (paradata groups)
-const GROUP_BODY_FILL = "rgba(190,196,204,0.25)";
+// DARK1 · the canvas chrome comes from `theme.ts`, never from a literal here.
+// Functions and not constants: a constant would freeze the palette at module load
+// and the theme can change while the app is running.
+const LANE_COLORS = (): [string, string] => {
+  const t = canvasTheme();
+  return [t.laneA, t.laneB];
+};
+const accentColor = (): string => canvasTheme().accent;
+const groupHeaderFill = (): string => canvasTheme().groupHeaderFallback;
+const groupBodyFill = (): string => canvasTheme().groupBody;
 
 // Screen-space hit rects for the "PD" tags drawn in lane / band label chips
 // (an epoch's / phase's temporal ParadataNodeGroup, shown as a tag instead of a
@@ -158,9 +193,9 @@ function headerFillFor(
   labelBg?: string,
 ): string {
   if (labelBg) return labelBg;
-  if (nodeType === "ParadataNodeGroup") return GROUP_HEADER_FILL;
+  if (nodeType === "ParadataNodeGroup") return groupHeaderFill();
   const h = border.replace("#", "");
-  if (h.length < 6) return GROUP_HEADER_FILL;
+  if (h.length < 6) return groupHeaderFill();
   const r = parseInt(h.slice(0, 2), 16);
   const g = parseInt(h.slice(2, 4), 16);
   const b = parseInt(h.slice(4, 6), 16);
@@ -179,7 +214,7 @@ function drawGroupContainer(
   // body
   ctx.beginPath();
   ctx.roundRect(g.x, g.y, g.w, g.h, 5);
-  ctx.fillStyle = GROUP_BODY_FILL;
+  ctx.fillStyle = groupBodyFill();
   ctx.fill();
   ctx.setLineDash([5, 3]);
   ctx.strokeStyle = borderColor;
@@ -192,12 +227,12 @@ function drawGroupContainer(
   ctx.fillStyle = headerFill;
   ctx.fill();
   // ± toggle
-  ctx.fillStyle = "#fff";
-  ctx.strokeStyle = "#555";
+  ctx.fillStyle = canvasTheme().handleFill;
+  ctx.strokeStyle = canvasTheme().handleRing;
   ctx.lineWidth = 1 / Math.sqrt(scale);
   ctx.fillRect(g.x + 4, g.y + 4, 13, 13);
   ctx.strokeRect(g.x + 4, g.y + 4, 13, 13);
-  ctx.strokeStyle = "#333";
+  ctx.strokeStyle = canvasTheme().labelInk;
   ctx.lineWidth = 1.4 / Math.sqrt(scale);
   ctx.beginPath();
   ctx.moveTo(g.x + 7, g.y + 10.5);
@@ -210,7 +245,7 @@ function drawGroupContainer(
   // title
   if (drawLabels) {
     ctx.font = `600 ${Math.min(11, g.headerH * 0.55)}px system-ui, sans-serif`;
-    ctx.fillStyle = "#4a3317";
+    ctx.fillStyle = canvasTheme().groupHeaderInk;
     ctx.textAlign = "left";
     ctx.textBaseline = "middle";
     let t = g.title;
@@ -227,9 +262,9 @@ function drawGroupContainer(
     const r = 9 / Math.sqrt(scale);
     ctx.beginPath();
     ctx.arc(g.x + g.w, g.y, r, 0, Math.PI * 2);
-    ctx.fillStyle = ACCENT;
+    ctx.fillStyle = accentColor();
     ctx.fill();
-    ctx.fillStyle = "#fff";
+    ctx.fillStyle = canvasTheme().handleFill;
     ctx.font = `${r * 1.1}px system-ui, sans-serif`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
@@ -290,7 +325,7 @@ export function render(
 
   // epoch swimlanes
   scene.lanes.forEach((lane, i) => {
-    ctx.fillStyle = LANE_COLORS[i % 2];
+    ctx.fillStyle = LANE_COLORS()[i % 2];
     ctx.fillRect(worldLeft, lane.y, worldRight - worldLeft, lane.height);
     // tint the whole lane with the epoch's own colour (data.color) at a very
     // low alpha — a 5%-visible wash; the strong colour lives in the left rail
@@ -307,11 +342,11 @@ export function render(
     if (lane.id === state.selectedId) {
       ctx.save();
       ctx.globalAlpha = 0.1;
-      ctx.fillStyle = ACCENT;
+      ctx.fillStyle = accentColor();
       ctx.fillRect(worldLeft, lane.y, worldRight - worldLeft, lane.height);
       ctx.restore();
     }
-    ctx.strokeStyle = "#D5E0EC";
+    ctx.strokeStyle = canvasTheme().laneLine;
     ctx.lineWidth = 1 / vp.scale;
     ctx.beginPath();
     ctx.moveTo(worldLeft, lane.y);
@@ -338,13 +373,13 @@ export function render(
       if (!sb.residual && sb.phaseId === state.selectedId) {
         ctx.save();
         ctx.globalAlpha = 0.1;
-        ctx.fillStyle = ACCENT;
+        ctx.fillStyle = accentColor();
         ctx.fillRect(worldLeft, sb.y, worldRight - worldLeft, sb.height);
         ctx.restore();
       }
       if (sb.first) continue; // topmost band: the lane border is its top edge
       ctx.save();
-      ctx.strokeStyle = sb.color || "#94a3b8";
+      ctx.strokeStyle = sb.color || canvasTheme().labelMuted;
       ctx.globalAlpha = 0.85;
       ctx.lineWidth = 1.5 / vp.scale;
       ctx.setLineDash([9 / vp.scale, 6 / vp.scale]);
@@ -413,7 +448,7 @@ export function render(
     const base = edgeStyle(e.edge.edge_type).width;
     ctx.lineCap = "round";
     ctx.globalAlpha = sel ? 0.28 : 0.16;
-    ctx.strokeStyle = ACCENT;
+    ctx.strokeStyle = accentColor();
     ctx.lineWidth = (base + (sel ? 9 : 7)) / Math.sqrt(vp.scale);
     ctx.beginPath();
     traceRoute(ctx, routes[idx], bridgeR);
@@ -425,7 +460,7 @@ export function render(
     ctx.stroke();
     ctx.lineCap = "butt";
     if (!SYMMETRIC_EDGES.has(e.edge.edge_type ?? ""))
-      drawArrowhead(ctx, routes[idx], arrowSize * 1.4, ACCENT);
+      drawArrowhead(ctx, routes[idx], arrowSize * 1.4, accentColor());
   };
   pickEdge(state.hoverEdgeIdx, false);
   pickEdge(state.selectedEdgeIdx, true);
@@ -444,7 +479,7 @@ export function render(
     // SHAPE + their existing fills, e.g. virtual USVn/USVs keep their black fill +
     // white text). Explicit user toggle, not tied to any template.
     const mono = state.monochrome === true;
-    const borderCol = mono ? "#1a1a1a" : st.border;
+    const borderCol = mono ? canvasTheme().labelInk : st.border;
     const group = scene.groupsById?.get(n.id);
     if (group) {
       drawGroupContainer(
@@ -458,7 +493,7 @@ export function render(
       );
       if (isSel(n) || n.id === state.hoverId) {
         const active = n.id === state.selectedId || n.instanceOf === state.selectedId;
-        ctx.strokeStyle = active ? ACCENT : isSel(n) ? "#5b9bf0" : "#a9c9f5";
+        ctx.strokeStyle = active ? accentColor() : isSel(n) ? canvasTheme().selectSoft : canvasTheme().hoverSoft;
         ctx.lineWidth = (active ? 3.6 : isSel(n) ? 2.6 : 1.6) / vp.scale;
         ctx.strokeRect(n.x - 2, n.y - 2, n.w + 4, n.h + 4);
       }
@@ -531,7 +566,10 @@ export function render(
       if (drawLabels) {
         const label = String(n.node.name || n.id);
         ctx.font = `10px system-ui, sans-serif`;
-        ctx.fillStyle = "#1a1a1a";
+        // ON the sheet, whose fill is white paper from the datamodel: the ink
+        // follows the FILL, not the theme (`labelOn`). Using the canvas ink here
+        // made the name disappear on a white sheet in dark mode.
+        ctx.fillStyle = labelInk(state, n.node.id ?? n.id, labelOn("#FFFFFF"));
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         ctx.fillText(label, n.x + n.w / 2, y0 + ih * 0.62);
@@ -542,9 +580,9 @@ export function render(
         const by = y0 + ih + 1;
         ctx.beginPath();
         ctx.arc(bx, by, r, 0, Math.PI * 2);
-        ctx.fillStyle = n.instanceOf ? "#8a939e" : "#4a5568";
+        ctx.fillStyle = n.instanceOf ? canvasTheme().labelMuted : canvasTheme().labelInk;
         ctx.fill();
-        ctx.fillStyle = "#fff";
+        ctx.fillStyle = canvasTheme().handleFill;
         ctx.font = `${r * 1.15}px system-ui, sans-serif`;
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
@@ -552,7 +590,7 @@ export function render(
       }
       if (isSel(n) || n.id === state.hoverId) {
         const active = n.id === state.selectedId || n.instanceOf === state.selectedId;
-        ctx.strokeStyle = active ? ACCENT : isSel(n) ? "#5b9bf0" : "#a9c9f5";
+        ctx.strokeStyle = active ? accentColor() : isSel(n) ? canvasTheme().selectSoft : canvasTheme().hoverSoft;
         ctx.lineWidth = (active ? 3.6 : isSel(n) ? 2.6 : 1.6) / vp.scale;
         ctx.strokeRect(x0 - 3, y0 - 3, iw + 6, ih + 6);
       }
@@ -570,7 +608,7 @@ export function render(
     // a framed chip — a different shape from the one the author draws in yEd.
     if (n.node.node_type === "property") {
       const st = nodeStyle(n.node.node_type);
-      ctx.fillStyle = st.fill || "#FFFFFFE6";
+      ctx.fillStyle = st.fill || canvasTheme().laneChip;
       ctx.fillRect(n.x, n.y, n.w, n.h);
       // the bracket: short tick, down the left edge, short tick
       const tick = Math.min(5, n.w * 0.18);
@@ -585,7 +623,12 @@ export function render(
       if (drawLabels) {
         const label = String(n.node.name || n.id);
         ctx.font = `${Math.min(11, n.h * 0.42)}px system-ui, sans-serif`;
-        ctx.fillStyle = "#1a1a1a";
+        // the annotation draws its own pale field (st.fill): ink from the fill
+        ctx.fillStyle = labelInk(
+          state,
+          n.node.id ?? n.id,
+          labelOn(st.fill || "#FFFFFF"),
+        );
         ctx.textAlign = "center";
         ctx.textBaseline = "middle";
         const maxW = n.w - 10;
@@ -599,7 +642,7 @@ export function render(
       }
       if (isSel(n) || n.id === state.hoverId) {
         const active = n.id === state.selectedId || n.instanceOf === state.selectedId;
-        ctx.strokeStyle = active ? ACCENT : isSel(n) ? "#5b9bf0" : "#a9c9f5";
+        ctx.strokeStyle = active ? accentColor() : isSel(n) ? canvasTheme().selectSoft : canvasTheme().hoverSoft;
         ctx.lineWidth = (active ? 3.6 : isSel(n) ? 2.6 : 1.6) / vp.scale;
         ctx.strokeRect(n.x - 3, n.y - 3, n.w + 6, n.h + 6);
       }
@@ -635,7 +678,7 @@ export function render(
         const label = String(n.node.name || n.id);
         const fs = 10;
         ctx.font = `${fs}px system-ui, sans-serif`;
-        ctx.fillStyle = "#1a1a1a";
+        ctx.fillStyle = labelInk(state, n.node.id ?? n.id, canvasTheme().labelInk);
         if (st.labelPosition === "top_left") {
           ctx.textAlign = "left";
           ctx.textBaseline = "bottom";
@@ -643,7 +686,7 @@ export function render(
           const ly = iy - 2;
           ctx.fillText(label, lx, ly);
           const tw = ctx.measureText(label).width;
-          ctx.strokeStyle = "#1a1a1a";
+          ctx.strokeStyle = canvasTheme().labelInk;
           ctx.lineWidth = 0.8 / Math.sqrt(vp.scale);
           ctx.beginPath();
           ctx.moveTo(lx, ly + 1.5);
@@ -665,7 +708,7 @@ export function render(
       }
       if (isSel(n) || n.id === state.hoverId) {
         const active = n.id === state.selectedId || n.instanceOf === state.selectedId;
-        ctx.strokeStyle = active ? ACCENT : isSel(n) ? "#5b9bf0" : "#a9c9f5";
+        ctx.strokeStyle = active ? accentColor() : isSel(n) ? canvasTheme().selectSoft : canvasTheme().hoverSoft;
         ctx.lineWidth = (active ? 3.6 : isSel(n) ? 2.6 : 1.6) / vp.scale;
         ctx.strokeRect(ix - 3, iy - 3, iw + 6, ih + 6);
       }
@@ -717,7 +760,7 @@ export function render(
       // the halo hugs the DRAWN shape, not the box: a 90×32 outline around BR's
       // 22px square would read as a selection of something else
       shapePath(ctx, st.shape, { x: sx - 2, y: sy - 2, w: sw + 4, h: sh + 4 });
-      ctx.strokeStyle = n.id === state.selectedId || n.instanceOf === state.selectedId ? ACCENT : "#7fb0f0";
+      ctx.strokeStyle = n.id === state.selectedId || n.instanceOf === state.selectedId ? accentColor() : canvasTheme().selectSoft;
       ctx.lineWidth = 2.2 / vp.scale;
       ctx.stroke();
     }
@@ -732,7 +775,15 @@ export function render(
       // white text on a white canvas, i.e. invisible. So a scaled shape captions
       // BELOW the glyph in ink, the way a marker is annotated on a drawing.
       const captionOutside = st.shapeScale < 1;
-      ctx.fillStyle = captionOutside ? "#1a1a1a" : st.textColor;
+      // the label sits ON the node's semantic fill (or below it, for a scaled
+      // glyph): `labelOn` picks black/white from the FILL's luminance, because the
+      // fill comes from the datamodel and does not change with the theme. NAME1's
+      // orange/red still wins — a broken name is a fact, not decoration.
+      ctx.fillStyle = labelInk(
+        state,
+        n.node.id ?? n.id,
+        captionOutside ? canvasTheme().labelInk : labelOn(st.fill),
+      );
       ctx.textAlign = "center";
       ctx.textBaseline = captionOutside ? "top" : "middle";
       const maxW = n.w - 8;
@@ -756,9 +807,9 @@ export function render(
       const by = n.y;
       ctx.beginPath();
       ctx.arc(bx, by, r, 0, Math.PI * 2);
-      ctx.fillStyle = ACCENT;
+      ctx.fillStyle = accentColor();
       ctx.fill();
-      ctx.fillStyle = "#fff";
+      ctx.fillStyle = canvasTheme().handleFill;
       ctx.font = `${r * 1.1}px system-ui, sans-serif`;
       ctx.textAlign = "center";
       ctx.textBaseline = "middle";
@@ -783,9 +834,9 @@ export function render(
       const ha = handleAnchor(n);
       ctx.beginPath();
       ctx.arc(ha.x, ha.y, r, 0, Math.PI * 2);
-      ctx.fillStyle = "#fff";
+      ctx.fillStyle = canvasTheme().handleFill;
       ctx.fill();
-      ctx.strokeStyle = isActive ? ACCENT : "#9aa7b5";
+      ctx.strokeStyle = isActive ? accentColor() : canvasTheme().handleRing;
       ctx.lineWidth = (isActive ? 2 : 1.3) / Math.sqrt(vp.scale);
       ctx.stroke();
     }
@@ -805,12 +856,12 @@ export function render(
     if (from) {
       const colors = {
         valid: "#1a7f37",
-        generic: "#8a939e",
+        generic: canvasTheme().labelMuted,
         invalid: "#c93c37",
       } as const;
       const c = state.connect.validity
         ? colors[state.connect.validity]
-        : "#8a939e";
+        : canvasTheme().labelMuted;
       ctx.strokeStyle = c;
       ctx.lineWidth = 2 / vp.scale;
       ctx.setLineDash([6 / vp.scale, 4 / vp.scale]);
@@ -850,7 +901,7 @@ export function render(
   const PD_TAG_H = 14;
   const drawPdTag = (x: number, y: number, pdgId: string): void => {
     ctx.save();
-    ctx.fillStyle = GROUP_HEADER_FILL; // paradata group colour (yEd folder tab)
+    ctx.fillStyle = groupHeaderFill(); // paradata group colour (yEd folder tab)
     ctx.strokeStyle = "rgba(0,0,0,0.30)";
     ctx.lineWidth = 1;
     if (typeof ctx.roundRect === "function") {
@@ -933,14 +984,14 @@ export function render(
       ctx.fill();
       if (selectedLane) {
         ctx.lineWidth = 2;
-        ctx.strokeStyle = ACCENT;
+        ctx.strokeStyle = accentColor();
         ctx.stroke();
       }
     } else {
       ctx.fillRect(chipX, ty - 2, chipW, chipH);
       if (selectedLane) {
         ctx.lineWidth = 2;
-        ctx.strokeStyle = ACCENT;
+        ctx.strokeStyle = accentColor();
         ctx.strokeRect(chipX, ty - 2, chipW, chipH);
       }
     }
@@ -956,11 +1007,11 @@ export function render(
       ctx.strokeStyle = "rgba(0,0,0,0.28)";
       ctx.stroke();
     }
-    ctx.fillStyle = "#2c4a6e";
+    ctx.fillStyle = canvasTheme().laneChipInk;
     ctx.font = "600 12px system-ui, sans-serif";
     ctx.fillText(lane.label, textX, ty);
     if (showBounds) {
-      ctx.fillStyle = "#6b7785";
+      ctx.fillStyle = canvasTheme().labelMuted;
       ctx.font = "10px system-ui, sans-serif";
       ctx.fillText(boundsText, textX, ty + 15);
     }
@@ -973,7 +1024,7 @@ export function render(
     const addR = 7;
     const addCx = RAIL + 14;
     const addCy = ty - 2 + chipH + 12;
-    const ecol = lane.color || "#94a3b8";
+    const ecol = lane.color || canvasTheme().labelMuted;
     ctx.strokeStyle = ecol;
     ctx.lineWidth = 1.5;
     ctx.beginPath();
@@ -987,7 +1038,7 @@ export function render(
     ctx.lineWidth = 1;
     ctx.strokeStyle = "rgba(0,0,0,0.28)";
     ctx.stroke();
-    ctx.strokeStyle = "#2c4a6e";
+    ctx.strokeStyle = canvasTheme().laneChipInk;
     ctx.lineWidth = 1.6;
     ctx.beginPath();
     ctx.moveTo(addCx - 3.2, addCy);
@@ -1008,7 +1059,7 @@ export function render(
         : scene.lanes[bi - 1].y + scene.lanes[bi - 1].height;
     const by = worldY * vp.scale + vp.y;
     ctx.save();
-    ctx.strokeStyle = ACCENT;
+    ctx.strokeStyle = accentColor();
     ctx.lineWidth = 2;
     ctx.setLineDash([6, 4]);
     ctx.beginPath();
@@ -1019,10 +1070,10 @@ export function render(
     const bx = RAIL + 12;
     ctx.beginPath();
     ctx.arc(bx, by, 8, 0, Math.PI * 2);
-    ctx.fillStyle = ACCENT;
+    ctx.fillStyle = accentColor();
     ctx.fill();
     ctx.lineWidth = 1.5;
-    ctx.strokeStyle = "#fff";
+    ctx.strokeStyle = canvasTheme().handleFill;
     ctx.stroke();
     ctx.lineWidth = 2;
     ctx.beginPath();
@@ -1086,14 +1137,14 @@ export function render(
         ctx.fill();
         if (selectedBand) {
           ctx.lineWidth = 2;
-          ctx.strokeStyle = ACCENT;
+          ctx.strokeStyle = accentColor();
           ctx.stroke();
         }
       } else {
         ctx.fillRect(chipX, ty - 1, chipW, chipH);
         if (selectedBand) {
           ctx.lineWidth = 2;
-          ctx.strokeStyle = ACCENT;
+          ctx.strokeStyle = accentColor();
           ctx.strokeRect(chipX, ty - 1, chipW, chipH);
         }
       }
@@ -1101,18 +1152,18 @@ export function render(
       const cy = ty - 1 + 8;
       ctx.beginPath();
       ctx.arc(cx, cy, dot / 2, 0, Math.PI * 2);
-      ctx.fillStyle = sb.color || "#94a3b8";
+      ctx.fillStyle = sb.color || canvasTheme().labelMuted;
       ctx.fill();
       ctx.lineWidth = 1;
       ctx.strokeStyle = "rgba(0,0,0,0.24)";
       ctx.stroke();
-      ctx.fillStyle = sb.residual ? "#6b7785" : "#2c4a6e";
+      ctx.fillStyle = sb.residual ? canvasTheme().labelMuted : canvasTheme().laneChipInk;
       ctx.font = sb.residual
         ? "italic 10px system-ui, sans-serif"
         : "600 10px system-ui, sans-serif";
       ctx.fillText(sb.label, chipX + 7 + dot + 5, ty);
       if (hasBounds) {
-        ctx.fillStyle = "#6b7785";
+        ctx.fillStyle = canvasTheme().labelMuted;
         ctx.font = "9px system-ui, sans-serif";
         ctx.fillText(boundsText, chipX + 7 + dot + 5, ty + 13);
       }

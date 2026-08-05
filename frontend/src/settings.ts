@@ -19,6 +19,17 @@ export interface DeveloperSettings {
 export interface InteractionSettings {
   /** show a tooltip when hovering a connector (edge); on by default */
   edgeTooltips: boolean;
+  /**
+   * Documents must be named `D.<n>` (NAME1). ON by default, and relaxing it is
+   * discouraged rather than forbidden.
+   *
+   * The reason it is a setting at all: an extractor's name derives from its
+   * document's (`D.10` → `D.10.1`), so a free-form document name still works —
+   * it just stops being readable as a reference. Off, a document is only
+   * required to be unique and non-empty; duplicates and empties stay errors
+   * either way.
+   */
+  strictDocumentNames: boolean;
 }
 
 /**
@@ -65,7 +76,7 @@ const KEY = "emstudio.settings";
 const DEFAULTS: Settings = {
   sync: { protocol: "ws", host: "localhost", port: 8788, tool: "blender" },
   developer: { showNodeIds: false },
-  interaction: { edgeTooltips: true },
+  interaction: { edgeTooltips: true, strictDocumentNames: true },
   ai: { provider: "claude", model: "" },
   // No default host on purpose: a wrong one would look like a broken viewer.
   // The Heriverse deployment guide mounts the wapp at /a/heriverse.
