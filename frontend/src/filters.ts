@@ -11,6 +11,8 @@ import {
   ancestorsOf,
   classOf,
   edgeEndpointClasses,
+  edgeEndpointsRaw,
+  edgeTypeNames,
   GENERIC_EDGE,
   isContinuityType,
   isGroupType,
@@ -48,7 +50,11 @@ export const CIRCLES: Circle[] = [
   { key: "virtual", label: "Virtual stratigraphic units", kind: "node", matrix: true, graph: true },
   { key: "continuity", label: "Continuity (BR)", kind: "node", matrix: true, graph: true },
   { key: "paradata_nodes", label: "Paradata nodes", kind: "node", matrix: true, graph: true },
-  { key: "authors_licenses", label: "Authors & licenses", kind: "node", matrix: false, graph: true },
+  // BADGE1 · author/license/embargo are no longer boxes but badges pinned to
+  // their referent, so they are cheap to show in Matrix too — this ring now
+  // toggles the BADGES. Default ON in both views; a small corner miniature does
+  // not crowd the matrix the way a box+edge did (which is why it was matrix:false).
+  { key: "authors_licenses", label: "Authors & licenses", kind: "node", matrix: true, graph: true },
   { key: "links_other", label: "Links & other", kind: "node", matrix: false, graph: true },
   { key: "edges_temporal", label: "Temporal edges", kind: "edge", matrix: true, graph: true },
   { key: "edges_paradata", label: "Paradata edges", kind: "edge", matrix: true, graph: true },
@@ -122,10 +128,58 @@ export function nodeCircle(nodeType: string | undefined): CircleKey | null {
   }
   if (isParadataType(nodeType)) return "paradata_nodes";
   const anc = ancestorsOf(nodeType);
-  if (anc.includes("AuthorNode") || anc.includes("LicenseNode"))
+  if (
+    anc.includes("AuthorNode") ||
+    anc.includes("LicenseNode") ||
+    anc.includes("EmbargoNode")
+  )
     return "authors_licenses";
   return "links_other"; // links, geo-position, representations, … the rest
 }
+
+// ---- ornament (adornment) classification — the ONE source (BADGE1) ----------
+// author / license / embargo are annotations of a referent, not stratigraphic
+// elements: the view collapses them into badges attached to the referent instead
+// of boxes joined by edges. "Is it an ornament?" is answered HERE, anchored to
+// the `authors_licenses` circle, so the filter and the collapse cannot disagree.
+const ORNAMENT_CLASSES: ReadonlySet<string> = new Set([
+  "AuthorNode",
+  "AuthorAINode",
+  "LicenseNode",
+  "EmbargoNode",
+]);
+
+/** True for a node type that is a pure annotation of a referent (author /
+ *  author_ai / license / embargo). Same answer as the `authors_licenses`
+ *  ring — one source of truth. */
+export function isAdornmentNodeType(nodeType: string | undefined): boolean {
+  return nodeCircle(nodeType) === "authors_licenses";
+}
+
+/**
+ * Edge types that ATTACH an ornament to its referent, DERIVED from the
+ * connections datamodel — never hardcoded. The rule: the edge's target is
+ * exclusively ornament classes AND its source admits a content class (anything
+ * that is neither an ornament nor NarrativeNode). That yields exactly
+ * `has_author` / `has_license` / `has_embargo` and, crucially, EXCLUDES
+ * `validated_by` — whose target is AuthorNode too, but whose source is
+ * NarrativeNode only: that edge is a narrative endorsement, not an attribution,
+ * and must keep drawing (narrative-authorship.ts still reads it).
+ *
+ * The ornament is always the edge's TARGET and the referent its SOURCE, verified
+ * for all three against the datamodel (see the BADGE1 report).
+ */
+export const ADORNMENT_EDGE_TYPES: ReadonlySet<string> = new Set(
+  edgeTypeNames().filter((name) => {
+    const { source, target } = edgeEndpointsRaw(name);
+    const targetIsOrnament =
+      target.length > 0 && target.every((c) => ORNAMENT_CLASSES.has(c));
+    const sourceHasContent = source.some(
+      (c) => !ORNAMENT_CLASSES.has(c) && c !== "NarrativeNode",
+    );
+    return targetIsOrnament && sourceHasContent;
+  }),
+);
 
 /** Which circle an edge belongs to, or null for structural membership edges
  *  (is_part_of / is_in_*) that build the containers and are never filtered. */

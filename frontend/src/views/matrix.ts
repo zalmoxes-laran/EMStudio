@@ -189,6 +189,7 @@ export function buildMatrixScene(
       node,
       badge: view?.badges.get(node.id),
       pinned: pinnedSet.has(node.id),
+      adornments: view?.adornments?.get(node.id),
     };
     scene.byId.set(node.id, sn);
     // outline containers: group-type nodes AND any stratigraphic node that

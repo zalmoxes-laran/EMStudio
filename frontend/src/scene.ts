@@ -1,3 +1,4 @@
+import type { AdornmentBadge } from "./adornments";
 import { nodeStyle } from "./palette";
 import { drawBoxOf, drawsAsGlyph, handleAnchor, pointInShape } from "./shape-geom";
 import type { EmEdge, EmNode } from "./types";
@@ -21,6 +22,10 @@ export interface SceneNode {
   useCount?: number;
   /** position is pinned (locked) — the renderer shows a small lock badge */
   pinned?: boolean;
+  /** BADGE1 · ornament miniatures (author/license/embargo) pinned to a corner;
+   *  a click on one selects the real ornament node. View-only — em.json is
+   *  untouched (the nodes/edges stay in the document). */
+  adornments?: AdornmentBadge[];
 }
 
 export interface SceneEdge {

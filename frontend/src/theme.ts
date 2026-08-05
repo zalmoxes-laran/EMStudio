@@ -32,7 +32,12 @@ export interface CanvasTheme {
   laneB: string;
   /** the hairline between two bands */
   laneLine: string;
-  /** lane label chip + its ink */
+  /** hairline around a chip / title-tab that carries a semantic fill, to
+   *  separate it from the surface behind it (mirrors CSS --border) */
+  chipBorder: string;
+  /** the NEUTRAL lane label chip + its ink — the fallback for an epoch that
+   *  declares no colour. A coloured epoch fills the chip with its own colour
+   *  and takes labelOn(colour) for the ink, so these two are used only then. */
   laneChip: string;
   laneChipInk: string;
   /** default label ink on the canvas background */
@@ -43,11 +48,13 @@ export interface CanvasTheme {
   accent: string;
   selectSoft: string;
   hoverSoft: string;
-  /** group container: body wash, dashed border, header tint fallback */
+  /** group container: body wash, dashed border, header tint fallback.
+   *  The header TITLE ink is not a theme value: the title-tab carries a
+   *  semantic label_background, so the ink is labelOn(that fill) — see
+   *  DARK2. groupHeaderFallback is used only when a group has no fill. */
   groupBody: string;
   groupBorder: string;
   groupHeaderFallback: string;
-  groupHeaderInk: string;
   /** connect handle (the bullet on a node's right edge) */
   handleFill: string;
   handleRing: string;
@@ -65,6 +72,7 @@ const LIGHT: CanvasTheme = {
   laneA: "#EDF3FA",
   laneB: "#F7FAFD",
   laneLine: "#D5E0EC",
+  chipBorder: "#d8dee6",
   laneChip: "#FFFFFFE6",
   laneChipInk: "#2c4a6e",
   labelInk: "#1a1a1a",
@@ -75,7 +83,6 @@ const LIGHT: CanvasTheme = {
   groupBody: "rgba(190,196,204,0.25)",
   groupBorder: "#000000",
   groupHeaderFallback: "#F6D7A4",
-  groupHeaderInk: "#4a3317",
   handleFill: "#ffffff",
   handleRing: "#9aa7b5",
   edgeDefault: "#888888",
@@ -97,6 +104,7 @@ const DARK: CanvasTheme = {
   laneA: "#1A222D",
   laneB: "#151C25",
   laneLine: "#2A3644",
+  chipBorder: "#2b3644",
   laneChip: "#1E2632F2",
   laneChipInk: "#bcd2ee",
   labelInk: "#e3e8ef",
@@ -107,7 +115,6 @@ const DARK: CanvasTheme = {
   groupBody: "rgba(120,132,148,0.20)",
   groupBorder: "#8b95a3",
   groupHeaderFallback: "#6b5324",
-  groupHeaderInk: "#f2e2c4",
   handleFill: "#1E2632",
   handleRing: "#8b95a3",
   edgeDefault: "#7c8794",

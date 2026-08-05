@@ -348,6 +348,24 @@ export function edgeTypeDescription(edgeType: string): string {
   return EDGE_TYPES[edgeType]?.description ?? "";
 }
 
+/** All specific edge type names (excludes the generic connection). Lets callers
+ *  derive edge-class sets from the datamodel instead of hardcoding names. */
+export function edgeTypeNames(): string[] {
+  return Object.keys(EDGE_TYPES).filter((n) => n !== GENERIC_EDGE);
+}
+
+/** Raw declared endpoint CLASS names of an edge type, VERBATIM from the
+ *  datamodel's `allowed_connections` (NOT expanded to ancestors — the caller
+ *  that needs "target is exactly these classes" must see the declared set, not
+ *  every ancestor up to Node). */
+export function edgeEndpointsRaw(edgeType: string): {
+  source: string[];
+  target: string[];
+} {
+  const ac = EDGE_TYPES[edgeType]?.allowed_connections;
+  return { source: ac?.source ?? [], target: ac?.target ?? [] };
+}
+
 /** node_types whose class ancestry includes the given class name. */
 export function typesOfClass(className: string): string[] {
   return [...TYPE_TO_CLASS.keys()].filter((t) =>

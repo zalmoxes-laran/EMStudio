@@ -43,6 +43,7 @@ import { createResourceThumb } from "./resource-preview";
 import {
   edgeAt,
   hitAddPhase,
+  hitAdornmentBadge,
   hitBandLabel,
   hitPdTag,
   render,
@@ -117,14 +118,17 @@ import {
   type Settings,
 } from "./settings";
 import {
+  ADORNMENT_EDGE_TYPES,
   CIRCLES,
   type CircleKey,
   defaultVisibleCircles,
   type DetailTemplate,
   edgeCircle,
+  isAdornmentNodeType,
   nodeCircle,
   TEMPLATES,
 } from "./filters";
+import { adornmentBadges, type AdornmentBadge } from "./adornments";
 import { type Qualia, vocabularyFor } from "./vocab";
 import { versionBreakdown } from "./versions";
 import {
@@ -1110,6 +1114,7 @@ function filteredView(): {
   nodes: EmDocument["graph"]["nodes"];
   edges: EmDocument["graph"]["edges"];
   badges: Map<string, number>;
+  adornments: Map<string, AdornmentBadge[]>;
 } {
   const doc = store!.doc;
   const folded = new Set(doc.layout?.folded_groups ?? []);
@@ -1167,10 +1172,22 @@ function filteredView(): {
         vis.has(e.target),
     );
   }
+  // BADGE1 · collapse ornament nodes (author/license/embargo) into badges on
+  // their referent. Resolved from the FULL document edges (the ornament edges are
+  // hidden by the `edges_author` ring, so the filtered edge list can't resolve
+  // them), but only for ornament nodes still present in vNodes — so the
+  // `authors_licenses` node ring, which drops those nodes above, turns the badges
+  // off with them. The ornament nodes and their edges are then removed from the
+  // VIEW (never a box, never an edge); em.json keeps both.
+  const visibleIds = new Set(vNodes.map((n) => n.id));
+  const adornments = adornmentBadges(vNodes, doc.graph.edges, visibleIds);
+  vNodes = vNodes.filter((n) => !isAdornmentNodeType(n.node_type));
+  vEdges = vEdges.filter((e) => !ADORNMENT_EDGE_TYPES.has(e.edge_type ?? ""));
   return {
     nodes: vNodes,
     edges: vEdges,
     badges: foldedView?.badges ?? new Map<string, number>(),
+    adornments,
   };
 }
 
@@ -4726,6 +4743,7 @@ let dragDetachPending = false; // Shift+drag a member → pull it out of its gro
 let dragDetachSet: { id: string; container: string }[] = [];
 let spaceHeld = false; // Space → pan-always gesture (see pointerdown)
 let pdTagPending: string | null = null; // PD tag pressed → enter on click (pointerup)
+let adornmentPending: string | null = null; // ornament badge pressed → select real node
 let bandSelectPending: string | null = null; // phase band label pressed → select on click
 let addPhasePending: string | null = null; // epoch "+" button pressed → add phase on click
 let hoverInsertBoundary: number | null = null; // EM-mode insert-epoch: hovered lane boundary
@@ -4893,6 +4911,16 @@ canvas.addEventListener("pointerdown", (e) => {
   if (placingType) {
     dragMode = "none";
     return; // click placement handled on pointerup
+  }
+  // BADGE1 · ornament badge (author/license/embargo) pressed → select the REAL
+  // ornament node on click. Checked before the node hit-test: the badge sits on
+  // the referent's corner and a click there means "edit the ornament", not the
+  // host. (The nodes/edges are still in em.json — this only selects.)
+  const ab = hitAdornmentBadge(w.x, w.y);
+  if (ab) {
+    adornmentPending = ab;
+    dragMode = "none";
+    return;
   }
   // connect handle? The bullet shows on the hovered/selected node always, and
   // on EVERY node when zoomed in (renderer) — so allow starting a connect from
@@ -5215,6 +5243,14 @@ canvas.addEventListener("pointerup", (e) => {
     const pd = pdTagPending;
     pdTagPending = null;
     if (!moved) enterGroup(pd);
+    return;
+  }
+  // ornament badge click → select the real author/license/embargo node so the
+  // Inspector edits it (the badge is only its view representation)
+  if (adornmentPending) {
+    const id = adornmentPending;
+    adornmentPending = null;
+    if (!moved) select(id);
     return;
   }
   // phase band label click → select that phase (residual → the epoch)

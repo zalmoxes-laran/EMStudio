@@ -165,6 +165,18 @@ export function hitPdTag(sx: number, sy: number): string | null {
   return null;
 }
 
+// WORLD-space hit rects for BADGE1 ornament badges (author/license/embargo)
+// pinned to a referent's corner → the REAL ornament node id to select on click.
+// World space (not screen) because the badges are drawn under the viewport
+// transform, alongside the node; main.ts tests them with world coordinates.
+let adornmentHits: { ornamentId: string; x: number; y: number; w: number; h: number }[] = [];
+export function hitAdornmentBadge(wx: number, wy: number): string | null {
+  for (const t of adornmentHits)
+    if (wx >= t.x && wx <= t.x + t.w && wy >= t.y && wy <= t.y + t.h)
+      return t.ornamentId;
+  return null;
+}
+
 // Screen-space hit rects for phase sub-band label chips → the id to select on
 // click (the phase id, or the epoch id for the residual band). Rebuilt each draw.
 let bandLabelHits: { id: string; x: number; y: number; w: number; h: number }[] = [];
@@ -242,10 +254,13 @@ function drawGroupContainer(
     ctx.lineTo(g.x + 10.5, g.y + 14);
   }
   ctx.stroke();
-  // title
+  // title — the ink is decided by the header FILL (semantic label_background:
+  // cyan/peach/green/grey), not by the theme: the tab colour is the same in both
+  // themes, so a per-theme ink went illegible on it (peach-on-cyan in dark). The
+  // label carries its own contrast via labelOn (DARK2).
   if (drawLabels) {
     ctx.font = `600 ${Math.min(11, g.headerH * 0.55)}px system-ui, sans-serif`;
-    ctx.fillStyle = canvasTheme().groupHeaderInk;
+    ctx.fillStyle = labelOn(headerFill);
     ctx.textAlign = "left";
     ctx.textBaseline = "middle";
     let t = g.title;
@@ -851,6 +866,55 @@ export function render(
     ctx.fillText("🔒", n.x + n.w - s * 0.35, n.y + s * 0.35);
   }
 
+  // BADGE1 · ornament miniatures (author / license / embargo) collapsed onto
+  // their referent instead of drawn as boxes joined by edges. Generalises the
+  // PD-tag: a small chip at the referent's top-right, stacked leftward, each a
+  // click target that selects the REAL ornament node (the Inspector edits it).
+  // The node's official 2D icon if it has one, else a lettered pastille. Sized
+  // in screen px (/vp.scale) so they stay legible; hit rects are world-space.
+  adornmentHits = [];
+  const BADGE = 16; // screen px
+  for (const n of scene.nodes) {
+    const ads = n.adornments;
+    if (!ads || !ads.length) continue;
+    const bs = BADGE / vp.scale;
+    const gap = 3 / vp.scale;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    for (let i = 0; i < ads.length; i++) {
+      const b = ads[i];
+      const bx = n.x + n.w - (i + 1) * bs - i * gap;
+      const by = n.y - bs * 0.55; // straddle the top edge
+      ctx.beginPath();
+      if (typeof ctx.roundRect === "function")
+        ctx.roundRect(bx, by, bs, bs, bs * 0.22);
+      else ctx.rect(bx, by, bs, bs);
+      ctx.fillStyle = canvasTheme().handleFill;
+      ctx.fill();
+      ctx.lineWidth = 1 / vp.scale;
+      ctx.strokeStyle = canvasTheme().chipBorder;
+      ctx.stroke();
+      const img = imageFor(b.kind);
+      const pad = bs * 0.16;
+      if (img) ctx.drawImage(img, bx + pad, by + pad, bs - 2 * pad, bs - 2 * pad);
+      else {
+        // no icon file → a lettered pastille (A/L/E), ink from the chip fill
+        ctx.fillStyle = labelOn(canvasTheme().handleFill);
+        ctx.font = `700 ${bs * 0.62}px system-ui, sans-serif`;
+        ctx.fillText((b.kind[0] || "?").toUpperCase(), bx + bs / 2, by + bs / 2 + 0.5);
+      }
+      // selection ring when THIS ornament node is the selected one
+      if (b.ornamentId === state.selectedId) {
+        ctx.strokeStyle = accentColor();
+        ctx.lineWidth = 2 / vp.scale;
+        ctx.strokeRect(bx - 1 / vp.scale, by - 1 / vp.scale, bs + 2 / vp.scale, bs + 2 / vp.scale);
+      }
+      adornmentHits.push({ ornamentId: b.ornamentId, x: bx, y: by, w: bs, h: bs });
+    }
+  }
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+
   if (state.connect) {
     const from = scene.byId.get(state.connect.fromId);
     if (from) {
@@ -962,58 +1026,52 @@ export function render(
     const boundsText =
       lane.start || lane.end ? `${lane.start ?? "?"} – ${lane.end ?? "?"}` : "";
     const showBounds = !!boundsText && sh > 36;
-    const dot = lane.color ? 12 : 0;
+    // The chip now carries the epoch's own colour, so there is no separate
+    // colour dot: the whole pastille IS the colour swatch (DARK2).
     ctx.font = "600 12px system-ui, sans-serif";
     const nameW = ctx.measureText(lane.label).width;
     ctx.font = "10px system-ui, sans-serif";
     const boundsW = showBounds ? ctx.measureText(boundsText).width : 0;
-    const gap = dot ? 6 : 0;
     const hasPd = !!lane.paradataGroupId;
     const tagSpace = hasPd ? PD_TAG_W + 6 : 0;
     const hasWarn = !!lane.warn;
     const warnSpace = hasWarn ? WARN_W + 4 : 0;
     const chipX = RAIL + 4;
-    const chipW =
-      8 + dot + gap + Math.max(nameW, boundsW) + warnSpace + tagSpace + 8;
+    const chipW = 8 + Math.max(nameW, boundsW) + warnSpace + tagSpace + 8;
     const chipH = showBounds ? 32 : 18;
     const selectedLane = lane.id === state.selectedId;
-    ctx.fillStyle = "rgba(255,255,255,0.86)";
+    // fill = the epoch's semantic colour (falls back to the neutral chip when
+    // the epoch declares none); ink = labelOn(that fill) so the contrast lives
+    // in the chip, not in a per-theme token laid on a semantic surface.
+    const chipFill = lane.color || canvasTheme().laneChip;
+    const chipInk = lane.color ? labelOn(lane.color) : canvasTheme().laneChipInk;
+    ctx.fillStyle = chipFill;
     if (typeof ctx.roundRect === "function") {
       ctx.beginPath();
       ctx.roundRect(chipX, ty - 2, chipW, chipH, 5);
       ctx.fill();
-      if (selectedLane) {
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = accentColor();
-        ctx.stroke();
-      }
+      // hairline to separate the chip from the lane, or the accent when selected
+      ctx.lineWidth = selectedLane ? 2 : 1;
+      ctx.strokeStyle = selectedLane ? accentColor() : canvasTheme().chipBorder;
+      ctx.stroke();
     } else {
       ctx.fillRect(chipX, ty - 2, chipW, chipH);
-      if (selectedLane) {
-        ctx.lineWidth = 2;
-        ctx.strokeStyle = accentColor();
-        ctx.strokeRect(chipX, ty - 2, chipW, chipH);
-      }
+      ctx.lineWidth = selectedLane ? 2 : 1;
+      ctx.strokeStyle = selectedLane ? accentColor() : canvasTheme().chipBorder;
+      ctx.strokeRect(chipX, ty - 2, chipW, chipH);
     }
-    const textX = chipX + 8 + dot + gap;
-    if (dot) {
-      const cx = chipX + 8 + dot / 2;
-      const cy = ty - 2 + (showBounds ? 10 : 9);
-      ctx.beginPath();
-      ctx.arc(cx, cy, dot / 2, 0, Math.PI * 2);
-      ctx.fillStyle = lane.color!;
-      ctx.fill();
-      ctx.lineWidth = 1;
-      ctx.strokeStyle = "rgba(0,0,0,0.28)";
-      ctx.stroke();
-    }
-    ctx.fillStyle = canvasTheme().laneChipInk;
+    const textX = chipX + 8;
+    ctx.fillStyle = chipInk;
     ctx.font = "600 12px system-ui, sans-serif";
     ctx.fillText(lane.label, textX, ty);
     if (showBounds) {
-      ctx.fillStyle = canvasTheme().labelMuted;
+      // the bounds line is the same ink, softened — still derived from the fill
+      ctx.save();
+      ctx.globalAlpha = 0.72;
+      ctx.fillStyle = chipInk;
       ctx.font = "10px system-ui, sans-serif";
       ctx.fillText(boundsText, textX, ty + 15);
+      ctx.restore();
     }
     if (hasWarn) drawWarn(textX + nameW + 4, ty + 6);
     if (hasPd)
@@ -1038,7 +1096,9 @@ export function render(
     ctx.lineWidth = 1;
     ctx.strokeStyle = "rgba(0,0,0,0.28)";
     ctx.stroke();
-    ctx.strokeStyle = canvasTheme().laneChipInk;
+    // the "+" sits on the epoch-coloured circle, so its ink comes from labelOn
+    // of that colour, not a per-theme token (DARK2, same anti-pattern).
+    ctx.strokeStyle = labelOn(ecol);
     ctx.lineWidth = 1.6;
     ctx.beginPath();
     ctx.moveTo(addCx - 3.2, addCy);
@@ -1111,7 +1171,6 @@ export function render(
         }
       }
       const ty = Math.max(sy + 3, 4);
-      const dot = 9;
       // a phase band shows its start–end under the name (like the lane chip);
       // the residual band never does (it's the epoch, already on the lane chip)
       const hasBounds = !sb.residual && (sb.start != null || sb.end != null);
@@ -1126,48 +1185,47 @@ export function render(
       const tagSpace = hasPd ? PD_TAG_W + 5 : 0;
       const hasWarn = !!sb.warn;
       const warnSpace = hasWarn ? WARN_W + 4 : 0;
-      const chipW =
-        7 + dot + 5 + Math.max(nameW, boundsW) + warnSpace + tagSpace + 8;
+      const chipW = 7 + 5 + Math.max(nameW, boundsW) + warnSpace + tagSpace + 8;
       const chipH = hasBounds ? 28 : 16;
       const selectedBand = sb.phaseId === state.selectedId;
-      ctx.fillStyle = "rgba(255,255,255,0.82)";
+      // same rule as the lane chip: a coloured phase fills its own colour and
+      // takes labelOn for the ink; the residual band (the epoch) has no colour
+      // and stays the neutral chip, its italic name in the muted ink.
+      const bandFill = sb.color || canvasTheme().laneChip;
+      const bandInk = sb.color
+        ? labelOn(sb.color)
+        : sb.residual
+          ? canvasTheme().labelMuted
+          : canvasTheme().laneChipInk;
+      ctx.fillStyle = bandFill;
       if (typeof ctx.roundRect === "function") {
         ctx.beginPath();
         ctx.roundRect(chipX, ty - 1, chipW, chipH, 4);
         ctx.fill();
-        if (selectedBand) {
-          ctx.lineWidth = 2;
-          ctx.strokeStyle = accentColor();
-          ctx.stroke();
-        }
+        ctx.lineWidth = selectedBand ? 2 : 1;
+        ctx.strokeStyle = selectedBand ? accentColor() : canvasTheme().chipBorder;
+        ctx.stroke();
       } else {
         ctx.fillRect(chipX, ty - 1, chipW, chipH);
-        if (selectedBand) {
-          ctx.lineWidth = 2;
-          ctx.strokeStyle = accentColor();
-          ctx.strokeRect(chipX, ty - 1, chipW, chipH);
-        }
+        ctx.lineWidth = selectedBand ? 2 : 1;
+        ctx.strokeStyle = selectedBand ? accentColor() : canvasTheme().chipBorder;
+        ctx.strokeRect(chipX, ty - 1, chipW, chipH);
       }
-      const cx = chipX + 7 + dot / 2;
-      const cy = ty - 1 + 8;
-      ctx.beginPath();
-      ctx.arc(cx, cy, dot / 2, 0, Math.PI * 2);
-      ctx.fillStyle = sb.color || canvasTheme().labelMuted;
-      ctx.fill();
-      ctx.lineWidth = 1;
-      ctx.strokeStyle = "rgba(0,0,0,0.24)";
-      ctx.stroke();
-      ctx.fillStyle = sb.residual ? canvasTheme().labelMuted : canvasTheme().laneChipInk;
+      const bandTextX = chipX + 7 + 5;
+      ctx.fillStyle = bandInk;
       ctx.font = sb.residual
         ? "italic 10px system-ui, sans-serif"
         : "600 10px system-ui, sans-serif";
-      ctx.fillText(sb.label, chipX + 7 + dot + 5, ty);
+      ctx.fillText(sb.label, bandTextX, ty);
       if (hasBounds) {
-        ctx.fillStyle = canvasTheme().labelMuted;
+        ctx.save();
+        ctx.globalAlpha = 0.72;
+        ctx.fillStyle = bandInk;
         ctx.font = "9px system-ui, sans-serif";
-        ctx.fillText(boundsText, chipX + 7 + dot + 5, ty + 13);
+        ctx.fillText(boundsText, bandTextX, ty + 13);
+        ctx.restore();
       }
-      if (hasWarn) drawWarn(chipX + 7 + dot + 5 + nameW + 4, ty + 5);
+      if (hasWarn) drawWarn(bandTextX + nameW + 4, ty + 5);
       if (hasPd)
         drawPdTag(chipX + chipW - PD_TAG_W - 5, ty - 1, sb.paradataGroupId!);
       // the chip is a click target → select the phase (residual → the epoch)

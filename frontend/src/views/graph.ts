@@ -415,5 +415,11 @@ export function buildGraphScene(
   const pos = new Map(base);
   const ov = opts?.overrides;
   if (ov) for (const [id, p] of ov) if (pos.has(id)) pos.set(id, p);
-  return assemble(nodes, pos, edges, view?.badges);
+  const scene = assemble(nodes, pos, edges, view?.badges);
+  // BADGE1 · attach the collapsed ornament badges to their referent SceneNode
+  // (the ornament nodes themselves are already stripped from view.nodes upstream)
+  if (view?.adornments)
+    for (const sn of scene.nodes)
+      sn.adornments = view.adornments.get(sn.id);
+  return scene;
 }
