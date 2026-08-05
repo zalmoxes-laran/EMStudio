@@ -143,6 +143,7 @@ import {
 } from "./scene";
 import { GROUP_HEADER, GROUP_PAD } from "./views/matrix";
 import { setupSearch } from "./search";
+import { initEmData, renderEmData } from "./emdata";
 import type { EmDocument, EmEdge, EmNode, ViewKind } from "./types";
 import { buildDtcGenesisScene, buildGroupScene } from "./views/context";
 import { buildGraphScene, type GraphAlgorithm } from "./views/graph";
@@ -1494,6 +1495,7 @@ function wireStore(s: DocumentStore): void {
     refreshNarrativeView();   // embeds are references: a graph edit shows here
     nodeList.refresh();
     refreshEMTree();          // node/edge counts and the dirty dot live there
+    renderEmData();           // EM-Data dock is a live view on the same graph
     draw();
   });
   // forward local graph mutations to a connected peer (op-log, ADR-002 §2).
@@ -5787,6 +5789,11 @@ populateLanguageSelect();
 // button sat there, enabled, filtering nothing (POL1 point 8 was only half true:
 // the rule was right, it just never ran before the first load).
 updateToolbar();
+
+// EM-Data dock (DP-81): a live tabular view on the active store. Reads `store`
+// through a getter so it always sees the current slot; re-renders from the
+// store's onChange (wired in wireStore).
+initEmData({ getStore: () => store });
 
 // Start from an EMPTY canvas (more natural than auto-loading a sample): use
 // New, Open…, drop a file, or Sync. __EM_TEST_DATA__ still injects a fixture

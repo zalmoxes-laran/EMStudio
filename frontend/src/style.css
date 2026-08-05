@@ -323,6 +323,181 @@ main {
   opacity: 0.9;
 }
 
+/* ---------- EM-Data dock (DP-81) ---------- */
+/* Full-width panel below the two side wings; a sibling of <main> in the body
+   column, so it spans the whole width and pushes main up. Resizable from the
+   top edge, collapsible to a thin bar. Theme-aware via the shared tokens. */
+#emdata-dock {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  height: 33vh;
+  min-height: 0;
+  background: var(--bg-panel);
+  border-top: 1px solid var(--border-strong);
+  position: relative;
+  overflow: hidden;
+}
+#emdata-dock.collapsed {
+  height: auto !important;
+}
+#emdata-dock.collapsed #emdata-body,
+#emdata-dock.collapsed #emdata-resizer {
+  display: none;
+}
+#emdata-resizer {
+  height: 6px;
+  cursor: ns-resize;
+  background: transparent;
+  flex: 0 0 auto;
+}
+#emdata-resizer:hover {
+  background: var(--accent);
+  opacity: 0.4;
+}
+#emdata-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 12px;
+  flex: 0 0 auto;
+  background: var(--bg-subtle);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.emdata-toggle {
+  background: none;
+  border: none;
+  color: var(--text);
+  font-weight: 600;
+  cursor: pointer;
+  padding: 2px 4px;
+}
+#emdata-dock.collapsed #emdata-head {
+  border-bottom: none;
+}
+#emdata-sheet {
+  font-size: 12px;
+  padding: 2px 6px;
+  background: var(--bg-panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+#emdata-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+#emdata-actions button {
+  font-size: 12px;
+  padding: 2px 8px;
+  background: var(--bg-panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+#emdata-actions button:hover {
+  background: var(--bg-hover);
+}
+.emdata-count {
+  margin-left: auto;
+  color: var(--text-faint);
+}
+#emdata-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+table.emdata-table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 12px;
+}
+table.emdata-table th,
+table.emdata-table td {
+  border: 1px solid var(--border);
+  padding: 0;
+  text-align: left;
+  vertical-align: middle;
+}
+table.emdata-table th {
+  position: sticky;
+  top: 0;
+  background: var(--bg-sunken);
+  color: var(--text-muted);
+  font-weight: 600;
+  padding: 4px 8px;
+  z-index: 1;
+}
+table.emdata-table td input,
+table.emdata-table td select {
+  width: 100%;
+  box-sizing: border-box;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  padding: 3px 8px;
+}
+table.emdata-table td input:focus,
+table.emdata-table td select:focus {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  background: var(--bg-panel);
+}
+table.emdata-table td.emdata-ro {
+  padding: 3px 8px;
+  color: var(--text-muted);
+  background: var(--bg-sunken);
+}
+table.emdata-table tr:hover td {
+  background: var(--bg-hover);
+}
+table.emdata-table td.emdata-rowop {
+  text-align: center;
+  width: 24px;
+}
+table.emdata-table td.emdata-rowop button {
+  border: none;
+  background: none;
+  color: var(--text-faint);
+  cursor: pointer;
+}
+/* Volatile (AUX2): a mapped-but-not-baked node — visible everywhere, marked in
+   accent blue, excluded from save until baked. Single flag drives graph + table. */
+table.emdata-table tr.emdata-vol td {
+  color: var(--accent);
+}
+table.emdata-table tr.emdata-vol td.emdata-ro {
+  color: var(--accent);
+  opacity: 0.85;
+}
+.emdata-empty {
+  padding: 16px;
+  color: var(--text-faint);
+  font-size: 13px;
+}
+.emdata-claimform {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-subtle);
+  flex-wrap: wrap;
+}
+.emdata-claimform input,
+.emdata-claimform select {
+  font-size: 12px;
+  padding: 2px 6px;
+  background: var(--bg-panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
 /* Extended Matrix brand mark in the footer, next to the EMStudio wordmark.
    The hourglass frame is currentColor so it tracks the footer text colour
    (navy on the light bar, mint on the dark sync bar). */

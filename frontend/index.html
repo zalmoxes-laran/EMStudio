@@ -210,6 +210,20 @@
         <div id="logpanel" class="hidden"></div>
       </aside>
     </main>
+    <!-- EM-Data dock (DP-81): a full-width tabular VIEW on the graph, BELOW the
+         two side wings (which live inside <main>). Resizable from its top edge,
+         collapsible to a bar. Starts collapsed so it never disrupts the canvas
+         until opened. Content is built by emdata.ts from the DocumentStore. -->
+    <section id="emdata-dock" class="collapsed" aria-label="EM-Data tables">
+      <div id="emdata-resizer" title="Drag to resize"></div>
+      <div id="emdata-head">
+        <button id="emdata-toggle" class="emdata-toggle" title="Collapse / expand EM-Data" aria-expanded="false"><span class="emdata-caret">▴</span> EM-Data</button>
+        <select id="emdata-sheet" title="Choose a table"></select>
+        <span id="emdata-actions"></span>
+        <span id="emdata-count" class="emdata-count"></span>
+      </div>
+      <div id="emdata-body"></div>
+    </section>
     <footer id="statusbar">
       <span id="footer-brand" title="Extended Matrix — EMStudio">
         <!-- Extended Matrix hourglass mark; frame uses currentColor so it
