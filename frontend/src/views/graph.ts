@@ -42,22 +42,29 @@ function adjacency(ids: string[], edges: EmEdge[]): Map<string, Set<string>> {
   return adj;
 }
 
-/** Assemble a Scene from a positions map (nodes at NODE_W×NODE_H). */
+/** Assemble a Scene from a positions map (nodes at NODE_W×NODE_H, unless a
+ *  per-type size is supplied by `sizeOf`). BUGFIX-GLYPH: the node's box comes
+ *  from em-core (the size owner, via `doc.layout.positions[id].w/h`), so a glyph
+ *  / shape is square here too — Graph no longer forces a wide 120×34 box that
+ *  left the connect handle floating far from the glyph. The graph LAYOUT still
+ *  spaces on NODE_W (a wider gap never overlaps), only the DRAWN box shrinks. */
 function assemble(
   nodes: EmNode[],
   pos: Map<string, Pos>,
   inputEdges: EmEdge[],
   badges?: Map<string, number>,
+  sizeOf?: (id: string) => { w: number; h: number } | undefined,
 ): Scene {
   const scene: Scene = { nodes: [], byId: new Map(), edges: [], lanes: [] };
   for (const n of nodes) {
     const p = pos.get(n.id) ?? { x: 0, y: 0 };
+    const sz = sizeOf?.(n.id);
     const sn: SceneNode = {
       id: n.id,
       x: p.x,
       y: p.y,
-      w: NODE_W,
-      h: NODE_H,
+      w: sz?.w ?? NODE_W,
+      h: sz?.h ?? NODE_H,
       node: n,
       badge: badges?.get(n.id),
     };
@@ -415,7 +422,17 @@ export function buildGraphScene(
   const pos = new Map(base);
   const ov = opts?.overrides;
   if (ov) for (const [id, p] of ov) if (pos.has(id)) pos.set(id, p);
-  const scene = assemble(nodes, pos, edges, view?.badges);
+  // BUGFIX-GLYPH · read each node's box from em-core's stored size
+  // (doc.layout.positions[id].w/h) so glyphs/shapes are square in Graph too,
+  // falling back to NODE_W/NODE_H for a node em-core never sized.
+  const positions = doc.layout?.positions;
+  const sizeOf = (id: string): { w: number; h: number } | undefined => {
+    const r = positions?.[id];
+    return r && typeof r.w === "number" && typeof r.h === "number"
+      ? { w: r.w, h: r.h }
+      : undefined;
+  };
+  const scene = assemble(nodes, pos, edges, view?.badges, sizeOf);
   // BADGE1 · attach the collapsed ornament badges to their referent SceneNode
   // (the ornament nodes themselves are already stripped from view.nodes upstream)
   if (view?.adornments)

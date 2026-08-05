@@ -44,7 +44,7 @@ const NODE_RESTRICTIONS = (
   connections as {
     node_type_restrictions?: Record<
       string,
-      { allowed_edges?: string[]; scope?: string }
+      { allowed_edges?: string[]; scope?: string; denied_edges?: string[] }
     >;
   }
 ).node_type_restrictions ?? {};
@@ -311,6 +311,16 @@ export function allowedEdgeTypes(
     const ac = def.allowed_connections;
     if (!ac) continue;
     if (!intersects(ac.source, sa) || !intersects(ac.target, ta)) continue;
+    // BUGFIX-CONN · a node type may DENY specific edges its CLASS would otherwise
+    // allow (`denied_edges`, the blacklist mirror of `allowed_edges`). Unlike the
+    // scoped `allowed_edges` whitelist below, this is NOT gated on the edge family
+    // — it names exact edges to withhold, so a subtype can say LESS than its
+    // parent for one edge without leaving the class hierarchy (e.g. an
+    // ExtractorNode/CombinerNode does not offer has_visual_reference, even though
+    // their parent ParadataNode is a listed source).
+    const deniedBySource = sourceType ? NODE_RESTRICTIONS[sourceType]?.denied_edges : undefined;
+    const deniedByTarget = targetType ? NODE_RESTRICTIONS[targetType]?.denied_edges : undefined;
+    if (deniedBySource?.includes(name) || deniedByTarget?.includes(name)) continue;
     // POL5 · a restricted type narrows the unit-to-unit relations, at EITHER end:
     // "USN cuts US" is as wrong as "US cuts USN".
     if (isUnitToUnitEdge(def)) {

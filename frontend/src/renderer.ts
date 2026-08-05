@@ -154,6 +154,17 @@ const accentColor = (): string => canvasTheme().accent;
 const groupHeaderFill = (): string => canvasTheme().groupHeaderFallback;
 const groupBodyFill = (): string => canvasTheme().groupBody;
 
+// B/W (monochrome) border: pure black on a LIGHT fill, pure white on a DARK fill,
+// so it always contrasts the node's own body (real US → black, virtual US → white).
+function monoBorder(fill: string): string {
+  const h = fill.replace("#", "");
+  if (h.length < 6) return "#000000";
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 > 0.5 ? "#000000" : "#FFFFFF";
+}
+
 // Decorator geometry (DEC1) — a FIXED size in SCREEN px, never scaled with the
 // world: zooming out does not grow the chip relative to the canvas (the size
 // adds nothing; to read the label you zoom in). One source, reused by the
@@ -525,7 +536,12 @@ export function render(
     // SHAPE + their existing fills, e.g. virtual USVn/USVs keep their black fill +
     // white text). Explicit user toggle, not tied to any template.
     const mono = state.monochrome === true;
-    const borderCol = mono ? canvasTheme().labelInk : st.border;
+    // B/W mode: the border must CONTRAST the node's own fill — BLACK on a light
+    // fill (real US, #F0F0F0), WHITE on a dark fill (virtual USVn/USVs, black).
+    // Using the theme's labelInk instead painted a real US's border white on the
+    // dark canvas — invisible on its white body (E.D.). This reads the fill, not
+    // the theme, so it is right in both themes.
+    const borderCol = mono ? monoBorder(st.fill || "#FFFFFF") : st.border;
     const group = scene.groupsById?.get(n.id);
     if (group) {
       drawGroupContainer(
@@ -1021,10 +1037,11 @@ export function render(
   pdDecoratorHits = [];
   const PD_W = Math.round(BADGE_PX * 1.5);
   const pdFill = nodeStyle("ParadataNodeGroup").labelBackground || groupHeaderFill();
-  for (const g of scene.groups ?? []) {
-    if (!(g.folded && g.pdReferent)) continue;
-    const ref = scene.byId.get(g.pdReferent);
-    if (!ref) continue;
+  // BUGFIX-PDG · drawn from the REFERENT node (`pdCollapsed` = the PDG id), so the
+  // collapsed PDG needs no SceneGroup — nothing draws a phantom box behind it.
+  for (const ref of scene.nodes) {
+    const pdgId = ref.pdCollapsed;
+    if (!pdgId) continue;
     const r = nodeScreenRect(ref, vp);
     if (r.x + r.w < 0 || r.x - PD_W > viewW || r.y > viewH || r.y + r.h < 0)
       continue;
@@ -1043,12 +1060,12 @@ export function render(
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText("PD", tx + PD_W / 2, ty + BADGE_PX / 2 + 0.5);
-    if (g.id === state.selectedId) {
+    if (pdgId === state.selectedId) {
       ctx.strokeStyle = accentColor();
       ctx.lineWidth = 2;
       ctx.strokeRect(tx - 1, ty - 1, PD_W + 2, BADGE_PX + 2);
     }
-    pdDecoratorHits.push({ pdgId: g.id, x: tx, y: ty, w: PD_W, h: BADGE_PX });
+    pdDecoratorHits.push({ pdgId, x: tx, y: ty, w: PD_W, h: BADGE_PX });
   }
   ctx.textAlign = "left";
   ctx.textBaseline = "top";

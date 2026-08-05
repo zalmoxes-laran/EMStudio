@@ -539,7 +539,10 @@ function draw(): void {
     ctx.save();
     for (const id of selectedIds) {
       const sn = s.byId.get(id);
-      if (!sn) continue;
+      // BUGFIX-PDG · a collapsed-to-tablet PDG has no box on the canvas — the
+      // selection wash must NOT paint a phantom box at its layout rect (its
+      // selection is the ring on the "PD" tablet, drawn by the renderer).
+      if (!sn || sn.collapsed) continue;
       const x = sn.x * vp.scale + vp.x - 3;
       const y = sn.y * vp.scale + vp.y - 3;
       const bw = sn.w * vp.scale + 6;
@@ -2073,6 +2076,11 @@ function placeNode(wx: number, wy: number): void {
     }
   }
   ensureCircleVisibleFor(placingType); // reveal its ring if the filter hid it
+  // BUGFIX-GLYPH · a glyph/shape type must never keep the wide default box: ask
+  // em-core (the size owner) to re-assert the new node's box from its TYPE, so a
+  // freshly created extractor/combiner/SE/BR is born ~square with the handle
+  // adjacent — not only after a Matrix re-load (EM2/EM3).
+  void reassertSizes();
   select(id);
   if (vocabularyFor(placingType)) openQualiaPicker(id, wx, wy); // pick its label
   cancelPlacing();
@@ -2367,6 +2375,9 @@ function createNodeAt(type: string, wx: number, wy: number): string | null {
       if (lane) store.addEdge(id, lane.id, "has_first_epoch");
     }
   }
+  // BUGFIX-GLYPH · re-assert the new node's box from its TYPE via em-core (see
+  // placeNode): a glyph/shape is born ~square, never with the wide default box.
+  void reassertSizes();
   return id;
 }
 
@@ -5377,6 +5388,10 @@ canvas.addEventListener("pointerup", (e) => {
       const ids = s.nodes
         .filter(
           (n) =>
+            // BUGFIX-PDG · a collapsed-to-tablet PDG is not on the canvas: the
+            // marquee must not sweep it up (it would select a phantom box in the
+            // empty space where the PDG's layout rect sits).
+            !n.collapsed &&
             n.x < x1 && n.x + n.w > x0 && n.y < y1 && n.y + n.h > y0,
         )
         .map((n) => n.id);

@@ -246,6 +246,54 @@ export function renderInspector(
     });
     panel.appendChild(idIn);
 
+    // ── CANVAS1 · canvas-scope defaults (Data Funnel) ──────────────────────
+    // Author / licence / embargo written as graph-level metadata
+    // (graph.author_name / license / embargo) — the GLOBAL default of the funnel
+    // pyramid (DP-40 canvas header tags). A node with no more-specific value
+    // (its own, its activity's, its epoch's) INHERITS these; the badge shows it
+    // attenuated ("da Canvas") and the "Propagative metadata" row names the
+    // source. DISTINCT from HDT-O "Author(s)" below (the Study's documentary
+    // authorship) — this is the propagative default.
+    panel.appendChild(
+      el("h3", "insp-sect", "Canvas metadata (global default)"),
+    );
+    const cg = store.doc.graph as unknown as Record<string, unknown>;
+    const cfield = (
+      key: "author_name" | "license" | "embargo",
+      label: string,
+      placeholder: string,
+      hint: string,
+    ): void => {
+      panel.appendChild(el("label", "insp-field-label", label));
+      const inp = document.createElement("input");
+      inp.className = "insp-name-input";
+      inp.value = String(cg[key] ?? "");
+      inp.placeholder = placeholder;
+      inp.addEventListener("change", () =>
+        store.updateCanvasDefaults({ [key]: inp.value }),
+      );
+      panel.appendChild(inp);
+      panel.appendChild(el("div", "insp-hint", hint));
+    };
+    cfield(
+      "author_name",
+      "Author (default)",
+      "e.g. M. Rossi",
+      "Propagative default: nodes with no author of their own / their epoch / their activity inherit this. Distinct from the Study Author(s) below.",
+    );
+    cfield(
+      "license",
+      "Licence (default)",
+      "e.g. CC-BY-NC",
+      "Creative Commons scheme (EM manual). Inherited by nodes with no more-specific licence.",
+    );
+    cfield(
+      "embargo",
+      "Embargo (default)",
+      "e.g. 24 (months)",
+      "Embargo in months (EM manual). Inherited by nodes with no more-specific embargo.",
+    );
+
     // ── HDT-O (ECHOES D7.1) per-graph panel ────────────────────────────────
     // This graph = a Study (HC9) whose proposition set (HC16) is about a
     // Heritage Entity (HC1, with its digital twin HC2), optionally under a

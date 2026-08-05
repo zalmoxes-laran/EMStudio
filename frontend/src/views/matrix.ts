@@ -149,6 +149,15 @@ export function buildMatrixScene(
       nodeById.get(e.source)?.node_type !== "EpochNode"
     )
       pdReferentNode.set(e.target, e.source);
+  // BUGFIX-PDG · the ONE condition for "this PDG is collapsed to a bottom-left
+  // tablet" (PD1). Shared by every path — the SceneNode (skip as a box), the
+  // SceneGroup pass (do not generate a box at all), the drawn edges (drop the
+  // has_paradata_nodegroup / is_in_paradata_nodegroup lines to it), and
+  // hit-testing — so they cannot drift and leave a phantom body or connector.
+  const isCollapsedTablet = (id: string): boolean =>
+    folded.has(id) &&
+    nodeById.get(id)?.node_type === "ParadataNodeGroup" &&
+    pdReferentNode.has(id);
   const propsOfPdg = new Map<string, string[]>(); // PDG id → member ids
   for (const e of doc.graph.edges)
     if (e.edge_type === "is_in_paradata_nodegroup") {
@@ -200,14 +209,9 @@ export function buildMatrixScene(
       badge: view?.badges.get(node.id),
       pinned: pinnedSet.has(node.id),
       adornments: view?.adornments?.get(node.id),
-      // PD1 · a folded PDG with a node referent is shown as a bottom-left tablet
-      // (SceneGroup.pdReferent), never as a node: mark it so drawing, the connect
-      // handle, and hit-testing all skip it — even in the edge cases where the
-      // SceneGroup box path would not have caught it.
-      collapsed:
-        folded.has(node.id) &&
-        node.node_type === "ParadataNodeGroup" &&
-        pdReferentNode.has(node.id),
+      // PD1/BUGFIX-PDG · a folded PDG shown as a bottom-left tablet is never a
+      // node: mark it so drawing, the connect handle and hit-testing skip it.
+      collapsed: isCollapsedTablet(node.id),
     };
     scene.byId.set(node.id, sn);
     // outline containers: group-type nodes AND any stratigraphic node that
@@ -748,6 +752,11 @@ export function buildMatrixScene(
 
   // ---- container descriptors for the renderer ----
   for (const g of [...outlineNodes, ...containerNodes]) {
+    // BUGFIX-PDG · a PDG collapsed to a bottom-left tablet gets NO SceneGroup at
+    // all — no box (the phantom body E.D. saw), no ± toggle hit area. The tablet
+    // (drawn from the referent's SceneNode + this pdg id, see the renderer) IS
+    // the representation. Same `isCollapsedTablet` the node/edge/hit paths use.
+    if (isCollapsedTablet(g.id)) continue;
     if (
       OUTLINE_TYPES.has(g.node.node_type) &&
       !folded.has(g.id) &&
@@ -764,17 +773,29 @@ export function buildMatrixScene(
       headerH: GROUP_HEADER,
       title: String(g.node.name || g.id),
       folded: folded.has(g.id),
-      pdReferent:
-        folded.has(g.id) && g.node.node_type === "ParadataNodeGroup"
-          ? pdReferentNode.get(g.id)
-          : undefined,
     };
     scene.groups!.push(sg);
     scene.groupsById!.set(g.id, sg);
   }
 
+  // BUGFIX-PDG · pin each collapsed-tablet PDG onto its referent SceneNode so the
+  // renderer draws the tablet from the referent (no SceneGroup needed).
+  for (const [pdg, refId] of pdReferentNode)
+    if (isCollapsedTablet(pdg)) {
+      const ref = scene.byId.get(refId);
+      if (ref) ref.pdCollapsed = pdg;
+    }
+
   for (const e of edges) {
     if (!scene.byId.has(e.source) || !scene.byId.has(e.target)) continue;
+    // BUGFIX-PDG · a PDG collapsed to a tablet has no box to point at: drop the
+    // has_paradata_nodegroup line (referent → PDG) AND any is_in_paradata_nodegroup
+    // (member → PDG), so no connector dangles to where the box used to be.
+    if (
+      (e.edge_type === "has_paradata_nodegroup" && isCollapsedTablet(e.target)) ||
+      (e.edge_type === "is_in_paradata_nodegroup" && isCollapsedTablet(e.target))
+    )
+      continue;
     // containment already expresses membership: hide the member→own-container
     // edge when the container is drawn open (yEd semantics)
     if (

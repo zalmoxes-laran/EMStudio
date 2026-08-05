@@ -29,8 +29,13 @@ export interface SceneNode {
   /** PD1 · this node is a folded ParadataNodeGroup shown as a bottom-left tablet
    *  on its referent instead of a box. It must not be drawn as a node, must not
    *  get a connect handle, and must not be hit-tested (the tablet has its own
-   *  hit rect). The tablet itself is drawn from the SceneGroup (pdReferent). */
+   *  hit rect). */
   collapsed?: boolean;
+  /** BUGFIX-PDG · set on the REFERENT node: the id of a folded PDG collapsed onto
+   *  it as a bottom-left tablet. The tablet is drawn from HERE (the referent's
+   *  screen rect), so the collapsed PDG needs NO SceneGroup at all — no phantom
+   *  box, no ± toggle. Clicking the tablet selects/enters this PDG. */
+  pdCollapsed?: string;
 }
 
 export interface SceneEdge {
@@ -103,11 +108,6 @@ export interface SceneGroup {
   headerH: number;
   title: string;
   folded: boolean;
-  /** PD1 · when this is a FOLDED ParadataNodeGroup whose referent is a node in
-   *  the scene, the referent node id: the group is not drawn as a closed box but
-   *  as a "tablet" decorator at that node's bottom-left (screen space). Absent
-   *  for open groups, non-PDG groups, and epoch/phase temporal PDGs (lane tag). */
-  pdReferent?: string;
 }
 
 export interface Scene {

@@ -1470,6 +1470,31 @@ export class DocumentStore {
     this.emit();
   }
 
+  /**
+   * CANVAS1 · the canvas-scope default of the Data Funnel — author / licence /
+   * embargo written as graph-level metadata (`graph.author_name` / `graph.license`
+   * / `graph.embargo`), the EXACT fields `funnel.ts::readScopeValue` reads for the
+   * canvas tier (mirrors s3dgraphy's graph getter; DP-65 swap-point). A node with
+   * no more-specific value inherits these. DISTINCT from HDT-O studyAuthors (the
+   * documentary authorship of the Study). An empty string clears the field so the
+   * funnel resolves it as absent. Checkpoint/undo like every other mutation.
+   */
+  updateCanvasDefaults(patch: {
+    author_name?: string;
+    license?: string;
+    embargo?: string;
+  }): void {
+    this.checkpoint();
+    const g = this.doc.graph as unknown as Record<string, unknown>;
+    for (const key of ["author_name", "license", "embargo"] as const) {
+      const v = patch[key];
+      if (v === undefined) continue;
+      if (v.trim() === "") delete g[key];
+      else g[key] = v;
+    }
+    this.emit();
+  }
+
   /** Find the (single) HDT-O singleton node carrying a given role marker. */
   private hdtoNode(role: HdtoRole): EmNode | undefined {
     return this.doc.graph.nodes.find(
