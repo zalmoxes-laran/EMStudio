@@ -35,12 +35,36 @@ import type { NodeStyle } from "./palette";
  * in this predicate too — otherwise its clickable area silently becomes whatever
  * `shape` its datamodel entry happens to declare.
  */
-export function drawsAsGlyph(nodeType: string): boolean {
+export function drawsAsGlyph(
+  nodeType: string,
+  data?: Record<string, unknown> | null,
+): boolean {
   return (
     ICON_NODE_TYPES.has(nodeType) ||
+    // the DTC profile picks a glyph per NODE, not per type: a plain `link` is a
+    // chain, a `link` with a kind is a photograph or a mesh (EM2)
+    (!!data && data["dtc_kind"] !== undefined) ||
     nodeType === "document" ||
     nodeType === "property"
   );
+}
+
+/**
+ * Where a node's CONNECT HANDLE sits — the bullet you drag to draw an edge.
+ *
+ * One function because there were two call sites computing it separately: the
+ * renderer's `arc(n.x + n.w, n.y + n.h / 2, …)` and `scene.ts::hitHandle`. They
+ * agreed by coincidence, and a coincidence is not a contract — the visible bullet
+ * and the grabbable bullet are the same object and must come from one expression.
+ *
+ * The anchor is the middle of the box's RIGHT EDGE, and that is the reason EM2
+ * squared the box of glyph nodes in em-core: the handle is only "attached to the
+ * glyph" if the box ends where the glyph ends. Nothing is corrected here — a
+ * handle nudged inwards to meet a narrow drawing would be a second geometry, and
+ * the first thing it would break is the edge that starts from it.
+ */
+export function handleAnchor(n: Box): { x: number; y: number } {
+  return { x: n.x + n.w, y: n.y + n.h / 2 };
 }
 
 export interface Box {

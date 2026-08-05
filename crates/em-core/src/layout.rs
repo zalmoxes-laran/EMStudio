@@ -413,6 +413,10 @@ pub fn compute_with_sketch(
         type_boxes: &'a crate::geometry::TypeBoxes,
         /// node index → node_type, to look the table up without the Graph
         node_types: &'a [String],
+        /// node index → "this node draws a glyph of its own" (EM2): the DTC
+        /// profile picks a glyph per node from `data.dtc_kind`, so glyph-ness is
+        /// not always a property of the type.
+        glyph_by_data: &'a [bool],
         gap_x: f64,
         pitch: f64,
         group_pad: f64,
@@ -449,12 +453,14 @@ pub fn compute_with_sketch(
                     Some(inner),
                 ));
             } else {
-                // EM1 · a LEAF takes its type's box. A group keeps the box its
-                // contents need (above): shrinking a container would clip the
-                // members the engine just placed inside it.
-                let (bw, bh) = crate::geometry::box_for(
+                // EM1/EM2 · a LEAF takes its type's box, or the square glyph box
+                // when the NODE itself carries a glyph (DTC `data.dtc_kind`). A
+                // group keeps the box its contents need (above): shrinking a
+                // container would clip the members the engine just placed inside.
+                let (bw, bh) = crate::geometry::box_for_node(
                     ctx.type_boxes,
                     ctx.node_types[m].as_str(),
+                    ctx.glyph_by_data[m],
                     ctx.node_w,
                     ctx.node_h,
                 );
@@ -831,6 +837,12 @@ pub fn compute_with_sketch(
     // node_type per index, for the per-type box lookup (EM1)
     let node_types: Vec<String> =
         graph.nodes.iter().map(|n| n.node_type.clone()).collect();
+    // …and per index whether the NODE itself draws a glyph (EM2, DTC profile)
+    let glyph_by_data: Vec<bool> = graph
+        .nodes
+        .iter()
+        .map(|n| n.data.contains_key(crate::geometry::GLYPH_BY_DATA_KEY))
+        .collect();
     let ctx = Ctx {
         down: &down,
         sym_pairs: &sym_pairs,
@@ -842,6 +854,7 @@ pub fn compute_with_sketch(
         node_h,
         type_boxes: &opts.type_boxes,
         node_types: &node_types,
+        glyph_by_data: &glyph_by_data,
         gap_x,
         pitch,
         group_pad,

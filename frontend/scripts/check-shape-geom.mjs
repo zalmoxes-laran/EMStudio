@@ -31,7 +31,7 @@ const bundle = await esbuild.build({
           namespace: "stub",
         }));
         build.onLoad({ filter: /.*/, namespace: "stub" }, () => ({
-          contents: `export const ICON_NODE_TYPES = new Set(["extractor"]);`,
+          contents: `export const ICON_NODE_TYPES = new Set(["extractor", "combiner"]);`,
           loader: "ts",
         }));
       },
@@ -43,7 +43,7 @@ const mod = await import(
   "data:text/javascript;base64," +
     Buffer.from(bundle.outputFiles[0].text).toString("base64")
 );
-const { drawBoxOf, drawsAsGlyph, pointInShape, polygonOf } = mod;
+const { drawBoxOf, drawsAsGlyph, handleAnchor, pointInShape, polygonOf } = mod;
 
 const node = { x: 0, y: 0, w: 90, h: 32 };
 let checks = 0;
@@ -123,5 +123,36 @@ for (const s of ["diamond", "triangle", "hexagon", "octagon", "parallelogram", "
 for (const s of ["ellipse", "circle", "corner_brackets", "rounded_rectangle"]) {
   ok(polygonOf(s, tri) === null, `${s} is not a polygon and says so`);
 }
+
+// ── EM2 · the connect handle, and the square box of a glyph node ────────────
+// The handle is ONE expression, and the point of squaring a glyph node's box in
+// em-core is that this expression then lands on the glyph. Both are checked here
+// because "the bullet you see is the bullet you can grab" has no other test.
+const glyph = { x: 100, y: 200, w: 32, h: 32 }; // what em-core now emits
+const wide = { x: 100, y: 200, w: 90, h: 32 };  // what it emitted before EM2
+ok(handleAnchor(glyph).x === 132 && handleAnchor(glyph).y === 216,
+  "the handle sits at the middle of the box's right edge");
+ok(handleAnchor(glyph).x === glyph.x + glyph.w,
+  "…which for a SQUARE glyph box is the right edge of the glyph itself");
+ok(handleAnchor(wide).x - (wide.x + 32) === 58,
+  "on the old wide box the same anchor was 58px away from a 32px glyph — the bug");
+// grab radius: the handle is grabbed within 8/sqrt(scale) world units of the
+// anchor (scene.ts::hitHandle), so at scale 1 the glyph's right edge is inside it
+const grab = 8;
+ok(Math.hypot(handleAnchor(glyph).x - (glyph.x + glyph.w), 0) <= grab,
+  "the glyph's right edge is within the grab radius of the handle");
+ok(Math.hypot(handleAnchor(wide).x - (wide.x + 32), 0) > grab,
+  "…and on the wide box it was not, however hard you aimed");
+// glyph-ness is per TYPE and, for the DTC profile, per NODE
+ok(drawsAsGlyph("extractor"), "a declared glyph type is a glyph");
+ok(!drawsAsGlyph("link"), "a plain link is not");
+ok(drawsAsGlyph("link", { dtc_kind: "photo" }),
+  "the same link with a DTC kind is — glyph-ness can come from the NODE");
+ok(!drawsAsGlyph("link", {}), "…and an empty data bag does not make one");
+// a glyph node answers for its (now square) box, and not beyond it
+ok(pointInShape("rounded_rectangle", glyph, 132 - 1, 216),
+  "a click just inside the square box selects");
+ok(!pointInShape("rounded_rectangle", glyph, 150, 216),
+  "a click in the OLD margin (past the square) does not");
 
 console.log(`shape-geom: ${checks} checks passed`);

@@ -1,5 +1,5 @@
 import { nodeStyle } from "./palette";
-import { drawBoxOf, drawsAsGlyph, pointInShape } from "./shape-geom";
+import { drawBoxOf, drawsAsGlyph, handleAnchor, pointInShape } from "./shape-geom";
 import type { EmEdge, EmNode } from "./types";
 
 export interface SceneNode {
@@ -191,8 +191,12 @@ export function hitHandle(
   scale: number,
 ): boolean {
   const r = 8 / Math.sqrt(scale); // slightly larger than drawn, easier to grab
-  const dx = wx - (n.x + n.w);
-  const dy = wy - (n.y + n.h / 2);
+  // the SAME anchor the renderer draws (EM2 · shape-geom.ts): grabbing a handle
+  // that is not where you can see it is the kind of bug nobody reports, they
+  // just stop using the gesture
+  const a = handleAnchor(n);
+  const dx = wx - a.x;
+  const dy = wy - a.y;
   return dx * dx + dy * dy <= r * r;
 }
 
@@ -224,7 +228,9 @@ export function hitTest(scene: Scene, wx: number, wy: number): SceneNode | null 
  */
 function pointInNodeShape(n: SceneNode, wx: number, wy: number): boolean {
   const type = n.node.node_type;
-  if (drawsAsGlyph(type)) return true; // box, see above
+  // the node's data too: a DTC node is a glyph even when its type is not (EM2)
+  if (drawsAsGlyph(type, n.node.data as Record<string, unknown> | undefined))
+    return true; // box, see above
   const st = nodeStyle(type);
   return pointInShape(st.shape, drawBoxOf(st, n), wx, wy);
 }

@@ -13,7 +13,7 @@ import {
   type EdgeRoute,
 } from "./routing";
 import { BAND_GAP } from "./scene";
-import { drawBoxOf, shapePath } from "./shape-geom";
+import { drawBoxOf, handleAnchor, shapePath } from "./shape-geom";
 import type { Scene, Viewport } from "./scene";
 
 export interface ConnectDrag {
@@ -777,8 +777,12 @@ export function render(
       const isActive = n.id === active;
       if (!isActive && !showAll) continue;
       const r = (isActive ? 5.5 : 4) / Math.sqrt(vp.scale);
+      // the anchor is `shape-geom.ts::handleAnchor` — the same expression
+      // `scene.ts::hitHandle` grabs (EM2). Since EM2 gave glyph nodes a square
+      // box in em-core, this lands ON the glyph instead of out in a margin.
+      const ha = handleAnchor(n);
       ctx.beginPath();
-      ctx.arc(n.x + n.w, n.y + n.h / 2, r, 0, Math.PI * 2);
+      ctx.arc(ha.x, ha.y, r, 0, Math.PI * 2);
       ctx.fillStyle = "#fff";
       ctx.fill();
       ctx.strokeStyle = isActive ? ACCENT : "#9aa7b5";
@@ -811,7 +815,12 @@ export function render(
       ctx.lineWidth = 2 / vp.scale;
       ctx.setLineDash([6 / vp.scale, 4 / vp.scale]);
       ctx.beginPath();
-      ctx.moveTo(from.x + from.w, from.y + from.h / 2);
+      // the THIRD place that used to spell the anchor out by hand: the live
+      // rubber-band starts at the handle you grabbed, so it reads it from the
+      // same `handleAnchor` (EM2). Before, a change to the handle's position
+      // would have moved the bullet and left the line starting somewhere else.
+      const fa = handleAnchor(from);
+      ctx.moveTo(fa.x, fa.y);
       ctx.lineTo(state.connect.x, state.connect.y);
       ctx.stroke();
       ctx.setLineDash([]);

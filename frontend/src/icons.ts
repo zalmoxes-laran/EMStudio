@@ -180,16 +180,22 @@ export function dtcGlyphUrl(basename: string | null): string | null {
  *
  * `narrative` joins them for the same reason as the rights nodes: it is an
  * icon, not a shape. It had no visual rule at all until N7 and fell through to
- * `unknown` — a red dotted question mark on every canvas holding a story. */
-export const ICON_NODE_TYPES = new Set([
-  "extractor",
-  "combiner",
-  "author",
-  "author_ai",
-  "license",
-  "embargo",
-  "narrative",
-]);
+ * `unknown` — a red dotted question mark on every canvas holding a story.
+ *
+ * EM2: the list is no longer written here. It is `2d_render_glyph_types.types` in
+ * `em_visual_rules`, because the LAYOUT ENGINE needs the same fact — a node drawn
+ * as a centred square glyph must get a square box, or the connect handle anchors
+ * to the right edge of a wider box and floats away from the glyph. A set kept in
+ * this file was invisible to em-core, so the two would have had to agree by
+ * coincidence. Everything the paragraphs above say is now said in that block's
+ * `_comment`, where the next consumer will look for it. */
+export const ICON_NODE_TYPES: ReadonlySet<string> = new Set(
+  (
+    (rules as unknown as {
+      "2d_render_glyph_types"?: { types?: string[] };
+    })["2d_render_glyph_types"]?.types ?? []
+  ),
+);
 
 const imageCache = new Map<string, HTMLImageElement>();
 let redraw: (() => void) | null = null;

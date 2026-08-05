@@ -42,11 +42,13 @@ export interface PaletteDragPayload {
 export const SECTIONS: Section[] = [
   {
     label: "Stratigraphic",
-    // POL5: the two VOIDS sit side by side on purpose — `USN` is the neutral one
-    // (a risparmio: window, door, room) and `USNeg` the negative/destructive one
-    // (displayed `US-`). They were one type until 2026-08-04, and the palette is
-    // where the difference has to be visible or nobody will use the right one.
-    types: ["US", "USVn", "USVs", "USD", "TSU", "USN", "USNeg", "SE", "BR"],
+    // POL5/POL6: the two VOIDS sit side by side on purpose — `USN` is the
+    // negative/destructive one (a cut, an erosion surface; displayed `US-`) and
+    // `USNt` the neutral one (a risparmio: window, door, niche, room). They were
+    // one type until 2026-08-04, and the palette is where the difference has to
+    // be visible or nobody will use the right one. Order: the negativa first,
+    // because it is the one an excavator reaches for.
+    types: ["US", "USVn", "USVs", "USD", "TSU", "USN", "USNt", "SE", "BR"],
   },
   { label: "Special finds", types: ["SF", "VSF", "RSF"] },
   { label: "Series", types: ["serSU", "serUSVn", "serUSVs", "serUSD"] },
