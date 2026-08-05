@@ -42,12 +42,23 @@ const VISUAL_RULES_JSON: &str =
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct TypeBox {
     pub scale: f64,
+    /// The box is HEIGHT-DRIVEN: its height is the node height and its width is
+    /// that height times [`TypeBox::aspect`]. (Named `square` since EM1, when the
+    /// only aspect was 1.0; EM3 generalised it and kept the field name because it
+    /// is what the visual rules call it — `shape_bbox: "square"`.)
     pub square: bool,
+    /// Width / height of the DRAWING, for a height-driven box. 1.0 = square.
+    ///
+    /// A STATIC number from the datamodel (`2d_render_glyph_types.aspect`), never
+    /// measured from a loaded image: an aspect read off `naturalWidth` would make
+    /// the layout depend on when a bitmap finished decoding, so the same document
+    /// could lay out two different ways and a box would jump under the user.
+    pub aspect: f64,
 }
 
 impl Default for TypeBox {
     fn default() -> Self {
-        Self { scale: 1.0, square: false }
+        Self { scale: 1.0, square: false, aspect: 1.0 }
     }
 }
 
@@ -59,9 +70,13 @@ impl TypeBox {
     pub fn apply(&self, w: f64, h: f64) -> (f64, f64) {
         let (mut bw, mut bh) = (w * self.scale, h * self.scale);
         if self.square {
+            // height-driven: the HEIGHT is the box, the width follows the aspect.
+            // `min` and not `h` alone so the box can never grow past the space it
+            // was given — a box that grew would overlap its neighbours and claim
+            // clicks that belong to them.
             let side = bw.min(bh);
-            bw = side;
             bh = side;
+            bw = side * self.aspect;
         }
         (bw, bh)
     }
@@ -69,6 +84,12 @@ impl TypeBox {
     /// True when this is the default box — nothing to do.
     pub fn is_identity(&self) -> bool {
         self.scale == 1.0 && !self.square
+    }
+
+    /// Same box with a different aspect (EM3): the glyph list says WHICH types are
+    /// height-driven, the aspect table says how wide each one is.
+    pub fn with_aspect(self, aspect: f64) -> Self {
+        Self { aspect, ..self }
     }
 }
 
@@ -91,7 +112,7 @@ pub const GLYPH_BY_DATA_KEY: &str = "dtc_kind";
 /// on the right edge of the glyph, so the connect handle (anchored there) touches
 /// the glyph instead of floating in an empty margin.
 pub const fn glyph_box() -> TypeBox {
-    TypeBox { scale: 1.0, square: true }
+    TypeBox { scale: 1.0, square: true, aspect: 1.0 }
 }
 
 /// Parse a visual-rules document into a box table.
@@ -127,24 +148,50 @@ pub fn type_boxes_from_json(json: &str) -> TypeBoxes {
                 .filter(|s| *s > 0.0 && *s <= 1.0)
                 .unwrap_or(1.0);
             let square = style.get("shape_bbox").and_then(|v| v.as_str()) == Some("square");
-            let tb = TypeBox { scale, square };
+            let tb = TypeBox { scale, square, aspect: 1.0 };
             if !tb.is_identity() {
                 out.insert(node_type.clone(), tb);
             }
         }
     }
-    if let Some(types) = doc
-        .get("2d_render_glyph_types")
-        .and_then(|v| v.get("types"))
-        .and_then(|v| v.as_array())
-    {
+    let glyphs = doc.get("2d_render_glyph_types");
+    let aspects = glyphs.and_then(|g| g.get("aspect")).and_then(|v| v.as_object());
+    if let Some(types) = glyphs.and_then(|g| g.get("types")).and_then(|v| v.as_array()) {
         for t in types.iter().filter_map(|v| v.as_str()) {
             // A type that also declares shape geometry keeps it: the explicit
             // per-style declaration is the more specific statement.
-            out.entry(t.to_string()).or_insert_with(glyph_box);
+            out.entry(t.to_string())
+                .or_insert_with(|| glyph_box().with_aspect(aspect_of(aspects, t)));
         }
     }
     out
+}
+
+/// The declared aspect of one glyph, or 1.0 (square) when it declares none.
+///
+/// Guarded, because an aspect of 0 or a negative number would collapse the box to
+/// nothing and a huge one would let a glyph swallow its neighbours: a malformed
+/// value falls back to square rather than to a shape nobody can click.
+fn aspect_of(aspects: Option<&serde_json::Map<String, serde_json::Value>>, key: &str) -> f64 {
+    aspects
+        .and_then(|m| m.get(key))
+        .and_then(|v| v.as_f64())
+        .filter(|a| *a >= 0.2 && *a <= 5.0)
+        .unwrap_or(1.0)
+}
+
+/// The aspect table, for the callers that resolve a glyph per NODE (a `dtc_kind`).
+pub fn glyph_aspect(kind: &str) -> f64 {
+    let doc: serde_json::Value = match serde_json::from_str(VISUAL_RULES_JSON) {
+        Ok(v) => v,
+        Err(_) => return 1.0,
+    };
+    let aspects = doc
+        .get("2d_render_glyph_types")
+        .and_then(|g| g.get("aspect"))
+        .and_then(|v| v.as_object())
+        .cloned();
+    aspect_of(aspects.as_ref(), kind)
 }
 
 /// The table for the vendored datamodel — what every delivery uses.
@@ -173,12 +220,15 @@ pub fn box_for(boxes: &TypeBoxes, node_type: &str, w: f64, h: f64) -> (f64, f64)
 pub fn box_for_node(
     boxes: &TypeBoxes,
     node_type: &str,
-    glyph_by_data: bool,
+    glyph_kind: Option<&str>,
     w: f64,
     h: f64,
 ) -> (f64, f64) {
-    if glyph_by_data {
-        return glyph_box().apply(w, h);
+    if let Some(kind) = glyph_kind {
+        // the kind names the drawing, so the kind also names its aspect (EM3);
+        // every DTC glyph is square today, so this is 1.0 in practice — the
+        // mechanism is here so a non-square kind does not need a code change
+        return glyph_box().with_aspect(glyph_aspect(kind)).apply(w, h);
     }
     box_for(boxes, node_type, w, h)
 }
@@ -201,7 +251,7 @@ mod tests {
 
     #[test]
     fn a_square_box_takes_the_smaller_side() {
-        let (w, h) = TypeBox { scale: 0.7, square: true }.apply(90.0, 32.0);
+        let (w, h) = TypeBox { scale: 0.7, square: true, aspect: 1.0 }.apply(90.0, 32.0);
         assert_eq!((w, h), (22.4, 22.4));
         // and never grows: 32*0.7 = 22.4 < 90*0.7 = 63
         assert!(w <= 90.0 && h <= 32.0);
@@ -216,7 +266,7 @@ mod tests {
 
     #[test]
     fn scale_alone_does_not_square_the_box() {
-        let (w, h) = TypeBox { scale: 0.5, square: false }.apply(90.0, 32.0);
+        let (w, h) = TypeBox { scale: 0.5, square: false, aspect: 1.0 }.apply(90.0, 32.0);
         assert_eq!((w, h), (45.0, 16.0));
     }
 
@@ -230,8 +280,14 @@ mod tests {
             let tb = boxes
                 .get(t)
                 .unwrap_or_else(|| panic!("{t} must be a declared glyph type"));
-            assert!(tb.square, "{t} must have a SQUARE box");
+            assert!(tb.square, "{t} must have a HEIGHT-DRIVEN box");
             assert_eq!(tb.scale, 1.0, "{t} is full size — only BR shrinks");
+            // the height is the node height for all of them; the width is the
+            // height × the declared aspect (EM3), which is 1.0 for the square ones
+            assert_eq!(box_for(&boxes, t, 90.0, 32.0).1, 32.0);
+        }
+        // the two genuinely square ones still come out 32×32
+        for t in ["extractor", "combiner"] {
             assert_eq!(box_for(&boxes, t, 90.0, 32.0), (32.0, 32.0));
         }
     }
@@ -255,24 +311,66 @@ mod tests {
     fn a_node_carrying_a_dtc_kind_is_a_glyph_whatever_its_type_says() {
         let boxes = type_boxes();
         // A plain `link` is a chain drawn in its box…
-        assert_eq!(box_for_node(&boxes, "link", false, 90.0, 32.0), (90.0, 32.0));
+        assert_eq!(box_for_node(&boxes, "link", None, 90.0, 32.0), (90.0, 32.0));
         // …the same `link` with a DTC kind draws a photograph/mesh/laser-scan
-        // glyph, so it takes the square box even though its TYPE says nothing.
-        assert_eq!(box_for_node(&boxes, "link", true, 90.0, 32.0), (32.0, 32.0));
+        // glyph, so it takes the glyph box even though its TYPE says nothing. All
+        // eleven DTC glyphs are square after the POL4 autocrop, hence 32×32.
+        assert_eq!(
+            box_for_node(&boxes, "link", Some("photo"), 90.0, 32.0),
+            (32.0, 32.0)
+        );
     }
 
     #[test]
-    fn the_square_side_never_depends_on_an_image() {
-        // The determinism requirement spelled out: the side is the node HEIGHT,
-        // a number the engine already owns. Nothing here reads a file, decodes a
-        // bitmap or asks for an aspect ratio, so the box cannot change when an
-        // icon finishes loading — the layout is the same before and after.
-        let tb = glyph_box();
-        assert_eq!(tb.apply(90.0, 32.0), (32.0, 32.0));
-        assert_eq!(tb.apply(120.0, 40.0), (40.0, 40.0));
-        // and it never grows, whatever the aspect of the drawing inside it
-        let (w, h) = tb.apply(20.0, 60.0);
-        assert!(w <= 20.0 && h <= 60.0 && w == h);
+    fn the_box_width_comes_from_static_geometry_never_from_an_image() {
+        // The determinism requirement, generalised in EM3: the HEIGHT is the node
+        // height (a number the engine already owns) and the WIDTH is that height
+        // times a STATIC aspect from the datamodel. Nothing here reads a file,
+        // decodes a bitmap or asks an <img> for `naturalWidth`, so the box cannot
+        // change when an icon finishes loading — the layout is identical before
+        // and after the image arrives, and identical across two runs.
+        let square = glyph_box();
+        assert_eq!(square.apply(90.0, 32.0), (32.0, 32.0));
+        assert_eq!(square.apply(120.0, 40.0), (40.0, 40.0));
+
+        // a NON-square glyph: same height, narrower box (author = 0.875 = 448/512)
+        let boxes = type_boxes();
+        let (w, h) = box_for(&boxes, "author", 90.0, 32.0);
+        assert_eq!(h, 32.0, "the height is the node height for every glyph");
+        assert_eq!(w, 28.0, "0.875 × 32 = 28 — the width follows the drawing");
+        // …and every glyph keeps the SAME height, which is E.D.'s rule
+        for t in ["extractor", "author", "license", "narrative"] {
+            assert_eq!(box_for(&boxes, t, 90.0, 32.0).1, 32.0);
+        }
+
+        // a malformed aspect must not collapse or explode the box
+        assert_eq!(glyph_box().with_aspect(0.0).apply(90.0, 32.0).0, 0.0);
+        assert_eq!(aspect_of(None, "whatever"), 1.0);
+        let bad: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(r#"{"x": 0, "y": 99, "z": "wide"}"#).unwrap();
+        for k in ["x", "y", "z", "absent"] {
+            assert_eq!(aspect_of(Some(&bad), k), 1.0, "{k} must fall back to square");
+        }
+    }
+
+    #[test]
+    fn the_declared_aspects_are_the_ones_the_engine_uses() {
+        // The table is data; this pins the two ends together so a datamodel edit
+        // that mistypes a key shows up as a failing test and not as a wrong box.
+        let boxes = type_boxes();
+        for (t, expect_w) in [
+            ("extractor", 32.0),   // 1.000 × 32
+            ("combiner", 32.0),    // 1.000 × 32
+            ("author", 28.0),      // 0.875 × 32
+            ("author_ai", 31.488), // 0.984 × 32
+            ("license", 31.264),   // 0.977 × 32
+            ("embargo", 31.744),   // 0.992 × 32
+            ("narrative", 31.392), // 0.981 × 32
+        ] {
+            let (w, h) = box_for(&boxes, t, 90.0, 32.0);
+            assert!((w - expect_w).abs() < 1e-9, "{t}: width {w}, expected {expect_w}");
+            assert_eq!(h, 32.0);
+        }
     }
 
     #[test]

@@ -132,6 +132,78 @@ for f in sorted(src.iterdir()):
 print(f"  icons2d          {copied} vendored, {skipped} unreachable/shadowed")
 PYEOF
 
+# EM3 · the declared glyph ASPECTS must still match the files.
+#
+# `em_visual_rules.2d_render_glyph_types.aspect` is a STATIC number (the layout may
+# not depend on a decoded image — see that block's comment). The cost of static is
+# staleness: redraw an icon at a new aspect and the box stays the old shape, with
+# the connect handle drifting off the glyph by exactly the error. So the numbers are
+# re-measured HERE, where the assets are copied, and a drift is reported. A WARNING
+# and not an error: a 3% aspect is a cosmetic problem, and refusing to vendor a
+# datamodel over it would be worse than saying so.
+python3 - "$CFG" <<'PYEOF'
+import json, pathlib, re, struct, sys
+
+cfg = pathlib.Path(sys.argv[1])
+rules = json.loads((cfg / "em_visual_rules.json").read_text())
+block = rules.get("2d_render_glyph_types") or {}
+declared = block.get("aspect") or {}
+styles = rules.get("node_styles") or {}
+# node_type -> visual-rules key, for the seven glyph types (mirrors icons.ts)
+ALIAS = {"extractor": "EXT", "combiner": "COMB", "author": "AUTH",
+         "author_ai": "AUTH_AI", "license": "LIC", "embargo": "EMB",
+         "narrative": "NARR"}
+
+def intrinsic(path: pathlib.Path):
+    """(w, h) of a drawing, from the SVG viewBox or the PNG header. No decoding."""
+    if not path.is_file():
+        return None
+    if path.suffix.lower() == ".svg":
+        m = re.search(r'viewBox="([-\d.eE]+)[ ,]+([-\d.eE]+)[ ,]+([\d.eE]+)[ ,]+([\d.eE]+)"',
+                      path.read_text(errors="ignore"))
+        return (float(m.group(3)), float(m.group(4))) if m else None
+    head = path.read_bytes()[:24]
+    if head[:8] != b"\x89PNG\r\n\x1a\n":
+        return None
+    w, h = struct.unpack(">II", head[16:24])
+    return (float(w), float(h))
+
+def icon_file(node_type: str):
+    """The file that type actually renders — same rule as icons.ts: the declared
+    vector first, the raster when `2d_icon_prefer` says so."""
+    st = styles.get(ALIAS.get(node_type, node_type)) or {}
+    keys = (("2d_file_rast", "file_2d", "2d_file_vect")
+            if st.get("2d_icon_prefer") == "raster"
+            else ("2d_file_vect", "2d_file_rast", "file_2d"))
+    for k in keys:
+        v = st.get(k)
+        if isinstance(v, str):
+            f = cfg / v
+            if f.is_file():
+                return f
+    return None
+
+drift = []
+for node_type in block.get("types") or []:
+    f = icon_file(node_type)
+    dim = intrinsic(f) if f else None
+    if not dim or not dim[1]:
+        continue
+    measured = dim[0] / dim[1]
+    have = float(declared.get(node_type, 1.0))
+    if abs(measured - have) / max(measured, 1e-9) > 0.02:
+        drift.append(f"{node_type}: declared {have:.3f}, {f.name} is "
+                     f"{measured:.3f} ({dim[0]:.0f}x{dim[1]:.0f})")
+if drift:
+    print("  glyph aspects   WARNING — declaration does not match the asset:")
+    for d in drift:
+        print(f"    {d}")
+    print("    fix em_visual_rules.2d_render_glyph_types.aspect in s3Dgraphy")
+else:
+    n = len(block.get("types") or [])
+    print(f"  glyph aspects   {n} checked against their files, all within 2%")
+PYEOF
+
 # The 2017 DTC glyphs. They live in s3Dgraphy — the single source — under
 # `src/2D/dtc/`, and `em_visual_rules.dtc_kinds[*].glyph` names them WITHOUT an
 # extension, so the vendored basenames must match the glyph names exactly.

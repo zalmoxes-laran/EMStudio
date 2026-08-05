@@ -19,6 +19,12 @@ struct LayoutRequest {
     graph: Graph,
     #[serde(default)]
     layout: Option<Layout>,
+    /// EM3 · re-assert node SIZES from their type and return the layout otherwise
+    /// untouched. No relayout: positions are user intent, sizes are not. Used at
+    /// load time so a document saved before a type's geometry existed still draws
+    /// it correctly without the user pressing Layout.
+    #[serde(default)]
+    sizes_only: bool,
 }
 
 #[no_mangle]
@@ -70,7 +76,12 @@ pub unsafe extern "C" fn em_layout(ptr: *const u8, len: usize) -> *mut u8 {
                 let mut opts = layout::LayoutOptions::default();
                 let sketch = req.layout.as_ref();
                 opts.use_sketch = sketch.is_some();
-                let computed = layout::compute_with_sketch(&req.graph, &opts, sketch);
+                let computed = match (req.sizes_only, sketch) {
+                    // sizes only: the same engine owns the size, so there is no
+                    // second implementation to diverge from
+                    (true, Some(l)) => layout::reassert_sizes(&req.graph, l, &opts),
+                    _ => layout::compute_with_sketch(&req.graph, &opts, sketch),
+                };
                 match serde_json::to_string(&computed) {
                     Ok(json) => format!(r#"{{"ok":{json}}}"#),
                     Err(e) => format!(r#"{{"err":"serialize: {e}"}}"#),

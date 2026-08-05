@@ -29,14 +29,22 @@ async function ensure(): Promise<EmCoreExports> {
  * Compute the swimlane layout via em-core (WASM). When `sketch` is passed,
  * its positions act as a From-Sketch soft constraint: the manual
  * arrangement survives the re-layout (yEd parity).
+ *
+ * `sizesOnly` (EM3) is NOT a layout: em-core returns the sketch with every node's
+ * SIZE re-asserted from its type and positions untouched. It exists because a size
+ * is geometry of the type while a position is user intent — a document saved before
+ * a type's box geometry existed must draw correctly on load, without moving
+ * anything and without the frontend re-implementing `box_for_node` (em-core stays
+ * the only owner of the size).
  */
 export async function computeLayout(
   graph: EmGraph,
   sketch?: EmLayout,
+  opts?: { sizesOnly?: boolean },
 ): Promise<EmLayout> {
   const core = await ensure();
   const input = new TextEncoder().encode(
-    JSON.stringify({ graph, layout: sketch }),
+    JSON.stringify({ graph, layout: sketch, sizes_only: !!opts?.sizesOnly }),
   );
   const ptr = core.em_alloc(input.length);
   new Uint8Array(core.memory.buffer, ptr, input.length).set(input);

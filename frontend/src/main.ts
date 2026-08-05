@@ -1555,7 +1555,19 @@ function loadDocument(
     );
   }
   if (hadStoredPositions) {
-    setView(scenes.matrix ? "matrix" : "graph");
+    // EM3 · the stored layout keeps its POSITIONS (user intent) but its SIZES are
+    // re-asserted from the type by em-core. A document saved before a type's box
+    // geometry existed — a pre-EM2 file whose glyph nodes are 90×32 — would
+    // otherwise keep drawing the old box until somebody pressed Layout, and the
+    // connect handle would keep floating away from the glyph. Sizes are geometry,
+    // not state: em-core owns them, and `reassert_sizes` is the only place that
+    // decides one (no `box_for_node` re-implemented in TypeScript).
+    //
+    // Silent and non-blocking: nothing moves, so there is nothing to explain, and
+    // a failure leaves the document exactly as it was on disk.
+    void reassertSizes().finally(() => {
+      setView(scenes.matrix ? "matrix" : "graph");
+    });
   } else {
     logInfo("no stored positions — computing a fresh layout via em-core");
     void runLayout(true)
@@ -1809,6 +1821,41 @@ const paletteUi = buildPalette(
     }
   },
 );
+
+/**
+ * Ask em-core to re-assert node SIZES on the layout we already have (EM3).
+ *
+ * Positions are untouched — this is not a re-layout and must never behave like
+ * one. Applied through `store.setLayout` so undo/redo and the sync channel see it
+ * as the ordinary layout change it is; skipped silently when nothing is stale, so
+ * opening an up-to-date document does not mark it dirty.
+ */
+async function reassertSizes(): Promise<void> {
+  if (!store) return;
+  const sketch = store.doc.layout;
+  if (!sketch || !Object.keys(sketch.positions ?? {}).length) return;
+  try {
+    // lazily imported like the other two em-core call sites: the WASM is fetched
+    // on first use, and opening a document must not wait for it
+    const { computeLayout } = await import("./emcore");
+    const fixed = await computeLayout(store.doc.graph, sketch, { sizesOnly: true });
+    const changed = Object.entries(fixed.positions ?? {}).filter(([id, rect]) => {
+      const before = sketch.positions?.[id];
+      const r = rect as { w: number; h: number };
+      return before && (before.w !== r.w || before.h !== r.h);
+    });
+    if (!changed.length) return;
+    store.setLayout(fixed);
+    logInfo(
+      `${changed.length} node size(s) re-asserted from their type ` +
+        `(a stored size never wins over the type's geometry)`,
+    );
+  } catch (e) {
+    // A failure here must not stop a document from opening: the layout on disk is
+    // still a valid layout, only its glyph boxes are out of date.
+    logWarn(`size re-assert skipped: ${e instanceof Error ? e.message : e}`);
+  }
+}
 
 function cancelPlacing(): void {
   placingType = null;

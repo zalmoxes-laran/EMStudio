@@ -110,6 +110,49 @@ pub fn compute(graph: &Graph, opts: &LayoutOptions) -> Layout {
 /// members of folded groups release their band slots (they are parked at
 /// the proxy position, invisible anyway), exactly like yEd's group
 /// compaction on closed folders.
+/// Re-assert every node's SIZE from its type, leaving positions alone (EM3).
+///
+/// The invariant this exists to defend: **the size of a node's box is geometry of
+/// its TYPE, not state of the layout.** A position is user intent — it was dragged
+/// there, and nothing may move it. A size never was: it is what the type is, and a
+/// size persisted by an older build is simply out of date.
+///
+/// Without this, a document saved before the glyph boxes existed keeps rendering
+/// its glyphs 90×32 until somebody presses Layout, because the frontend skips the
+/// auto-layout when a document already carries positions. The alternative — a
+/// from-sketch relayout at load — would also *move* things, which is exactly the
+/// user intent we must not touch.
+///
+/// Lanes, canvas, sectors and edge routes are carried over untouched: this is not
+/// a layout, it is a correction of four numbers per node.
+pub fn reassert_sizes(graph: &Graph, sketch: &Layout, opts: &LayoutOptions) -> Layout {
+    let mut out = sketch.clone();
+    for node in &graph.nodes {
+        let Some(rect) = out.positions.get_mut(&node.id) else { continue };
+        // a GROUP box is sized by what it contains, not by its type — leave it to
+        // the real layout, which is the only thing that knows its members
+        let kind = node
+            .data
+            .get(crate::geometry::GLYPH_BY_DATA_KEY)
+            .map(|v| v.as_str().unwrap_or_default().to_string());
+        let (w, h) = crate::geometry::box_for_node(
+            &opts.type_boxes,
+            node.node_type.as_str(),
+            kind.as_deref(),
+            opts.default_node_w,
+            opts.default_node_h,
+        );
+        // only the types that DECLARE a geometry are touched: for everything else
+        // `box_for_node` returns the default box, and a stored width that differs
+        // from it is legitimate (a container, a text-sized node, a hand-made file).
+        if (w, h) != (opts.default_node_w, opts.default_node_h) {
+            rect.w = w;
+            rect.h = h;
+        }
+    }
+    out
+}
+
 pub fn compute_with_sketch(
     graph: &Graph,
     opts: &LayoutOptions,
@@ -416,7 +459,7 @@ pub fn compute_with_sketch(
         /// node index → "this node draws a glyph of its own" (EM2): the DTC
         /// profile picks a glyph per node from `data.dtc_kind`, so glyph-ness is
         /// not always a property of the type.
-        glyph_by_data: &'a [bool],
+        glyph_by_data: &'a [Option<String>],
         gap_x: f64,
         pitch: f64,
         group_pad: f64,
@@ -460,7 +503,7 @@ pub fn compute_with_sketch(
                 let (bw, bh) = crate::geometry::box_for_node(
                     ctx.type_boxes,
                     ctx.node_types[m].as_str(),
-                    ctx.glyph_by_data[m],
+                    ctx.glyph_by_data[m].as_deref(),
                     ctx.node_w,
                     ctx.node_h,
                 );
@@ -838,10 +881,14 @@ pub fn compute_with_sketch(
     let node_types: Vec<String> =
         graph.nodes.iter().map(|n| n.node_type.clone()).collect();
     // …and per index whether the NODE itself draws a glyph (EM2, DTC profile)
-    let glyph_by_data: Vec<bool> = graph
+    let glyph_by_data: Vec<Option<String>> = graph
         .nodes
         .iter()
-        .map(|n| n.data.contains_key(crate::geometry::GLYPH_BY_DATA_KEY))
+        .map(|n| {
+            n.data
+                .get(crate::geometry::GLYPH_BY_DATA_KEY)
+                .map(|v| v.as_str().unwrap_or_default().to_string())
+        })
         .collect();
     let ctx = Ctx {
         down: &down,
