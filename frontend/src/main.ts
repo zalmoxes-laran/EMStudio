@@ -45,6 +45,7 @@ import {
   hitAddPhase,
   hitAdornmentBadge,
   hitBandLabel,
+  hitPdDecorator,
   hitPdTag,
   render,
   type ConnectDrag,
@@ -129,6 +130,7 @@ import {
   TEMPLATES,
 } from "./filters";
 import { adornmentBadges, type AdornmentBadge } from "./adornments";
+import { BADGE_RULES, resolveEffective, sourceLabel } from "./funnel";
 import { type Qualia, vocabularyFor } from "./vocab";
 import { versionBreakdown } from "./versions";
 import {
@@ -693,7 +695,7 @@ function refreshInspector(): void {
         if (selectedEdge && sameEdge(selectedEdge, edge)) selectedEdge = null;
         store!.deleteEdge(edge);
       },
-      onToggleFold: (gid) => store!.setFolded(gid, !store!.isFolded(gid)),
+      onToggleFold: (gid) => requestFold(gid),
       onEnterGroup: enterGroup,
       onAddPhase: (epochId) => {
         const ph = store!.addPhase(epochId);
@@ -1057,6 +1059,28 @@ function enterGroup(groupId: string): void {
   rebuildContext();
 }
 
+// PD1 · toggle a group's fold, but REFUSE to collapse a ParadataNodeGroup that
+// has no referent (no `has_paradata_nodegroup` pointing at it): a collapsed PDG
+// becomes a tablet ON its referent, so without one the decorator would float
+// orphaned. Every other group, and un-folding, passes straight through.
+function requestFold(groupId: string): void {
+  if (!store) return;
+  const folding = !store.isFolded(groupId);
+  const node = store.doc.graph.nodes.find((n) => n.id === groupId);
+  if (folding && node?.node_type === "ParadataNodeGroup") {
+    const hasReferent = store.doc.graph.edges.some(
+      (e) => e.edge_type === "has_paradata_nodegroup" && e.target === groupId,
+    );
+    if (!hasReferent) {
+      toast(
+        "Il gruppo paradati non è collegato a nessun nodo: non può essere compattato.",
+      );
+      return;
+    }
+  }
+  store.setFolded(groupId, folding);
+}
+
 // A context id is either a group (→ its members) or a DTC-output Resource (→ its
 // upstream DTC genesis). Pick the right scene builder, reusing the same fold.
 function contextSceneFor(id: string): Scene | null {
@@ -1181,6 +1205,24 @@ function filteredView(): {
   // VIEW (never a box, never an edge); em.json keeps both.
   const visibleIds = new Set(vNodes.map((n) => n.id));
   const adornments = adornmentBadges(vNodes, doc.graph.edges, visibleIds);
+  // FUNNEL1 · add an ATTENUATED badge for each author/license/embargo a node does
+  // NOT declare itself but INHERITS down the funnel (activity/epoch/canvas). The
+  // node's own (explicit) badges are already present from adornmentBadges. This
+  // resolves per node — em.json is untouched (nothing materialised).
+  const normRule = (kind: string): string =>
+    kind === "author_ai" ? "author" : kind;
+  for (const n of vNodes) {
+    if (!isStratigraphicType(n.node_type)) continue;
+    const own = new Set((adornments.get(n.id) ?? []).map((b) => normRule(b.kind)));
+    for (const rule of BADGE_RULES) {
+      if (own.has(rule)) continue; // declared on the node → explicit badge exists
+      const eff = resolveEffective(doc, n.id, rule);
+      if (eff.value == null || eff.explicit) continue;
+      const arr = adornments.get(n.id) ?? [];
+      arr.push({ ornamentId: "", kind: rule, label: `${eff.value} · ${sourceLabel(eff.source)}`, inherited: true });
+      adornments.set(n.id, arr);
+    }
+  }
   vNodes = vNodes.filter((n) => !isAdornmentNodeType(n.node_type));
   vEdges = vEdges.filter((e) => !ADORNMENT_EDGE_TYPES.has(e.edge_type ?? ""));
   return {
@@ -1955,7 +1997,7 @@ const nodeList = buildNodeList(
   },
   {
     isFolded: (id) => store?.isFolded(id) ?? false,
-    onToggleFold: (id) => store?.setFolded(id, !store.isFolded(id)),
+    onToggleFold: (id) => requestFold(id),
     onExplode: (id) => {
       contextStack = [];
       enterGroup(id);
@@ -2228,6 +2270,13 @@ function createEdge(source: string, target: string, edgeType: string): void {
     return;
   }
   store.addEdge(source, target, edgeType);
+  // PDMEM1 · attaching an ornament (author/license/embargo) also makes it a
+  // MEMBER of the referent's ParadataNodeGroup (created on demand): the badge
+  // and the exploded PDG then read the same membership — one truth, two views.
+  // Verso verified in filters.ts: the ornament is the edge TARGET, referent the
+  // SOURCE, so attach onto `source`.
+  if (ADORNMENT_EDGE_TYPES.has(edgeType))
+    store.attachAdornmentToParadata(source, target);
   toast(
     `${store.node(source)?.name || source} — ${edgeTypeLabel(edgeType)} → ${store.node(target)?.name || target}`,
   );
@@ -4744,6 +4793,7 @@ let dragDetachSet: { id: string; container: string }[] = [];
 let spaceHeld = false; // Space → pan-always gesture (see pointerdown)
 let pdTagPending: string | null = null; // PD tag pressed → enter on click (pointerup)
 let adornmentPending: string | null = null; // ornament badge pressed → select real node
+let pdDecoratorPending: string | null = null; // PD tablet pressed → select group on click
 let bandSelectPending: string | null = null; // phase band label pressed → select on click
 let addPhasePending: string | null = null; // epoch "+" button pressed → add phase on click
 let hoverInsertBoundary: number | null = null; // EM-mode insert-epoch: hovered lane boundary
@@ -4904,6 +4954,24 @@ canvas.addEventListener("pointerdown", (e) => {
       dragMode = "none";
       return;
     }
+    // BADGE1/DEC1 · ornament badge (author/license/embargo) — SCREEN-space hit,
+    // like the PD tag. A click selects the REAL ornament node (a "+N" overflow
+    // chip carries the referent). Checked before the node hit-test: the badge
+    // sits on the referent's corner and a click there means "edit the ornament".
+    const ab = hitAdornmentBadge(lx, ly);
+    if (ab) {
+      adornmentPending = ab;
+      dragMode = "none";
+      return;
+    }
+    // PD1 · collapsed-PDG tablet (bottom-left) → single click selects the group;
+    // the double click that enters the hypergraph is handled in `dblclick`.
+    const pdd = hitPdDecorator(lx, ly);
+    if (pdd) {
+      pdDecoratorPending = pdd;
+      dragMode = "none";
+      return;
+    }
   }
   const s = scene();
   if (!s) return;
@@ -4912,16 +4980,6 @@ canvas.addEventListener("pointerdown", (e) => {
     dragMode = "none";
     return; // click placement handled on pointerup
   }
-  // BADGE1 · ornament badge (author/license/embargo) pressed → select the REAL
-  // ornament node on click. Checked before the node hit-test: the badge sits on
-  // the referent's corner and a click there means "edit the ornament", not the
-  // host. (The nodes/edges are still in em.json — this only selects.)
-  const ab = hitAdornmentBadge(w.x, w.y);
-  if (ab) {
-    adornmentPending = ab;
-    dragMode = "none";
-    return;
-  }
   // connect handle? The bullet shows on the hovered/selected node always, and
   // on EVERY node when zoomed in (renderer) — so allow starting a connect from
   // any node's right-edge handle there, not only the focused one (the handle
@@ -4929,10 +4987,10 @@ canvas.addEventListener("pointerdown", (e) => {
   const focus = hoverId ?? selectedId;
   const fn = focus ? s.byId.get(focus) : null;
   let handleNode =
-    fn && hitHandle(fn, w.x, w.y, viewport().scale) ? fn : null;
+    fn && !fn.collapsed && hitHandle(fn, w.x, w.y, viewport().scale) ? fn : null;
   if (!handleNode && viewport().scale > 0.5) {
     for (const n of s.nodes) {
-      if (hitHandle(n, w.x, w.y, viewport().scale)) {
+      if (!n.collapsed && hitHandle(n, w.x, w.y, viewport().scale)) {
         handleNode = n;
         break;
       }
@@ -5253,6 +5311,14 @@ canvas.addEventListener("pointerup", (e) => {
     if (!moved) select(id);
     return;
   }
+  // PD tablet single click → select the collapsed group (Inspector); the double
+  // click is a separate handler that enters the hypergraph.
+  if (pdDecoratorPending) {
+    const id = pdDecoratorPending;
+    pdDecoratorPending = null;
+    if (!moved) select(id);
+    return;
+  }
   // phase band label click → select that phase (residual → the epoch)
   if (bandSelectPending) {
     const id = bandSelectPending;
@@ -5331,7 +5397,7 @@ canvas.addEventListener("pointerup", (e) => {
     // group container ± toggle
     const toggle = hitGroupToggle(s, w.x, w.y);
     if (toggle && store) {
-      store.setFolded(toggle.id, !store.isFolded(toggle.id));
+      requestFold(toggle.id);
       return;
     }
     // matrix: click in the left swimlane-label strip → select that epoch (T7),
@@ -5404,6 +5470,14 @@ canvas.addEventListener("pointerup", (e) => {
 canvas.addEventListener("dblclick", (e) => {
   const s = scene();
   if (!s) return;
+  // PD1 · double-clicking the collapsed-PDG tablet enters the hypergraph
+  const rect = canvas.getBoundingClientRect();
+  const pdd = hitPdDecorator(e.clientX - rect.left, e.clientY - rect.top);
+  if (pdd) {
+    e.preventDefault();
+    enterGroup(pdd);
+    return;
+  }
   const w = worldPos(e);
   const hit = hitTest(s, w.x, w.y);
   if (!hit) return;

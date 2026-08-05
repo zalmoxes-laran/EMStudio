@@ -14,12 +14,17 @@ import { ADORNMENT_EDGE_TYPES, isAdornmentNodeType } from "./filters";
 import type { EmEdge, EmNode } from "./types";
 
 export interface AdornmentBadge {
-  /** the REAL ornament node id — a click on the badge selects THIS node */
+  /** the REAL ornament node id — a click on the badge selects THIS node.
+   *  Empty for an INHERITED badge (FUNNEL1): there is no ornament node on this
+   *  referent, the value comes from a wider scope, so it is not a click target. */
   ornamentId: string;
   /** runtime node_type: author | author_ai | license | embargo */
   kind: string;
   /** the node's name, for the tooltip */
   label: string;
+  /** FUNNEL1 · true when the value is INHERITED (activity/epoch/canvas), drawn
+   *  attenuated/outline. Absent/false for the node's own (explicit) ornament. */
+  inherited?: boolean;
 }
 
 // stable badge order on a referent: attribution first, then rights, then embargo
@@ -43,9 +48,21 @@ export function adornmentBadges(
   visibleIds: ReadonlySet<string>,
 ): Map<string, AdornmentBadge[]> {
   const byId = new Map(nodes.map((n) => [n.id, n]));
-  // ornament (edge target) → its immediate referent (edge source). First edge in
-  // document order wins, deterministically, if an ornament is attached twice.
+  // ornament → its immediate referent. PDMEM1 made the ornament a MEMBER of the
+  // referent's ParadataNodeGroup, and that membership is the ONE source: resolve
+  // ornament → (is_in_paradata_nodegroup) → PDG → (has_paradata_nodegroup) →
+  // referent FIRST. The direct semantic edge (has_author/…, BADGE1) is the
+  // FALLBACK, so a document whose ornaments are not yet PDG members still shows
+  // badges. Both are created together by the attach, so they agree.
   const referentOf = new Map<string, string>();
+  const pdgHost = new Map<string, string>(); // PDG → referent node
+  for (const e of allEdges)
+    if (e.edge_type === "has_paradata_nodegroup") pdgHost.set(e.target, e.source);
+  for (const e of allEdges)
+    if (e.edge_type === "is_in_paradata_nodegroup") {
+      const host = pdgHost.get(e.target);
+      if (host && !referentOf.has(e.source)) referentOf.set(e.source, host);
+    }
   for (const e of allEdges) {
     if (!ADORNMENT_EDGE_TYPES.has(e.edge_type ?? "")) continue;
     if (!referentOf.has(e.target)) referentOf.set(e.target, e.source);

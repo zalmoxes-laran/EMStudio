@@ -154,6 +154,24 @@ const accentColor = (): string => canvasTheme().accent;
 const groupHeaderFill = (): string => canvasTheme().groupHeaderFallback;
 const groupBodyFill = (): string => canvasTheme().groupBody;
 
+// Decorator geometry (DEC1) — a FIXED size in SCREEN px, never scaled with the
+// world: zooming out does not grow the chip relative to the canvas (the size
+// adds nothing; to read the label you zoom in). One source, reused by the
+// ornament badges (BADGE1, top-right) and the PD decorator (PD1, bottom-left).
+export const BADGE_PX = 16; // chip side, CSS px
+const BADGE_GAP = 3; // gap between stacked chips, CSS px
+const BADGE_ICON_INSET = 0.16; // icon inset as a fraction of the chip
+// A node's rectangle in SCREEN (CSS px) space, from its world box and the vp.
+const nodeScreenRect = (
+  n: { x: number; y: number; w: number; h: number },
+  vp: Viewport,
+): { x: number; y: number; w: number; h: number } => ({
+  x: n.x * vp.scale + vp.x,
+  y: n.y * vp.scale + vp.y,
+  w: n.w * vp.scale,
+  h: n.h * vp.scale,
+});
+
 // Screen-space hit rects for the "PD" tags drawn in lane / band label chips
 // (an epoch's / phase's temporal ParadataNodeGroup, shown as a tag instead of a
 // box). Rebuilt every draw; queried by main.ts on click to enter that group.
@@ -165,15 +183,27 @@ export function hitPdTag(sx: number, sy: number): string | null {
   return null;
 }
 
-// WORLD-space hit rects for BADGE1 ornament badges (author/license/embargo)
-// pinned to a referent's corner → the REAL ornament node id to select on click.
-// World space (not screen) because the badges are drawn under the viewport
-// transform, alongside the node; main.ts tests them with world coordinates.
+// SCREEN-space hit rects for BADGE1 ornament badges (author/license/embargo)
+// pinned to a referent's corner → the REAL ornament node id to select on click
+// (a "+N" overflow chip carries the REFERENT id). Screen space (DEC1), like
+// pdTagHits, because the badges are a fixed pixel size drawn after the world
+// transform is reset; main.ts tests them with screen (client-relative) coords.
 let adornmentHits: { ornamentId: string; x: number; y: number; w: number; h: number }[] = [];
-export function hitAdornmentBadge(wx: number, wy: number): string | null {
+export function hitAdornmentBadge(sx: number, sy: number): string | null {
   for (const t of adornmentHits)
-    if (wx >= t.x && wx <= t.x + t.w && wy >= t.y && wy <= t.y + t.h)
+    if (sx >= t.x && sx <= t.x + t.w && sy >= t.y && sy <= t.y + t.h)
       return t.ornamentId;
+  return null;
+}
+
+// SCREEN-space hit rects for PD1 collapsed-ParadataNodeGroup tablets (bottom-left
+// of the referent) → the PDG id. Single click selects the group, double click
+// enters the hypergraph (main.ts). Screen space + fixed size, like the badges.
+let pdDecoratorHits: { pdgId: string; x: number; y: number; w: number; h: number }[] = [];
+export function hitPdDecorator(sx: number, sy: number): string | null {
+  for (const t of pdDecoratorHits)
+    if (sx >= t.x && sx <= t.x + t.w && sy >= t.y && sy <= t.y + t.h)
+      return t.pdgId;
   return null;
 }
 
@@ -488,6 +518,7 @@ export function render(
     n.instanceOf === state.selectedId ||
     (state.selectedIds?.has(n.id) ?? false);
   for (const n of scene.nodes) {
+    if (n.collapsed) continue; // PD1 · shown as a bottom-left tablet, not a node
     const st = nodeStyle(n.node.node_type);
     // Monochrome (B/W) mode: EVERY node draws with a black BORDER only — fills,
     // text and container header tints are left untouched (nodes are told apart by
@@ -840,6 +871,7 @@ export function render(
     const active = state.hoverId ?? state.selectedId;
     const showAll = vp.scale > 0.5;
     for (const n of scene.nodes) {
+      if (n.collapsed) continue; // PD1 · no handle on a collapsed-to-tablet node
       const isActive = n.id === active;
       if (!isActive && !showAll) continue;
       const r = (isActive ? 5.5 : 4) / Math.sqrt(vp.scale);
@@ -858,7 +890,7 @@ export function render(
   }
   // pinned badge: a small lock at the top-right corner of every locked node
   for (const n of scene.nodes) {
-    if (!n.pinned) continue;
+    if (!n.pinned || n.collapsed) continue;
     const s = 12 / vp.scale;
     ctx.font = `${s}px system-ui, sans-serif`;
     ctx.textAlign = "center";
@@ -866,54 +898,8 @@ export function render(
     ctx.fillText("🔒", n.x + n.w - s * 0.35, n.y + s * 0.35);
   }
 
-  // BADGE1 · ornament miniatures (author / license / embargo) collapsed onto
-  // their referent instead of drawn as boxes joined by edges. Generalises the
-  // PD-tag: a small chip at the referent's top-right, stacked leftward, each a
-  // click target that selects the REAL ornament node (the Inspector edits it).
-  // The node's official 2D icon if it has one, else a lettered pastille. Sized
-  // in screen px (/vp.scale) so they stay legible; hit rects are world-space.
-  adornmentHits = [];
-  const BADGE = 16; // screen px
-  for (const n of scene.nodes) {
-    const ads = n.adornments;
-    if (!ads || !ads.length) continue;
-    const bs = BADGE / vp.scale;
-    const gap = 3 / vp.scale;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    for (let i = 0; i < ads.length; i++) {
-      const b = ads[i];
-      const bx = n.x + n.w - (i + 1) * bs - i * gap;
-      const by = n.y - bs * 0.55; // straddle the top edge
-      ctx.beginPath();
-      if (typeof ctx.roundRect === "function")
-        ctx.roundRect(bx, by, bs, bs, bs * 0.22);
-      else ctx.rect(bx, by, bs, bs);
-      ctx.fillStyle = canvasTheme().handleFill;
-      ctx.fill();
-      ctx.lineWidth = 1 / vp.scale;
-      ctx.strokeStyle = canvasTheme().chipBorder;
-      ctx.stroke();
-      const img = imageFor(b.kind);
-      const pad = bs * 0.16;
-      if (img) ctx.drawImage(img, bx + pad, by + pad, bs - 2 * pad, bs - 2 * pad);
-      else {
-        // no icon file → a lettered pastille (A/L/E), ink from the chip fill
-        ctx.fillStyle = labelOn(canvasTheme().handleFill);
-        ctx.font = `700 ${bs * 0.62}px system-ui, sans-serif`;
-        ctx.fillText((b.kind[0] || "?").toUpperCase(), bx + bs / 2, by + bs / 2 + 0.5);
-      }
-      // selection ring when THIS ornament node is the selected one
-      if (b.ornamentId === state.selectedId) {
-        ctx.strokeStyle = accentColor();
-        ctx.lineWidth = 2 / vp.scale;
-        ctx.strokeRect(bx - 1 / vp.scale, by - 1 / vp.scale, bs + 2 / vp.scale, bs + 2 / vp.scale);
-      }
-      adornmentHits.push({ ornamentId: b.ornamentId, x: bx, y: by, w: bs, h: bs });
-    }
-  }
-  ctx.textAlign = "left";
-  ctx.textBaseline = "top";
+  // BADGE1 ornament badges are drawn in SCREEN space (DEC1) — see the pass after
+  // the transform is reset to device pixels below.
 
   if (state.connect) {
     const from = scene.byId.get(state.connect.fromId);
@@ -951,6 +937,121 @@ export function render(
       }
     }
   }
+
+  // ── BADGE1 / DEC1 · ornament badges, FIXED screen-space size ────────────────
+  // Drawn with the device-pixel transform (not the world one) so every chip is
+  // BADGE_PX regardless of zoom — anchored to the node's top-right SCREEN corner.
+  // If more badges than fit along the top edge, the overflow collapses to a "+N"
+  // chip (click selects the referent, whose Inspector lists them all). Hit rects
+  // are screen-space and match the drawing exactly (like pdTagHits).
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  adornmentHits = [];
+  for (const n of scene.nodes) {
+    const ads = n.adornments;
+    if (!ads || !ads.length) continue;
+    const r = nodeScreenRect(n, vp);
+    if (r.x + r.w < -BADGE_PX || r.x > viewW || r.y + r.h < -BADGE_PX || r.y > viewH)
+      continue; // node (plus its badge row) entirely off-screen
+    const step = BADGE_PX + BADGE_GAP;
+    const fit = Math.max(1, Math.floor((r.w + BADGE_GAP) / step));
+    const showAll = ads.length <= fit;
+    const nShown = showAll ? ads.length : Math.max(1, fit - 1);
+    const slots = showAll ? ads.length : nShown + 1; // last slot = "+N"
+    const topY = r.y - BADGE_PX * 0.55; // straddle the top edge
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    for (let i = 0; i < slots; i++) {
+      const bx = r.x + r.w - (i + 1) * BADGE_PX - i * BADGE_GAP;
+      const isMore = !showAll && i === slots - 1;
+      ctx.beginPath();
+      if (typeof ctx.roundRect === "function")
+        ctx.roundRect(bx, topY, BADGE_PX, BADGE_PX, BADGE_PX * 0.22);
+      else ctx.rect(bx, topY, BADGE_PX, BADGE_PX);
+      ctx.fillStyle = canvasTheme().handleFill;
+      ctx.fill();
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = canvasTheme().chipBorder;
+      ctx.stroke();
+      if (isMore) {
+        ctx.fillStyle = labelOn(canvasTheme().handleFill);
+        ctx.font = `700 ${Math.round(BADGE_PX * 0.5)}px system-ui, sans-serif`;
+        ctx.fillText(`+${ads.length - nShown}`, bx + BADGE_PX / 2, topY + BADGE_PX / 2 + 0.5);
+        adornmentHits.push({ ornamentId: n.id, x: bx, y: topY, w: BADGE_PX, h: BADGE_PX });
+        continue;
+      }
+      const b = ads[i];
+      // FUNNEL1 · an INHERITED value (from activity/epoch/canvas) is drawn
+      // attenuated (dimmed, dashed outline) and is NOT a click target — it has
+      // no ornament node on this referent. The node's own value is a full badge.
+      if (b.inherited) ctx.globalAlpha = 0.5;
+      const img = imageFor(b.kind);
+      const pad = BADGE_PX * BADGE_ICON_INSET;
+      if (img) ctx.drawImage(img, bx + pad, topY + pad, BADGE_PX - 2 * pad, BADGE_PX - 2 * pad);
+      else {
+        ctx.fillStyle = labelOn(canvasTheme().handleFill);
+        ctx.font = `700 ${Math.round(BADGE_PX * 0.62)}px system-ui, sans-serif`;
+        ctx.fillText((b.kind[0] || "?").toUpperCase(), bx + BADGE_PX / 2, topY + BADGE_PX / 2 + 0.5);
+      }
+      if (b.inherited) {
+        // dashed outline marks it as a funnel-inherited preview, not a real node
+        ctx.globalAlpha = 1;
+        ctx.setLineDash([2, 1.5]);
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = canvasTheme().accent;
+        ctx.strokeRect(bx + 0.5, topY + 0.5, BADGE_PX - 1, BADGE_PX - 1);
+        ctx.setLineDash([]);
+        continue; // no hit rect for an inherited badge
+      }
+      if (b.ornamentId === state.selectedId) {
+        ctx.strokeStyle = accentColor();
+        ctx.lineWidth = 2;
+        ctx.strokeRect(bx - 1, topY - 1, BADGE_PX + 2, BADGE_PX + 2);
+      }
+      adornmentHits.push({ ornamentId: b.ornamentId, x: bx, y: topY, w: BADGE_PX, h: BADGE_PX });
+    }
+  }
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
+
+  // ── PD1 · collapsed ParadataNodeGroup tablets, bottom-left of the referent ───
+  // A folded PDG with a node referent shows as a small "PD" tablet (fixed
+  // screen size, the Paradata tab colour) at the referent's bottom-left — the
+  // ornament badges of BADGE1 are top-right, so the two never collide. Single
+  // click selects the group; double click enters the hypergraph (main.ts).
+  pdDecoratorHits = [];
+  const PD_W = Math.round(BADGE_PX * 1.5);
+  const pdFill = nodeStyle("ParadataNodeGroup").labelBackground || groupHeaderFill();
+  for (const g of scene.groups ?? []) {
+    if (!(g.folded && g.pdReferent)) continue;
+    const ref = scene.byId.get(g.pdReferent);
+    if (!ref) continue;
+    const r = nodeScreenRect(ref, vp);
+    if (r.x + r.w < 0 || r.x - PD_W > viewW || r.y > viewH || r.y + r.h < 0)
+      continue;
+    const tx = r.x - PD_W * 0.12; // bottom-left, nudged just outside the corner
+    const ty = r.y + r.h - BADGE_PX * 0.55; // straddle the bottom edge
+    ctx.beginPath();
+    if (typeof ctx.roundRect === "function") ctx.roundRect(tx, ty, PD_W, BADGE_PX, 3);
+    else ctx.rect(tx, ty, PD_W, BADGE_PX);
+    ctx.fillStyle = pdFill;
+    ctx.fill();
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = canvasTheme().chipBorder;
+    ctx.stroke();
+    ctx.fillStyle = labelOn(pdFill);
+    ctx.font = `700 ${Math.round(BADGE_PX * 0.55)}px system-ui, sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText("PD", tx + PD_W / 2, ty + BADGE_PX / 2 + 0.5);
+    if (g.id === state.selectedId) {
+      ctx.strokeStyle = accentColor();
+      ctx.lineWidth = 2;
+      ctx.strokeRect(tx - 1, ty - 1, PD_W + 2, BADGE_PX + 2);
+    }
+    pdDecoratorHits.push({ pdgId: g.id, x: tx, y: ty, w: PD_W, h: BADGE_PX });
+  }
+  ctx.textAlign = "left";
+  ctx.textBaseline = "top";
 
   // lane colour rail + label chip, pinned to the left edge (screen space)
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);

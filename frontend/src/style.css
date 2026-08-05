@@ -3545,3 +3545,60 @@ body.sync-active #footer-brand #em-version {
 .sm-hidden-file {
   display: none;
 }
+
+/* FUNNEL1 · Propagative metadata subsection (Inspector) — value + provenance of
+   author/license/embargo resolved down the funnel. Inherited rows are dimmed. */
+.insp-propagative {
+  margin: 8px 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px 6px;
+  background: var(--bg-subtle);
+}
+.insp-sect-summary {
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  padding: 2px 0;
+}
+.insp-prop-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 12px;
+}
+.insp-prop-rule {
+  flex: 0 0 68px;
+  color: var(--text-muted);
+  text-transform: capitalize;
+}
+.insp-prop-value {
+  flex: 1 1 auto;
+  color: var(--text);
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.insp-prop-source {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: var(--bg-accent-soft);
+  color: var(--accent-ink);
+}
+.insp-prop-inherited .insp-prop-value {
+  font-weight: 500;
+  color: var(--text-muted);
+  font-style: italic;
+}
+.insp-prop-own .insp-prop-source {
+  background: var(--ok-soft);
+  color: var(--ok-ink);
+}

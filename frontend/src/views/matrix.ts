@@ -139,6 +139,16 @@ export function buildMatrixScene(
     )
       pdgOfEpochNode.set(e.source, e.target);
   const pdgOfPhase = pdgOfEpochNode; // phases are EpochNodes too — same lookup
+  // PD1 · a NON-epoch PDG (attached to a stratigraphic node via
+  // has_paradata_nodegroup) collapses, when folded, to a tablet on that node
+  // instead of a closed box. Epoch/phase PDGs keep the lane "PD" tag.
+  const pdReferentNode = new Map<string, string>(); // pdg id → referent node id
+  for (const e of doc.graph.edges)
+    if (
+      e.edge_type === "has_paradata_nodegroup" &&
+      nodeById.get(e.source)?.node_type !== "EpochNode"
+    )
+      pdReferentNode.set(e.target, e.source);
   const propsOfPdg = new Map<string, string[]>(); // PDG id → member ids
   for (const e of doc.graph.edges)
     if (e.edge_type === "is_in_paradata_nodegroup") {
@@ -190,6 +200,14 @@ export function buildMatrixScene(
       badge: view?.badges.get(node.id),
       pinned: pinnedSet.has(node.id),
       adornments: view?.adornments?.get(node.id),
+      // PD1 · a folded PDG with a node referent is shown as a bottom-left tablet
+      // (SceneGroup.pdReferent), never as a node: mark it so drawing, the connect
+      // handle, and hit-testing all skip it — even in the edge cases where the
+      // SceneGroup box path would not have caught it.
+      collapsed:
+        folded.has(node.id) &&
+        node.node_type === "ParadataNodeGroup" &&
+        pdReferentNode.has(node.id),
     };
     scene.byId.set(node.id, sn);
     // outline containers: group-type nodes AND any stratigraphic node that
@@ -746,6 +764,10 @@ export function buildMatrixScene(
       headerH: GROUP_HEADER,
       title: String(g.node.name || g.id),
       folded: folded.has(g.id),
+      pdReferent:
+        folded.has(g.id) && g.node.node_type === "ParadataNodeGroup"
+          ? pdReferentNode.get(g.id)
+          : undefined,
     };
     scene.groups!.push(sg);
     scene.groupsById!.set(g.id, sg);

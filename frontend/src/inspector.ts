@@ -1,6 +1,7 @@
 import type { DocumentStore, HdtoFields } from "./model";
 import { edgeStyle, nodeStyle } from "./palette";
-import { isGroupType } from "./rules";
+import { isGroupType, isStratigraphicType } from "./rules";
+import { BADGE_RULES, resolveEffective, sourceLabel } from "./funnel";
 import type { AuthorityCandidate, AuthorityRef, EmEdge, EmNode } from "./types";
 import { qualiaList } from "./vocab";
 import { getSettings } from "./settings";
@@ -697,6 +698,44 @@ export function renderInspector(
     enter.addEventListener("click", () => cb.onEnterGroup(nodeId));
     bar.appendChild(enter);
     root.appendChild(bar);
+  }
+
+  // FUNNEL1 · "Propagative metadata" — the value + provenance of each propagative
+  // property (author/license/embargo), resolved Node → Activity → Epoch → Canvas
+  // (first non-null, substitutive). Mirrors EMtools' draw_propagative_metadata:
+  // it is a PRESENTATION of the resolver — nothing is written to em.json. Shown
+  // for stratigraphic referents (the nodes that inherit down the funnel).
+  if (nodeId && isStratigraphicType(node.node_type)) {
+    const rows: { rule: string; value: string; src: string; own: boolean }[] = [];
+    for (const rule of BADGE_RULES) {
+      const eff = resolveEffective(store.doc, nodeId, rule);
+      if (eff.value == null) continue;
+      rows.push({
+        rule,
+        value: eff.value,
+        src: sourceLabel(eff.source),
+        own: eff.explicit,
+      });
+    }
+    if (rows.length) {
+      const details = el("details", "insp-propagative") as HTMLDetailsElement;
+      details.open = true;
+      const sum = el("summary", "insp-sect-summary", "Propagative metadata");
+      details.appendChild(sum);
+      for (const r of rows) {
+        const row = el("div", `insp-prop-row${r.own ? " insp-prop-own" : " insp-prop-inherited"}`);
+        row.appendChild(el("span", "insp-prop-rule", r.rule));
+        row.appendChild(el("span", "insp-prop-value", r.value));
+        // provenance: "proprio" when declared on the node, else "da Epoca …"
+        const from = el("span", "insp-prop-source", r.own ? "proprio" : r.src);
+        from.title = r.own
+          ? "Dichiarato su questo nodo"
+          : `Ereditato (${r.src}) — override dichiarandolo sul nodo`;
+        row.appendChild(from);
+        details.appendChild(row);
+      }
+      root.appendChild(details);
+    }
   }
 
   // extra data fields (read-only)

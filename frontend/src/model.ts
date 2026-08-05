@@ -379,6 +379,49 @@ export class DocumentStore {
     return null;
   }
 
+  /** The ParadataNodeGroup attached to ANY node via has_paradata_nodegroup, or
+   *  null — the same edge the epochs use, node-agnostic (a US carries its
+   *  paradata the same way an epoch carries its chronology). */
+  paradataGroupOf(nodeId: string): string | null {
+    return this.epochParadataGroup(nodeId);
+  }
+
+  /**
+   * PDMEM1 · make an ornament (author / license / embargo) a MEMBER of the
+   * referent's ParadataNodeGroup, so it shows loose inside the exploded PDG next
+   * to the qualia, and the badge previews it. Ensures the referent has a PDG
+   * (creates it + `has_paradata_nodegroup` if missing, like
+   * `ensureEpochTemporalParadata` does for epochs) and adds
+   * `is_in_paradata_nodegroup(ornament → PDG)`. Idempotent; the semantic edge
+   * (`has_author`/…) is created by the caller and left untouched. Returns the
+   * PDG id (null only if the referent is missing / an epoch — those use the
+   * temporal PDG path).
+   */
+  attachAdornmentToParadata(referentId: string, ornamentId: string): string | null {
+    const ref = this.node(referentId);
+    if (!ref || ref.node_type === "EpochNode") return null;
+    let pdgId = this.paradataGroupOf(referentId);
+    if (!pdgId) {
+      const pos = this.doc.layout?.positions?.[referentId];
+      const g = this.addNode(
+        {
+          id: this.newId(),
+          name: `${ref.name ?? "node"} · paradata`,
+          node_type: "ParadataNodeGroup",
+          description: "",
+        },
+        pos
+          ? { x: pos.x + (pos.w ?? 90) + 30, y: pos.y, w: 200, h: 44 }
+          : undefined,
+      );
+      pdgId = g.id;
+      this.addEdge(referentId, pdgId, "has_paradata_nodegroup");
+    }
+    if (!this.hasEdge(ornamentId, pdgId, "is_in_paradata_nodegroup"))
+      this.addEdge(ornamentId, pdgId, "is_in_paradata_nodegroup");
+    return pdgId;
+  }
+
   /** The PropertyNode of a given property_type inside a paradata group. */
   private propInGroup(pdgId: string, propType: string): EmNode | undefined {
     for (const e of this.doc.graph.edges) {

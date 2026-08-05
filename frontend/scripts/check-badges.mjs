@@ -120,6 +120,33 @@ const vis = (nodes) => new Set(nodes.map((n) => n.id));
   ok(!m.has("li"), "the licence (an ornament) never hosts a badge itself");
 }
 
+// ── PDMEM1 · the PDG membership is the source; badge previews the PDG member ──
+{
+  // ornament is a MEMBER of the referent's PDG (is_in_paradata_nodegroup), the
+  // PDG is the referent's (has_paradata_nodegroup) — resolves WITHOUT a direct
+  // has_author edge, proving the PDG chain is a first-class source.
+  const nodes = [
+    node("u1", "US", "US_1"),
+    node("pdg", "ParadataNodeGroup", "US_1_PD"),
+    node("au", "author", "M. Rossi"),
+  ];
+  const edges = [
+    edge("hp", "has_paradata_nodegroup", "u1", "pdg"),
+    edge("im", "is_in_paradata_nodegroup", "au", "pdg"),
+  ];
+  const m = A.adornmentBadges(nodes, edges, vis(nodes));
+  eq(m.get("u1")?.map((b) => b.kind), ["author"],
+    "an ornament that is a PDG member badges on the PDG's referent (no has_author needed)");
+  ok(!m.has("pdg"), "the PDG itself hosts no badge");
+
+  // with BOTH the semantic edge AND the membership (what attach creates), the
+  // ornament is counted ONCE, on the same referent
+  const edges2 = [...edges, edge("ha", "has_author", "u1", "au")];
+  const m2 = A.adornmentBadges(nodes, edges2, vis(nodes));
+  eq(m2.get("u1")?.map((b) => b.ornamentId), ["au"],
+    "membership + semantic edge agree → the badge appears once");
+}
+
 // ── an orphan ornament, and one whose referent is hidden, produce no badge ────
 {
   const nodes = [node("u1", "US", "US_1"), node("au", "author", "orphan")];
