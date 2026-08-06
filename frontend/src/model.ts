@@ -13,6 +13,7 @@ import type {
 } from "./types";
 import { MEMBERSHIP_EDGES } from "./folding";
 import { edgeTypeFor, nodeTypeForClass } from "./rules";
+import { VOLATILE_KEY } from "./volatile";
 
 /** A structured graph mutation for the live op-log bridge (ADR-002 phase 2).
  * Kept small and additive; more variants (add/delete node/edge) land next. */
@@ -1815,13 +1816,93 @@ export class DocumentStore {
     if (checkpoint) this.emit();
   }
 
+  // ---------- AUX2 · volatile lifecycle ----------
+  /** Inject a mapped auxiliary's nodes/edges into the graph, each node marked
+   *  volatile (VOLATILE_KEY = auxId). ONE undoable change. Volatile nodes show on
+   *  the canvas and in the EM-Data table (blue) but are excluded from `toJSON`
+   *  until baked. Nodes/edges already present (by id) are skipped. */
+  mapVolatile(auxId: string, nodes: EmNode[], edges: EmEdge[]): number {
+    this.checkpoint();
+    const have = new Set(this.doc.graph.nodes.map((n) => n.id));
+    let added = 0;
+    for (const n of nodes) {
+      if (have.has(n.id)) continue;
+      (n.data ??= {} as Record<string, unknown>)[VOLATILE_KEY] = auxId;
+      this.doc.graph.nodes.push(n);
+      have.add(n.id);
+      added++;
+    }
+    const edgeIds = new Set(this.doc.graph.edges.map((e) => e.id));
+    for (const e of edges) {
+      const id = e.id ?? `${e.source}__${e.edge_type}__${e.target}`;
+      if (edgeIds.has(id)) continue;
+      this.doc.graph.edges.push({ ...e, id });
+      edgeIds.add(id);
+    }
+    this.emit();
+    return added;
+  }
+
+  /** Bake an auxiliary's volatile nodes into the document: clear the marker so
+   *  they become persistent (and travel with `toJSON`). Returns how many. */
+  bakeVolatile(auxId: string): number {
+    this.checkpoint();
+    let n = 0;
+    for (const node of this.doc.graph.nodes) {
+      const d = node.data as Record<string, unknown> | undefined;
+      if (d && d[VOLATILE_KEY] === auxId) {
+        delete d[VOLATILE_KEY];
+        n++;
+      }
+    }
+    this.emit();
+    return n;
+  }
+
+  /** Drop an auxiliary's volatile nodes (unmap / remove-before-bake): delete the
+   *  nodes still marked with this auxId and their incident edges. Baked nodes
+   *  (marker already cleared) are left untouched. Returns how many removed. */
+  dropVolatile(auxId: string): number {
+    this.checkpoint();
+    const g = this.doc.graph;
+    const doomed = new Set(
+      g.nodes
+        .filter((n) => (n.data as Record<string, unknown> | undefined)?.[VOLATILE_KEY] === auxId)
+        .map((n) => n.id),
+    );
+    if (!doomed.size) {
+      this.undoStack.pop(); // nothing to do — don't leave an empty undo step
+      return 0;
+    }
+    g.nodes = g.nodes.filter((n) => !doomed.has(n.id));
+    g.edges = g.edges.filter((e) => !doomed.has(e.source) && !doomed.has(e.target));
+    const layout = this.doc.layout;
+    if (layout?.positions) for (const id of doomed) delete layout.positions[id];
+    this.emit();
+    return doomed.size;
+  }
+
   toJSON(): string {
     const header = { ...(this.doc.header ?? {}) };
     header["last_editor"] = "EMStudio 0.1.0";
-    return JSON.stringify(
-      { header, graph: this.doc.graph, layout: this.doc.layout },
-      null,
-      1,
+    // AUX2: volatile (mapped-but-not-baked) nodes NEVER travel with the saved
+    // document. Drop them and any edge incident to one — the canvas/table keep
+    // showing them (they read the live graph), but the file, sync and bridge
+    // payloads see only baked content.
+    const volatile = new Set(
+      this.doc.graph.nodes
+        .filter((n) => !!(n.data as Record<string, unknown> | undefined)?.[VOLATILE_KEY])
+        .map((n) => n.id),
     );
+    const graph = volatile.size
+      ? {
+          ...this.doc.graph,
+          nodes: this.doc.graph.nodes.filter((n) => !volatile.has(n.id)),
+          edges: this.doc.graph.edges.filter(
+            (e) => !volatile.has(e.source) && !volatile.has(e.target),
+          ),
+        }
+      : this.doc.graph;
+    return JSON.stringify({ header, graph, layout: this.doc.layout }, null, 1);
   }
 }

@@ -122,6 +122,13 @@ export interface AuxiliaryFile {
    */
   baked: boolean;
   /**
+   * AUX2 · true once the source has been MAPPED: its nodes are in the in-memory
+   * graph (visible on the canvas and in the EM-Data table, marked volatile in
+   * blue) but not yet baked into em.json. `mapped && !baked` = volatile;
+   * `baked` = persistent; neither = attached only.
+   */
+  mapped?: boolean;
+  /**
    * Per-type options — a mapping name, a table choice, a resource folder.
    *
    * A free object and not a class per type on purpose: EMtools needs one Blender
@@ -323,6 +330,12 @@ export interface EMTreeHandlers {
   onAuxToggle?(auxId: string): void;
   onAuxTypeChange?(auxId: string, fileType: AuxFileType): void;
   onAuxBake?(auxId: string): void;
+  /** AUX2 — map the source into the graph as volatile nodes (blue, unsaved). */
+  onAuxMap?(auxId: string): void;
+  /** AUX2 — remove the mapped (volatile) nodes from the graph. */
+  onAuxUnmap?(auxId: string): void;
+  /** AUX2 — a per-type option changed (mapping name, folder, toggle…). */
+  onAuxOption?(auxId: string, key: string, value: string | boolean): void;
 }
 
 function esc(s: string): string {
@@ -351,7 +364,7 @@ function auxSection(tree: EMTree, labels: (key: string) => string): string {
   if (!slot) return "";
   const rows = slot.auxiliaryFiles.map((f) => {
     const type = AUX_FILE_TYPES.find((t) => t.value === f.fileType);
-    const state = f.baked ? "baked" : "volatile";
+    const state = f.baked ? "baked" : f.mapped ? "volatile" : "attached";
     return `
       <li class="aux-row${f.expanded ? " open" : ""}" data-aux="${esc(f.id)}">
         <button class="aux-head" data-aux-toggle="${esc(f.id)}"
@@ -380,10 +393,80 @@ function auxSection(tree: EMTree, labels: (key: string) => string): string {
     </div>`;
 }
 
-/** The per-file detail panel: type, locator, options, bake. */
+/**
+ * The per-type options a source exposes — the SAME tokens EMtools uses
+ * (`em_setup/properties.py::AuxiliaryFileProperties`), so the two tools name the
+ * same option the same way. Rendered generically into the detail panel; the
+ * value lives in `AuxiliaryFile.options[key]` and is written back via
+ * `onAuxOption`. `mapping` selects a registry mapping (DP-61) for the xlsx types.
+ */
+type AuxOptSpec =
+  | { key: string; label: string; kind: "text"; placeholder?: string }
+  | { key: string; label: string; kind: "bool" }
+  | { key: string; label: string; kind: "select"; options: string[] };
+
+const AUX_OPTIONS: Record<AuxFileType, AuxOptSpec[]> = {
+  emdb_xlsx: [
+    { key: "mapping", label: "Mapping (emdb)", kind: "text", placeholder: "registry mapping name" },
+  ],
+  pyarchinit: [
+    { key: "mapping", label: "Mapping (pyarchinit)", kind: "text", placeholder: "registry mapping name" },
+    { key: "import_geometries", label: "Import geometries", kind: "bool" },
+    { key: "geom_force_update", label: "Force geometry update", kind: "bool" },
+  ],
+  dosco: [
+    { key: "overwrite_paths", label: "Overwrite existing paths", kind: "bool" },
+    { key: "preserve_web_urls", label: "Preserve web URLs", kind: "bool" },
+  ],
+  source_list: [],
+  resource_collection: [
+    { key: "thumbs_path", label: "Custom thumbnails folder", kind: "text" },
+    { key: "scan_mode", label: "Scan mode", kind: "select", options: ["by_filename", "manual"] },
+    { key: "target_node_types", label: "Target node types", kind: "text", placeholder: "e.g. US, SF" },
+  ],
+};
+
+function auxOptionField(f: AuxiliaryFile, spec: AuxOptSpec): string {
+  const v = (f.options ?? {})[spec.key];
+  const id = esc(f.id);
+  if (spec.kind === "bool") {
+    return `<label class="aux-field aux-field-inline">
+      <input type="checkbox" data-aux-opt="${id}" data-opt-key="${spec.key}"
+             ${v ? "checked" : ""} />
+      <span>${esc(spec.label)}</span></label>`;
+  }
+  if (spec.kind === "select") {
+    return `<label class="aux-field"><span>${esc(spec.label)}</span>
+      <select data-aux-opt="${id}" data-opt-key="${spec.key}">
+        ${spec.options.map((o) =>
+          `<option value="${esc(o)}"${String(v) === o ? " selected" : ""}>${esc(o)}</option>`).join("")}
+      </select></label>`;
+  }
+  return `<label class="aux-field"><span>${esc(spec.label)}</span>
+    <input type="text" data-aux-opt="${id}" data-opt-key="${spec.key}"
+           value="${esc(String(v ?? ""))}" placeholder="${esc(spec.placeholder ?? "")}" /></label>`;
+}
+
+/** Why the map action carries a caveat for this type (bridge/mapping gaps). */
+function auxMapNote(fileType: AuxFileType): string {
+  switch (fileType) {
+    case "emdb_xlsx":
+      return "Maps via the bridge (/import-em-data) using an s3Dgraphy registry mapping (DP-61); its nodes enter the graph as volatile.";
+    case "source_list":
+      return "Maps into the Documents sheet. A dedicated source_list→Documents mapping is not yet in the s3Dgraphy registry (flagged) — mapped via the Documents columns for now.";
+    case "pyarchinit":
+      return "Needs a bridge endpoint for the pyArchInit importer (not yet exposed); flagged for the server side.";
+    case "dosco":
+      return "Harvests a documentation folder into document nodes — needs a bridge endpoint (flagged).";
+    case "resource_collection":
+      return "Scans a folder of resources (bridge /scan-resources) and links them — attach-as-volatile needs the endpoint wired (flagged).";
+  }
+}
+
+/** The per-file detail panel: type, locator, per-type options, map/bake/unmap. */
 function auxDetail(f: AuxiliaryFile): string {
   const type = AUX_FILE_TYPES.find((t) => t.value === f.fileType);
-  const options = Object.entries(f.options ?? {});
+  const opts = AUX_OPTIONS[f.fileType] ?? [];
   return `
     <div class="aux-detail">
       <label class="aux-field">
@@ -400,51 +483,23 @@ function auxDetail(f: AuxiliaryFile): string {
         <input type="text" value="${esc(f.locator)}" readonly
                title="${esc(f.locator)}" />
       </label>
-      <p class="aux-hint">
-        Source: <b>${esc(f.kind)}</b>${f.kind === "local"
-          ? " — the StratiGraph Catalog, the HDT Catalog and MinIO are ET3."
-          : ""}
-      </p>
-      ${options.length
-        ? `<p class="aux-hint">Options: ${esc(
-            options.map(([k, v]) => `${k}=${String(v)}`).join(" · "),
-          )}</p>`
-        : ""}
+      ${opts.map((o) => auxOptionField(f, o)).join("")}
+      <p class="aux-hint">${esc(auxMapNote(f.fileType))}</p>
       <div class="aux-actions">
-        <button data-aux-bake="${esc(f.id)}" disabled
-                title="TODO(ET2): mapping/import. ${esc(bakeBlocker(f.fileType))}"
-          >Bake into the graph</button>
+        ${f.mapped
+          ? `<button data-aux-unmap="${esc(f.id)}"
+               title="Remove the mapped (volatile) nodes from the graph">Unmap</button>
+             <button data-aux-bake="${esc(f.id)}"${f.baked ? " disabled" : ""}
+               title="Promote the volatile nodes into the document (they persist on save)">Bake into the graph</button>`
+          : `<button data-aux-map="${esc(f.id)}"
+               title="Map this source into the graph as volatile nodes (blue, not saved until baked)">Map into the graph</button>`}
         <span class="aux-hint">${f.baked
           ? "baked — its content is in the document"
-          : "volatile — not in the document"}</span>
+          : f.mapped
+            ? "volatile — visible in blue, not in the saved em.json until baked"
+            : "attached — not yet mapped"}</span>
       </div>
     </div>`;
-}
-
-/**
- * Why a bake is not available for this type — the specific reason, not a generic
- * TODO, so nobody re-investigates from scratch.
- *
- * No importer is wired anywhere: what exists is listed here per type, and in every
- * case the missing piece is the same one — a MERGE into an existing graph. The
- * bridge's `/import-em-data` builds a document from an xlsx; `/scan-resources`
- * lists a folder's resources. Neither adds nodes to the graph you are looking at,
- * and deciding what "adding" means (match by name? by id? overwrite?) is the ET2
- * decision, not an implementation detail to guess.
- */
-function bakeBlocker(fileType: AuxFileType): string {
-  switch (fileType) {
-    case "emdb_xlsx":
-      return "s3dgraphy has mapped_xlsx_importer and the bridge has /import-em-data, but that BUILDS a document — merging into this graph is ET2.";
-    case "pyarchinit":
-      return "s3dgraphy has pyarchinit_importer, but the bridge does not expose it yet.";
-    case "source_list":
-      return "s3dgraphy has source_text/unified_xlsx_importer; the mapping to document/extractor/combiner nodes is ET2.";
-    case "dosco":
-      return "harvesting a documentation folder into document nodes is ET2.";
-    case "resource_collection":
-      return "the bridge's /scan-resources lists a folder (see the Resources panel); attaching them as a baked aux is ET2.";
-  }
 }
 
 /**
@@ -581,6 +636,23 @@ export function renderEMTree(host: HTMLElement, tree: EMTree,
   });
   host.querySelectorAll<HTMLButtonElement>("[data-aux-bake]").forEach((el) => {
     el.addEventListener("click", () => handlers.onAuxBake?.(el.dataset.auxBake!));
+  });
+  host.querySelectorAll<HTMLButtonElement>("[data-aux-map]").forEach((el) => {
+    el.addEventListener("click", () => handlers.onAuxMap?.(el.dataset.auxMap!));
+  });
+  host.querySelectorAll<HTMLButtonElement>("[data-aux-unmap]").forEach((el) => {
+    el.addEventListener("click", () => handlers.onAuxUnmap?.(el.dataset.auxUnmap!));
+  });
+  host.querySelectorAll<HTMLElement>("[data-aux-opt]").forEach((el) => {
+    const commit = () => {
+      const key = el.dataset.optKey!;
+      const value =
+        (el as HTMLInputElement).type === "checkbox"
+          ? (el as HTMLInputElement).checked
+          : (el as HTMLInputElement | HTMLSelectElement).value;
+      handlers.onAuxOption?.(el.dataset.auxOpt!, key, value);
+    };
+    el.addEventListener("change", commit);
   });
 
   host.querySelectorAll<HTMLButtonElement>(".et-close").forEach((button) => {

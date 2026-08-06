@@ -143,7 +143,8 @@ import {
 } from "./scene";
 import { GROUP_HEADER, GROUP_PAD } from "./views/matrix";
 import { setupSearch } from "./search";
-import { initEmData, renderEmData } from "./emdata";
+import { initEmData, renderEmData, setVolatileProvider } from "./emdata";
+import { isVolatile } from "./volatile";
 import type { EmDocument, EmEdge, EmNode, ViewKind } from "./types";
 import { buildDtcGenesisScene, buildGroupScene } from "./views/context";
 import { buildGraphScene, type GraphAlgorithm } from "./views/graph";
@@ -555,6 +556,30 @@ function draw(): void {
       ctx.fillRect(x, y, bw, bh);
       ctx.strokeRect(x, y, bw, bh);
     }
+    ctx.restore();
+  }
+  // AUX2 volatile overlay (screen space): a dashed accent-blue ring around every
+  // mapped-but-not-baked node, so a volatile node is unmistakable on the canvas
+  // regardless of its own colour — the SAME state the EM-Data table paints blue
+  // (single source of truth: the VOLATILE_KEY marker read via isVolatile).
+  if (store) {
+    const vp = viewport();
+    const dpr = window.devicePixelRatio || 1;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.save();
+    ctx.strokeStyle = "#4c8dff";
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 4]);
+    for (const sn of s.nodes) {
+      if (sn.collapsed || !isVolatile(store.node(sn.id))) continue;
+      ctx.strokeRect(
+        sn.x * vp.scale + vp.x - 3,
+        sn.y * vp.scale + vp.y - 3,
+        sn.w * vp.scale + 6,
+        sn.h * vp.scale + 6,
+      );
+    }
+    ctx.setLineDash([]);
     ctx.restore();
   }
   if (marquee) {
@@ -2710,11 +2735,53 @@ auxFileInput.addEventListener("change", () => {
     locator: rel || f.name,
     fileType,
     baked: false,
+    mapped: false,
     expanded: true, // opened on arrival: the type usually needs correcting
   });
   refreshEMTree();
-  toast(`${f.name} attached to ${slotLabel(slot)} — volatile until baked`);
+  toast(`${f.name} attached to ${slotLabel(slot)} — map it to see it in blue`);
 });
+
+/**
+ * AUX2 · MAP a source into the graph as VOLATILE nodes.
+ *
+ * xlsx types go through the bridge (`/import-em-data`), which builds a document
+ * from the workbook using an s3Dgraphy registry mapping (DP-61) — we do NOT
+ * re-implement the mapping in TS. The returned nodes/edges are injected into the
+ * live graph marked volatile (blue on the canvas and in the EM-Data table), and
+ * excluded from `toJSON` until baked. The other types need a bridge endpoint that
+ * is not exposed yet (flagged); they report that rather than pretend.
+ */
+async function mapAux(auxId: string): Promise<void> {
+  const f = emtree.active()?.auxiliaryFiles.find((x) => x.id === auxId);
+  if (!f || !store) return;
+  if (f.fileType !== "emdb_xlsx" && f.fileType !== "source_list") {
+    toast(`${f.fileType}: mapping needs a bridge endpoint (flagged) — see the note`);
+    return;
+  }
+  toast(`mapping ${f.name}…`);
+  try {
+    const res = await fetch(`${await bridgeUrl()}/import-em-data`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: f.locator }),
+    });
+    if (!res.ok) throw new Error(`bridge ${res.status}`);
+    const payload = (await res.json()) as { doc?: EmDocument };
+    const g = payload.doc?.graph;
+    if (!g || !Array.isArray(g.nodes)) throw new Error("no graph in response");
+    const added = store.mapVolatile(auxId, g.nodes, g.edges ?? []);
+    f.mapped = true;
+    f.baked = false;
+    refreshEMTree();
+    toast(`mapped ${f.name} — ${added} volatile node(s) in blue; save excludes them until baked`);
+  } catch (e) {
+    toast(
+      `map failed (${e instanceof Error ? e.message : e}). The bridge (dev.sh) ` +
+        `must be running to map an xlsx via the s3Dgraphy registry.`,
+    );
+  }
+}
 document
   .getElementById("btn-new")!
   .addEventListener("click", async () => {
@@ -3911,6 +3978,9 @@ const emtreeHandlers: EMTreeHandlers = {
     const i = slot.auxiliaryFiles.findIndex((f) => f.id === auxId);
     if (i < 0) return;
     const [gone] = slot.auxiliaryFiles.splice(i, 1);
+    // AUX2: if it was mapped, its volatile nodes must go with it (they were
+    // never in em.json, so this only touches the in-memory graph).
+    if (gone.mapped && store) store.dropVolatile(auxId);
     refreshEMTree();
     toast(`removed ${gone.name} (the document is untouched)`);
   },
@@ -3926,10 +3996,33 @@ const emtreeHandlers: EMTreeHandlers = {
     f.fileType = fileType;
     refreshEMTree();
   },
-  onAuxBake: () => {
-    // The button is rendered disabled (see `bakeBlocker`); this exists so the
-    // handler is not a hole if it is ever enabled without reading the section.
-    toast("bake: mapping still to come (ET2)");
+  onAuxOption: (auxId, key, value) => {
+    const f = emtree.active()?.auxiliaryFiles.find((x) => x.id === auxId);
+    if (!f) return;
+    (f.options ??= {})[key] = value;
+    // no re-render: the field already holds the value; a rebuild would drop focus
+  },
+  onAuxMap: (auxId) => void mapAux(auxId),
+  onAuxUnmap: (auxId) => {
+    const f = emtree.active()?.auxiliaryFiles.find((x) => x.id === auxId);
+    if (!f || !store) return;
+    const n = store.dropVolatile(auxId);
+    f.mapped = false;
+    f.baked = false;
+    refreshEMTree();
+    toast(`unmapped ${f.name} — ${n} volatile node(s) removed`);
+  },
+  onAuxBake: (auxId) => {
+    const f = emtree.active()?.auxiliaryFiles.find((x) => x.id === auxId);
+    if (!f || !store) return;
+    if (!f.mapped) {
+      toast("map the source first, then bake");
+      return;
+    }
+    const n = store.bakeVolatile(auxId);
+    f.baked = true;
+    refreshEMTree();
+    toast(`baked ${f.name} — ${n} node(s) now persistent (saved with em.json)`);
   },
   onRename: (id, name) => {
     // POL3: renaming a row renames the GRAPH — `emtree.rename` writes
@@ -5794,6 +5887,9 @@ updateToolbar();
 // through a getter so it always sees the current slot; re-renders from the
 // store's onChange (wired in wireStore).
 initEmData({ getStore: () => store });
+// AUX2: the EM-Data table paints a row blue iff its node is volatile — the SAME
+// marker the canvas overlay reads, so table and graph never disagree.
+setVolatileProvider((id) => isVolatile(store?.node(id)));
 
 // Start from an EMPTY canvas (more natural than auto-loading a sample): use
 // New, Open…, drop a file, or Sync. __EM_TEST_DATA__ still injects a fixture
