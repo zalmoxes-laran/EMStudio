@@ -3,6 +3,11 @@ import { applyFolding, buildMembership, MEMBERSHIP_EDGES } from "./folding";
 import { setBridgeResolver } from "./geo";
 import { renderInspector } from "./inspector";
 import { narrativesIn, renderNarrativeView } from "./narrative";
+import {
+  addEpochChapter,
+  scaffoldNarrativeFromGraph,
+  undescribedEpochs,
+} from "./narrative-scaffold";
 import type { NarrativeEditor } from "./narrative";
 import * as nauth from "./narrative-authorship";
 import type { AuthorRef, DraftResult } from "./narrative-authorship";
@@ -145,7 +150,7 @@ import { GROUP_HEADER, GROUP_PAD } from "./views/matrix";
 import { setupSearch } from "./search";
 import { initEmData, renderEmData, setVolatileProvider } from "./emdata";
 import { isVolatile } from "./volatile";
-import type { EmDocument, EmEdge, EmNode, ViewKind } from "./types";
+import type { CentralMode, EmDocument, EmEdge, EmNode, ViewKind } from "./types";
 import { buildDtcGenesisScene, buildGroupScene } from "./views/context";
 import { buildGraphScene, type GraphAlgorithm } from "./views/graph";
 import { buildMatrixScene } from "./views/matrix";
@@ -177,6 +182,16 @@ let applyingRemoteSelect = false;
 // Sync endpoint is configured in Settings (see settings.ts); resolved fresh
 // on each connect so a settings change takes effect on the next connect.
 let view: ViewKind = "matrix";
+// DP-82 · the central area's MODE — the single decider of what the middle shows.
+// `matrix`/`graph` are canvas projections and keep `view` in step (the canvas
+// sub-view to restore when leaving narrative); `narrative` is a first-class mode,
+// not a separate overlay toggle. `setMode` is the one entry point; the old
+// `view`+`narrativeOpen` pair collapsed into this. Extension seam: add a token to
+// CentralMode and a branch in `setMode`/the render dispatch — nothing else.
+let centralMode: CentralMode = "matrix";
+/** The modes the central-area selector offers, in order. Add `table`/`dtc` here
+ *  (and a branch in `setMode`) when they land — the seam, not the feature. */
+const CENTRAL_MODES: CentralMode[] = ["matrix", "graph", "narrative"];
 // Graph-view layout: chosen algorithm + manual position overrides (drags /
 // liquid clustering). Overrides persist across rebuilds in-session and are
 // cleared on a fresh Layout, an algorithm change, or a new/loaded document.
@@ -278,6 +293,14 @@ const chronoBanner = document.getElementById("chrono-banner")!;
 const btnMatrix = document.getElementById("btn-matrix") as HTMLButtonElement;
 const btnGraph = document.getElementById("btn-graph") as HTMLButtonElement;
 const btnNarrative = document.getElementById("btn-narrative") as HTMLButtonElement;
+/** DP-82 · the central-area selector, one segment per CentralMode. A new mode
+ *  adds its button here and a token to CENTRAL_MODES — `setMode` lights the right
+ *  one from this map, so the active-state logic never grows a special case. */
+const MODE_BUTTONS: Partial<Record<CentralMode, HTMLButtonElement>> = {
+  matrix: btnMatrix,
+  graph: btnGraph,
+  narrative: btnNarrative,
+};
 const narrativeViewEl = document.getElementById("narrative-view")!;
 const btnNarrativeEdit = document.getElementById(
   "btn-narrative-edit") as HTMLButtonElement;
@@ -1442,14 +1465,53 @@ async function refreshMatrixViewLayout(): Promise<void> {
   draw();
 }
 
+/**
+ * DP-82 · the ONE point that decides what the central area shows. `view` +
+ * `narrativeOpen` collapsed into this: matrix/graph route to the canvas
+ * projection (`applyCanvasView`), narrative shows the story overlay. Exactly one
+ * mode is active at a time. A future `table`/`dtc` mode adds a token to
+ * `CentralMode` and a branch HERE — the single extension seam.
+ */
+function setMode(m: CentralMode): void {
+  centralMode = m;
+  const narrative = m === "narrative";
+  // One selector segment active at a time — derived from CENTRAL_MODES, so a new
+  // mode needs no new toggle line here.
+  for (const mode of CENTRAL_MODES)
+    MODE_BUTTONS[mode]?.classList.toggle("active", mode === m);
+  // The narrative overlay's visibility IS "the mode is narrative" (this replaced
+  // the separate `narrativeOpen` flag — no second, divergible state).
+  narrativeViewEl.classList.toggle("hidden", !narrative);
+  btnNarrativeEdit.classList.toggle("hidden", !narrative);
+  if (narrative) {
+    // keep `view` (matrix/graph) as the canvas sub-view to restore on the way back.
+    // NARR1 · entering narrative with no story yet → scaffold one from the graph
+    // (a chapter per epoch, ordered + anchored, canonical intro). Idempotent:
+    // scaffoldNarrativeFromGraph is a no-op when a narrative already exists, so a
+    // written story is never disturbed.
+    if (store) {
+      const nid = scaffoldNarrativeFromGraph(store);
+      if (nid) selectedNarrativeId = nid;
+    }
+    refreshNarrativeView();
+    return;
+  }
+  // <extension seam> a `table`/`dtc` mode would branch above this line.
+  applyCanvasView(m); // m is matrix | graph
+}
+
+/** A canvas view IS a central mode — back-compat entry for the many callers that
+ *  ask for a specific canvas projection (viewState restore, boot, drops). */
 function setView(v: ViewKind): void {
-  // Picking a canvas view means you want the canvas: close the overlay rather
-  // than leaving it covering a view the user just asked for.
-  if (narrativeOpen) setNarrativeOpen(false);
+  setMode(v);
+}
+
+/** Switch the canvas projection (matrix ↔ graph): per-view viewport, circles of
+ *  detail, scene rebuild and fit. Called by `setMode` for the two canvas modes. */
+function applyCanvasView(v: ViewKind): void {
   const changed = view !== v;
   view = v;
-  btnMatrix.classList.toggle("active", v === "matrix");
-  btnGraph.classList.toggle("active", v === "graph");
+  // (selector "active" state is set by setMode, from CENTRAL_MODES)
   // Layout controls are per-view: Matrix uses the "Layout" button (em-core
   // swimlanes); Graph uses the algorithm dropdown (layered/radial/force). Show
   // only the relevant one so they don't look redundant.
@@ -4456,10 +4518,10 @@ function refreshLogPanel(): void {
 }
 onLogChange(refreshLogPanel);
 // ── Narrative view (N2) ───────────────────────────────────────────────────
-// An OVERLAY over the canvas, not a third ViewKind: Matrix and Graph are built
-// on scenes, layout and circles-of-detail, and a story is none of those.
-// Toggling it leaves the canvas exactly as it was underneath.
-let narrativeOpen = false;
+// Rendered as an overlay over the canvas (Matrix and Graph are built on scenes,
+// layout and circles-of-detail; a story is none of those), but it is a
+// first-class central MODE now (DP-82): its on/off IS `centralMode === "narrative"`,
+// driven by `setMode` — there is no separate `narrativeOpen` flag to drift.
 let narrativeEditing = false;
 let selectedNarrativeId: string | null = null;
 /** Who is signing endorsements in this session. NOT persisted in the document:
@@ -4601,6 +4663,15 @@ function narrativeEditor(narrativeId: string): NarrativeEditor {
   return {
     narrativeId,
     addChapter: () => nedit.addChapter(s, narrativeId),
+    // NARR1 · reintroduce-epoch affordance + the bridge regenerate seam.
+    undescribedEpochs: () => undescribedEpochs(s, narrativeId),
+    addEpochChapter: (epochId) => addEpochChapter(s, narrativeId, epochId),
+    // Seam only: the rich s3Dgraphy site_story regeneration needs a bridge
+    // endpoint (build_narrative) that is not exposed yet — declared as a
+    // follow-up, button stays disabled until it exists.
+    canRegenerate: () => false,
+    regenerateViaBridge: () =>
+      toast("Rigenera bozza completa: endpoint bridge site_story non ancora disponibile (follow-up)"),
     renameChapter: (i, t) => nedit.renameChapter(s, narrativeId, i, t),
     moveChapter: (i, d) => nedit.moveChapter(s, narrativeId, i, d),
     deleteChapter: (i) => nedit.deleteChapter(s, narrativeId, i),
@@ -4678,7 +4749,7 @@ function narrativeEditor(narrativeId: string): NarrativeEditor {
 }
 
 function refreshNarrativeView(): void {
-  if (!narrativeOpen) return;
+  if (centralMode !== "narrative") return;
   const narratives = narrativesIn(store?.doc ?? null);
   const current = narratives.find((n) => n.id === selectedNarrativeId)
     ?? narratives[0];
@@ -4702,15 +4773,16 @@ function refreshNarrativeView(): void {
   );
 }
 
+/** Back-compat wrapper: opening the narrative = entering `narrative` mode,
+ *  closing it = returning to the canvas sub-view (`view`). All the state lives in
+ *  `setMode` now; internal callers (embed-click, boot) keep working through this. */
 function setNarrativeOpen(open: boolean): void {
-  narrativeOpen = open;
-  narrativeViewEl.classList.toggle("hidden", !open);
-  btnNarrative.classList.toggle("active", open);
-  btnNarrativeEdit.classList.toggle("hidden", !open);
-  if (open) refreshNarrativeView();
+  setMode(open ? "narrative" : view);
 }
 
-btnNarrative.addEventListener("click", () => setNarrativeOpen(!narrativeOpen));
+btnNarrative.addEventListener("click", () =>
+  setMode(centralMode === "narrative" ? view : "narrative"),
+);
 btnNarrativeEdit.addEventListener("click", () => {
   narrativeEditing = !narrativeEditing;
   btnNarrativeEdit.classList.toggle("active", narrativeEditing);

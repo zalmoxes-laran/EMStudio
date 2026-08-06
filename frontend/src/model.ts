@@ -837,6 +837,23 @@ export class DocumentStore {
       .map((n) => n.id);
   }
 
+  /** Top-level epochs in CHRONOLOGICAL reading order — OLDEST first (a story
+   *  runs forward in time). Uses the same date key the lanes order by
+   *  (`start_time` via `startOf`); undated epochs keep their document order and
+   *  fall after the dated ones. Reused by the narrative auto-scaffold (NARR1). */
+  topEpochIdsChrono(): string[] {
+    const ids = this.topEpochIds();
+    const pos = new Map(ids.map((id, i) => [id, i]));
+    return ids.slice().sort((a, b) => {
+      const sa = this.startOf(a);
+      const sb = this.startOf(b);
+      if (sa == null && sb == null) return pos.get(a)! - pos.get(b)!;
+      if (sa == null) return 1;
+      if (sb == null) return -1;
+      return sa - sb || pos.get(a)! - pos.get(b)!;
+    });
+  }
+
   /** Does the current lane stack (top→bottom) follow newest-first chronology?
    *  Undated epochs are skipped (can't judge). True when there's nothing to
    *  order or dates agree with the visual order. */

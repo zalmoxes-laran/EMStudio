@@ -3276,6 +3276,14 @@ body.sync-active #footer-brand #em-version {
   50% { outline-color: transparent; }
 }
 
+/* NARR1 · reintroduce-epoch chips under the chapter list */
+.nv-undescribed {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+}
 .nv-tool-label {
   font-size: 10px;
   text-transform: uppercase;

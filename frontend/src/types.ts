@@ -69,6 +69,13 @@ export interface EmDocument {
 
 export type ViewKind = "matrix" | "graph";
 
+/** DP-82 · the MODE of the central area — what it currently shows. `matrix` and
+ *  `graph` are canvas projections (they carry their own viewport/scene/circles,
+ *  see `ViewKind`); `narrative` reads the graph as a story. Extensible: `table`
+ *  and `dtc` (and a future `3d`) slot in here without touching the callers — the
+ *  enum + the render dispatch are the single extension point. */
+export type CentralMode = ViewKind | "narrative";
+
 /** A resolved authority cross-reference stored on a node/qualia
  *  (`data.authority_refs`) — the P1-D shape. `match` drives the export
  *  predicate (skos:exactMatch / skos:closeMatch; owl:sameAs is identity-only). */

@@ -590,6 +590,16 @@ export interface NarrativeEditor {
   deleteBlock(chapter: number, block: number): void;
   /** Lanes a chapter may be anchored to: epochs and activities. */
   lanes(): { id: string; label: string }[];
+  // — NARR1 · scaffold-from-graph affordances (all optional: the editor works
+  //   without them, they only add the "reintroduce epoch" + regenerate seam) —
+  /** Top-level epochs not yet described by a chapter (the reintroduce chips). */
+  undescribedEpochs?(): { id: string; name: string }[];
+  /** Append a chapter anchored to `epochId` (default embed) — reintroduce. */
+  addEpochChapter?(epochId: string): void;
+  /** Seam: rebuild the draft from s3Dgraphy site_story via the bridge. */
+  regenerateViaBridge?(): void;
+  /** Whether the bridge regenerate is available (else the button is disabled). */
+  canRegenerate?(): boolean;
 
   // — authorship, generation, endorsement (N6) —
   /** Everyone the graph knows as an author, models included. */
@@ -1022,6 +1032,30 @@ export function renderNarrativeView(
     const foot = el("div", "nv-chapter");
     foot.appendChild(iconButton("+ capitolo", "Add a chapter at the end",
       () => editor.addChapter()));
+    // NARR1 · reintroduce an epoch you deleted (or never described): one chip per
+    // top-level epoch without a chapter. Deleting a chapter (the ✕ above) is the
+    // "togli"; these chips are the "reintroduci".
+    const undescribed = editor.undescribedEpochs?.() ?? [];
+    if (undescribed.length) {
+      const bar = el("div", "nv-undescribed");
+      bar.appendChild(el("span", "nv-tool-label", "epoche non descritte:"));
+      for (const ep of undescribed)
+        bar.appendChild(iconButton(`+ ${ep.name}`,
+          `Add a chapter for the epoch “${ep.name}”`,
+          () => editor.addEpochChapter?.(ep.id)));
+      foot.appendChild(bar);
+    }
+    // Seam · "regenerate the full draft" via the rich s3Dgraphy site_story
+    // (build_narrative) over the bridge — a follow-up when the endpoint exists.
+    if (editor.regenerateViaBridge) {
+      const regen = iconButton("Rigenera bozza completa",
+        editor.canRegenerate?.()
+          ? "Rebuild the draft from s3Dgraphy site_story via the bridge"
+          : "Needs the bridge and an s3Dgraphy build_narrative endpoint (follow-up)",
+        () => editor.regenerateViaBridge?.());
+      if (!editor.canRegenerate?.()) (regen as HTMLButtonElement).disabled = true;
+      foot.appendChild(regen);
+    }
     container.appendChild(foot);
   }
 }
