@@ -819,6 +819,10 @@ export class DocumentStore {
   /** Numeric start_time of an epoch/phase, or null if unset/non-numeric. */
   private startOf(id: string): number | null {
     const n = Number((this.node(id)?.data as { start_time?: unknown })?.start_time);
+    // BUGFIX-EPOCH: an undated epoch has no finite start_time → null, so the
+    // ordering keeps it in document/manual order instead of treating it as a
+    // date. A real, explicit -10000 (e.g. a "Geologic" epoch, as in Aiano) is a
+    // legitimate oldest date and is NOT special-cased.
     return Number.isFinite(n) ? n : null;
   }
   private endOf(id: string): number | null {

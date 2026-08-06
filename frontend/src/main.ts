@@ -2817,16 +2817,32 @@ auxFileInput.addEventListener("change", () => {
 async function mapAux(auxId: string): Promise<void> {
   const f = emtree.active()?.auxiliaryFiles.find((x) => x.id === auxId);
   if (!f || !store) return;
-  if (f.fileType !== "emdb_xlsx" && f.fileType !== "source_list") {
-    toast(`${f.fileType}: mapping needs a bridge endpoint (flagged) — see the note`);
+  // AUX-COMPLETE: the xlsx aux types map through the bridge /import-em-data.
+  // emdb_xlsx / pyarchinit / source_list carry a registry `mapping` (their sheet
+  // is transformed to nodes by the s3Dgraphy mapping); a bare em_data.xlsx has no
+  // mapping (read directly). dosco / resource_collection are folder-based and use
+  // a different endpoint — flagged as follow-up.
+  if (
+    f.fileType !== "emdb_xlsx" &&
+    f.fileType !== "pyarchinit" &&
+    f.fileType !== "source_list"
+  ) {
+    toast(`${f.fileType}: folder mapping needs a dedicated endpoint (follow-up) — see the note`);
     return;
   }
+  const mapping = String((f.options ?? {}).mapping ?? "").trim();
   toast(`mapping ${f.name}…`);
   try {
     const res = await fetch(`${await bridgeUrl()}/import-em-data`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path: f.locator }),
+      body: JSON.stringify({
+        path: f.locator,
+        graph_id: String(
+          (store.doc.graph as Record<string, unknown>).graph_id ?? "",
+        ),
+        ...(mapping ? { mapping } : {}),
+      }),
     });
     if (!res.ok) throw new Error(`bridge ${res.status}`);
     const payload = (await res.json()) as { doc?: EmDocument };

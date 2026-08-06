@@ -267,7 +267,16 @@ export function renderInspector(
       panel.appendChild(el("label", "insp-field-label", label));
       const inp = document.createElement("input");
       inp.className = "insp-name-input";
-      inp.value = String(cg[key] ?? "");
+      // BUGFIX-CANVAS-IMPORT: read the SAME canonical the funnel reads
+      // (readScopeValue canvas tier): top-level graph[key] first, then the
+      // graph.data[key] fallback — which is where the GraphML importer puts the
+      // imported author/license/embargo. Reading top-level ONLY left an imported
+      // value invisible in this field while the funnel already inherited it.
+      inp.value = String(
+        cg[key] ??
+          (cg.data as Record<string, unknown> | undefined)?.[key] ??
+          "",
+      );
       inp.placeholder = placeholder;
       inp.addEventListener("change", () =>
         store.updateCanvasDefaults({ [key]: inp.value }),

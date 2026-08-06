@@ -185,39 +185,80 @@ pub fn compute_with_sketch(
     } else {
         None
     };
-    let mut epochs: Vec<(usize, f64)> = graph
+    // (node index, start_time) in DECLARATION order. BUGFIX-EPOCH (2026-08-06):
+    // an UNDATED epoch has NO `start_time` (the importer no longer fabricates a
+    // date). Undated epochs must KEEP their declaration/manual order, not sink to
+    // "oldest": the old `unwrap_or(f64::MIN)` shoved every undated epoch to the
+    // bottom of the date sort. NOTE: a real, explicit -10000 (e.g. a "Geologic"
+    // epoch) is a legitimate date and IS ordered as oldest — only a MISSING
+    // start_time means undated (we cannot tell a legacy fabricated -10000 from a
+    // real one, and real ones exist, so the sentinel is resolved by re-import).
+    let epochs_decl: Vec<(usize, Option<f64>)> = graph
         .nodes
         .iter()
         .enumerate()
         .filter(|(_, n)| n.node_type == "epoch" || n.node_type == "EpochNode")
         .map(|(i, n)| {
-            let start = n
-                .data
-                .get("start_time")
-                .and_then(|v| v.as_f64())
-                .unwrap_or(f64::MIN);
+            let start = n.data.get("start_time").and_then(|v| v.as_f64());
             (i, start)
         })
         .collect();
-    epochs.sort_by(|a, b| {
-        if let Some(map) = &sketch_lane_order {
-            let ia = map.get(graph.nodes[a.0].id.as_str());
-            let ib = map.get(graph.nodes[b.0].id.as_str());
-            match (ia, ib) {
-                (Some(x), Some(y)) => return x.cmp(y), // both sketched → sketch order
-                (Some(_), None) => return std::cmp::Ordering::Less, // sketched before unseen
-                (None, Some(_)) => return std::cmp::Ordering::Greater,
-                (None, None) => {} // neither sketched → fall through to start_time
+    // BASE order (no manual arrangement): dated epochs sort newest-first, but they
+    // only reshuffle among the slots that ARE dated — undated epochs keep their
+    // DECLARATION slot. So a dated+undated mix "coexists" instead of the undated
+    // ones sinking. When every epoch is dated this is a plain date-desc sort.
+    let base_order: Vec<usize> = {
+        let mut dated: Vec<usize> = epochs_decl
+            .iter()
+            .filter(|(_, d)| d.is_some())
+            .map(|(i, _)| *i)
+            .collect();
+        dated.sort_by(|&a, &b| {
+            let da = epochs_decl.iter().find(|(i, _)| *i == a).and_then(|(_, d)| *d);
+            let db = epochs_decl.iter().find(|(i, _)| *i == b).and_then(|(_, d)| *d);
+            // newest first
+            db.partial_cmp(&da).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let mut it = dated.into_iter();
+        epochs_decl
+            .iter()
+            .map(|(i, d)| if d.is_some() { it.next().unwrap_or(*i) } else { *i })
+            .collect()
+    };
+    let base_rank: HashMap<usize, usize> =
+        base_order.iter().enumerate().map(|(r, ix)| (*ix, r)).collect();
+    // FROM-SKETCH override: an epoch present in the sketched swimlane order (a
+    // manual Move up/down) uses that order; every other epoch — and the whole
+    // fresh-load case, where the sketch carries pins/anchors but NO swimlanes —
+    // falls back to the BASE order above (so undated epochs keep their slot). A
+    // "fresh" layout passes a sketch object for pins, so this fallback, not a
+    // date sort, is what a fresh load actually uses.
+    let ordered: Vec<usize> = {
+        let mut e: Vec<usize> = epochs_decl.iter().map(|(i, _)| *i).collect();
+        e.sort_by(|&a, &b| {
+            let (sa, sb) = if let Some(map) = &sketch_lane_order {
+                (
+                    map.get(graph.nodes[a].id.as_str()).copied(),
+                    map.get(graph.nodes[b].id.as_str()).copied(),
+                )
+            } else {
+                (None, None)
+            };
+            match (sa, sb) {
+                (Some(x), Some(y)) => x.cmp(&y),
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => base_rank[&a].cmp(&base_rank[&b]),
             }
-        }
-        b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)
-    });
-    let lane_of_epoch: HashMap<usize, usize> = epochs
+        });
+        e
+    };
+    let lane_of_epoch: HashMap<usize, usize> = ordered
         .iter()
         .enumerate()
-        .map(|(lane, (ix, _))| (*ix, lane))
+        .map(|(lane, ix)| (*ix, lane))
         .collect();
-    let unassigned_lane = epochs.len(); // trailing lane
+    let unassigned_lane = ordered.len(); // trailing lane
 
     // ── 1b. lane of each node ────────────────────────────────────────────
     // Direct: has_first_epoch edge → epoch's lane. Epoch nodes live in their
@@ -1066,10 +1107,10 @@ pub fn compute_with_sketch(
         }
     }
 
-    let swimlanes: Vec<Swimlane> = epochs
+    let swimlanes: Vec<Swimlane> = ordered
         .iter()
         .enumerate()
-        .map(|(order, (ix, _))| Swimlane {
+        .map(|(order, ix)| Swimlane {
             epoch_id: graph.nodes[*ix].id.clone(),
             order: order as u32,
             y: lane_y[order],
@@ -1213,6 +1254,49 @@ mod tests {
         let us2 = &layout.positions["US2"];
         // US2 (modern) above US1 (roman)
         assert!(us2.y < us1.y);
+    }
+
+    // BUGFIX-EPOCH: an undated epoch (no start_time) keeps its DECLARATION slot;
+    // the dated epochs only reshuffle among the slots that are dated (newest
+    // first). Undated no longer sink to the bottom.
+    #[test]
+    fn undated_epochs_keep_declaration_order_dated_sort_newest_first() {
+        let g = Graph {
+            graph_id: "g".into(),
+            name: Some("t".into()),
+            description: None,
+            nodes: vec![
+                node("U_a", "epoch"),   // undated
+                epoch("E_old", 100.0),
+                node("U_b", "epoch"),   // undated
+                epoch("E_new", 1900.0),
+            ],
+            edges: vec![],
+            data: std::collections::BTreeMap::new(),
+        };
+        let l = compute(&g, &LayoutOptions::default());
+        let order: Vec<&str> = l.swimlanes.iter().map(|s| s.epoch_id.as_str()).collect();
+        // dated slots (1,3) take E_new then E_old; undated U_a/U_b keep 0 and 2.
+        assert_eq!(order, vec!["U_a", "E_new", "U_b", "E_old"]);
+    }
+
+    // A real, explicit -10000 (e.g. a "Geologic" epoch) is a legitimate date and
+    // is ordered as the oldest — NOT treated as undated (only a MISSING start_time
+    // is undated). Aiano's "Geologic [start:-10000]" is the real case.
+    #[test]
+    fn explicit_minus_10000_is_a_real_oldest_date() {
+        let g = Graph {
+            graph_id: "g".into(),
+            name: Some("t".into()),
+            description: None,
+            nodes: vec![epoch("Geologic", -10000.0), epoch("Modern", 1900.0)],
+            edges: vec![],
+            data: std::collections::BTreeMap::new(),
+        };
+        let l = compute(&g, &LayoutOptions::default());
+        let order: Vec<&str> = l.swimlanes.iter().map(|s| s.epoch_id.as_str()).collect();
+        // Modern (newest) on top, Geologic (oldest, -10000) at the bottom.
+        assert_eq!(order, vec!["Modern", "Geologic"]);
     }
 
     #[test]

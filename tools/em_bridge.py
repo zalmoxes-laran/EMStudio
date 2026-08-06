@@ -668,10 +668,27 @@ def make_handler(api):
                 if not os.path.isfile(path):
                     self._fail(400, f"no such file: {path}")
                     return
+                graph_id = (body.get("graph_id") or "").strip() or None
+                # AUX-COMPLETE (2026-08-06): the AUX2 aux types that are NOT already
+                # in em_data shape (emdb_xlsx / pyarchinit / source_list) carry a
+                # `mapping` name — the s3Dgraphy registry mapping (DP-61) that turns
+                # their sheet into nodes. When present, route through xlsx_to_graph
+                # (MappedXLSXImporter, uuid on its own ids); otherwise read the
+                # canonical em_data.xlsx (UnifiedXLSXImporter, uuid5). Same {doc}
+                # shape either way, so the frontend injects the result as volatile
+                # regardless of the source type.
+                mapping = (body.get("mapping") or "").strip() or None
                 try:
-                    graph, warnings, stats = api.em_data_to_graph(
-                        path, graph_id=(body.get("graph_id") or "").strip()
-                        or None)
+                    if mapping:
+                        graph, warnings = api.xlsx_to_graph(
+                            path, mapping_name=mapping,
+                            graph_id=graph_id or "imported_graph")
+                        stats = {"nodes_total": len(graph.nodes),
+                                 "edges_total": len(graph.edges),
+                                 "mapping": mapping}
+                    else:
+                        graph, warnings, stats = api.em_data_to_graph(
+                            path, graph_id=graph_id)
                 except ImportError as exc:
                     # pandas/openpyxl absent (a slimmed sidecar): the request was
                     # valid, this build cannot serve it. 501, never 500.
@@ -682,9 +699,9 @@ def make_handler(api):
                     self._fail(400, str(exc))
                     return
                 except Exception as exc:
-                    # A malformed workbook is the user's file, not our bug —
-                    # 400 with the importer's own message (it names the sheet).
-                    self._fail(400, f"could not read em_data.xlsx: {exc}")
+                    # A malformed workbook (or unknown mapping) is the user's file,
+                    # not our bug — 400 with the importer's own message.
+                    self._fail(400, f"could not read xlsx: {exc}")
                     return
                 self._json({"ok": True, "stats": stats, "warnings": warnings,
                             "doc": api.graph_to_emjson(graph)})
