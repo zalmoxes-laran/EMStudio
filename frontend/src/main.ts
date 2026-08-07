@@ -222,7 +222,7 @@ let placingType: string | null = null;
 // for DTC palette items: the specific kind (photo, mesh, …) to stamp on the
 // created node's data.dtc_kind; null for non-DTC placement.
 let placingKind: string | null = null;
-// true when the DTC item being placed is a RESOURCE (output → a LinkNode) — so
+// true when the DTC item being placed is a RESOURCE (output → a ResourceNode) — so
 // placeNode also stamps data.resource_type.
 let placingIsResource = false;
 let connect: ConnectDrag | null = null;
@@ -2141,7 +2141,7 @@ function placeNode(wx: number, wy: number): void {
   // projects its crm:P2_has_type (em.json = single source of truth).
   if (placingKind) {
     // DTC chunk (input/process) carries dtc_kind; a DTC OUTPUT is a Resource
-    // (LinkNode) → also stamp resource_type (slice b). em.json = source of truth.
+    // (ResourceNode) → also stamp resource_type (slice b). em.json = source of truth.
     node.data = { dtc_kind: placingKind };
     if (placingIsResource) node.data.resource_type = placingKind;
   }
@@ -3476,7 +3476,7 @@ interface ResourceRow {
 // The Document node_type comes from the datamodel (no hardcoded string).
 const RES_DOC_TYPE = nodeTypeForClass("DocumentNode") ?? "document";
 // The resource (link) node_type — datamodel-driven, not hardcoded.
-const RES_LINK_TYPE = nodeTypeForClass("LinkNode") ?? "link";
+const RES_LINK_TYPE = nodeTypeForClass("ResourceNode") ?? "resource";
 const resourcesModal = document.getElementById("resources-modal")!;
 const resFolderInp = document.getElementById("res-folder") as HTMLInputElement;
 const resStatus = document.getElementById("res-status")!;
@@ -3661,7 +3661,7 @@ function hatShelfEntry(entry: ShelfEntry): void {
 // ── Resources (link nodes) list + "Promote to MinIO" ───────────────────────────
 // Lists the graph's resources via the bridge (/list-resources — single connector).
 // Promote uploads a LOCAL resource's bytes into the shared MinIO under its OWN
-// stable ID (one ID space FS↔MinIO), then repoints its LinkNode locator at the
+// stable ID (one ID space FS↔MinIO), then repoints its ResourceNode locator at the
 // returned s3:// URI. The stable ID and every graph reference are unchanged.
 async function renderResLinks(): Promise<void> {
   if (!store) return;
@@ -3761,7 +3761,7 @@ async function promoteToMinio(r: ResourceRow, btn: HTMLButtonElement): Promise<v
       return;
     }
     const j = (await res.json()) as { s3_uri: string; object_key: string };
-    // Repoint the LinkNode locator at the shared-store URI (id + refs unchanged).
+    // Repoint the ResourceNode locator at the shared-store URI (id + refs unchanged).
     const node = store.node(r.id);
     const data = { ...((node?.data as Record<string, unknown>) ?? {}), url: j.s3_uri };
     store.updateNode(r.id, { data });

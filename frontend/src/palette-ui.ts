@@ -77,7 +77,7 @@ export const SECTIONS: Section[] = [
     // declares EpochNode (invariant 1), and the app still creates, renders and
     // validates epochs. What changed is only what the palette offers.
     label: "Context",
-    types: ["author", "author_ai", "link", "license", "embargo"],
+    types: ["author", "author_ai", "resource", "license", "embargo"],
   },
 ];
 

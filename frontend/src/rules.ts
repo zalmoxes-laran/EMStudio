@@ -184,10 +184,10 @@ export function nodeLabel(nodeType: string): string {
 
 // ── DTC substrate profile (ECHOES): data-driven kinds + glyphs ────────────────
 // The DTC node_types come from the `dtc_nodes` datamodel section — now just
-// `dtc_process` (both INPUT and OUTPUT are Resources = LinkNodes, no dedicated
+// `dtc_process` (both INPUT and OUTPUT are Resources = ResourceNodes, no dedicated
 // class). The per-kind vocabulary + glyph basenames come from the `dtc_kinds`
 // block of em_visual_rules.json; a base with a dedicated `dtc_${base}` node uses
-// it, else the kind creates a Resource (LinkNode). Adding a kind is
+// it, else the kind creates a Resource (ResourceNode). Adding a kind is
 // a `dtc_kinds` entry (+ an SVG) — NO code change here.
 
 /** Runtime node_types of the gated DTC authoring layer (from `dtc_nodes`). */
@@ -219,7 +219,7 @@ export interface DtcKindItem {
   kind: string; // photo | mesh | …
   label: string;
   glyph: string | null;
-  /** true when creating this item yields a RESOURCE (LinkNode) rather than a
+  /** true when creating this item yields a RESOURCE (ResourceNode) rather than a
    *  dedicated DTC node — the output facet (slice b): the DTC output is a file
    *  Resource, so it also gets a `resource_type`. */
   isResource: boolean;
@@ -228,11 +228,11 @@ export interface DtcKindItem {
 /** The DTC authoring palette, fully data-driven: one entry per (base kind) ×
  *  (specific kind) from `dtc_kinds`. A base backed by a dedicated DTC node_type
  *  (`dtc_${base}`) creates that node; a base WITHOUT one (the OUTPUT, slice b —
- *  DTCOutputNode retired) creates a RESOURCE = the LinkNode. Empty when the
+ *  DTCOutputNode retired) creates a RESOURCE = the ResourceNode. Empty when the
  *  datamodel carries no DTC profile. */
 export function dtcAuthoringKinds(): DtcKindItem[] {
   const types = dtcNodeTypes();
-  const resourceNt = nodeTypeForClass("LinkNode"); // the Resource node ("link")
+  const resourceNt = nodeTypeForClass("ResourceNode"); // the Resource node ("resource")
   const out: DtcKindItem[] = [];
   for (const base of Object.keys(DTC_KINDS)) {
     if (base.startsWith("_")) continue;
@@ -258,7 +258,7 @@ export function dtcAuthoringKinds(): DtcKindItem[] {
 
 // flat kind → glyph basename (kinds are unique across the input/process/output
 // bases), so a glyph resolves from a node's `data.dtc_kind` regardless of its
-// node_type — covers the dtc_* chunks AND the output Resource (a LinkNode).
+// node_type — covers the dtc_* chunks AND the output Resource (a ResourceNode).
 const DTC_KIND_GLYPH = new Map<string, string>();
 for (const base of Object.keys(DTC_KINDS)) {
   if (base.startsWith("_")) continue;
@@ -270,7 +270,7 @@ for (const base of Object.keys(DTC_KINDS)) {
 
 /** Glyph basename for a node's `data.dtc_kind` — data-driven from `dtc_kinds`;
  *  null when there is no kind / no glyph. Resolves for the dtc_* chunks and for
- *  the output Resource (LinkNode) alike, keyed purely on the kind. */
+ *  the output Resource (ResourceNode) alike, keyed purely on the kind. */
 export function dtcGlyphName(dtcKind: string | undefined): string | null {
   return (dtcKind && DTC_KIND_GLYPH.get(dtcKind)) || null;
 }
@@ -433,9 +433,9 @@ export function narrativeViewTypeDescription(viewType: string): string {
   return dm.narrative_nodes?.NarrativeNode?.valid_view_types?.[viewType] ?? "";
 }
 
-// ── resource types (LinkNode) ────────────────────────────────────────────────
+// ── resource types (ResourceNode) ────────────────────────────────────────────────
 // A resource's *kind* — image, document, 3d_model, … — is a vocabulary the
-// datamodel owns (`reference_nodes.LinkNode.resource_types`: kind → extensions),
+// datamodel owns (`reference_nodes.ResourceNode.resource_types`: kind → extensions),
 // and it is the same table `s3dgraphy.resources.classify_resource_type` reads on
 // the Python side. So: no second list of extensions in the UI. The previews
 // (N10) and the 3D embed (N9) both ask this.
@@ -444,7 +444,7 @@ const RESOURCE_TYPES: Record<string, string[]> =
     nodeDatamodel as unknown as {
       reference_nodes?: Record<string, { resource_types?: Record<string, string[]> }>;
     }
-  ).reference_nodes?.LinkNode?.resource_types) ?? {};
+  ).reference_nodes?.ResourceNode?.resource_types) ?? {};
 
 const EXT_TO_RESOURCE_TYPE = new Map<string, string>();
 for (const [kind, exts] of Object.entries(RESOURCE_TYPES))

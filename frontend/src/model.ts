@@ -31,6 +31,19 @@ interface Snapshot {
 
 const MAX_UNDO = 80;
 
+/** MIG1 (2026-08-06) one-shot legacy migration: node_type strings renamed in
+ *  this release. A legacy em.json still carries the old string; remap it in place
+ *  at load so the dataset opens on the new model (LinkNode → ResourceNode →
+ *  node_type "link" → "resource"). Mirrors the Python emjson importer's
+ *  `_LEGACY_NODE_TYPE_ALIASES`. Add future renames here. */
+const LEGACY_NODE_TYPE_ALIASES: Record<string, string> = { link: "resource" };
+function migrateLegacyNodeTypes(doc: EmDocument): void {
+  for (const n of doc.graph?.nodes ?? []) {
+    const to = LEGACY_NODE_TYPE_ALIASES[n.node_type];
+    if (to) n.node_type = to;
+  }
+}
+
 /** The per-graph HDT-O (ECHOES D7.1) authoring fields surfaced by the Canvas
  *  inspector. A graph is a Study (HC9) whose proposition set (HC16) is about a
  *  Heritage Entity (HC1, with its digital twin HC2), optionally under a Project
@@ -87,6 +100,7 @@ export class DocumentStore {
 
   constructor(doc: EmDocument) {
     this.doc = doc;
+    migrateLegacyNodeTypes(doc);
   }
 
   onChange(fn: () => void): void {

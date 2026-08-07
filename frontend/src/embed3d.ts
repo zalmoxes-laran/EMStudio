@@ -116,7 +116,7 @@ function fromLocator(locator: string): Resolved3D {
  * The node itself may carry the reference (an epoch with a published scene id, a
  * Resource with a glb locator). If it does not, we follow its outgoing edges one
  * step: an epoch, an RM or a US that points at a Resource is the normal EM shape
- * — the geometry is a LinkNode, and everything else references it. One step only,
+ * — the geometry is a ResourceNode, and everything else references it. One step only,
  * and the first hit wins: a chapter is not the place for a search.
  */
 export function resolve3d(node: EmNode, doc: EmDocument | null): Resolved3D {

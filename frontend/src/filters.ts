@@ -194,7 +194,7 @@ export function edgeCircle(edgeType: string | undefined): CircleKey | null {
   // resources/geo/representation/HDT — none of these is a paradata edge
   if (
     cls.has("EpochNode") ||
-    cls.has("LinkNode") ||
+    cls.has("ResourceNode") ||
     cls.has("GeoPositionNode") ||
     cls.has("RepresentationNode") ||
     cls.has("HDTNode") ||
