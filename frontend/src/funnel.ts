@@ -45,18 +45,6 @@ const RULE_NODE_TYPES: Record<string, string[]> = {
   embargo: ["embargo"],
 };
 
-/** Canvas-header key per rule id — mirrors s3dgraphy's graph-level getter
- *  (`graph.attributes['author_name' | 'license' | 'embargo']`, builtin_rules.py).
- *  This is the ONE place the canvas value is read; swapping it for the DP-65
- *  graph-scope PDG is a change to `readScopeValue`'s canvas branch alone. */
-const CANVAS_KEY: Record<string, string> = {
-  author: "author_name",
-  license: "license",
-  embargo: "embargo",
-  absolute_time_start: "start_time",
-  absolute_time_end: "end_time",
-};
-
 type Node = EmDocument["graph"]["nodes"][number];
 type Edge = EmDocument["graph"]["edges"][number];
 
@@ -64,15 +52,18 @@ const nodeName = (n: Node | undefined): string | null =>
   n && n.name != null && String(n.name).trim() !== "" ? String(n.name) : null;
 
 /**
- * The value a SCOPE declares for a rule — the SINGLE place that reads a scope,
- * so the future migration to the DP-65 graph-scope PDG is one swap here.
+ * The value a SCOPE declares for a rule — the SINGLE place that reads a scope
+ * (invariant FUNNEL1: one reader per scope). Since MIG1-A / DP-65 ALL four
+ * scopes read the same way: the ornament (or temporal property) that is a
+ * MEMBER of the scope owner's ParadataNodeGroup (`is_in_paradata_nodegroup` ←
+ * the owner's `has_paradata_nodegroup`).
  *
- *  - node / activity / epoch (A2): the ornament (or temporal property) that is a
- *    MEMBER of that scope's ParadataNodeGroup (PDMEM1's `is_in_paradata_nodegroup`
- *    ← the scope's `has_paradata_nodegroup`). An author in the epoch's PDG IS the
- *    epoch's authorship declaration.
- *  - canvas (A1): the header field (DP-40 coexistence — NOT a PDG), read behind
- *    this same function so DP-65 is a local change.
+ *  - node / activity / epoch (A2): the owner is the scope node itself. An author
+ *    in the epoch's PDG IS the epoch's authorship declaration.
+ *  - canvas (A1): the owner is the GRAPH-SELF node (node_type `graph`), which
+ *    anchors the graph-scope PDG (DP-65). MIG1-A removed the legacy
+ *    `graph.data['author_name'|…]` / top-level branch — the graph-scope member
+ *    nodes are now the single truth of the canvas tier.
  */
 export function readScopeValue(
   doc: EmDocument,
@@ -81,19 +72,17 @@ export function readScopeValue(
   ruleId: RuleId,
 ): string | null {
   const g = doc.graph;
-  if (scope === "canvas") {
-    const key = CANVAS_KEY[ruleId];
-    const top = (g as unknown as Record<string, unknown>)[key];
-    if (top != null && String(top).trim() !== "") return String(top);
-    const data = (g as unknown as { data?: Record<string, unknown> }).data;
-    const dv = data?.[key];
-    return dv != null && String(dv).trim() !== "" ? String(dv) : null;
-  }
-  if (!scopeNodeId) return null;
-  // the scope's ParadataNodeGroup (has_paradata_nodegroup: scope → PDG)
+  // canvas: resolve the owner to the graph-self node; every scope then reads
+  // its PDG members through the one code path below.
+  const ownerId =
+    scope === "canvas"
+      ? (g.nodes.find((n) => n.node_type === "graph")?.id ?? null)
+      : scopeNodeId;
+  if (!ownerId) return null;
+  // the owner's ParadataNodeGroup (has_paradata_nodegroup: owner → PDG)
   let pdgId: string | null = null;
   for (const e of g.edges)
-    if (e.edge_type === "has_paradata_nodegroup" && e.source === scopeNodeId) {
+    if (e.edge_type === "has_paradata_nodegroup" && e.source === ownerId) {
       pdgId = e.target;
       break;
     }
@@ -187,12 +176,13 @@ export function sourceLabel(source: Scope | null): string {
   }
 }
 
-// PARITY TODO (s3dgraphy ↔ EMStudio): the canonical resolver lives in
-// s3dgraphy (`resolvers/property_resolver.py::resolve_with_source` +
-// `builtin_rules.py`), but its author node/swimlane getters return None until
-// DP-51 formalises AuthorNode/has_author in yEd — EMStudio reads them here from
-// the PDG membership (PDMEM1), and adds the Activity tier absent from
-// s3dgraphy's node>swimlane>graph. To keep the two worlds resolving identically,
-// the shared extraction should (a) add the Activity tier to s3dgraphy and
-// (b) implement the PDG-member getters there; until then EMStudio is ahead and
-// this file is the single EMStudio-side mirror of DP-32.
+// PARITY (s3dgraphy ↔ EMStudio): the canonical resolver lives in s3dgraphy
+// (`resolvers/property_resolver.py::resolve_with_source` + `builtin_rules.py`).
+// MIG1-A (DP-65) aligned the GRAPH tier on both sides: s3dgraphy's graph getters
+// now read the AuthorNode/LicenseNode/EmbargoNode MEMBERS of the graph-scope
+// ParadataNodeGroup owned by the GraphNode (the same shape this file reads for
+// the canvas scope), and the legacy `graph.attributes`/`graph.data` reads are
+// gone on both sides (clean cut). Residual divergence: EMStudio adds the
+// Activity tier absent from s3dgraphy's node>swimlane>graph, and s3dgraphy's
+// node/swimlane author getters still follow has_author edges (not PDG
+// membership). Reconciling those two is the remaining parity work.

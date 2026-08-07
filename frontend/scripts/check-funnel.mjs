@@ -45,6 +45,17 @@ function withParadata(nodes, edges, scopeId, ornType, ornName) {
   );
   return orn;
 }
+// MIG1-A / DP-65: the CANVAS scope value lives as an ornament MEMBER of the
+// graph-scope PDG owned by the graph-self node (node_type "graph"). Create that
+// chain — mirrors what readScopeValue's canvas branch now reads.
+function withGraphScope(nodes, edges, ornType, ornName) {
+  let root = nodes.find((n) => n.node_type === "graph");
+  if (!root) {
+    root = N(uid("graph_"), "graph", "Graph");
+    nodes.push(root);
+  }
+  return withParadata(nodes, edges, root.id, ornType, ornName);
+}
 
 // ── 1 · node own author + epoch author → NODE wins (explicit) ─────────────────
 {
@@ -73,11 +84,11 @@ function withParadata(nodes, edges, scopeId, ornType, ornName) {
 {
   const nodes = [N("u1", "US", "US_1"), N("ep", "EpochNode", "Epoca 1")];
   const edges = [E("has_first_epoch", "u1", "ep")];
-  const d = doc(nodes, edges, { license: "CC-BY" }); // canvas header (graph attr)
-  const r = F.resolveEffective(d, "u1", "license");
+  withGraphScope(nodes, edges, "license", "CC-BY"); // graph-scope PDG member (DP-65)
+  const r = F.resolveEffective(doc(nodes, edges), "u1", "license");
   eq({ value: r.value, source: r.source, explicit: r.explicit },
     { value: "CC-BY", source: "canvas", explicit: false },
-    "with nothing more specific, the canvas header license is inherited");
+    "with nothing more specific, the graph-scope licence node is inherited");
 }
 
 // ── 4 · activity declares AND epoch declares → ACTIVITY wins (more specific) ───
@@ -118,13 +129,25 @@ function withParadata(nodes, edges, scopeId, ornType, ornName) {
     "an author_ai member satisfies the `author` rule");
 }
 
-// ── 7 · sourceLabel / readScopeValue canvas branch ────────────────────────────
+// ── 7 · sourceLabel / readScopeValue canvas branch (graph-scope PDG) ──────────
 {
   eq(F.sourceLabel("epoch"), "da Epoca", "source label for epoch");
   eq(F.sourceLabel("node"), "proprio", "source label for the node itself");
-  const d = doc([N("u1", "US", "US_1")], [], { author_name: "Canvas Author" });
-  eq(F.readScopeValue(d, "canvas", null, "author"), "Canvas Author",
-    "readScopeValue canvas branch reads graph.author_name (mirrors s3dgraphy)");
+  const nodes = [N("u1", "US", "US_1")];
+  const edges = [];
+  withGraphScope(nodes, edges, "author", "Canvas Author");
+  eq(F.readScopeValue(doc(nodes, edges), "canvas", null, "author"), "Canvas Author",
+    "readScopeValue canvas branch reads the graph-scope AuthorNode member (DP-65)");
+}
+// ── 8 · MIG1-A clean cut: legacy graph.data / top-level is NO LONGER read ──────
+{
+  const d = doc([N("u1", "US", "US_1")], [], {
+    author_name: "Legacy Top", data: { license: "Legacy Data" },
+  });
+  eq(F.readScopeValue(d, "canvas", null, "author"), null,
+    "legacy top-level graph.author_name is ignored (clean cut)");
+  eq(F.readScopeValue(d, "canvas", null, "license"), null,
+    "legacy graph.data.license is ignored (clean cut)");
 }
 
 console.log(`funnel: ${checks} checks passed`);

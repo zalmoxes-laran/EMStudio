@@ -44,6 +44,100 @@ function migrateLegacyNodeTypes(doc: EmDocument): void {
   }
 }
 
+/** MIG1-A (DP-65) legacy field → class for the graph-scope rights metadata. */
+const LEGACY_GRAPH_SCOPE: Array<{ key: string; cls: string }> = [
+  { key: "author_name", cls: "AuthorNode" },
+  { key: "license", cls: "LicenseNode" },
+  { key: "embargo", cls: "EmbargoNode" },
+];
+
+/**
+ * MIG1-A (DP-65) one-shot legacy migration: the graph-scope author / licence /
+ * embargo used to live as `graph.author_name`/`graph.data['author_name'|…]`
+ * fields (BUGFIX-CANVAS-IMPORT). EM 1.6 formalises them as first-class MEMBER
+ * nodes of a graph-scope ParadataNodeGroup owned by the graph-self node
+ * (`GraphNode`, node_type `graph`) via `has_paradata_nodegroup` ←
+ * `is_in_paradata_nodegroup`. Materialise the nodes in place at load and drop
+ * the legacy fields; the Data Funnel canvas tier reads these nodes.
+ *
+ * Silent (no checkpoint / no op / no change event, like `ensureAllEpochParadata`)
+ * and idempotent: reuses an existing graph-self node / graph-scope PDG (HDT-O
+ * may have created the GraphNode), never duplicates a member class, and mints
+ * ids matching the Python emjson importer so both migrations agree.
+ */
+function migrateLegacyGraphScope(doc: EmDocument): void {
+  const g = doc.graph as unknown as Record<string, unknown> & {
+    graph_id?: string;
+    nodes: EmNode[];
+    edges: EmEdge[];
+    data?: Record<string, unknown>;
+  };
+  if (!g || !Array.isArray(g.nodes)) return;
+  const data = (g.data ??= {}) as Record<string, unknown>;
+  const read = (key: string): string | null => {
+    const top = g[key];
+    if (top != null && String(top).trim() !== "") return String(top);
+    const dv = data[key];
+    return dv != null && String(dv).trim() !== "" ? String(dv) : null;
+  };
+  const legacy = LEGACY_GRAPH_SCOPE.map((x) => ({ ...x, val: read(x.key) })).filter(
+    (x) => x.val != null,
+  );
+  if (legacy.length === 0) return;
+
+  const graphNt = nodeTypeForClass("GraphNode") ?? "graph";
+  const pdgNt = nodeTypeForClass("ParadataNodeGroup") ?? "ParadataNodeGroup";
+  const gid = String(g.graph_id ?? "graph");
+
+  // 1 · the graph-self node (reuse an existing one, e.g. authored by HDT-O)
+  let root = g.nodes.find((n) => n.node_type === graphNt);
+  if (!root) {
+    root = { id: `${gid}_graphroot`, name: "Graph", node_type: graphNt, description: "" };
+    g.nodes.push(root);
+  }
+  // 2 · its graph-scope ParadataNodeGroup (reuse if already anchored)
+  let pdgId: string | null = null;
+  for (const e of g.edges)
+    if (e.edge_type === "has_paradata_nodegroup" && e.source === root.id) {
+      pdgId = e.target;
+      break;
+    }
+  if (!pdgId) {
+    pdgId = `${gid}_graph_paradata`;
+    g.nodes.push({ id: pdgId, name: "Graph paradata", node_type: pdgNt, description: "" });
+    g.edges.push({
+      id: `${root.id}__has_paradata_nodegroup__${pdgId}`,
+      source: root.id,
+      target: pdgId,
+      edge_type: "has_paradata_nodegroup",
+    });
+  }
+  // 3 · existing member node_types (idempotency — never a second author/…)
+  const present = new Set<string>();
+  for (const e of g.edges)
+    if (e.edge_type === "is_in_paradata_nodegroup" && e.target === pdgId) {
+      const m = g.nodes.find((n) => n.id === e.source);
+      if (m) present.add(m.node_type);
+    }
+  for (const item of legacy) {
+    const nt = nodeTypeForClass(item.cls);
+    if (!nt || present.has(nt)) continue;
+    const mid = `${gid}_graph_${nt}`;
+    g.nodes.push({ id: mid, name: String(item.val), node_type: nt, description: "" });
+    g.edges.push({
+      id: `${mid}__is_in_paradata_nodegroup__${pdgId}`,
+      source: mid,
+      target: pdgId,
+      edge_type: "is_in_paradata_nodegroup",
+    });
+  }
+  // 4 · drop the legacy fields we consumed (the nodes are now the truth)
+  for (const item of legacy) {
+    delete g[item.key];
+    delete data[item.key];
+  }
+}
+
 /** The per-graph HDT-O (ECHOES D7.1) authoring fields surfaced by the Canvas
  *  inspector. A graph is a Study (HC9) whose proposition set (HC16) is about a
  *  Heritage Entity (HC1, with its digital twin HC2), optionally under a Project
@@ -101,6 +195,7 @@ export class DocumentStore {
   constructor(doc: EmDocument) {
     this.doc = doc;
     migrateLegacyNodeTypes(doc);
+    migrateLegacyGraphScope(doc);
   }
 
   onChange(fn: () => void): void {
@@ -1506,36 +1601,162 @@ export class DocumentStore {
     this.emit();
   }
 
-  /**
-   * CANVAS1 · the canvas-scope default of the Data Funnel — author / licence /
-   * embargo written as graph-level metadata (`graph.author_name` / `graph.license`
-   * / `graph.embargo`), the EXACT fields `funnel.ts::readScopeValue` reads for the
-   * canvas tier (mirrors s3dgraphy's graph getter; DP-65 swap-point). A node with
-   * no more-specific value inherits these. DISTINCT from HDT-O studyAuthors (the
-   * documentary authorship of the Study). An empty string clears the field so the
-   * funnel resolves it as absent. Checkpoint/undo like every other mutation.
-   */
-  updateCanvasDefaults(patch: {
-    author_name?: string;
-    license?: string;
-    embargo?: string;
-  }): void {
-    this.checkpoint();
-    const g = this.doc.graph as unknown as Record<string, unknown>;
-    for (const key of ["author_name", "license", "embargo"] as const) {
-      const v = patch[key];
-      if (v === undefined) continue;
-      if (v.trim() === "") delete g[key];
-      else g[key] = v;
-    }
-    this.emit();
+  // ── MIG1-A · graph-scope rights metadata as first-class nodes (DP-65) ──────
+  // CANVAS1's author/licence/embargo are no longer graph.data fields: they are
+  // AuthorNode/LicenseNode/EmbargoNode MEMBERS of a graph-scope ParadataNodeGroup
+  // owned by the graph-self node (`GraphNode`). The funnel canvas tier reads
+  // these nodes (one reader per scope). The EM-ID (human-readable site id) is a
+  // field on the graph-self node — the import key detail is deferred to IMP1.
+
+  /** The graph-self node (node_type `graph`) — anchor of the graph-scope PDG
+   *  and, when HDT-O is authored, the proposition_set (HC16). One per document. */
+  graphRootNode(): EmNode | undefined {
+    const nt = nodeTypeForClass("GraphNode") ?? "graph";
+    return this.doc.graph.nodes.find((n) => n.node_type === nt);
   }
 
-  /** Find the (single) HDT-O singleton node carrying a given role marker. */
+  /** Ensure the graph-self node exists (create if missing). */
+  private ensureGraphRootNode(): EmNode {
+    const existing = this.graphRootNode();
+    if (existing) return existing;
+    const nt = nodeTypeForClass("GraphNode") ?? "graph";
+    const gid = String((this.doc.graph as Record<string, unknown>).graph_id ?? "graph");
+    return this.addNode({
+      id: `${gid}_graphroot`,
+      name: "Graph",
+      node_type: nt,
+      description: "",
+    });
+  }
+
+  /** The graph-scope ParadataNodeGroup id, or null (no creation). */
+  graphParadataGroup(): string | null {
+    const root = this.graphRootNode();
+    return root ? this.paradataGroupOf(root.id) : null;
+  }
+
+  /** Ensure the graph-scope PDG (and its graph-self node) exist; return its id. */
+  private ensureGraphParadata(): string {
+    const root = this.ensureGraphRootNode();
+    let pdgId = this.paradataGroupOf(root.id);
+    if (!pdgId) {
+      const gid = String((this.doc.graph as Record<string, unknown>).graph_id ?? "graph");
+      const g = this.addNode({
+        id: `${gid}_graph_paradata`,
+        name: "Graph paradata",
+        node_type: "ParadataNodeGroup",
+        description: "",
+      });
+      pdgId = g.id;
+      this.addEdge(root.id, pdgId, "has_paradata_nodegroup");
+    }
+    return pdgId;
+  }
+
+  /** rule key → the s3Dgraphy datamodel CLASS of its graph-scope member node. */
+  private static readonly GRAPH_SCOPE_CLASS: Record<
+    "author" | "license" | "embargo",
+    string
+  > = { author: "AuthorNode", license: "LicenseNode", embargo: "EmbargoNode" };
+
+  /** The graph-scope PDG member of a given node_type, or undefined. */
+  private graphScopeMember(pdgId: string, nt: string): EmNode | undefined {
+    for (const e of this.doc.graph.edges)
+      if (e.edge_type === "is_in_paradata_nodegroup" && e.target === pdgId) {
+        const m = this.node(e.source);
+        if (m && m.node_type === nt) return m;
+      }
+    return undefined;
+  }
+
+  /** Read the graph-scope rights metadata from the PDG member nodes + the EM-ID
+   *  field. The value lives in each member's `name` (what the funnel reads).
+   *  Inverse of {@link setGraphScope}. */
+  readGraphScope(): {
+    author: string;
+    license: string;
+    embargo: string;
+    em_id: string;
+  } {
+    const out = { author: "", license: "", embargo: "", em_id: "" };
+    const root = this.graphRootNode();
+    if (root)
+      out.em_id = String((root.data as Record<string, unknown> | undefined)?.em_id ?? "");
+    const pdgId = this.graphParadataGroup();
+    if (pdgId)
+      for (const key of ["author", "license", "embargo"] as const) {
+        const nt = nodeTypeForClass(DocumentStore.GRAPH_SCOPE_CLASS[key]);
+        const m = nt ? this.graphScopeMember(pdgId, nt) : undefined;
+        if (m) out[key] = String(m.name ?? "");
+      }
+    return out;
+  }
+
+  /** Author / update the graph-scope rights metadata + EM-ID as REAL nodes
+   *  (create / rename the PDG member; an empty value deletes it). The whole
+   *  reconciliation is ONE undo step (batched). Replaces `updateCanvasDefaults`
+   *  — the canvas tier is now the nodes, not graph.data. */
+  setGraphScope(patch: {
+    author?: string;
+    license?: string;
+    embargo?: string;
+    em_id?: string;
+  }): void {
+    this.batch(() => {
+      if (patch.em_id !== undefined) {
+        const v = patch.em_id.trim();
+        if (v) {
+          const root = this.ensureGraphRootNode();
+          const d = (root.data ??= {}) as Record<string, unknown>;
+          d.em_id = v;
+        } else {
+          const root = this.graphRootNode();
+          const d = root?.data as Record<string, unknown> | undefined;
+          if (d) delete d.em_id;
+        }
+      }
+      for (const key of ["author", "license", "embargo"] as const) {
+        const v = patch[key];
+        if (v === undefined) continue;
+        const nt = nodeTypeForClass(DocumentStore.GRAPH_SCOPE_CLASS[key]);
+        if (!nt) continue;
+        const val = v.trim();
+        if (val) {
+          const pdgId = this.ensureGraphParadata();
+          const existing = this.graphScopeMember(pdgId, nt);
+          if (existing) this.updateNode(existing.id, { name: val });
+          else {
+            const gid = String(
+              (this.doc.graph as Record<string, unknown>).graph_id ?? "graph",
+            );
+            const m = this.addNode({
+              id: `${gid}_graph_${nt}`,
+              name: val,
+              node_type: nt,
+              description: "",
+            });
+            this.addEdge(m.id, pdgId, "is_in_paradata_nodegroup");
+          }
+        } else {
+          const pdgId = this.graphParadataGroup();
+          const existing = pdgId ? this.graphScopeMember(pdgId, nt) : undefined;
+          if (existing) this.deleteNode(existing.id);
+        }
+      }
+    });
+  }
+
+  /** Find the (single) HDT-O singleton node carrying a given role marker. The
+   *  proposition_set (HC16) IS the graph-self node (node_type `graph`) and may
+   *  already exist as the graph-scope paradata anchor (DP-65) without the
+   *  hdto_role marker — so share that one node rather than minting a second. */
   private hdtoNode(role: HdtoRole): EmNode | undefined {
-    return this.doc.graph.nodes.find(
+    const byRole = this.doc.graph.nodes.find(
       (n) => (n.data as Record<string, unknown> | undefined)?.hdto_role === role,
     );
+    if (byRole) return byRole;
+    if (role === "proposition_set") return this.graphRootNode();
+    return undefined;
   }
 
   /** Read back the HDT-O authoring fields from the real gated nodes, so the
@@ -1615,11 +1836,23 @@ export class DocumentStore {
     const removeRole = (role: HdtoRole): void => {
       const n = this.hdtoNode(role);
       if (!n) return;
+      // MIG1-A: the proposition_set (HC16) doubles as the graph-self node that
+      // anchors the graph-scope PDG (DP-65). When that PDG exists, clearing the
+      // HDT-O layer must NOT delete the node (it would orphan author/licence/
+      // embargo): keep the node + its has_paradata_nodegroup edge, drop only its
+      // HDT-O edges.
+      const keepGraphRoot =
+        role === "proposition_set" &&
+        this.graphRootNode()?.id === n.id &&
+        this.graphParadataGroup() != null;
       g.edges = g.edges.filter((e) => {
-        const drop = e.source === n.id || e.target === n.id;
+        const touches = e.source === n.id || e.target === n.id;
+        const drop =
+          touches && !(keepGraphRoot && e.edge_type === "has_paradata_nodegroup");
         if (drop) removed.push(e);
         return !drop;
       });
+      if (keepGraphRoot) return;
       g.nodes = g.nodes.filter((x) => x.id !== n.id);
       const pos = this.doc.layout?.positions;
       if (pos) delete pos[n.id];

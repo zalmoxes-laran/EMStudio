@@ -246,20 +246,22 @@ export function renderInspector(
     });
     panel.appendChild(idIn);
 
-    // ── CANVAS1 · canvas-scope defaults (Data Funnel) ──────────────────────
-    // Author / licence / embargo written as graph-level metadata
-    // (graph.author_name / license / embargo) — the GLOBAL default of the funnel
-    // pyramid (DP-40 canvas header tags). A node with no more-specific value
-    // (its own, its activity's, its epoch's) INHERITS these; the badge shows it
+    // ── CANVAS1 · graph-scope metadata (Data Funnel · DP-65) ───────────────
+    // MIG1-A: author / licence / embargo are now first-class MEMBER nodes of a
+    // graph-scope ParadataNodeGroup owned by the graph-self node — the GLOBAL
+    // default of the funnel pyramid. A node with no more-specific value (its
+    // own, its activity's, its epoch's) INHERITS these; the badge shows it
     // attenuated ("da Canvas") and the "Propagative metadata" row names the
     // source. DISTINCT from HDT-O "Author(s)" below (the Study's documentary
-    // authorship) — this is the propagative default.
+    // authorship) — this is the propagative default. The EM-ID is the graph's
+    // human-readable site id, stored on the graph-self node (import-key detail
+    // in IMP1). Editing writes REAL nodes via store.setGraphScope.
     panel.appendChild(
-      el("h3", "insp-sect", "Canvas metadata (global default)"),
+      el("h3", "insp-sect", "Graph metadata (global default)"),
     );
-    const cg = store.doc.graph as unknown as Record<string, unknown>;
-    const cfield = (
-      key: "author_name" | "license" | "embargo",
+    const gscope = store.readGraphScope();
+    const gfield = (
+      key: "author" | "license" | "embargo" | "em_id",
       label: string,
       placeholder: string,
       hint: string,
@@ -267,40 +269,37 @@ export function renderInspector(
       panel.appendChild(el("label", "insp-field-label", label));
       const inp = document.createElement("input");
       inp.className = "insp-name-input";
-      // BUGFIX-CANVAS-IMPORT: read the SAME canonical the funnel reads
-      // (readScopeValue canvas tier): top-level graph[key] first, then the
-      // graph.data[key] fallback — which is where the GraphML importer puts the
-      // imported author/license/embargo. Reading top-level ONLY left an imported
-      // value invisible in this field while the funnel already inherited it.
-      inp.value = String(
-        cg[key] ??
-          (cg.data as Record<string, unknown> | undefined)?.[key] ??
-          "",
-      );
+      inp.value = gscope[key];
       inp.placeholder = placeholder;
       inp.addEventListener("change", () =>
-        store.updateCanvasDefaults({ [key]: inp.value }),
+        store.setGraphScope({ [key]: inp.value }),
       );
       panel.appendChild(inp);
       panel.appendChild(el("div", "insp-hint", hint));
     };
-    cfield(
-      "author_name",
+    gfield(
+      "em_id",
+      "EM-ID (site id)",
+      "e.g. TM (Templu Mare)",
+      "Human-readable identifier of this graph / site — the key used across the EM ecosystem (EMtools). Stored on the graph-self node.",
+    );
+    gfield(
+      "author",
       "Author (default)",
       "e.g. M. Rossi",
-      "Propagative default: nodes with no author of their own / their epoch / their activity inherit this. Distinct from the Study Author(s) below.",
+      "Propagative default (graph-scope AuthorNode): nodes with no author of their own / their epoch / their activity inherit this. Distinct from the Study Author(s) below.",
     );
-    cfield(
+    gfield(
       "license",
       "Licence (default)",
       "e.g. CC-BY-NC",
-      "Creative Commons scheme (EM manual). Inherited by nodes with no more-specific licence.",
+      "Graph-scope LicenseNode. Inherited by nodes with no more-specific licence.",
     );
-    cfield(
+    gfield(
       "embargo",
       "Embargo (default)",
       "e.g. 24 (months)",
-      "Embargo in months (EM manual). Inherited by nodes with no more-specific embargo.",
+      "Graph-scope EmbargoNode. Inherited by nodes with no more-specific embargo.",
     );
 
     // ── HDT-O (ECHOES D7.1) per-graph panel ────────────────────────────────
