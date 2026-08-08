@@ -1808,6 +1808,52 @@ body.sync-active #footer-brand #em-version {
   padding: 8px 6px;
 }
 
+/* NARRWS1 · the narrative-mode left palette (building blocks, not node types) */
+#narrative-palette {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 8px 6px;
+}
+.np-sect {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+  margin: 10px 4px 4px;
+}
+.np-item {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  width: 100%;
+  text-align: left;
+  padding: 6px 8px;
+  margin: 3px 0;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-subtle);
+  font: inherit;
+  cursor: pointer;
+}
+.np-item:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.np-item-static {
+  background: none;
+  border-style: dashed;
+  cursor: default;
+  opacity: 0.85;
+}
+.np-label {
+  font-size: 12px;
+  font-weight: 600;
+}
+.np-hint {
+  font-size: 10px;
+  color: var(--text-faint);
+  white-space: normal;
+}
+
 .pal-sect {
   font-size: 10.5px;
   text-transform: uppercase;

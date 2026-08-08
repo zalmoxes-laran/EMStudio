@@ -193,9 +193,32 @@ const mapViews = new Map<string, OsmView>();
 function mapCard(node: EmNode, options: Record<string, unknown>,
                  key: string, doc: EmDocument | null): HTMLElement {
   const data = (node.data ?? {}) as Record<string, unknown>;
-  const geo = geoOf(data);
   const box = el("div", "nv-embed nv-map");
   box.appendChild(el("div", "nv-embed-kind", "map"));
+
+  // NARRWS1 / GEO1 · a map embed pointing at the GRAPH-SELF node shows the SITE
+  // POSITION (symbolic lon/lat, graph-scope) — distinct from the shift. This is
+  // the site mini-map; if the graph is not positioned yet, say so and point to
+  // the picker (Canvas inspector) instead of drawing an empty/0,0 map.
+  if (node.node_type === "graph") {
+    const sp = (data.site_position ?? null) as
+      | { lon?: unknown; lat?: unknown; crs?: unknown }
+      | null;
+    const lon = sp ? Number(sp.lon) : NaN;
+    const lat = sp ? Number(sp.lat) : NaN;
+    if (Number.isFinite(lon) && Number.isFinite(lat)) {
+      drawMap(box, node, options, key,
+        { ok: true, lat, lon, epsg: 4326, rotation: 0 }, doc);
+    } else {
+      box.appendChild(el("div", "nv-embed-title", "sito non posizionato"));
+      box.appendChild(el("div", "nv-embed-note",
+        "posiziona il sito col picker nel pannello Canvas (Ispettore) — la " +
+        "mini-mappa lo mostrerà qui (posizione simbolica, non lo shift 3D)."));
+    }
+    return box;
+  }
+
+  const geo = geoOf(data);
 
   if (!geo.ok) {
     if (geo.reason === "needs-reprojection") {

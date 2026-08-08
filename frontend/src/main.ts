@@ -65,6 +65,8 @@ import {
   hdtoProfileTypes,
   isGroupType,
   isStratigraphicType,
+  narrativeViewTypes,
+  narrativeViewTypeDescription,
   nodeTypeForClass,
   typeDescription,
 } from "./rules";
@@ -302,6 +304,8 @@ const MODE_BUTTONS: Partial<Record<CentralMode, HTMLButtonElement>> = {
   narrative: btnNarrative,
 };
 const narrativeViewEl = document.getElementById("narrative-view")!;
+const paletteEl = document.getElementById("palette")!;
+const narrativePaletteEl = document.getElementById("narrative-palette")!;
 const btnNarrativeEdit = document.getElementById(
   "btn-narrative-edit") as HTMLButtonElement;
 const btnUndo = document.getElementById("btn-undo") as HTMLButtonElement;
@@ -1483,6 +1487,10 @@ function setMode(m: CentralMode): void {
   // the separate `narrativeOpen` flag — no second, divergible state).
   narrativeViewEl.classList.toggle("hidden", !narrative);
   btnNarrativeEdit.classList.toggle("hidden", !narrative);
+  // NARRWS1 · the left palette is PER-MODE: the node-type palette is useless in
+  // narrative mode, so it is replaced by the narrative building-blocks palette.
+  paletteEl.classList.toggle("hidden", narrative);
+  narrativePaletteEl.classList.toggle("hidden", !narrative);
   if (narrative) {
     // keep `view` (matrix/graph) as the canvas sub-view to restore on the way back.
     // NARR1 · entering narrative with no story yet → scaffold one from the graph
@@ -4787,6 +4795,74 @@ function refreshNarrativeView(): void {
       ? narrativeEditor(current.id)
       : undefined,
   );
+  renderNarrativePalette();
+}
+
+/**
+ * NARRWS1 · the narrative mode's OWN left palette — narrative building blocks,
+ * NOT the graph node-types (which are useless while reading/writing a story).
+ * Per-mode, coherent with MODE1/DP-82. "＋ Capitolo" and "🗺 Mappa del sito" are
+ * direct, unambiguous actions (reuse the narrative-edit mutators); the embed
+ * view-types are listed from the datamodel (`narrativeViewTypes`) as a guide —
+ * inserting one with a specific node reference is done from the chapter's own +
+ * button, which knows the target chapter and ref. Site map ties to GEO1: the
+ * embed points at the graph-self node, whose map reads the site position.
+ */
+function renderNarrativePalette(): void {
+  const host = narrativePaletteEl;
+  host.textContent = "";
+  if (centralMode !== "narrative") return;
+  const narr =
+    narrativesIn(store?.doc ?? null).find((n) => n.id === selectedNarrativeId) ??
+    narrativesIn(store?.doc ?? null)[0];
+
+  const section = (title: string): HTMLElement => {
+    const h = document.createElement("div");
+    h.className = "np-sect";
+    h.textContent = title;
+    host.appendChild(h);
+    return h;
+  };
+  const item = (
+    label: string,
+    hint: string,
+    onClick: (() => void) | null,
+  ): void => {
+    const b = document.createElement("button");
+    b.className = "np-item" + (onClick ? "" : " np-item-static");
+    b.title = hint;
+    b.innerHTML = `<span class="np-label">${label}</span><span class="np-hint">${hint}</span>`;
+    if (onClick) b.addEventListener("click", onClick);
+    else b.disabled = true;
+    host.appendChild(b);
+  };
+
+  section("Narrativa");
+  if (!narr || !store) {
+    item("Nessuna narrativa", "Entra in modo narrativa su un grafo per iniziare", null);
+    return;
+  }
+  const nid = narr.id;
+  // structure
+  item("＋ Capitolo", "Aggiungi un capitolo alla narrativa", () => {
+    nedit.addChapter(store!, nid);
+    refreshNarrativeView();
+  });
+  item("🗺 Mappa del sito", "Inserisce una mappa del sito (posizione GEO1) nell'ultimo capitolo", () => {
+    const chapters = narr.chapters;
+    if (!chapters.length) nedit.addChapter(store!, nid);
+    const cs = narrativesIn(store!.doc).find((n) => n.id === nid)?.chapters ?? [];
+    const ci = Math.max(0, cs.length - 1);
+    nedit.addEmbed(store!, nid, ci, store!.ensureGraphRootId(), "map");
+    refreshNarrativeView();
+  });
+
+  // embeds — the datamodel's narrative view-types, as a guide (insert with a
+  // reference from the chapter's + button, which knows chapter and node).
+  section("Blocchi (inserisci col + del capitolo)");
+  for (const vt of narrativeViewTypes()) {
+    item(vt, narrativeViewTypeDescription(vt) || vt, null);
+  }
 }
 
 /** Back-compat wrapper: opening the narrative = entering `narrative` mode,

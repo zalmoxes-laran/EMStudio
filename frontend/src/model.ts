@@ -1629,6 +1629,12 @@ export class DocumentStore {
     });
   }
 
+  /** The graph-self node id, creating it if missing — for callers that need a
+   *  stable ref to the graph (e.g. a narrative "site map" embed). */
+  ensureGraphRootId(): string {
+    return this.ensureGraphRootNode().id;
+  }
+
   /** The graph-scope ParadataNodeGroup id, or null (no creation). */
   graphParadataGroup(): string | null {
     const root = this.graphRootNode();
