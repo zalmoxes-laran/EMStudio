@@ -927,9 +927,20 @@ body.sync-active #mode-indicator::before {
   overflow: hidden;
 }
 
+/* WIN4 · the canvas is anchored to the BOTTOM of its wrapper and sized by
+   `resizeCanvas` (wrapper height minus the docked window bar). It no longer
+   fills the wrapper via `inset: 0`, which is what let the floating bar cover
+   the epoch bands pinned to the top of the matrix. */
 #canvas {
   position: absolute;
-  inset: 0;
+  left: 0;
+  bottom: 0;
+  /* A <canvas> is replaced content: offsets alone do NOT stretch it (width/height
+     resolve to the intrinsic 300x150), which is why the box is stated here.
+     `calc` keeps the drawing area exactly the wrapper minus the docked bar, with
+     no dependency on a JS callback having run first. */
+  width: 100%;
+  height: calc(100% - var(--winbar-h, 0px));
   cursor: grab;
 }
 
@@ -1120,7 +1131,7 @@ body.sync-active #mode-indicator::before {
 
 #drop-hint {
   position: absolute;
-  inset: 0;
+  inset: var(--winbar-h, 0px) 0 0 0; /* WIN4 · below the docked bar */
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -1523,17 +1534,23 @@ body.sync-active #mode-indicator::before {
 /* WIN1 (checkpoint 2) · window header — floating top-left chip with the window
    type + transform dropdown. Above the narrative overlay (z-index 5) and the
    canvas; needs no canvas re-sizing (floats like the filter button). */
+/* WIN4 · DOCKED bar: full width, its own vertical space at the top of the
+   window area. It does not overlay the content — the canvas is shorter by
+   exactly this height (see `resizeCanvas` / `--winbar-h`). */
 #window-header {
   position: absolute;
-  top: 10px;
-  left: 10px;
+  top: 0;
+  left: 0;
+  right: 0;
   z-index: 25;
-  /* WIN2 · a real header bar: type · mode · fit · layout · algorithm ·
-     instances. Wraps rather than clips — the canvas must never be pushed. */
   display: flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 6px;
+  padding: 5px 8px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.10);
 }
 #window-header .win-type-toggle,
 #window-header .win-mode-toggle {
@@ -1651,7 +1668,8 @@ body.sync-active #mode-indicator::before {
 
 #btn-view-props {
   position: absolute;
-  top: 10px;
+  /* WIN4 · below the docked window bar, never under it */
+  top: calc(var(--winbar-h, 0px) + 10px);
   right: 10px;
   z-index: 21;
   width: 30px;
@@ -1696,7 +1714,8 @@ body.sync-active #mode-indicator::before {
 
 #filter-panel {
   position: absolute;
-  top: 10px;
+  /* WIN4 · below the docked window bar, never under it */
+  top: calc(var(--winbar-h, 0px) + 10px);
   right: 10px;
   width: 250px;
   max-height: 70vh;
@@ -2462,7 +2481,8 @@ body.sync-active #footer-brand #em-version {
 
 #hint-bar {
   position: absolute;
-  top: 10px;
+  /* WIN4 · below the docked window bar, never under it */
+  top: calc(var(--winbar-h, 0px) + 10px);
   left: 50%;
   transform: translateX(-50%);
   background: var(--accent);
@@ -2475,7 +2495,8 @@ body.sync-active #footer-brand #em-version {
 
 #chrono-banner {
   position: absolute;
-  top: 10px;
+  /* WIN4 · below the docked window bar, never under it */
+  top: calc(var(--winbar-h, 0px) + 10px);
   left: 12px;
   right: 12px;
   display: flex;
@@ -2824,7 +2845,7 @@ body.sync-active #footer-brand #em-version {
    evidence beside it, so it is set like a page. */
 #narrative-view {
   position: absolute;
-  inset: 0;
+  inset: var(--winbar-h, 0px) 0 0 0; /* WIN4 · below the docked bar */
   overflow-y: auto;
   background: var(--bg-subtle);
   padding: 28px 0 64px;
@@ -4169,7 +4190,8 @@ body.sync-active #footer-brand #em-version {
    must not look like a canvas decoration — hence a real button chrome. */
 #btn-add-epoch {
   position: absolute;
-  top: 10px;
+  /* WIN4 · below the docked window bar, never under it */
+  top: calc(var(--winbar-h, 0px) + 10px);
   left: 10px;
   z-index: 5;
   display: flex;
@@ -4285,19 +4307,9 @@ body.sync-active #footer-brand #em-version {
   display: none !important;
 }
 
-/* WIN3 · the window header as a translucent BAR overlaying the canvas: it holds
-   the type, the mode and the per-type menus without ever resizing the canvas
-   underneath (which is why it floats rather than taking a row of layout). */
-#window-header {
-  background: color-mix(in srgb, var(--bg-panel) 72%, transparent);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 4px 6px;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.14);
-}
-/* inside the bar the controls lose their own chrome — the BAR is the surface */
+/* WIN3/WIN4 · inside the bar the controls lose their own chrome — the BAR is
+   the surface. (WIN3 shipped this bar as a translucent floating overlay; WIN4
+   docked it, so the blur and the rounded card are gone.) */
 #window-header .win-type-toggle,
 #window-header .win-mode-toggle,
 #window-header .win-act,
@@ -4327,4 +4339,108 @@ body.sync-active #footer-brand #em-version {
 #window-header .win-menu .dd-menu button[disabled] {
   opacity: 0.45;
   cursor: default;
+}
+
+/* CURRENT-ELEMENT · the chapter / row a window is working on. A left accent rule
+   rather than a fill: the current element must be findable at a glance without
+   competing with the selection colours the content itself uses. */
+.nv-chapter.nv-current {
+  border-left: 3px solid var(--accent);
+  padding-left: 13px;
+  margin-left: -16px;
+}
+.emdata-table tr.emdata-current td {
+  box-shadow: inset 0 -1px 0 var(--accent), inset 0 1px 0 var(--accent);
+}
+.emdata-table tr.emdata-current td:first-child {
+  box-shadow:
+    inset 3px 0 0 var(--accent),
+    inset 0 -1px 0 var(--accent),
+    inset 0 1px 0 var(--accent);
+}
+
+/* ── WIN5 · tiling ──────────────────────────────────────────────────────────
+   `#tile-root` is the split tree rendered as nested flex boxes: an area is a
+   flex child with a grow factor, a divider is a 6px handle between two of them.
+   With one window the root has a single child (`#canvas-wrap`) and behaves
+   exactly as it did before tiling existed. */
+#tile-root {
+  flex: 1;
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+#tile-root.tile-col {
+  flex-direction: column;
+}
+/* every area — the live one and the secondary ones — shares the same box */
+#tile-root > #canvas-wrap,
+#tile-root .tile-area,
+#tile-root .tile-split {
+  min-width: 0;
+  min-height: 0;
+}
+.tile-split {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+.tile-split.tile-col {
+  flex-direction: column;
+}
+/* a secondary area: its own docked bar + a canvas that draws its projection */
+.tile-area {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  background: var(--canvas-bg);
+  overflow: hidden;
+}
+.tile-area > .tile-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  background: var(--bg-panel);
+  border-bottom: 1px solid var(--border);
+  font-size: 12.5px;
+  color: var(--text);
+  cursor: pointer;
+}
+.tile-area > .tile-bar .tile-ic {
+  opacity: 0.9;
+}
+.tile-area > .tile-bar .tile-mode {
+  opacity: 0.7;
+}
+.tile-area > .tile-bar .tile-hint {
+  margin-left: auto;
+  opacity: 0.55;
+  font-size: 11px;
+}
+.tile-area > canvas {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+}
+/* the ACTIVE area is the one that takes the edits — say so, quietly */
+.tile-area.tile-active > .tile-bar,
+#canvas-wrap.tile-active > #window-header {
+  box-shadow: inset 0 2px 0 var(--accent);
+}
+/* the divider between two areas */
+.tile-div {
+  flex: 0 0 6px;
+  background: var(--border);
+  opacity: 0.55;
+  cursor: col-resize;
+}
+.tile-div.tile-div-col {
+  cursor: row-resize;
+}
+.tile-div:hover,
+.tile-div.dragging {
+  opacity: 1;
+  background: var(--accent);
 }

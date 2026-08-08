@@ -34,10 +34,20 @@ export function setVolatileProvider(fn: VolatileProvider): void {
   volatileProvider = fn;
 }
 
+// CURRENT-ELEMENT · the row this window is working on. The table VIEW does not
+// own it — the window does (workspace.ts) — so the dock asks for it and reports
+// clicks, exactly like the narrative does for its chapter.
+let currentRowOf: () => string | null = () => null;
+let setCurrentRow: (id: string | null) => void = () => {};
+
 export function initEmData(opts: {
   getStore: () => DocumentStore | null;
+  currentRow?: () => string | null;
+  setCurrentRow?: (id: string | null) => void;
 }): void {
   getStore = opts.getStore;
+  if (opts.currentRow) currentRowOf = opts.currentRow;
+  if (opts.setCurrentRow) setCurrentRow = opts.setCurrentRow;
   const dock = $("emdata-dock");
   const toggle = $<HTMLButtonElement>("emdata-toggle");
   const resizer = $("emdata-resizer");
@@ -159,7 +169,8 @@ export function renderEmData(): void {
       const del = `<td class="emdata-rowop"><button data-del="${escapeAttr(
         row.id,
       )}" title="Delete this node">✕</button></td>`;
-      return `<tr class="${row.volatile ? "emdata-vol" : ""}" data-row="${escapeAttr(
+      const cur = row.id === currentRowOf() ? " emdata-current" : "";
+      return `<tr class="${row.volatile ? "emdata-vol" : ""}${cur}" data-row="${escapeAttr(
         row.id,
       )}">${cells}${del}</tr>`;
     })
@@ -190,6 +201,17 @@ export function renderEmData(): void {
   });
 
   // wire delete buttons
+  // clicking a row makes it current (the ✕ and the cell editors stop the event
+  // themselves, so editing a cell does not fight with selecting the row)
+  body.querySelectorAll<HTMLTableRowElement>("tr[data-row]").forEach((tr) => {
+    tr.addEventListener("mousedown", () => {
+      setCurrentRow(tr.getAttribute("data-row"));
+      body.querySelectorAll("tr.emdata-current").forEach((r) =>
+        r.classList.remove("emdata-current"),
+      );
+      tr.classList.add("emdata-current");
+    });
+  });
   body.querySelectorAll<HTMLButtonElement>("[data-del]").forEach((btn) => {
     btn.onclick = () => {
       deleteRow(store, btn.getAttribute("data-del")!);

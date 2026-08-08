@@ -150,9 +150,28 @@ export function onWorkspaceChange(fn: (id: WorkspaceId) => void): void {
 
 const WINDOWS_KEY = "emstudio.windows";
 
+/**
+ * WIN5 · the spatial arrangement of a workspace: a binary split TREE, the same
+ * shape Blender (and every tiling editor) uses.
+ *
+ *   leaf  → one window fills the area
+ *   split → two areas side by side (`row`) or stacked (`col`), `ratio` being the
+ *           fraction the FIRST child takes
+ *
+ * A tree rather than a list of rectangles because splitting and joining are then
+ * local edits — split a leaf into a split, join a split back into one of its
+ * children — with no coordinate arithmetic to keep consistent, and the geometry
+ * falls out of nested flex boxes at render time.
+ */
+export type Pane =
+  | { kind: "leaf"; winId: string }
+  | { kind: "split"; dir: "row" | "col"; ratio: number; a: Pane; b: Pane };
+
 interface WorkspaceWindows {
   wins: Win[];
   activeId: string;
+  /** the arrangement; absent in layouts saved before WIN5 → rebuilt as a leaf */
+  layout?: Pane;
 }
 
 function seedWindows(preset: WorkspacePreset): WorkspaceWindows {
@@ -164,7 +183,7 @@ function seedWindows(preset: WorkspacePreset): WorkspaceWindows {
         ? { mode: preset.graphMode ?? "matrix" }
         : {},
   };
-  return { wins: [win], activeId: win.id };
+  return { wins: [win], activeId: win.id, layout: { kind: "leaf", winId: win.id } };
 }
 
 function seedRegistry(): Record<WorkspaceId, WorkspaceWindows> {
@@ -191,12 +210,17 @@ function loadRegistry(): Record<WorkspaceId, WorkspaceWindows> {
         (w) => w && typeof w.id === "string" && typeof w.type === "string",
       );
       if (!wins.length) continue;
-      seeded[preset.id] = {
+      const restored: WorkspaceWindows = {
         wins: wins.map((w) => ({ ...w, state: w.state ?? {} })),
         activeId: wins.some((w) => w.id === entry.activeId)
           ? entry.activeId
           : wins[0].id,
       };
+      // The tree is the authority on WHERE, the window list on WHAT: a restored
+      // tree is pruned of ids that no longer exist and completed with windows it
+      // never mentioned, so the two can never disagree after a bad save.
+      restored.layout = repairLayout(entry.layout, restored.wins);
+      seeded[preset.id] = restored;
     }
   } catch {
     /* storage disabled or corrupted → seeded arrangement */
@@ -212,6 +236,114 @@ function persistWindows(): void {
   } catch {
     /* storage disabled */
   }
+}
+
+// ── WIN5 · tree helpers (pure: they answer questions / return new trees) ─────
+
+/** Every window id the tree places, in left-to-right / top-to-bottom order. */
+export function paneIds(p: Pane | undefined): string[] {
+  if (!p) return [];
+  return p.kind === "leaf" ? [p.winId] : [...paneIds(p.a), ...paneIds(p.b)];
+}
+
+/**
+ * Make a tree that is guaranteed to place EXACTLY the given windows once each.
+ *
+ * Called on restore and after any window is added or closed. Windows the tree
+ * forgot are appended as a split of the last leaf; ids it mentions that no
+ * longer exist are pruned (a split with one dead child collapses into the
+ * other). A corrupted arrangement therefore degrades to a usable one instead of
+ * a blank screen.
+ */
+function repairLayout(p: Pane | undefined, wins: Win[]): Pane {
+  const live = new Set(wins.map((w) => w.id));
+  const prune = (n: Pane | undefined): Pane | null => {
+    if (!n) return null;
+    if (n.kind === "leaf") return live.has(n.winId) ? n : null;
+    const a = prune(n.a);
+    const b = prune(n.b);
+    if (a && b) return { ...n, a, b };
+    return a ?? b;
+  };
+  let tree = prune(p);
+  const placed = new Set(paneIds(tree ?? undefined));
+  for (const w of wins) {
+    if (placed.has(w.id)) continue;
+    const leaf: Pane = { kind: "leaf", winId: w.id };
+    tree = tree ? { kind: "split", dir: "row", ratio: 0.5, a: tree, b: leaf } : leaf;
+    placed.add(w.id);
+  }
+  return tree ?? { kind: "leaf", winId: wins[0].id };
+}
+
+/** Replace the leaf holding `winId` with `make(leaf)`. Returns a NEW tree. */
+function mapLeaf(p: Pane, winId: string, make: (leaf: Pane) => Pane): Pane {
+  if (p.kind === "leaf") return p.winId === winId ? make(p) : p;
+  return { ...p, a: mapLeaf(p.a, winId, make), b: mapLeaf(p.b, winId, make) };
+}
+
+/** The arrangement of a workspace. */
+export function layoutOf(ws: WorkspaceId = active): Pane {
+  const entry = registry[ws];
+  if (!entry.layout) entry.layout = repairLayout(undefined, entry.wins);
+  return entry.layout;
+}
+
+/** True when the workspace shows more than one area. */
+export function isTiled(ws: WorkspaceId = active): boolean {
+  return layoutOf(ws).kind === "split";
+}
+
+/**
+ * Split the area holding `winId` in two, putting a NEW window beside it, and
+ * make the new one active. `dir: "row"` puts it to the right, `"col"` below.
+ * The new window copies the type/state of the one it was split from — splitting
+ * a DTC view to compare it with the matrix starts from what you were looking at.
+ */
+export function splitWindow(
+  winId: string,
+  dir: "row" | "col",
+  ws: WorkspaceId = active,
+): Win | null {
+  const entry = registry[ws];
+  const src = entry.wins.find((w) => w.id === winId);
+  if (!src) return null;
+  const clone = addWindow(src.type, { ...src.state }, ws); // appends + activates
+  // `addWindow` gave the clone a home of its own (any window must have one);
+  // here we want it in a SPECIFIC place, so prune that provisional leaf first —
+  // otherwise the clone would be placed twice and the tree would out-count the
+  // window list.
+  const base = repairLayout(
+    entry.layout,
+    entry.wins.filter((w) => w.id !== clone.id),
+  );
+  entry.layout = mapLeaf(base, winId, (leaf) => ({
+    kind: "split",
+    dir,
+    ratio: 0.5,
+    a: leaf,
+    b: { kind: "leaf", winId: clone.id },
+  }));
+  persistWindows();
+  return clone;
+}
+
+/** Move the divider of the split that contains `winId` as its FIRST child. */
+export function setSplitRatio(
+  winId: string,
+  ratio: number,
+  ws: WorkspaceId = active,
+): void {
+  const clamp = Math.min(0.85, Math.max(0.15, ratio)); // never collapse an area
+  const walk = (p: Pane): Pane => {
+    if (p.kind === "leaf") return p;
+    const firstIds = paneIds(p.a);
+    if (firstIds.includes(winId) && paneIds(p.b).length >= 1 && firstIds.length === 1)
+      return { ...p, ratio: clamp };
+    return { ...p, a: walk(p.a), b: walk(p.b) };
+  };
+  registry[ws].layout = walk(layoutOf(ws));
+  persistWindows();
 }
 
 /** Every window of a workspace, in creation order. */
@@ -249,6 +381,8 @@ export function addWindow(
   const win: Win = { id: `${ws}:${n}`, type, state };
   entry.wins.push(win);
   entry.activeId = win.id;
+  // WIN5 · a window that exists must have somewhere to be: repair places it.
+  entry.layout = repairLayout(entry.layout, entry.wins);
   persistWindows();
   return win;
 }
@@ -263,6 +397,8 @@ export function closeWindow(winId: string, ws: WorkspaceId = active): boolean {
   entry.wins.splice(i, 1);
   if (entry.activeId === winId)
     entry.activeId = entry.wins[Math.min(i, entry.wins.length - 1)].id;
+  // WIN5 · closing an area JOINS its split: the sibling takes the space back.
+  entry.layout = repairLayout(entry.layout, entry.wins);
   persistWindows();
   return true;
 }
@@ -276,6 +412,26 @@ export function setWinType(win: Win, type: WindowType): void {
   win.type = type;
   // a graph window must always have a mode for the header to show
   if (type === "graph" && !win.state["mode"]) win.state["mode"] = "matrix";
+  persistWindows();
+}
+
+/**
+ * CURRENT-ELEMENT · the element a window is currently working ON — the chapter
+ * in a Narrative window, the row in a Table window. (A Graph window already has
+ * one: the canvas selection.)
+ *
+ * It lives on the WINDOW, next to the mode, because it is the same kind of fact:
+ * two Narrative windows can sit on different chapters, and a menu item that acts
+ * on "the current chapter" must mean the one in the window it was opened from.
+ * UI state only — never em.json.
+ */
+export function winCurrent(win: Win, key: string): unknown {
+  return win.state[`current.${key}`] ?? null;
+}
+
+export function setWinCurrent(win: Win, key: string, value: unknown): void {
+  if (value == null) delete win.state[`current.${key}`];
+  else win.state[`current.${key}`] = value;
   persistWindows();
 }
 

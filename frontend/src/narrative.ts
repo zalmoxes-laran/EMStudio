@@ -649,6 +649,18 @@ export interface NarrativeEditor {
   generating(index: number): boolean;
 }
 
+/**
+ * CURRENT-ELEMENT · which chapter this window is working on.
+ *
+ * A separate parameter from the editor on purpose: choosing the chapter you are
+ * looking at is NAVIGATION, not editing — it has to work while merely reading,
+ * which is exactly when someone reaches for "insert a map here".
+ */
+export interface CurrentChapter {
+  index(): number | null;
+  set(index: number): void;
+}
+
 function authorChip(a: AuthorRef, ai: boolean): HTMLElement {
   const style = nodeStyle(ai ? "author_ai" : "author");
   const chip = el("span", "nv-author-chip", a.label);
@@ -708,6 +720,7 @@ export function renderNarrativeView(
   onSelect: (id: string) => void,
   onReveal?: (nodeId: string) => void,
   editor?: NarrativeEditor,
+  currentChapter?: CurrentChapter,
 ): void {
   container.textContent = "";
   const narratives = narrativesIn(doc);
@@ -820,6 +833,12 @@ export function renderNarrativeView(
 
   current.chapters.forEach((chapter, ci) => {
     const section = el("section", "nv-chapter");
+    // CURRENT-ELEMENT · clicking anywhere in a chapter makes it the window's
+    // current one (the marker is a left accent rule, see `.nv-chapter.nv-current`).
+    // Menus that say "the current chapter" then have something true to mean.
+    if (currentChapter?.index() === ci) section.classList.add("nv-current");
+    if (currentChapter)
+      section.addEventListener("mousedown", () => currentChapter.set(ci));
     const h = el("div", "nv-chapter-head");
     h.appendChild(el("h2", "nv-chapter-title", chapter.title || "(untitled)"));
     if (chapter.canonical) {

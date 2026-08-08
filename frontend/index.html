@@ -170,19 +170,25 @@
            nothing to hunt for when you want the canvas back. The arrow always
            points at what will happen. -->
       <button id="collapse-left" class="col-toggle" data-i18n-title="layout.hideLeft">‹</button>
+      <!-- WIN5 · the tiled workspace lives here: `#canvas-wrap` is the AREA of
+           the ACTIVE window (its canvas, its docked bar and the canvas
+           overlays), and `#tile-root` lays it out beside the other areas of the
+           split tree. A workspace with one window renders as `#canvas-wrap`
+           alone, exactly as before — the tiling costs nothing until it is used. -->
+      <div id="tile-root">
       <div id="canvas-wrap">
         <canvas id="canvas"></canvas>
-        <!-- WIN1 (checkpoint 2) · window header: the active window's type icon +
-             a transform dropdown (Graph/Narrative/Table/Doc) that changes the
-             window in-place. Floating top-left (like the filter button top-right)
-             so it needs no canvas re-sizing; above the narrative overlay.
-             Reuses the generic .dropdown wiring; items built by main.ts. -->
-        <!-- WIN2 · the header grew the window's own controls: the transform
-             dropdown, then (graph windows only) the MODE dropdown
-             matrix/graph/DTC, fit, layout + algorithm, and the instance strip.
-             The toolbar's global view-toggle / fit / layout / algorithm are
-             hidden and driven from here — they stay in the DOM so their handlers
-             and keyboard shortcuts remain the single owners of the behaviour. -->
+        <!-- WIN4 · the window header is a DOCKED bar, full width at the top of
+             the window area: the canvas starts BELOW it and is shorter by its
+             height (viewSize subtracts it), so the bar no longer floats over the
+             epoch bands anchored at the top of the matrix. Every tiled area will
+             carry its own copy of this bar (WIN5).
+             Contents, left to right: window TYPE (transform) · MODE (the single
+             place the projection is chosen) · the per-type menus (WINDOW_MENUS)
+             · the window actions as ICON BUTTONS · the instance strip.
+             The toolbar's own view-toggle / fit / layout / algorithm stay in the
+             DOM, hidden: they remain the single owners of the behaviour and this
+             bar drives them. -->
         <div id="window-header">
           <div id="window-type" class="dropdown">
             <button class="dd-toggle win-type-toggle" title="Window type — transform this window">
@@ -202,9 +208,12 @@
           <!-- WIN3 · the per-type menus, built by main.ts from WINDOW_MENUS.
                Adding a menu is an entry in that registry, not a markup change. -->
           <div id="window-menus"></div>
-          <!-- WIN2 controls kept in the DOM: the Vista/Layout menus drive them,
-               so fit / layout / algorithm still have exactly one implementation.
-               Hidden — the menus are the surface now. -->
+          <!-- WIN4 · window ACTIONS as icon buttons, not menu items: they are
+               one-click verbs on this window's camera, and a verb behind two
+               clicks is a menu pretending to be a toolbar. -->
+          <button id="win-act-fit" class="win-act" title="Adatta alla finestra (0)">⤢</button>
+          <button id="win-act-zoom1" class="win-act" title="Ridimensiona a 1:1 (zoom 100%)">1:1</button>
+          <!-- kept in the DOM, hidden: the owners of fit / layout / algorithm -->
           <button id="win-fit" class="win-act hidden" title="Fit to view (0)">⤢</button>
           <button id="win-layout" class="win-act hidden" title="Recompute this window's layout">⧉</button>
           <select id="win-algo" class="hidden" title="Graph layout algorithm">
@@ -277,6 +286,7 @@
              view to add something beside it. -->
         <div id="narrative-view" class="hidden"></div>
         <canvas id="overview" title="Overview — click to move the viewport"></canvas>
+      </div>
       </div>
       <button id="collapse-right" class="col-toggle hidden" data-i18n-title="layout.hideRight">›</button>
       <aside id="side" class="hidden">

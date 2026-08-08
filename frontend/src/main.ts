@@ -159,7 +159,7 @@ import {
 import { GROUP_HEADER, GROUP_PAD } from "./views/matrix";
 import { setupSearch } from "./search";
 import { initEmData, renderEmData, setVolatileProvider } from "./emdata";
-import { EM_DATA_SHEETS } from "./em-data";
+import { deleteRow, EM_DATA_SHEETS } from "./em-data";
 import { isVolatile } from "./volatile";
 import { addRecent, removeRecent, type RecentFile } from "./recent";
 import {
@@ -168,16 +168,22 @@ import {
   activeWin,
   activeWorkspace,
   activeWindowType,
-  addWindow,
   closeWindow,
   GRAPH_MODES,
+  layoutOf,
+  paneIds,
   setActiveWin,
   setActiveWorkspace,
+  setWinCurrent,
+  winCurrent,
   setWinMode,
   setWinType,
   syncActiveWorkspace,
+  setSplitRatio,
+  splitWindow,
   winMode,
   windowsOf,
+  type Pane,
   type Win,
   type WorkspaceId,
   type WindowType,
@@ -573,21 +579,48 @@ function toast(msg: string): void {
   toastTimer = window.setTimeout(() => toastEl.classList.add("hidden"), 2600);
 }
 
+/**
+ * WIN4 · the height the DOCKED window bar takes from the canvas.
+ *
+ * The bar is not an overlay any more: the canvas is exactly this much shorter,
+ * so nothing the bar covers is content (the epoch bands are pinned to the top of
+ * the matrix, and a floating bar sat on them). Measured rather than declared —
+ * the bar wraps to two rows on a narrow window, and a hardcoded height would go
+ * wrong precisely when it matters.
+ */
+function windowBarHeight(): number {
+  const bar = document.getElementById("window-header");
+  if (!bar || bar.classList.contains("hidden")) return 0;
+  return bar.offsetHeight;
+}
+
 function viewSize(): { w: number; h: number } {
-  // Fall back through canvas → window if the wrapper reports 0 (transient
-  // relayout) so fit() never collapses the viewport to the min-scale.
-  const w = wrap.clientWidth || canvas.clientWidth || window.innerWidth || 800;
-  const h = wrap.clientHeight || canvas.clientHeight || window.innerHeight || 600;
+  // WIN4 · the CANVAS ELEMENT is the drawing area, and CSS gives it its box
+  // (`top: var(--winbar-h)` — i.e. below the docked bar). Reading the element
+  // rather than the wrapper means the two can never disagree about where the
+  // drawing starts. Fall back through wrapper → window if it reports 0 during a
+  // transient relayout, so fit() never collapses to the min-scale.
+  const w = canvas.clientWidth || wrap.clientWidth || window.innerWidth || 800;
+  const h =
+    canvas.clientHeight ||
+    Math.max(1, (wrap.clientHeight || 0) - windowBarHeight()) ||
+    window.innerHeight ||
+    600;
   return { w, h };
 }
 
 function resizeCanvas(): void {
   const dpr = window.devicePixelRatio || 1;
+  // publish the bar height so the canvas AND the canvas-area overlays (filters,
+  // chrono banner, add-epoch, drop hint, narrative) sit BELOW it — one
+  // measurement, one source, and CSS does the placing.
+  wrap.style.setProperty("--winbar-h", `${windowBarHeight()}px`);
   const { w, h } = viewSize();
+  // only the backing store is set here: the element's CSS box is laid out by the
+  // stylesheet, so a missed observer callback can no longer leave a canvas that
+  // is the wrong SIZE on screen — just one frame at the wrong resolution.
   canvas.width = Math.max(1, Math.round(w * dpr));
   canvas.height = Math.max(1, Math.round(h * dpr));
-  canvas.style.width = w + "px";
-  canvas.style.height = h + "px";
   draw();
 }
 
@@ -640,6 +673,7 @@ function draw(): void {
     h,
   );
   overview.update(s, viewport(), w, h);
+  drawTiles(); // WIN5 · the other areas show the same document, live
   // selection overlay (screen space): a translucent wash + ring so the whole
   // multi-selection is unmistakable regardless of node colour. Active node is
   // bolder than the other selected ones (two-tier feedback).
@@ -5158,6 +5192,13 @@ function refreshNarrativeView(): void {
     narrativeEditing && current && store
       ? narrativeEditor(current.id)
       : undefined,
+    // CURRENT-ELEMENT · the window owns which chapter is being worked on; the
+    // view marks it and reports the click. Passed ALWAYS (not only in edit
+    // mode): picking the chapter you are reading is navigation.
+    {
+      index: () => currentChapterIndex(),
+      set: (i) => setCurrentChapterIndex(i),
+    },
   );
   renderNarrativePalette();
 }
@@ -5279,6 +5320,205 @@ function reflectWorkspaceInBar(id: WorkspaceId): void {
   updateWindowHeader();
 }
 
+// ── WIN5 · the tiled shell ──────────────────────────────────────────────────
+//
+// The split tree (workspace.ts) is rendered as nested flex boxes into
+// `#tile-root`. The ACTIVE window's area is the real `#canvas-wrap` — the
+// canvas, its docked bar and every overlay stay exactly where they were, so all
+// of the editing machinery is untouched. Every OTHER area is a light secondary
+// area: its own docked bar plus a canvas that draws that window's projection
+// with that window's camera, read-only. Clicking a secondary area makes it
+// active, which moves `#canvas-wrap` into it — so the editable window is
+// wherever you last clicked, and there is still exactly one editor.
+//
+// Declared limit: secondary areas are a live VIEW, not a second editor (no
+// selection, no drag). Promoting one is a click.
+
+const tileRoot = document.getElementById("tile-root")!;
+// The live area, captured ONCE: `renderTiles` detaches it before rebuilding the
+// tree, and a detached element is no longer findable by id — looking it up
+// afterwards returned null and left the app with no canvas at all.
+const canvasWrapEl = document.getElementById("canvas-wrap")!;
+/** canvases of the secondary areas, by window id — redrawn with the main draw */
+const tileCanvases = new Map<string, HTMLCanvasElement>();
+
+/** Draw one secondary area: same renderer, that window's scene and camera. */
+function drawTile(winId: string, mode: ViewKind, cv: HTMLCanvasElement): void {
+  const dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth || 1;
+  const h = cv.clientHeight || 1;
+  cv.width = Math.max(1, Math.round(w * dpr));
+  cv.height = Math.max(1, Math.round(h * dpr));
+  const c = cv.getContext("2d");
+  if (!c) return;
+  const s = scenes[mode] ?? null;
+  const vp = viewportFor(winId, mode);
+  if (!s) {
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    c.clearRect(0, 0, w, h);
+    return;
+  }
+  // frame it the first time this area shows this document (same rule as the
+  // main canvas, so a new area never opens on a blank patch of coordinates)
+  const key = viewportKey(winId, mode);
+  if (!framedViews.has(key)) {
+    framedViews.add(key);
+    vp.fit(sceneBounds(s), w, h);
+  }
+  render(
+    c,
+    s,
+    vp,
+    {
+      hoverId: null,
+      selectedId: null,
+      selectedIds: new Set<string>(),
+      edgeVisible,
+      hoverEdgeIdx: null,
+      selectedEdgeIdx: -1,
+      filterKey: "all",
+      connect: null,
+      editable: false,
+      insertBoundary: null,
+      monochrome,
+      nameStatus,
+    },
+    w,
+    h,
+  );
+}
+
+/** Redraw every secondary area (the active one is drawn by `draw`). */
+function drawTiles(): void {
+  for (const [winId, cv] of tileCanvases) {
+    const win = windowsOf().find((x) => x.id === winId);
+    if (!win) continue;
+    drawTile(winId, win.type === "graph" ? winMode(win) : "matrix", cv);
+  }
+}
+
+/** Build the DOM of one pane of the tree. */
+function buildPane(pane: Pane, activeId: string): HTMLElement {
+  if (pane.kind === "leaf") {
+    if (pane.winId === activeId) {
+      // the live area IS the existing canvas wrapper, moved into place
+      canvasWrapEl.classList.add("tile-active");
+      canvasWrapEl.style.flex = "1 1 0";
+      return canvasWrapEl;
+    }
+    const win = windowsOf().find((x) => x.id === pane.winId);
+    const area = document.createElement("div");
+    area.className = "tile-area";
+    area.style.flex = "1 1 0";
+    area.dataset.win = pane.winId;
+    const bar = document.createElement("div");
+    bar.className = "tile-bar";
+    const meta = win ? WINDOW_TYPE_META[win.type] : null;
+    bar.innerHTML =
+      `<span class="tile-ic">${meta?.icon ?? "▦"}</span>` +
+      `<span>${meta ? t(meta.labelKey) : "?"}</span>` +
+      (win && win.type === "graph"
+        ? `<span class="tile-mode">· ${t(`mode.${winMode(win)}`)}</span>`
+        : "") +
+      `<span class="tile-hint">${t("tile.activate")}</span>`;
+    area.appendChild(bar);
+    const cv = document.createElement("canvas");
+    area.appendChild(cv);
+    tileCanvases.set(pane.winId, cv);
+    // clicking anywhere in a secondary area promotes it — the editable window
+    // follows the pointer's intent, which is the whole point of tiling
+    area.addEventListener("mousedown", () => selectWindow(pane.winId));
+    return area;
+  }
+  const split = document.createElement("div");
+  split.className = "tile-split" + (pane.dir === "col" ? " tile-col" : "");
+  const a = buildPane(pane.a, activeId);
+  a.style.flex = `${pane.ratio} 1 0`;
+  const div = document.createElement("div");
+  div.className = "tile-div" + (pane.dir === "col" ? " tile-div-col" : "");
+  const b = buildPane(pane.b, activeId);
+  b.style.flex = `${1 - pane.ratio} 1 0`;
+  // dragging the divider re-proportions THIS split only
+  div.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    div.classList.add("dragging");
+    const rect = split.getBoundingClientRect();
+    const firstId = paneIds(pane.a)[0];
+    const move = (ev: MouseEvent): void => {
+      const r =
+        pane.dir === "col"
+          ? (ev.clientY - rect.top) / Math.max(1, rect.height)
+          : (ev.clientX - rect.left) / Math.max(1, rect.width);
+      setSplitRatio(firstId, r);
+      renderTiles();
+    };
+    const up = (): void => {
+      div.classList.remove("dragging");
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+  });
+  split.appendChild(a);
+  split.appendChild(div);
+  split.appendChild(b);
+  return split;
+}
+
+/** Lay the workspace's tree out. Cheap and idempotent: called on any change to
+ *  the arrangement (split, close, activate, ratio) and after a workspace switch. */
+function renderTiles(): void {
+  tileCanvases.clear();
+  // detach the live area before rebuilding, so it survives the innerHTML reset
+  canvasWrapEl.remove();
+  tileRoot.innerHTML = "";
+  tileRoot.appendChild(buildPane(layoutOf(), activeWin().id));
+  resizeCanvas(); // the live area changed size
+  drawTiles();
+}
+
+// ── CURRENT-ELEMENT · the element the ACTIVE window is working on ───────────
+// The chapter of a Narrative window, the row of a Table window. Stored on the
+// window (workspace.ts) so two windows of the same type can sit on different
+// elements; read here by the menus, which then act through the EXISTING
+// mutators. A menu item with no current element stays disabled WITH ITS REASON
+// rather than guessing which chapter the user meant.
+
+function currentChapterIndex(): number | null {
+  const v = winCurrent(activeWin(), "chapter");
+  return typeof v === "number" ? v : null;
+}
+function setCurrentChapterIndex(i: number | null): void {
+  setWinCurrent(activeWin(), "chapter", i);
+  refreshNarrativeView();
+  updateWindowHeader(); // the menus enable/disable with it
+}
+function currentRowId(): string | null {
+  const v = winCurrent(activeWin(), "row");
+  return typeof v === "string" ? v : null;
+}
+function setCurrentRowId(id: string | null): void {
+  setWinCurrent(activeWin(), "row", id);
+}
+
+/** The narrative this window is showing (the selected one, else the first). */
+function activeNarrative(): { id: string; chapters: unknown[] } | null {
+  if (!store) return null;
+  const list = narrativesIn(store.doc);
+  const n = list.find((x) => x.id === selectedNarrativeId) ?? list[0];
+  return n ? { id: n.id, chapters: n.chapters } : null;
+}
+
+/** The current chapter, validated against the narrative that is actually open —
+ *  a persisted index must never outlive the chapter it pointed at. */
+function validCurrentChapter(): number | null {
+  const narr = activeNarrative();
+  const i = currentChapterIndex();
+  if (!narr || i == null) return null;
+  return i >= 0 && i < narr.chapters.length ? i : null;
+}
+
 // WIN2b · the window header's transform dropdown. It changes the ACTIVE WINDOW's
 // type IN PLACE — same slot, same workspace, a different editor. (WIN1 shipped a
 // placeholder that jumped to the type's canonical workspace; with real window
@@ -5332,22 +5572,16 @@ function setWindowMode(mode: ViewKind): void {
 /** Show another window of the current workspace, restoring ITS mode. */
 function selectWindow(winId: string): void {
   const win = setActiveWin(winId);
+  renderTiles(); // the live (editable) area moves to the window just picked
   if (win.type === "graph") setMode(winMode(win));
-  updateWindowHeader();
-}
-
-/** Add a second (third, …) graph window to THIS workspace. No tiling: the new
- *  window becomes the visible one, and the instance strip switches between them
- *  — which is what makes two graph windows in different modes observable. */
-function addGraphWindow(): void {
-  const win = addWindow("graph", { mode: winMode(activeWin()) });
-  setMode(winMode(win));
+  else mountWindow(win);
   updateWindowHeader();
 }
 
 function closeActiveWindow(): void {
   if (!closeWindow(activeWin().id)) return; // never the last one
   const win = activeWin();
+  renderTiles(); // the split JOINS: the sibling takes the space back
   if (win.type === "graph") setMode(winMode(win));
   updateWindowHeader();
 }
@@ -5371,10 +5605,11 @@ function updateWindowHeader(): void {
     document.getElementById(id)?.classList.toggle("hidden", !on);
   };
   show("window-mode", isGraph);
-  // WIN3 · fit / layout / algorithm are now ITEMS of the Vista and Layout menus.
-  // Their controls stay in the DOM (they own the behaviour, the menus drive
-  // them) but are never shown: two ways to click the same thing, side by side,
-  // is the duplication this step went to remove.
+  // WIN4 · the window's camera verbs are BUTTONS (fit, 1:1) and only make sense
+  // on a canvas window. `win-fit`/`win-layout`/`win-algo` stay hidden: they own
+  // the behaviour, the bar drives them.
+  show("win-act-fit", isGraph);
+  show("win-act-zoom1", isGraph);
   show("win-fit", false);
   show("win-layout", false);
   show("win-algo", false);
@@ -5408,12 +5643,24 @@ function renderInstanceStrip(): void {
       b.addEventListener("click", () => selectWindow(w.id));
       strip.appendChild(b);
     });
-  const add = document.createElement("button");
-  add.className = "wi-chip wi-add";
-  add.textContent = "+";
-  add.title = t("win.add");
-  add.addEventListener("click", addGraphWindow);
-  strip.appendChild(add);
+  // WIN5 · the two ways to get another area, side by side with the instance
+  // chips: split this area vertically (a new area to the RIGHT) or horizontally
+  // (BELOW). The old "+" (a window with no place of its own) is gone: with
+  // tiling, every window has a place.
+  const mkSplit = (dir: "row" | "col", glyph: string, key: string): void => {
+    const b = document.createElement("button");
+    b.className = "wi-chip wi-add";
+    b.textContent = glyph;
+    b.title = t(key);
+    b.addEventListener("click", () => {
+      splitWindow(activeWin().id, dir);
+      renderTiles();
+      updateWindowHeader();
+    });
+    strip.appendChild(b);
+  };
+  mkSplit("row", "⇥", "win.splitRight");
+  mkSplit("col", "⇤", "win.splitDown");
   if (wins.length > 1) {
     const close = document.createElement("button");
     close.className = "wi-chip wi-close";
@@ -5445,20 +5692,20 @@ interface WinMenu {
 
 const click = (id: string): void => document.getElementById(id)?.click();
 
+// WIN4 · AUDIT against the master header (the app toolbar) and against the
+// bar's own controls — every duplicate removed, with its reason:
+//  · "Vista" DISSOLVED. Its three jobs already had a home: the modes are the
+//    Mode selector two centimetres to the left (a state offered twice reads as
+//    two different states), "Adatta" is now an icon button, and the filters are
+//    the funnel at the top-right of the canvas, which was there all along.
+//  · Table ▸ "Esporta" REMOVED: it was File ▸ Esporta verbatim (same three
+//    handlers), and exporting is a document command, not a table command.
+//  · The window TYPE dropdown stays even though the leader also switches
+//    workspaces: they are different scopes (leader = which arrangement, header =
+//    what THIS window shows) and the tiling of WIN5 is where that pair finally
+//    reads as one thing. Deliberately left alone.
 const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
   graph: [
-    {
-      label: "Vista",
-      items: () => [
-        { label: "Adatta alla finestra", run: () => fit() },
-        { label: "Filtri (cerchi di dettaglio)…", run: () => click("btn-view-props") },
-        ...GRAPH_MODES.map((m) => ({
-          label: t(`mode.${m}`),
-          run: () => setWindowMode(m),
-          checked: () => winMode(activeWin()) === m,
-        })),
-      ],
-    },
     {
       label: "Layout",
       items: () => {
@@ -5495,64 +5742,121 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
   narrative: [
     {
       label: "Capitolo",
-      items: () => [
-        {
-          label: "Aggiungi capitolo",
-          run: () => {
-            if (!store) return;
-            const narr = narrativesIn(store.doc).find((n) => n.id === selectedNarrativeId)
-              ?? narrativesIn(store.doc)[0];
-            if (!narr) return;
-            nedit.addChapter(store, narr.id);
-            refreshNarrativeView();
+      items: () => {
+        const narr = activeNarrative();
+        const ci = validCurrentChapter();
+        const noChapter = (): string | null =>
+          !narr
+            ? "Nessuna narrativa in questo grafo."
+            : ci == null
+              ? "Clicca un capitolo per renderlo corrente."
+              : null;
+        return [
+          {
+            label: "Aggiungi capitolo",
+            run: () => {
+              if (!store || !narr) return;
+              nedit.addChapter(store, narr.id);
+              refreshNarrativeView();
+            },
+            disabledReason: () => (narr ? null : "Nessuna narrativa in questo grafo."),
           },
-          disabledReason: () =>
-            store && narrativesIn(store.doc).length ? null : "Nessuna narrativa in questo grafo.",
-        },
-        {
-          label: "Modifica narrativa",
-          run: () => click("btn-narrative-edit"),
-        },
-      ],
+          {
+            label: "Elimina capitolo corrente",
+            run: () => {
+              if (!store || !narr || ci == null) return;
+              nedit.deleteChapter(store, narr.id, ci);
+              setCurrentChapterIndex(null);
+              refreshNarrativeView();
+            },
+            disabledReason: noChapter,
+          },
+          {
+            label: "Sposta su",
+            run: () => {
+              if (!store || !narr || ci == null) return;
+              nedit.moveChapter(store, narr.id, ci, -1);
+              setCurrentChapterIndex(Math.max(0, ci - 1));
+            },
+            disabledReason: () => noChapter() ?? (ci === 0 ? "È già il primo." : null),
+          },
+          {
+            label: "Sposta giù",
+            run: () => {
+              if (!store || !narr || ci == null) return;
+              nedit.moveChapter(store, narr.id, ci, 1);
+              setCurrentChapterIndex(Math.min(narr.chapters.length - 1, ci + 1));
+            },
+            disabledReason: () =>
+              noChapter() ??
+              (narr && ci === narr.chapters.length - 1 ? "È già l'ultimo." : null),
+          },
+          { label: "Modifica narrativa", run: () => click("btn-narrative-edit") },
+        ];
+      },
     },
     {
       label: "Inserisci",
-      items: () => [
-        {
-          label: "Mappa del sito",
-          run: () => {
-            if (!store) return;
-            const narr = narrativesIn(store.doc).find((n) => n.id === selectedNarrativeId)
-              ?? narrativesIn(store.doc)[0];
-            if (!narr) return;
-            if (!narr.chapters.length) nedit.addChapter(store, narr.id);
-            const cs = narrativesIn(store.doc).find((n) => n.id === narr.id)?.chapters ?? [];
-            nedit.addEmbed(store, narr.id, Math.max(0, cs.length - 1),
-                           store.ensureGraphRootId(), "map");
-            refreshNarrativeView();
+      items: () => {
+        const narr = activeNarrative();
+        const ci = validCurrentChapter();
+        // The embed needs a chapter AND a node to point at. The MAP points at
+        // the graph itself (that is what a site map is), so it needs no
+        // selection — which is the case E.D. hit: a map in the introduction.
+        // Every other view type embeds A NODE, so it uses the canvas selection;
+        // with nothing selected the item says so instead of guessing.
+        const insert = (viewType: string, ref: string): void => {
+          if (!store || !narr || ci == null) return;
+          nedit.addEmbed(store, narr.id, ci, ref, viewType);
+          refreshNarrativeView();
+        };
+        const needChapter = (): string | null =>
+          !narr
+            ? "Nessuna narrativa in questo grafo."
+            : ci == null
+              ? "Clicca un capitolo per renderlo corrente."
+              : null;
+        return [
+          {
+            label: "Mappa del sito",
+            run: () => store && insert("map", store.ensureGraphRootId()),
+            disabledReason: needChapter,
           },
-          disabledReason: () =>
-            store && narrativesIn(store.doc).length ? null : "Nessuna narrativa in questo grafo.",
-        },
-        // The other block types are inserted from a chapter's own + button,
-        // which knows WHICH chapter and WHICH node — a menu has neither, and a
-        // menu item that guesses the chapter is worse than no menu item.
-        ...narrativeViewTypes().map((vt) => ({
-          label: vt,
-          run: () => toast("Inserisci questo blocco dal + del capitolo (sa quale capitolo e quale nodo)."),
-          disabledReason: () => "Si inserisce dal + del capitolo.",
-        })),
-      ],
+          ...narrativeViewTypes()
+            .filter((vt) => vt !== "map")
+            .map((vt) => ({
+              label: vt,
+              run: () => selectedId && insert(vt, selectedId),
+              disabledReason: () =>
+                needChapter() ??
+                (selectedId
+                  ? null
+                  : "Seleziona sul canvas il nodo da incorporare."),
+            })),
+        ];
+      },
     },
     {
       label: "IA",
-      items: () => [
-        {
-          label: "Rigenera bozza del capitolo",
-          run: () => toast("La rigenerazione parte dal ✨ del capitolo: la bozza è di QUEL capitolo."),
-          disabledReason: () => "Si lancia dal ✨ del capitolo.",
-        },
-      ],
+      items: () => {
+        const narr = activeNarrative();
+        const ci = validCurrentChapter();
+        return [
+          {
+            label: "Rigenera bozza del capitolo corrente",
+            run: () => {
+              if (!narr || ci == null) return;
+              void generateChapterDraft(narr.id, ci);
+            },
+            disabledReason: () =>
+              !narr
+                ? "Nessuna narrativa in questo grafo."
+                : ci == null
+                  ? "Clicca un capitolo per renderlo corrente."
+                  : null,
+          },
+        ];
+      },
     },
   ],
   table: [
@@ -5585,18 +5889,17 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
           },
         },
         {
-          label: "Elimina riga",
-          run: () => toast("Elimina una riga dalla ✕ in fondo alla riga stessa."),
-          disabledReason: () => "Si elimina dalla ✕ della riga.",
+          label: "Elimina riga corrente",
+          run: () => {
+            const id = currentRowId();
+            if (!store || !id) return;
+            deleteRow(store, id);
+            setCurrentRowId(null);
+            renderEmData();
+          },
+          disabledReason: () =>
+            currentRowId() ? null : "Clicca una riga per renderla corrente.",
         },
-      ],
-    },
-    {
-      label: "Esporta",
-      items: () => [
-        { label: "SVG", run: () => click("btn-svg") },
-        { label: "GraphML", run: () => click("btn-graphml") },
-        { label: "Turtle (.ttl)", run: () => click("btn-ttl") },
       ],
     },
   ],
@@ -5685,6 +5988,17 @@ function initWindowHeader(): void {
 initWindowHeader();
 onLocaleChange(initWindowHeader);
 document.getElementById("win-fit")?.addEventListener("click", () => fit());
+// WIN4 · the two camera verbs of this window, as buttons. "Adatta" frames the
+// scene; "1:1" drops the zoom back to actual size around the centre of the
+// window — the complement you want after a fit on a large graph, built on the
+// same `zoomAt` the +/- keys use (no second camera path).
+document.getElementById("win-act-fit")?.addEventListener("click", () => fit());
+document.getElementById("win-act-zoom1")?.addEventListener("click", () => {
+  const vp = viewport();
+  const { w, h } = viewSize();
+  if (vp.scale > 0) vp.zoomAt(w / 2, h / 2, 1 / vp.scale);
+  draw();
+});
 document
   .getElementById("win-layout")
   ?.addEventListener("click", (ev) =>
@@ -5708,6 +6022,7 @@ function applyWorkspace(id: WorkspaceId): void {
 
 function setWorkspace(id: WorkspaceId): void {
   setActiveWorkspace(id);
+  renderTiles(); // WIN5 · each workspace has its own arrangement
   // the leader chip follows the WORKSPACE and nothing else — mounting an editor
   // never moves it (that is what made a transformed window possible).
   reflectWorkspaceInBar(id);
@@ -6896,12 +7211,18 @@ updateToolbar();
 // workspace while the canvas silently sat in Matrix — the saved state was a
 // label, not a state. Safe on an empty canvas (fit/buildScenes are no-ops
 // without a store).
+renderTiles(); // WIN5 · lay out the arrangement this session was left in
 applyWorkspace(activeWorkspace());
 
 // EM-Data dock (DP-81): a live tabular view on the active store. Reads `store`
 // through a getter so it always sees the current slot; re-renders from the
 // store's onChange (wired in wireStore).
-initEmData({ getStore: () => store });
+initEmData({
+  getStore: () => store,
+  // CURRENT-ELEMENT · the row lives on the window, not in the table module
+  currentRow: () => currentRowId(),
+  setCurrentRow: (id) => setCurrentRowId(id),
+});
 // AUX2: the EM-Data table paints a row blue iff its node is volatile — the SAME
 // marker the canvas overlay reads, so table and graph never disagree.
 setVolatileProvider((id) => isVolatile(store?.node(id)));

@@ -81,6 +81,9 @@ const EN: Dict = {
   "mode.dtc": "DTC",
   "mode.multigraph": "Multigraph",
   "win.add": "Add a graph window to this workspace",
+  "win.splitRight": "Split: a new area to the right",
+  "win.splitDown": "Split: a new area below",
+  "tile.activate": "click to edit here",
   "win.close": "Close this window",
   "win.docStub": "The Doc window is not available yet.",
   "dtc.empty":
@@ -209,6 +212,9 @@ const IT: Dict = {
   "mode.dtc": "DTC",
   "mode.multigraph": "Multigrafo",
   "win.add": "Aggiungi una finestra grafo a questo workspace",
+  "win.splitRight": "Dividi: nuova area a destra",
+  "win.splitDown": "Dividi: nuova area sotto",
+  "tile.activate": "clicca per lavorare qui",
   "win.close": "Chiudi questa finestra",
   "win.docStub": "La finestra Doc non è ancora disponibile.",
   "dtc.empty":
