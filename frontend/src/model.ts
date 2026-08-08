@@ -1674,11 +1674,13 @@ export class DocumentStore {
    *  Inverse of {@link setGraphScope}. */
   readGraphScope(): {
     author: string;
+    /** ORCID of the graph-scope author, when the AuthorNode carries one (IMP1). */
+    orcid: string;
     license: string;
     embargo: string;
     em_id: string;
   } {
-    const out = { author: "", license: "", embargo: "", em_id: "" };
+    const out = { author: "", orcid: "", license: "", embargo: "", em_id: "" };
     const root = this.graphRootNode();
     if (root)
       out.em_id = String((root.data as Record<string, unknown> | undefined)?.em_id ?? "");
@@ -1687,7 +1689,13 @@ export class DocumentStore {
       for (const key of ["author", "license", "embargo"] as const) {
         const nt = nodeTypeForClass(DocumentStore.GRAPH_SCOPE_CLASS[key]);
         const m = nt ? this.graphScopeMember(pdgId, nt) : undefined;
-        if (m) out[key] = String(m.name ?? "");
+        if (m) {
+          out[key] = String(m.name ?? "");
+          if (key === "author") {
+            const orcid = (m.data as Record<string, unknown> | undefined)?.orcid;
+            if (orcid != null) out.orcid = String(orcid);
+          }
+        }
       }
     return out;
   }

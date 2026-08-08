@@ -344,6 +344,73 @@ function esc(s: string): string {
 }
 
 /**
+ * OVR1 · which face of the EMTree is showing — the slot LIST (default) or the
+ * OVERVIEW dashboard. A module-level toggle, per session and not persisted: it
+ * is how you are looking at the workspace, not part of any document. The
+ * overview is a VIEW — it reads the graph-scope nodes and writes nothing.
+ */
+let overviewMode = false;
+
+/**
+ * OVR1 · the overview dashboard: one card per open graph, its high-level data
+ * read from the GRAPH-SCOPE NODES (MIG1-A: author/licence/embargo + EM-ID on the
+ * GraphNode) and the SITE POSITION (GEO1: `readSitePosition`). One source — the
+ * nodes — never `graph.data`. Missing values read honestly ("senza EM-ID" / "non
+ * posizionato"), never a fabricated default. Clicking a card activates that slot.
+ */
+function overviewSection(tree: EMTree, labels: (key: string) => string): string {
+  if (!tree.slots.length)
+    return `<p class="et-empty">${esc(labels("emtree.empty"))}</p>`;
+  const rawLabels = tree.slots.map(slotLabel);
+  const seen = new Map<string, number>();
+  const cards = tree.slots.map((slot) => {
+    const isActive = slot.id === tree.activeId;
+    const gs = slot.store.readGraphScope();
+    const site = slot.store.readSitePosition();
+    const nodes = slot.store.doc.graph?.nodes?.length ?? 0;
+    const edges = slot.store.doc.graph?.edges?.length ?? 0;
+    let name = slotLabel(slot);
+    if (rawLabels.filter((l) => l === name).length > 1) {
+      const n = (seen.get(name) ?? 0) + 1;
+      seen.set(name, n);
+      name = `${name} (${n})`;
+    }
+    const field = (label: string, value: string, missing: string): string =>
+      `<div class="ov-field"><dt>${esc(label)}</dt><dd${value ? "" : ' class="ov-missing"'}>${
+        esc(value || missing)
+      }</dd></div>`;
+    const author = gs.author
+      ? gs.author + (gs.orcid ? ` · ${gs.orcid}` : "")
+      : "";
+    const siteText = site
+      ? `${site.lat.toFixed(5)}, ${site.lon.toFixed(5)}`
+      : "";
+    return `
+      <li class="ov-card${isActive ? " active" : ""}" data-id="${esc(slot.id)}">
+        <button class="ov-pick" data-id="${esc(slot.id)}"
+                title="${esc(slot.path ?? labels("emtree.noFile"))}">
+          <div class="ov-head">
+            <span class="ov-name">${esc(name)}${slot.store.dirty ? " •" : ""}</span>
+            <span class="ov-emid${gs.em_id ? "" : " ov-missing"}">${
+              esc(gs.em_id || "senza EM-ID")
+            }</span>
+          </div>
+          <dl class="ov-fields">
+            ${field("Autore", author, "—")}
+            ${field("Licenza", gs.license, "—")}
+            ${field("Embargo", gs.embargo, "—")}
+            ${field("Posizione", siteText, "non posizionato")}
+          </dl>
+          <div class="ov-meta">${nodes} ${labels("emtree.nodes")} · ${edges} ${labels("emtree.edges")}</div>
+        </button>
+        <button class="et-close" data-close="${esc(slot.id)}"
+                title="${esc(labels("emtree.close"))}">×</button>
+      </li>`;
+  }).join("");
+  return `<ul class="ov-cards">${cards}</ul>`;
+}
+
+/**
  * The AUXILIARY FILES section of the ACTIVE slot — the EMtools section, reproposed.
  *
  * EMtools draws this as a `template_list` per graph with an active index, add /
@@ -549,6 +616,28 @@ export function renderEMTree(host: HTMLElement, tree: EMTree,
       </li>`;
   }).join("");
 
+  // OVR1 · a segmented toggle chooses the LIST (slots + aux) or the OVERVIEW
+  // dashboard (cards from the graph-scope nodes). The overview only shows with
+  // ≥1 slot; the toggle is hidden when the workspace is empty.
+  const toggle = tree.slots.length
+    ? `<div class="et-viewtoggle" role="tablist">
+        <button id="et-mode-list" class="${overviewMode ? "" : "on"}">${
+          esc(labels("emtree.viewList"))
+        }</button>
+        <button id="et-mode-overview" class="${overviewMode ? "on" : ""}">${
+          esc(labels("emtree.viewOverview"))
+        }</button>
+      </div>`
+    : "";
+
+  const body = overviewMode
+    ? overviewSection(tree, labels)
+    : `${tree.slots.length
+        ? `<ul class="et-slots">${rows}</ul>`
+        : `<p class="et-empty">${esc(labels("emtree.empty"))}</p>`}
+       ${auxSection(tree, labels)}
+       <p class="et-todo">${esc(labels("emtree.auxNote"))}</p>`;
+
   host.innerHTML = `
     <div class="et-panel">
       <p class="et-intro">${esc(labels("emtree.intro"))}</p>
@@ -556,12 +645,28 @@ export function renderEMTree(host: HTMLElement, tree: EMTree,
         <button id="et-new">${esc(labels("emtree.new"))}</button>
         <button id="et-open">${esc(labels("emtree.open"))}</button>
       </div>
-      ${tree.slots.length
-        ? `<ul class="et-slots">${rows}</ul>`
-        : `<p class="et-empty">${esc(labels("emtree.empty"))}</p>`}
-      ${auxSection(tree, labels)}
-      <p class="et-todo">${esc(labels("emtree.auxNote"))}</p>
+      ${toggle}
+      ${body}
     </div>`;
+
+  // OVR1 · toggle handlers: flip the mode and re-render this same panel (the
+  // overview is view-only, so a re-render is all it takes).
+  const setMode = (overview: boolean): void => {
+    if (overviewMode === overview) return;
+    overviewMode = overview;
+    renderEMTree(host, tree, handlers, labels);
+  };
+  host.querySelector<HTMLButtonElement>("#et-mode-list")
+    ?.addEventListener("click", () => setMode(false));
+  host.querySelector<HTMLButtonElement>("#et-mode-overview")
+    ?.addEventListener("click", () => setMode(true));
+  // Overview cards activate their slot on click (same as a list row).
+  host.querySelectorAll<HTMLButtonElement>(".ov-pick").forEach((button) => {
+    button.addEventListener("click", () => {
+      const id = button.dataset.id;
+      if (id) handlers.onActivate(id);
+    });
+  });
 
   host.querySelectorAll<HTMLButtonElement>(".et-pick").forEach((button) => {
     button.addEventListener("click", () => {
