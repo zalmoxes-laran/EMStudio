@@ -74,6 +74,7 @@ import { sceneToSvg } from "./svg-export";
 import {
   isTauri,
   openEmJson,
+  readEmJsonPath,
   writeEmJson,
   saveAsEmJson,
   openGraphml,
@@ -152,6 +153,7 @@ import { GROUP_HEADER, GROUP_PAD } from "./views/matrix";
 import { setupSearch } from "./search";
 import { initEmData, renderEmData, setVolatileProvider } from "./emdata";
 import { isVolatile } from "./volatile";
+import { addRecent, removeRecent, type RecentFile } from "./recent";
 import type { CentralMode, EmDocument, EmEdge, EmNode, ViewKind } from "./types";
 import { buildDtcGenesisScene, buildGroupScene } from "./views/context";
 import { buildGraphScene, type GraphAlgorithm } from "./views/graph";
@@ -1699,6 +1701,8 @@ function loadDocument(
     return;
   }
   currentFilePath = path; // desktop: enables in-place Save; null in browser
+  // QOL1 · remember this open (path for desktop reopen, name otherwise).
+  addRecent({ path, name: path ? baseName(path) : sourceName }, Date.now());
   // Does the INCOMING doc already carry node positions? Capture this BEFORE
   // ensureAllEpochParadata (which adds positions for the boxes it creates) —
   // otherwise those few positions make the doc look "already laid out" and we
@@ -1958,6 +1962,30 @@ function browserDownload(text: string, filename: string): void {
   a.download = filename;
   a.click();
   URL.revokeObjectURL(a.href);
+}
+
+// QOL1 · reopen a recent file. A path-less recent (a browser drop) cannot be
+// reopened by the sandbox; a path-bearing one reopens on the desktop and, if the
+// file has since disappeared, is pruned from the list.
+async function openRecentFile(r: RecentFile): Promise<void> {
+  if (!r.path) {
+    toast("Recente aperto per drag&drop: riaprilo trascinando di nuovo il file " +
+          "(il browser non può riaprirlo per percorso).");
+    return;
+  }
+  try {
+    const res = await readEmJsonPath(r.path);
+    if (!res) {
+      toast("Riapertura per percorso disponibile solo nell'app desktop.");
+      return;
+    }
+    if (!(await confirmLeaveSidecar("Opening a file"))) return;
+    loadDocument(JSON.parse(res.text) as EmDocument, baseName(res.path), res.path);
+  } catch {
+    removeRecent(r.path);
+    toast("Il file recente non è più leggibile — rimosso dai recenti.");
+    renderEMTree(emtreeEl, emtree, emtreeHandlers, t);
+  }
 }
 
 // Open: native dialog on desktop, <input type=file> in a browser.
@@ -4043,6 +4071,7 @@ const emtreeHandlers: EMTreeHandlers = {
   },
   onOpen: () => void openDocument(),
   onNew: () => newDocument(),
+  onOpenRecent: (r) => void openRecentFile(r),
   // AUX1 · auxiliary files live on the SLOT and never in em.json, so every one of
   // these mutates `slot.auxiliaryFiles` and re-renders the tree — none of them
   // touches `store`, which is what keeps an un-baked aux out of a shared document.

@@ -28,6 +28,7 @@
 
 import type { DocumentStore } from "./model";
 import type { ViewKind } from "./types";
+import { getRecents, type RecentFile } from "./recent";
 
 /**
  * A per-graph auxiliary file — **the place, not the feature** (ET1 P0).
@@ -322,6 +323,8 @@ export interface EMTreeHandlers {
   /** Add = the same Open… the toolbar uses; the tree does not duplicate it. */
   onOpen(): void;
   onNew(): void;
+  /** QOL1 · open a recent file (reopenable only when it carries a path). */
+  onOpenRecent?(r: RecentFile): void;
   /** Inline rename from the tree (POL1): double-click the name. */
   onRename(id: string, name: string): void;
   /** AUX1 — auxiliary files of the ACTIVE slot. The tree renders, main.ts acts. */
@@ -638,6 +641,21 @@ export function renderEMTree(host: HTMLElement, tree: EMTree,
        ${auxSection(tree, labels)}
        <p class="et-todo">${esc(labels("emtree.auxNote"))}</p>`;
 
+  // QOL1 · recent files (newest first). A path-less entry (a browser drop) is
+  // shown but marked not-reopenable — the sandbox cannot reopen a file by path.
+  const recents = getRecents();
+  const recentBlock = recents.length
+    ? `<div class="et-recents">
+        <div class="et-recents-head">${esc(labels("emtree.recent"))}</div>
+        <ul class="et-recent-list">
+          ${recents.map((r, i) =>
+            `<li><button class="et-recent${r.path ? "" : " et-recent-nofile"}"
+                 data-recent="${i}" title="${esc(r.path ?? labels("emtree.noFile"))}">
+               ${esc(r.name)}</button></li>`).join("")}
+        </ul>
+      </div>`
+    : "";
+
   host.innerHTML = `
     <div class="et-panel">
       <p class="et-intro">${esc(labels("emtree.intro"))}</p>
@@ -645,9 +663,17 @@ export function renderEMTree(host: HTMLElement, tree: EMTree,
         <button id="et-new">${esc(labels("emtree.new"))}</button>
         <button id="et-open">${esc(labels("emtree.open"))}</button>
       </div>
+      ${recentBlock}
       ${toggle}
       ${body}
     </div>`;
+
+  host.querySelectorAll<HTMLButtonElement>(".et-recent").forEach((button) => {
+    button.addEventListener("click", () => {
+      const r = recents[Number(button.dataset.recent)];
+      if (r) handlers.onOpenRecent?.(r);
+    });
+  });
 
   // OVR1 · toggle handlers: flip the mode and re-render this same panel (the
   // overview is view-only, so a re-render is all it takes).

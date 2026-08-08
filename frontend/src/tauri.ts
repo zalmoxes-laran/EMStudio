@@ -9,8 +9,11 @@ import { readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 
+// QOL1 · `.emj` is the native short extension for an em.json document; `.em.json`
+// and `.json` stay accepted. The parser is content-based (header.format), so the
+// extension only drives the pickers.
 const EM_FILTERS = [
-  { name: "Extended Matrix", extensions: ["em.json", "json"] },
+  { name: "Extended Matrix", extensions: ["emj", "em.json", "json"] },
 ];
 
 const GRAPHML_FILTERS = [
@@ -38,6 +41,16 @@ export async function openEmJson(): Promise<
   const picked = await open({ multiple: false, filters: EM_FILTERS });
   const path = Array.isArray(picked) ? picked[0] : picked;
   if (!path || typeof path !== "string") return null;
+  const text = await readTextFile(path);
+  return { path, text };
+}
+
+/** QOL1 · read a specific em.json/.emj by absolute path — reopening a recent
+ *  file on the desktop. `null` in a browser (no filesystem access by path). */
+export async function readEmJsonPath(
+  path: string,
+): Promise<{ path: string; text: string } | null> {
+  if (!isTauri()) return null;
   const text = await readTextFile(path);
   return { path, text };
 }

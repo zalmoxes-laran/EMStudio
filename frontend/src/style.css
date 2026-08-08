@@ -1808,6 +1808,46 @@ body.sync-active #footer-brand #em-version {
   padding: 8px 6px;
 }
 
+/* QOL1 · recent files list in the EMTree panel */
+.et-recents {
+  margin-bottom: 10px;
+}
+.et-recents-head {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+  margin: 2px 4px 4px;
+}
+.et-recent-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.et-recent {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 3px 8px;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--accent-ink);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-radius: 4px;
+}
+.et-recent:hover {
+  background: var(--bg-subtle);
+}
+.et-recent-nofile {
+  color: var(--text-faint);
+  cursor: default;
+}
+
 /* NARRWS1 · the narrative-mode left palette (building blocks, not node types) */
 #narrative-palette {
   flex: 1 1 auto;
