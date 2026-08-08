@@ -206,6 +206,33 @@ body.sync-active #statusbar {
   background: rgba(255, 255, 255, 0.22);
 }
 
+/* WIN1 · workspace leader (Canvas/Narrative/Table/DTC) */
+#workspace-bar {
+  display: flex;
+  gap: 2px;
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+}
+#workspace-bar .ws-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  padding: 4px 9px;
+  cursor: pointer;
+}
+#workspace-bar .ws-chip .ws-ic {
+  font-size: 12px;
+  opacity: 0.85;
+}
+#workspace-bar .ws-chip.active {
+  background: rgba(255, 255, 255, 0.3);
+  font-weight: 600;
+}
+
 #view-toggle {
   display: flex;
   border-radius: 6px;

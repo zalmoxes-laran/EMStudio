@@ -95,6 +95,11 @@
       <button id="btn-resources" title="Resources: the shared Resource layer (Documents · RM · DTC · Shelf) via the bridge" data-i18n="toolbar.resources">Resources</button>
       <span id="dirty-dot" class="hidden" title="unsaved changes">●</span>
       <span class="tb-sep"></span>
+      <!-- WIN1 · workspace leader: fixed presets (Canvas/Narrative/Table/DTC).
+           The higher-level switcher that absorbs MODE1; each preset mounts the
+           existing editors. Populated by main.ts from workspace.ts. -->
+      <div id="workspace-bar" role="group" aria-label="Workspaces"></div>
+      <span class="tb-sep"></span>
       <div id="view-toggle" role="group">
         <button id="btn-matrix" class="active" data-i18n="toolbar.matrix">Matrix</button>
         <button id="btn-graph" data-i18n="toolbar.graph">Graph</button>

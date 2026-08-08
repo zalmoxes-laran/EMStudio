@@ -110,6 +110,7 @@ import {
   isValidated,
   isValidatedInBuild,
   LOCALES,
+  onLocaleChange,
   setLocale,
   setValidated,
   t,
@@ -158,6 +159,13 @@ import { setupSearch } from "./search";
 import { initEmData, renderEmData, setVolatileProvider } from "./emdata";
 import { isVolatile } from "./volatile";
 import { addRecent, removeRecent, type RecentFile } from "./recent";
+import {
+  WORKSPACES,
+  activeWorkspace,
+  setActiveWorkspace,
+  syncActiveWorkspace,
+  type WorkspaceId,
+} from "./workspace";
 import type { CentralMode, EmDocument, EmEdge, EmNode, ViewKind } from "./types";
 import { buildDtcGenesisScene, buildGroupScene } from "./views/context";
 import { buildGraphScene, type GraphAlgorithm } from "./views/graph";
@@ -1494,6 +1502,12 @@ function setMode(m: CentralMode): void {
   // mode needs no new toggle line here.
   for (const mode of CENTRAL_MODES)
     MODE_BUTTONS[mode]?.classList.toggle("active", mode === m);
+  // WIN1 · keep the workspace leader in step when the mode changes by any route
+  // (Narrative button, Matrix/Graph, boot). narrative→"narrative", the canvas
+  // modes→"canvas" (DTC is only entered via the leader itself, so a direct
+  // Matrix/Graph click reads as the Canvas workspace). No re-entrancy: this only
+  // updates the leader's own active chip + the persisted id, never calls setMode.
+  reflectWorkspaceInBar(narrative ? "narrative" : "canvas");
   // The narrative overlay's visibility IS "the mode is narrative" (this replaced
   // the separate `narrativeOpen` flag — no second, divergible state).
   narrativeViewEl.classList.toggle("hidden", !narrative);
@@ -5052,6 +5066,77 @@ btnUndo.addEventListener("click", () => store?.undo());
 btnRedo.addEventListener("click", () => store?.redo());
 btnMatrix.addEventListener("click", () => setView("matrix"));
 btnGraph.addEventListener("click", () => setView("graph"));
+
+// ---------- WIN1 · workspace leader (Canvas/Narrative/Table/DTC) ----------
+// The higher-level switcher that ABSORBS MODE1: each preset mounts an existing
+// editor. No shell rewrite here — Canvas/Narrative reuse setMode; Table expands
+// the EM-Data dock (the tabular window surface); DTC opens the graph (its full
+// DTC mode is WIN2). Per-window transform + true multi-window arrangements land
+// next (the workspace.ts `Win` shape is already per-instance).
+const workspaceBar = document.getElementById("workspace-bar")!;
+
+/** Expand/collapse the EM-Data dock to a desired state, via its own toggle so
+ *  emdata.ts stays the single owner of the dock's collapsed logic. */
+function setEmDataOpen(open: boolean): void {
+  const dock = document.getElementById("emdata-dock");
+  const toggle = document.getElementById("emdata-toggle") as HTMLButtonElement | null;
+  if (!dock || !toggle) return;
+  const collapsed = dock.classList.contains("collapsed");
+  if (open === collapsed) toggle.click(); // flip only when needed
+}
+
+/** Light the leader's active chip; keep workspace.ts's persisted id in step.
+ *  Pure reflection — never triggers a workspace apply (no re-entrancy). */
+function reflectWorkspaceInBar(id: WorkspaceId): void {
+  syncActiveWorkspace(id);
+  workspaceBar
+    .querySelectorAll<HTMLButtonElement>("button[data-ws]")
+    .forEach((b) => b.classList.toggle("active", b.dataset.ws === id));
+}
+
+/** Apply a workspace: mount its editor via the existing shell. */
+function applyWorkspace(id: WorkspaceId): void {
+  const preset = WORKSPACES.find((w) => w.id === id) ?? WORKSPACES[0];
+  if (preset.windowType === "narrative") {
+    setEmDataOpen(false);
+    setMode("narrative");
+    return;
+  }
+  if (preset.windowType === "table") {
+    // the EM-Data dock IS the table surface; keep a canvas mode behind it (never
+    // the narrative overlay) and open the dock.
+    if (centralMode === "narrative") setMode(view);
+    setEmDataOpen(true);
+    reflectWorkspaceInBar("table");
+    return;
+  }
+  // graph window (canvas / dtc). DTC full mode = WIN2; for now it opens Graph.
+  setEmDataOpen(false);
+  setMode(preset.graphMode === "graph" || preset.graphMode === "dtc" ? "graph" : "matrix");
+  // setMode reflected "canvas"; for the DTC preset keep DTC lit instead.
+  if (id === "dtc") reflectWorkspaceInBar("dtc");
+}
+
+function setWorkspace(id: WorkspaceId): void {
+  setActiveWorkspace(id);
+  applyWorkspace(id);
+}
+
+function renderWorkspaceBar(): void {
+  workspaceBar.innerHTML = "";
+  for (const w of WORKSPACES) {
+    const b = document.createElement("button");
+    b.dataset.ws = w.id;
+    b.className = "ws-chip" + (w.id === activeWorkspace() ? " active" : "");
+    b.title = t(w.labelKey);
+    b.innerHTML = `<span class="ws-ic">${w.icon}</span><span class="ws-lb">${t(w.labelKey)}</span>`;
+    b.addEventListener("click", () => setWorkspace(w.id));
+    workspaceBar.appendChild(b);
+  }
+}
+renderWorkspaceBar();
+onLocaleChange(renderWorkspaceBar);
+
 document.getElementById("btn-fit")!.addEventListener("click", fit);
 const btnLayout = document.getElementById("btn-layout") as HTMLButtonElement;
 btnLayout.title =
