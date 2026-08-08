@@ -1492,8 +1492,15 @@ body.sync-active #mode-indicator::before {
   top: 10px;
   left: 10px;
   z-index: 25;
+  /* WIN2 · a real header bar: type · mode · fit · layout · algorithm ·
+     instances. Wraps rather than clips — the canvas must never be pushed. */
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
 }
-#window-header .win-type-toggle {
+#window-header .win-type-toggle,
+#window-header .win-mode-toggle {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -1507,9 +1514,64 @@ body.sync-active #mode-indicator::before {
   font-size: 12.5px;
   cursor: pointer;
 }
-#window-header .win-type-toggle:hover {
+#window-header .win-type-toggle:hover,
+#window-header .win-mode-toggle:hover {
   background: var(--bg-panel);
   border-color: var(--accent);
+}
+#window-header .win-mode-label {
+  font-weight: 600;
+}
+/* the window's own actions — square buttons matching the header pills */
+#window-header .win-act,
+#window-header #win-algo,
+#window-header .wi-chip {
+  height: 30px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  color: var(--text);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+#window-header .win-act {
+  width: 30px;
+  padding: 0;
+}
+#window-header #win-algo {
+  padding: 0 6px;
+}
+#window-header .win-act:hover,
+#window-header #win-algo:hover,
+#window-header .wi-chip:hover {
+  background: var(--bg-panel);
+  border-color: var(--accent);
+}
+#window-header .win-sep {
+  width: 1px;
+  height: 18px;
+  background: var(--border);
+  opacity: 0.8;
+}
+#win-instances {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+#window-header .wi-chip {
+  min-width: 26px;
+  padding: 0 7px;
+}
+#window-header .wi-chip.active {
+  border-color: var(--accent);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+#window-header .wi-chip.wi-add,
+#window-header .wi-chip.wi-close {
+  opacity: 0.75;
+  font-weight: 400;
 }
 #window-header .win-type-icon {
   font-size: 13px;

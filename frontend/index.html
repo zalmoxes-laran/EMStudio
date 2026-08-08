@@ -100,7 +100,11 @@
            existing editors. Populated by main.ts from workspace.ts. -->
       <div id="workspace-bar" role="group" aria-label="Workspaces"></div>
       <span class="tb-sep"></span>
-      <div id="view-toggle" role="group">
+      <!-- WIN2 · the view-toggle was ABSORBED into the Graph window header (the
+           mode belongs to the window, not to the app). The buttons stay in the
+           DOM, hidden: they remain the single owners of the mode handlers, and
+           the header + the leader bar drive them. -->
+      <div id="view-toggle" role="group" class="hidden">
         <button id="btn-matrix" class="active" data-i18n="toolbar.matrix">Matrix</button>
         <button id="btn-graph" data-i18n="toolbar.graph">Graph</button>
         <button
@@ -110,10 +114,12 @@
           <span data-i18n="toolbar.narrative">Narrative</span>
         </button>
       </div>
+      <!-- WIN2 · mirrored by #win-algo in the window header; hidden here but
+           still the owner of the algorithm-change handler. -->
       <select
         id="graph-layout"
+        class="hidden"
         title="Graph-view layout algorithm (Graph view only)"
-        style="display: none"
       >
         <option value="layered">Layered</option>
         <option value="radial">Radial</option>
@@ -126,8 +132,10 @@
       >
         Edit
       </button>
-      <button id="btn-fit" title="Fit to view (0)" data-i18n="toolbar.fit">Fit</button>
-      <button id="btn-layout" title="Recompute the swimlane layout (em-core, same engine as the CLI)" data-i18n="toolbar.layout">Layout</button>
+      <!-- WIN2 · fit / layout / algorithm moved INTO the window header (they act
+           on a window, not on the app). Hidden here, still the handler owners. -->
+      <button id="btn-fit" class="hidden" title="Fit to view (0)" data-i18n="toolbar.fit">Fit</button>
+      <button id="btn-layout" class="hidden" title="Recompute the swimlane layout (em-core, same engine as the CLI)" data-i18n="toolbar.layout">Layout</button>
       <input type="file" id="file-input" accept=".json,.em.json,.emj" hidden />
       <!-- AUX1: the auxiliary-file picker. No `accept`: the five source kinds
            include folders (DosCo, resource collection) and databases, and a
@@ -159,13 +167,37 @@
              window in-place. Floating top-left (like the filter button top-right)
              so it needs no canvas re-sizing; above the narrative overlay.
              Reuses the generic .dropdown wiring; items built by main.ts. -->
-        <div id="window-header" class="dropdown">
-          <button class="dd-toggle win-type-toggle" title="Window type — transform this window">
-            <span id="win-type-icon" class="win-type-icon">▦</span>
-            <span id="win-type-label" class="win-type-label">Graph</span>
-            <span class="win-type-caret">▾</span>
-          </button>
-          <div id="window-type-menu" class="dd-menu hidden"></div>
+        <!-- WIN2 · the header grew the window's own controls: the transform
+             dropdown, then (graph windows only) the MODE dropdown
+             matrix/graph/DTC, fit, layout + algorithm, and the instance strip.
+             The toolbar's global view-toggle / fit / layout / algorithm are
+             hidden and driven from here — they stay in the DOM so their handlers
+             and keyboard shortcuts remain the single owners of the behaviour. -->
+        <div id="window-header">
+          <div id="window-type" class="dropdown">
+            <button class="dd-toggle win-type-toggle" title="Window type — transform this window">
+              <span id="win-type-icon" class="win-type-icon">▦</span>
+              <span id="win-type-label" class="win-type-label">Graph</span>
+              <span class="win-type-caret">▾</span>
+            </button>
+            <div id="window-type-menu" class="dd-menu hidden"></div>
+          </div>
+          <div id="window-mode" class="dropdown">
+            <button class="dd-toggle win-mode-toggle" title="Mode — the projection THIS window shows">
+              <span id="win-mode-label" class="win-mode-label">Matrix</span>
+              <span class="win-type-caret">▾</span>
+            </button>
+            <div id="window-mode-menu" class="dd-menu hidden"></div>
+          </div>
+          <button id="win-fit" class="win-act" title="Fit to view (0)">⤢</button>
+          <button id="win-layout" class="win-act" title="Recompute this window's layout">⧉</button>
+          <select id="win-algo" title="Graph layout algorithm">
+            <option value="layered">Layered</option>
+            <option value="radial">Radial</option>
+            <option value="force">Force</option>
+          </select>
+          <span class="win-sep"></span>
+          <div id="win-instances" role="group" aria-label="Windows"></div>
         </div>
         <div id="chrono-banner" class="hidden"></div>
         <!-- The empty state has to offer BOTH ways of getting a graph. Dropping

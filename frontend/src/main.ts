@@ -162,10 +162,17 @@ import { addRecent, removeRecent, type RecentFile } from "./recent";
 import {
   WORKSPACES,
   WINDOW_TYPE_META,
+  activeWin,
   activeWorkspace,
   activeWindowType,
+  addWindow,
+  closeWindow,
+  setActiveWin,
   setActiveWorkspace,
+  setWinMode,
   syncActiveWorkspace,
+  winMode,
+  windowsOf,
   type WorkspaceId,
   type WindowType,
 } from "./workspace";
@@ -1522,14 +1529,18 @@ function setMode(m: CentralMode): void {
   // mode needs no new toggle line here.
   for (const mode of CENTRAL_MODES)
     MODE_BUTTONS[mode]?.classList.toggle("active", mode === m);
-  // WIN1 · keep the workspace leader in step when the mode changes by any route
-  // (Narrative button, Matrix/Graph/DTC, boot). Each mode maps to the workspace
-  // that owns it; matrix/graph both read as the Canvas workspace. No re-entrancy:
-  // this only updates the leader's own active chip + the persisted id, never
-  // calls setMode.
-  reflectWorkspaceInBar(
-    narrative ? "narrative" : m === "dtc" ? "dtc" : "canvas",
-  );
+  // WIN2 · the mode belongs to the WINDOW, so a canvas mode no longer moves the
+  // leader: a graph window in DTC mode inside the Canvas workspace is exactly
+  // what per-instance modes mean. Only narrative, which lives in its own
+  // workspace, moves the chip — and leaving narrative brings it back to Canvas.
+  // No re-entrancy: reflectWorkspaceInBar only updates the chip + persisted id.
+  if (narrative) reflectWorkspaceInBar("narrative");
+  else {
+    const win = activeWin();
+    if (win.type === "graph") setWinMode(win, m);
+    if (activeWorkspace() === "narrative") reflectWorkspaceInBar("canvas");
+    else updateWindowHeader();
+  }
   // The narrative overlay's visibility IS "the mode is narrative" (this replaced
   // the separate `narrativeOpen` flag — no second, divergible state).
   narrativeViewEl.classList.toggle("hidden", !narrative);
@@ -1561,19 +1572,26 @@ function setView(v: ViewKind): void {
   setMode(v);
 }
 
+/** WIN2 · the view a LOADED document asks for. An arriving document must not
+ *  seize the window's mode: a graph window left in DTC keeps showing the DTC
+ *  projection of whatever is opened next — that is what makes the mode belong to
+ *  the window. Only the two stratigraphic projections trade places on load. */
+function setViewOnLoad(v: ViewKind): void {
+  const win = activeWin();
+  if (win.type === "graph" && winMode(win) === "dtc") {
+    setMode("dtc");
+    return;
+  }
+  setView(v);
+}
+
 /** Switch the canvas projection (matrix ↔ graph): per-view viewport, circles of
  *  detail, scene rebuild and fit. Called by `setMode` for the two canvas modes. */
 function applyCanvasView(v: ViewKind): void {
   const changed = view !== v;
   view = v;
-  // (selector "active" state is set by setMode, from CENTRAL_MODES)
-  // Layout controls are per-view: Matrix uses the "Layout" button (em-core
-  // swimlanes); Graph uses the algorithm dropdown (layered/radial/force); DTC is
-  // a deterministic layered projection with no algorithm choice, so it shows
-  // neither. Show only the relevant one so they don't look redundant.
-  const graphLayoutSel = document.getElementById("graph-layout");
-  if (graphLayoutSel) graphLayoutSel.style.display = v === "graph" ? "" : "none";
-  btnLayout.style.display = v === "matrix" ? "" : "none";
+  // (selector "active" state is set by setMode, from CENTRAL_MODES; the layout
+  // controls are per-mode and live in the window header — updateWindowHeader.)
   // each view keeps its own "circles of detail" depth → re-derive the hidden
   // sets and rebuild when the active view changes.
   if (changed && store) {
@@ -1723,7 +1741,7 @@ function activateSlot(id: string, opts: { rebuildOnly?: boolean } = {}): void {
   if (!opts.rebuildOnly) {
     // A switch restores the view the slot was left in; a load lets
     // `loadDocument` decide (it may need a fresh em-core layout first).
-    setView(target.viewState.view);
+    setViewOnLoad(target.viewState.view);
     // Restore this graph's camera, or frame it if it has never been shown. The
     // viewports are shared per view KIND, so without this the incoming graph
     // inherits the outgoing one's pan and zoom — a 17-node document arriving at a
@@ -1817,20 +1835,20 @@ function loadDocument(
     // Silent and non-blocking: nothing moves, so there is nothing to explain, and
     // a failure leaves the document exactly as it was on disk.
     void reassertSizes().finally(() => {
-      setView(scenes.matrix ? "matrix" : "graph");
+      setViewOnLoad(scenes.matrix ? "matrix" : "graph");
     });
   } else {
     logInfo("no stored positions — computing a fresh layout via em-core");
     void runLayout(true)
       .then(() => {
-        setView("matrix");
+        setViewOnLoad("matrix");
         fit();
       })
       .catch((e) => {
         const msg = e instanceof Error ? e.message : String(e);
         info.textContent = `auto-layout failed: ${msg}`;
         logError(`auto-layout failed: ${msg}`);
-        setView(scenes.matrix ? "matrix" : "graph");
+        setViewOnLoad(scenes.matrix ? "matrix" : "graph");
       });
   }
   refreshLogPanel();
@@ -5150,15 +5168,120 @@ function transformWindow(type: WindowType): void {
   setWorkspace(ws);
 }
 
+// WIN2 · the modes a graph window can show, in header order. They ARE the canvas
+// projections (ViewKind) — the window picks one, the app no longer has "a view".
+const GRAPH_MODES: ViewKind[] = ["matrix", "graph", "dtc"];
+
+/** Change the mode of the ACTIVE window (per-instance): record it on the window,
+ *  then mount that projection. Another graph window keeps its own mode. */
+function setWindowMode(mode: ViewKind): void {
+  setWinMode(activeWin(), mode);
+  setMode(mode); // → reflect + updateWindowHeader
+}
+
+/** Show another window of the current workspace, restoring ITS mode. */
+function selectWindow(winId: string): void {
+  const win = setActiveWin(winId);
+  if (win.type === "graph") setMode(winMode(win));
+  updateWindowHeader();
+}
+
+/** Add a second (third, …) graph window to THIS workspace. No tiling: the new
+ *  window becomes the visible one, and the instance strip switches between them
+ *  — which is what makes two graph windows in different modes observable. */
+function addGraphWindow(): void {
+  const win = addWindow("graph", { mode: winMode(activeWin()) });
+  setMode(winMode(win));
+  updateWindowHeader();
+}
+
+function closeActiveWindow(): void {
+  if (!closeWindow(activeWin().id)) return; // never the last one
+  const win = activeWin();
+  if (win.type === "graph") setMode(winMode(win));
+  updateWindowHeader();
+}
+
 function updateWindowHeader(): void {
-  const meta = WINDOW_TYPE_META[activeWindowType()];
+  const type = activeWindowType();
+  const meta = WINDOW_TYPE_META[type];
   const icon = document.getElementById("win-type-icon");
   const label = document.getElementById("win-type-label");
   if (icon) icon.textContent = meta.icon;
   if (label) label.textContent = t(meta.labelKey);
   document
     .querySelectorAll<HTMLButtonElement>("#window-type-menu button[data-wt]")
-    .forEach((b) => b.classList.toggle("active", b.dataset.wt === activeWindowType()));
+    .forEach((b) => b.classList.toggle("active", b.dataset.wt === type));
+
+  // The mode + canvas actions belong to a GRAPH window; on any other window type
+  // they would act on something that isn't there.
+  const isGraph = type === "graph";
+  const mode = isGraph ? winMode(activeWin()) : null;
+  const show = (id: string, on: boolean): void => {
+    document.getElementById(id)?.classList.toggle("hidden", !on);
+  };
+  show("window-mode", isGraph);
+  show("win-fit", isGraph);
+  // Layout is a Matrix action (em-core swimlanes); the algorithm belongs to the
+  // Graph projection; DTC is a deterministic layered projection, so neither.
+  show("win-layout", mode === "matrix");
+  show("win-algo", mode === "graph");
+  const modeLabel = document.getElementById("win-mode-label");
+  if (modeLabel && mode) modeLabel.textContent = t(`mode.${mode}`);
+  document
+    .querySelectorAll<HTMLButtonElement>("#window-mode-menu button[data-wm]")
+    .forEach((b) => b.classList.toggle("active", b.dataset.wm === mode));
+  const algo = document.getElementById("win-algo") as HTMLSelectElement | null;
+  if (algo) algo.value = graphAlgorithm;
+  renderInstanceStrip();
+}
+
+/** The instance strip: one chip per window of this workspace, plus add/close.
+ *  Hidden as a strip when a single window would make it noise — the "+" stays. */
+function renderInstanceStrip(): void {
+  const strip = document.getElementById("win-instances");
+  if (!strip) return;
+  strip.innerHTML = "";
+  const wins = windowsOf();
+  const current = activeWin();
+  if (wins.length > 1)
+    wins.forEach((w, i) => {
+      const b = document.createElement("button");
+      b.className = "wi-chip" + (w.id === current.id ? " active" : "");
+      b.textContent = String(i + 1);
+      b.title = `${t(WINDOW_TYPE_META[w.type].labelKey)}${
+        w.type === "graph" ? ` · ${t(`mode.${winMode(w)}`)}` : ""
+      }`;
+      b.addEventListener("click", () => selectWindow(w.id));
+      strip.appendChild(b);
+    });
+  const add = document.createElement("button");
+  add.className = "wi-chip wi-add";
+  add.textContent = "+";
+  add.title = t("win.add");
+  add.addEventListener("click", addGraphWindow);
+  strip.appendChild(add);
+  if (wins.length > 1) {
+    const close = document.createElement("button");
+    close.className = "wi-chip wi-close";
+    close.textContent = "×";
+    close.title = t("win.close");
+    close.addEventListener("click", closeActiveWindow);
+    strip.appendChild(close);
+  }
+}
+
+function renderWindowModeMenu(): void {
+  const menu = document.getElementById("window-mode-menu");
+  if (!menu) return;
+  menu.innerHTML = "";
+  for (const mode of GRAPH_MODES) {
+    const b = document.createElement("button");
+    b.dataset.wm = mode;
+    b.textContent = t(`mode.${mode}`);
+    b.addEventListener("click", () => setWindowMode(mode));
+    menu.appendChild(b);
+  }
 }
 
 function renderWindowTypeMenu(): void {
@@ -5175,18 +5298,42 @@ function renderWindowTypeMenu(): void {
   }
   updateWindowHeader();
 }
-renderWindowTypeMenu();
-onLocaleChange(renderWindowTypeMenu);
 
-/** Apply a workspace: mount its editor via the existing shell. */
+/** Build the header once, and again on a locale change. The window ACTIONS are
+ *  wired to the existing toolbar controls rather than reimplemented: those
+ *  handlers stay the single owners of fit / layout / algorithm. */
+function initWindowHeader(): void {
+  renderWindowTypeMenu();
+  renderWindowModeMenu();
+  updateWindowHeader();
+}
+initWindowHeader();
+onLocaleChange(initWindowHeader);
+document.getElementById("win-fit")?.addEventListener("click", () => fit());
+document
+  .getElementById("win-layout")
+  ?.addEventListener("click", (ev) =>
+    btnLayout.dispatchEvent(
+      new MouseEvent("click", { altKey: (ev as MouseEvent).altKey }),
+    ),
+  );
+document.getElementById("win-algo")?.addEventListener("change", (ev) => {
+  const sel = document.getElementById("graph-layout") as HTMLSelectElement;
+  sel.value = (ev.target as HTMLSelectElement).value;
+  sel.dispatchEvent(new Event("change"));
+});
+
+/** Apply a workspace: mount the editor of its ACTIVE window via the existing
+ *  shell. WIN2 · the window decides, not the preset — the preset only seeded the
+ *  first window, so a Canvas workspace left in DTC mode reopens in DTC. */
 function applyWorkspace(id: WorkspaceId): void {
-  const preset = WORKSPACES.find((w) => w.id === id) ?? WORKSPACES[0];
-  if (preset.windowType === "narrative") {
+  const win = activeWin(id);
+  if (win.type === "narrative") {
     setEmDataOpen(false);
     setMode("narrative");
     return;
   }
-  if (preset.windowType === "table") {
+  if (win.type === "table") {
     // the EM-Data dock IS the table surface; keep a canvas mode behind it (never
     // the narrative overlay) and open the dock.
     if (centralMode === "narrative") setMode(view);
@@ -5194,11 +5341,8 @@ function applyWorkspace(id: WorkspaceId): void {
     reflectWorkspaceInBar("table");
     return;
   }
-  // graph window (canvas / dtc): the preset's graph mode IS a canvas projection
-  // (WIN2 made `dtc` one), so the preset applies with no special case — setMode
-  // lights the right leader chip on its own.
   setEmDataOpen(false);
-  setMode(preset.graphMode ?? "matrix");
+  setMode(winMode(win));
 }
 
 function setWorkspace(id: WorkspaceId): void {
@@ -6383,6 +6527,12 @@ populateLanguageSelect();
 // button sat there, enabled, filtering nothing (POL1 point 8 was only half true:
 // the rule was right, it just never ran before the first load).
 updateToolbar();
+// WIN2 · reopen the arrangement the session was left in: the persisted workspace
+// and ITS active window's mode. Before this the leader chip showed the saved
+// workspace while the canvas silently sat in Matrix — the saved state was a
+// label, not a state. Safe on an empty canvas (fit/buildScenes are no-ops
+// without a store).
+applyWorkspace(activeWorkspace());
 
 // EM-Data dock (DP-81): a live tabular view on the active store. Reads `store`
 // through a getter so it always sees the current slot; re-renders from the

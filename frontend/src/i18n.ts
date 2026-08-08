@@ -79,6 +79,8 @@ const EN: Dict = {
   "mode.matrix": "Matrix",
   "mode.graph": "Graph",
   "mode.dtc": "DTC",
+  "win.add": "Add a graph window to this workspace",
+  "win.close": "Close this window",
   "dtc.empty":
     "DTC — no digital-twin chain in this graph yet (no dtc_ relation, no linked resource).",
   "toolbar.edit": "Edit",
@@ -203,6 +205,8 @@ const IT: Dict = {
   "mode.matrix": "Matrix",
   "mode.graph": "Grafo",
   "mode.dtc": "DTC",
+  "win.add": "Aggiungi una finestra grafo a questo workspace",
+  "win.close": "Chiudi questa finestra",
   "dtc.empty":
     "DTC — questo grafo non ha ancora una catena di gemello digitale (nessuna relazione dtc_, nessuna risorsa collegata).",
   "toolbar.edit": "Modifica",
