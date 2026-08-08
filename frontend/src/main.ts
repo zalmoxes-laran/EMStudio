@@ -161,10 +161,13 @@ import { isVolatile } from "./volatile";
 import { addRecent, removeRecent, type RecentFile } from "./recent";
 import {
   WORKSPACES,
+  WINDOW_TYPE_META,
   activeWorkspace,
+  activeWindowType,
   setActiveWorkspace,
   syncActiveWorkspace,
   type WorkspaceId,
+  type WindowType,
 } from "./workspace";
 import type { CentralMode, EmDocument, EmEdge, EmNode, ViewKind } from "./types";
 import { buildDtcGenesisScene, buildGroupScene } from "./views/context";
@@ -5092,7 +5095,59 @@ function reflectWorkspaceInBar(id: WorkspaceId): void {
   workspaceBar
     .querySelectorAll<HTMLButtonElement>("button[data-ws]")
     .forEach((b) => b.classList.toggle("active", b.dataset.ws === id));
+  updateWindowHeader();
 }
+
+// WIN1 checkpoint 2 · the window header's transform dropdown. Shows the active
+// window's type and transforms the window in-place by re-pointing to the
+// canonical workspace for the chosen type (reuse — no new editors). DTC is a
+// graph MODE (WIN2), not a transform target; Doc has no editor yet (stub).
+// Elements are looked up at call time (not module-load consts) so the early
+// reflectWorkspaceInBar → updateWindowHeader path never hits a TDZ.
+const TRANSFORM_TYPES: WindowType[] = ["graph", "narrative", "table", "doc"];
+const WINDOW_TYPE_WORKSPACE: Record<WindowType, WorkspaceId | null> = {
+  graph: "canvas",
+  narrative: "narrative",
+  table: "table",
+  doc: null, // no editor yet
+};
+
+function transformWindow(type: WindowType): void {
+  const ws = WINDOW_TYPE_WORKSPACE[type];
+  if (!ws) {
+    toast("La finestra Doc non è ancora disponibile (stub).");
+    return;
+  }
+  setWorkspace(ws);
+}
+
+function updateWindowHeader(): void {
+  const meta = WINDOW_TYPE_META[activeWindowType()];
+  const icon = document.getElementById("win-type-icon");
+  const label = document.getElementById("win-type-label");
+  if (icon) icon.textContent = meta.icon;
+  if (label) label.textContent = t(meta.labelKey);
+  document
+    .querySelectorAll<HTMLButtonElement>("#window-type-menu button[data-wt]")
+    .forEach((b) => b.classList.toggle("active", b.dataset.wt === activeWindowType()));
+}
+
+function renderWindowTypeMenu(): void {
+  const menu = document.getElementById("window-type-menu");
+  if (!menu) return;
+  menu.innerHTML = "";
+  for (const type of TRANSFORM_TYPES) {
+    const meta = WINDOW_TYPE_META[type];
+    const b = document.createElement("button");
+    b.dataset.wt = type;
+    b.innerHTML = `<span class="wt-ic">${meta.icon}</span> ${t(meta.labelKey)}`;
+    b.addEventListener("click", () => transformWindow(type));
+    menu.appendChild(b);
+  }
+  updateWindowHeader();
+}
+renderWindowTypeMenu();
+onLocaleChange(renderWindowTypeMenu);
 
 /** Apply a workspace: mount its editor via the existing shell. */
 function applyWorkspace(id: WorkspaceId): void {

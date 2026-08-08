@@ -52,6 +52,21 @@ export const WORKSPACES: WorkspacePreset[] = [
   { id: "dtc", labelKey: "ws.dtc", icon: "◈", windowType: "graph", graphMode: "dtc" },
 ];
 
+/** Per-window-TYPE display metadata for the window header + transform dropdown
+ *  (WIN1 checkpoint 2). DTC is a mode of the graph window, so it is not a
+ *  transform target here — it is reached via the DTC workspace preset. */
+export const WINDOW_TYPE_META: Record<WindowType, { icon: string; labelKey: string }> = {
+  graph: { icon: "▦", labelKey: "win.graph" },
+  narrative: { icon: "❧", labelKey: "win.narrative" },
+  table: { icon: "▤", labelKey: "win.table" },
+  doc: { icon: "▧", labelKey: "win.doc" },
+};
+
+/** The window type the active workspace centres on. */
+export function activeWindowType(): WindowType {
+  return workspacePreset().windowType;
+}
+
 const STORAGE_KEY = "emstudio.workspace";
 
 function initial(): WorkspaceId {

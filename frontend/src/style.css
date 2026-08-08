@@ -1484,6 +1484,73 @@ body.sync-active #mode-indicator::before {
 }
 
 /* ---------- liquid filters panel ---------- */
+/* WIN1 (checkpoint 2) · window header — floating top-left chip with the window
+   type + transform dropdown. Above the narrative overlay (z-index 5) and the
+   canvas; needs no canvas re-sizing (floats like the filter button). */
+#window-header {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 25;
+}
+#window-header .win-type-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 10px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+  color: var(--text);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+#window-header .win-type-toggle:hover {
+  background: var(--bg-panel);
+  border-color: var(--accent);
+}
+#window-header .win-type-icon {
+  font-size: 13px;
+  opacity: 0.9;
+}
+#window-header .win-type-label {
+  font-weight: 600;
+}
+#window-header .win-type-caret {
+  opacity: 0.6;
+}
+#window-header .dd-menu {
+  top: 100%;
+  left: 0;
+  margin-top: 5px;
+}
+#window-header .dd-menu button {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  text-align: left;
+  padding: 6px 10px;
+  border: 0;
+  background: transparent;
+  border-radius: 5px;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+#window-header .dd-menu button:hover {
+  background: var(--bg-accent-soft);
+}
+#window-header .dd-menu button.active {
+  font-weight: 600;
+  color: var(--accent-ink);
+}
+#window-header .dd-menu .wt-ic {
+  opacity: 0.9;
+}
+
 #btn-view-props {
   position: absolute;
   top: 10px;

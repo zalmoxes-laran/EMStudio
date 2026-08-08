@@ -154,6 +154,19 @@
       <button id="collapse-left" class="col-toggle" data-i18n-title="layout.hideLeft">‹</button>
       <div id="canvas-wrap">
         <canvas id="canvas"></canvas>
+        <!-- WIN1 (checkpoint 2) · window header: the active window's type icon +
+             a transform dropdown (Graph/Narrative/Table/Doc) that changes the
+             window in-place. Floating top-left (like the filter button top-right)
+             so it needs no canvas re-sizing; above the narrative overlay.
+             Reuses the generic .dropdown wiring; items built by main.ts. -->
+        <div id="window-header" class="dropdown">
+          <button class="dd-toggle win-type-toggle" title="Window type — transform this window">
+            <span id="win-type-icon" class="win-type-icon">▦</span>
+            <span id="win-type-label" class="win-type-label">Graph</span>
+            <span class="win-type-caret">▾</span>
+          </button>
+          <div id="window-type-menu" class="dd-menu hidden"></div>
+        </div>
         <div id="chrono-banner" class="hidden"></div>
         <!-- The empty state has to offer BOTH ways of getting a graph. Dropping
              a file assumes one already exists; StratiMiner is for when it does
