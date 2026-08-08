@@ -4643,9 +4643,13 @@ async function generateChapterDraft(narrativeId: string,
   if (!store || generating.has(chapterIndex)) return;
   const narrative = narrativesIn(store.doc).find((n) => n.id === narrativeId);
   const chapter = narrative?.chapters[chapterIndex];
+  // NARR-AI: the anchor may be an activity OR an epoch (a site-story chapter is
+  // epoch-anchored); the bridge/context builder accepts either. Only a chapter
+  // with NO anchor at all (e.g. the free intro) cannot be generated.
   const activityId = chapter?.anchor;
   if (!activityId) {
-    toast("Questo capitolo non è ancorato a un'attività");
+    toast("Questo capitolo non è ancorato (a un'attività o un'epoca): " +
+          "ancoralo per generare la bozza.");
     return;
   }
   const ai = getSettings().ai;

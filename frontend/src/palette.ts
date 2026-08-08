@@ -3,6 +3,7 @@
 // copy of s3dgraphy/JSON_config/em_visual_rules.json; refresh it when the
 // datamodel bumps.
 import rules from "./assets/em_visual_rules.json";
+import { canvasTheme } from "./theme";
 
 export interface NodeStyle {
   shape: string;
@@ -204,6 +205,28 @@ export function edgeStyle(edgeType?: string): EdgeStyle {
   }
   edgeCache.set(key, style);
   return style;
+}
+
+/**
+ * CONN-NIGHT · the CONNECTOR INK for an edge type, from the active theme.
+ *
+ * Colour is themed (dark ink in light, light ink in dark — like `labelOn`), the
+ * dash PATTERN stays per edge-type in {@link edgeStyle} (geometry, not colour).
+ * One family map, here: the provenance family (data-provenance / property /
+ * extraction / documentation) is ochre; everything else — the generic
+ * connector, `is_after`, and every other type with its own dash — is the
+ * continuous ink. Renderers read THIS, not the literal hex in `edgeStyle`.
+ */
+const PROVENANCE_EDGES = new Set([
+  "has_data_provenance",
+  "has_property",
+  "extracted_from",
+  "has_documentation",
+]);
+
+export function edgeInk(edgeType?: string): string {
+  const t = canvasTheme();
+  return PROVENANCE_EDGES.has(edgeType ?? "") ? t.edgeProvenance : t.edgeInk;
 }
 
 /**

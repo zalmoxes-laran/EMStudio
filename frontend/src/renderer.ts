@@ -4,7 +4,7 @@
 // orthogonally with crossing bridges (routing.ts), yEd-style.
 import { dtcGlyphUrl, ICON_NODE_TYPES, imageFor, imageForUrl } from "./icons";
 import { dtcGlyphName } from "./rules";
-import { documentVariant, edgeStyle, nodeStyle } from "./palette";
+import { documentVariant, edgeInk, edgeStyle, nodeStyle } from "./palette";
 import {
   drawArrowhead,
   routeScene,
@@ -465,7 +465,8 @@ export function render(
     }
     const st = edgeStyle(e.edge.edge_type);
     const conflict = upwardConflict(scene, e);
-    const col = conflict ? CONFLICT_COLOR : st.color;
+    // CONN-NIGHT: colour from the THEME (edgeInk), dash pattern from edgeStyle.
+    const col = conflict ? CONFLICT_COLOR : edgeInk(e.edge.edge_type);
     ctx.strokeStyle = col;
     ctx.globalAlpha = conflict ? 1 : e.edge.edge_type === "is_after" ? 0.85 : 0.45;
     ctx.lineWidth =
@@ -481,7 +482,7 @@ export function render(
   for (const i of accent) {
     const e = scene.edges[i];
     const st = edgeStyle(e.edge.edge_type);
-    const col = upwardConflict(scene, e) ? CONFLICT_COLOR : st.color;
+    const col = upwardConflict(scene, e) ? CONFLICT_COLOR : edgeInk(e.edge.edge_type);
     ctx.strokeStyle = col;
     ctx.globalAlpha = 1;
     ctx.lineWidth = (st.width * 2) / Math.sqrt(vp.scale);

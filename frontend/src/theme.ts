@@ -60,6 +60,14 @@ export interface CanvasTheme {
   handleRing: string;
   /** edge ink when an edge type declares none */
   edgeDefault: string;
+  /** CONN-NIGHT · theme-aware connector ink: the CONTINUOUS ink family
+   *  (generic + is_after + everything not in the provenance family) — dark in
+   *  light theme, light in dark theme. The dash PATTERN stays per edge-type
+   *  (geometry, in palette.edgeStyle), only the colour is themed. */
+  edgeInk: string;
+  /** the provenance/property/extraction/documentation family — ochre, dark in
+   *  light theme, light in dark theme. */
+  edgeProvenance: string;
   /** the neutral fill a node falls back to when the rules give none */
   nodeFallbackFill: string;
   /** ink for a label drawn ON a coloured (semantic) fill — see labelOn() */
@@ -86,6 +94,8 @@ const LIGHT: CanvasTheme = {
   handleFill: "#ffffff",
   handleRing: "#9aa7b5",
   edgeDefault: "#888888",
+  edgeInk: "#1a1a1a",
+  edgeProvenance: "#9a7b34",
   nodeFallbackFill: "#FFFFFF",
   onLight: "#1a1a1a",
   onDark: "#f5f5f5",
@@ -118,6 +128,8 @@ const DARK: CanvasTheme = {
   handleFill: "#1E2632",
   handleRing: "#8b95a3",
   edgeDefault: "#7c8794",
+  edgeInk: "#e3e8ef",
+  edgeProvenance: "#d9bd7a",
   nodeFallbackFill: "#242C38",
   onLight: "#1a1a1a",
   onDark: "#f5f5f5",
