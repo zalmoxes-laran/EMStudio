@@ -102,7 +102,7 @@ import {
   unreadWarnings,
 } from "./stratiminer";
 import { EMTree, renderEMTree, slotLabel } from "./emtree";
-import type { EMTreeHandlers } from "./emtree";
+import type { EMTreeHandlers, SlotViewState } from "./emtree";
 import {
   coverage,
   getLocale,
@@ -170,9 +170,11 @@ import {
   setActiveWin,
   setActiveWorkspace,
   setWinMode,
+  setWinType,
   syncActiveWorkspace,
   winMode,
   windowsOf,
+  type Win,
   type WorkspaceId,
   type WindowType,
 } from "./workspace";
@@ -245,11 +247,33 @@ let matrixViewLayout: import("./types").EmLayout | null = null;
 // back into a single lane (opt-out). Keyed by the top-level epoch (the lane).
 const phasesCollapsed = new Set<string>();
 const scenes: Partial<Record<ViewKind, Scene | null>> = {};
-const viewports: Record<ViewKind, Viewport> = {
-  matrix: new Viewport(),
-  graph: new Viewport(),
-  dtc: new Viewport(),
-};
+// WIN2b · the camera belongs to a (WINDOW, mode) pair, not to the app. Two graph
+// windows in the same projection keep their own pan and zoom, and coming back to
+// a window returns you where you left it. Keyed lazily: a window that never
+// showed a projection has no camera to restore, which is exactly the signal
+// "frame it on arrival" (see framedViews).
+const winViewports = new Map<string, Viewport>();
+/** (window, mode) pairs already framed for the CURRENT document — reset whenever
+ *  the document changes, so every window re-frames on the new graph. */
+const framedViews = new Set<string>();
+function viewportKey(winId: string, v: ViewKind): string {
+  return `${winId}::${v}`;
+}
+function viewportFor(winId: string, v: ViewKind): Viewport {
+  const key = viewportKey(winId, v);
+  let vp = winViewports.get(key);
+  if (!vp) {
+    vp = new Viewport();
+    winViewports.set(key, vp);
+  }
+  return vp;
+}
+/** Forget every window's camera — a different document needs different framing
+ *  in every window, not the previous graph's pan and zoom. */
+function resetWindowCameras(): void {
+  winViewports.clear();
+  framedViews.clear();
+}
 let hoverId: string | null = null;
 let selectedId: string | null = null;
 // Connector (edge) hover/selection is separate from node selection: the
@@ -563,7 +587,7 @@ function scene(): Scene | null {
 }
 
 function viewport(): Viewport {
-  return inContext() ? contextViewport : viewports[view];
+  return inContext() ? contextViewport : viewportFor(activeWin().id, view);
 }
 
 function draw(): void {
@@ -1529,18 +1553,12 @@ function setMode(m: CentralMode): void {
   // mode needs no new toggle line here.
   for (const mode of CENTRAL_MODES)
     MODE_BUTTONS[mode]?.classList.toggle("active", mode === m);
-  // WIN2 · the mode belongs to the WINDOW, so a canvas mode no longer moves the
-  // leader: a graph window in DTC mode inside the Canvas workspace is exactly
-  // what per-instance modes mean. Only narrative, which lives in its own
-  // workspace, moves the chip — and leaving narrative brings it back to Canvas.
-  // No re-entrancy: reflectWorkspaceInBar only updates the chip + persisted id.
-  if (narrative) reflectWorkspaceInBar("narrative");
-  else {
-    const win = activeWin();
-    if (win.type === "graph") setWinMode(win, m);
-    if (activeWorkspace() === "narrative") reflectWorkspaceInBar("canvas");
-    else updateWindowHeader();
-  }
+  // WIN2 · the mode belongs to the WINDOW and never moves the leader chip: the
+  // workspace changes only when the user picks one. A Canvas workspace showing
+  // DTC — or a narrative, after a transform — is a legitimate arrangement.
+  const win = activeWin();
+  if (!narrative && win.type === "graph") setWinMode(win, m);
+  updateWindowHeader();
   // The narrative overlay's visibility IS "the mode is narrative" (this replaced
   // the separate `narrativeOpen` flag — no second, divergible state).
   narrativeViewEl.classList.toggle("hidden", !narrative);
@@ -1619,7 +1637,15 @@ function applyCanvasView(v: ViewKind): void {
   updateLegend();
   // The "+ epoch" overlay is Matrix-only, so switching view has to re-evaluate it.
   updateToolbar();
-  fit();
+  // WIN2b · frame this projection the FIRST time this window shows it (for this
+  // document), then leave the camera alone: switching mode or window and coming
+  // back must return you where you were, not re-fit under your hands.
+  const key = viewportKey(activeWin().id, v);
+  if (framedViews.has(key)) draw();
+  else {
+    framedViews.add(key);
+    fit();
+  }
 }
 
 /** A slot's label: the document's own name if it declares one, else the source. */
@@ -1694,14 +1720,20 @@ function activateSlot(id: string, opts: { rebuildOnly?: boolean } = {}): void {
   // Park the outgoing slot's view state — unless the outgoing slot IS the target
   // (loadDocument's first activation, where `add` already made it active).
   if (outgoing && outgoing.id !== id) {
+    // The cameras parked here are the ACTIVE window's (WIN2b): the other windows
+    // re-frame on arrival, which is what they would need anyway on a document of
+    // a different size. Only projections actually shown have one.
+    const winId = activeWin().id;
+    const camera: SlotViewState["camera"] = {};
+    for (const v of ["matrix", "graph", "dtc"] as ViewKind[]) {
+      const vp = winViewports.get(viewportKey(winId, v));
+      if (vp) camera[v] = { x: vp.x, y: vp.y, scale: vp.scale };
+    }
     outgoing.viewState = {
       view,
       graphOverrides: new Map(graphOverrides),
       phasesCollapsed: new Set(phasesCollapsed),
-      camera: {
-        matrix: { ...viewports.matrix },
-        graph: { ...viewports.graph },
-      },
+      camera,
     };
   }
   emtree.setActive(id);
@@ -1716,6 +1748,7 @@ function activateSlot(id: string, opts: { rebuildOnly?: boolean } = {}): void {
   hoverId = null;
   selectedId = null;
   matrixViewLayout = null; // derived from filters; recomputed for this document
+  resetWindowCameras(); // every window re-frames on the incoming document
 
   graphOverrides.clear();
   for (const [nodeId, position] of target.viewState.graphOverrides) {
@@ -1748,10 +1781,11 @@ function activateSlot(id: string, opts: { rebuildOnly?: boolean } = {}): void {
     // 215-node document's scale is off screen, and looks like a broken switch.
     const camera = target.viewState.camera[target.viewState.view];
     if (camera) {
-      const viewport = viewports[target.viewState.view];
-      viewport.x = camera.x;
-      viewport.y = camera.y;
-      viewport.scale = camera.scale;
+      const vp = viewportFor(activeWin().id, target.viewState.view);
+      vp.x = camera.x;
+      vp.y = camera.y;
+      vp.scale = camera.scale;
+      framedViews.add(viewportKey(activeWin().id, target.viewState.view));
       draw();
     } else {
       fit();
@@ -4382,6 +4416,7 @@ function closeWorkspace(): void {
   matrixViewLayout = null;
   graphOverrides.clear();
   dtcOverrides.clear();
+  resetWindowCameras();
   phasesCollapsed.clear();
   scenes.matrix = null;
   scenes.graph = null;
@@ -5145,27 +5180,47 @@ function reflectWorkspaceInBar(id: WorkspaceId): void {
   updateWindowHeader();
 }
 
-// WIN1 checkpoint 2 · the window header's transform dropdown. Shows the active
-// window's type and transforms the window in-place by re-pointing to the
-// canonical workspace for the chosen type (reuse — no new editors). DTC is a
-// graph MODE (WIN2), not a transform target; Doc has no editor yet (stub).
-// Elements are looked up at call time (not module-load consts) so the early
-// reflectWorkspaceInBar → updateWindowHeader path never hits a TDZ.
+// WIN2b · the window header's transform dropdown. It changes the ACTIVE WINDOW's
+// type IN PLACE — same slot, same workspace, a different editor. (WIN1 shipped a
+// placeholder that jumped to the type's canonical workspace; with real window
+// instances that indirection is gone, and a Canvas workspace showing a table is
+// now a legitimate arrangement.) DTC is a graph MODE, not a transform target;
+// Doc has no editor yet. Elements are looked up at call time (not module-load
+// consts) so the early updateWindowHeader path never hits a TDZ.
 const TRANSFORM_TYPES: WindowType[] = ["graph", "narrative", "table", "doc"];
-const WINDOW_TYPE_WORKSPACE: Record<WindowType, WorkspaceId | null> = {
-  graph: "canvas",
-  narrative: "narrative",
-  table: "table",
-  doc: null, // no editor yet
-};
 
-function transformWindow(type: WindowType): void {
-  const ws = WINDOW_TYPE_WORKSPACE[type];
-  if (!ws) {
-    toast("La finestra Doc non è ancora disponibile (stub).");
+/** Mount a window's editor in the central area. The ONE place that knows how a
+ *  window type becomes something on screen — `applyWorkspace` and the transform
+ *  both go through it, so they can never drift apart. */
+function mountWindow(win: Win): void {
+  if (win.type === "narrative") {
+    setEmDataOpen(false);
+    setMode("narrative");
     return;
   }
-  setWorkspace(ws);
+  if (win.type === "table") {
+    // the EM-Data dock IS the table surface; keep a canvas mode behind it (never
+    // the narrative overlay) and open the dock.
+    if (centralMode === "narrative") setMode(view);
+    setEmDataOpen(true);
+    return;
+  }
+  setEmDataOpen(false);
+  setMode(winMode(win));
+}
+
+function transformWindow(type: WindowType): void {
+  if (type === "doc") {
+    // Refused rather than half-mounted: a window type with no editor would be an
+    // empty area with no way to tell "not built yet" from "broken".
+    toast(t("win.docStub"));
+    return;
+  }
+  const win = activeWin();
+  if (win.type === type) return;
+  setWinType(win, type);
+  mountWindow(win);
+  updateWindowHeader();
 }
 
 // WIN2 · the modes a graph window can show, in header order. They ARE the canvas
@@ -5325,28 +5380,17 @@ document.getElementById("win-algo")?.addEventListener("change", (ev) => {
 
 /** Apply a workspace: mount the editor of its ACTIVE window via the existing
  *  shell. WIN2 · the window decides, not the preset — the preset only seeded the
- *  first window, so a Canvas workspace left in DTC mode reopens in DTC. */
+ *  first window, so a Canvas workspace left in DTC mode reopens in DTC, and one
+ *  whose window was transformed into a table reopens as a table. */
 function applyWorkspace(id: WorkspaceId): void {
-  const win = activeWin(id);
-  if (win.type === "narrative") {
-    setEmDataOpen(false);
-    setMode("narrative");
-    return;
-  }
-  if (win.type === "table") {
-    // the EM-Data dock IS the table surface; keep a canvas mode behind it (never
-    // the narrative overlay) and open the dock.
-    if (centralMode === "narrative") setMode(view);
-    setEmDataOpen(true);
-    reflectWorkspaceInBar("table");
-    return;
-  }
-  setEmDataOpen(false);
-  setMode(winMode(win));
+  mountWindow(activeWin(id));
 }
 
 function setWorkspace(id: WorkspaceId): void {
   setActiveWorkspace(id);
+  // the leader chip follows the WORKSPACE and nothing else — mounting an editor
+  // never moves it (that is what made a transformed window possible).
+  reflectWorkspaceInBar(id);
   applyWorkspace(id);
 }
 

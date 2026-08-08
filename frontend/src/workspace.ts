@@ -253,6 +253,18 @@ export function closeWindow(winId: string, ws: WorkspaceId = active): boolean {
   return true;
 }
 
+/** Transform a window IN PLACE: the same slot of the same workspace, a different
+ *  editor. The workspace does NOT change — a Canvas workspace whose window was
+ *  turned into a table is a legitimate arrangement, and jumping to another
+ *  workspace instead would be a different gesture (that is the leader bar's). */
+export function setWinType(win: Win, type: WindowType): void {
+  if (win.type === type) return;
+  win.type = type;
+  // a graph window must always have a mode for the header to show
+  if (type === "graph" && !win.state["mode"]) win.state["mode"] = "matrix";
+  persistWindows();
+}
+
 /** The mode of a graph window (its canvas projection). */
 export function winMode(win: Win): GraphMode {
   const m = win.state["mode"];

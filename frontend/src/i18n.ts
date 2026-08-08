@@ -81,6 +81,7 @@ const EN: Dict = {
   "mode.dtc": "DTC",
   "win.add": "Add a graph window to this workspace",
   "win.close": "Close this window",
+  "win.docStub": "The Doc window is not available yet.",
   "dtc.empty":
     "DTC — no digital-twin chain in this graph yet (no dtc_ relation, no linked resource).",
   "toolbar.edit": "Edit",
@@ -207,6 +208,7 @@ const IT: Dict = {
   "mode.dtc": "DTC",
   "win.add": "Aggiungi una finestra grafo a questo workspace",
   "win.close": "Chiudi questa finestra",
+  "win.docStub": "La finestra Doc non è ancora disponibile.",
   "dtc.empty":
     "DTC — questo grafo non ha ancora una catena di gemello digitale (nessuna relazione dtc_, nessuna risorsa collegata).",
   "toolbar.edit": "Modifica",
