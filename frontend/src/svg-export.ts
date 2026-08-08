@@ -83,6 +83,22 @@ function shapeSvg(n: SceneNode): string {
         [x + w * 0.2, y + h],
         [x, y + h * 0.4],
       ]);
+    case "star": {
+      // DARKBK: draw the 5-pointed star (author nodes use it). Was missing, so
+      // a star node fell through to the default rounded-rect in the SVG export
+      // — the "hole" that forced the CLI. Inscribed in the box, top point up.
+      const cx = x + w / 2;
+      const cy = y + h / 2;
+      const R = Math.min(w, h) / 2;
+      const r = R * 0.42;
+      const pts: number[][] = [];
+      for (let i = 0; i < 10; i++) {
+        const ang = -Math.PI / 2 + (i * Math.PI) / 5;
+        const rad = i % 2 === 0 ? R : r;
+        pts.push([cx + rad * Math.cos(ang), cy + rad * Math.sin(ang)]);
+      }
+      return poly(pts);
+    }
     case "rectangle":
       return `<rect x="${x}" y="${y}" width="${w}" height="${h}" ${attrs}/>`;
     default:
