@@ -158,8 +158,15 @@ import {
 } from "./scene";
 import { GROUP_HEADER, GROUP_PAD } from "./views/matrix";
 import { setupSearch } from "./search";
-import { initEmData, renderEmData, setVolatileProvider } from "./emdata";
-import { deleteRow, EM_DATA_SHEETS } from "./em-data";
+import {
+  addEmDataHost,
+  currentSheetKey,
+  initEmData,
+  renderEmData,
+  setSheet,
+  setVolatileProvider,
+} from "./emdata";
+import { addRow, deleteRow, EM_DATA_SHEETS, type SheetKey } from "./em-data";
 import { isVolatile } from "./volatile";
 import { addRecent, removeRecent, type RecentFile } from "./recent";
 import {
@@ -1641,6 +1648,9 @@ function setMode(m: CentralMode): void {
   // The narrative overlay's visibility IS "the mode is narrative" (this replaced
   // the separate `narrativeOpen` flag — no second, divergible state).
   narrativeViewEl.classList.toggle("hidden", !narrative);
+  // WIN5 · entering a CANVAS mode also puts the canvas back in front: the table
+  // and doc surfaces belong to their window types, not to a mode.
+  if (!narrative && win.type === "graph") applyWindowSurface("graph");
   btnNarrativeEdit.classList.toggle("hidden", !narrative);
   // NARRWS1 · the left palette is PER-MODE: the node-type palette is useless in
   // narrative mode, so it is replaced by the narrative building-blocks palette.
@@ -5300,16 +5310,6 @@ btnGraph.addEventListener("click", () => setView("graph"));
 // next (the workspace.ts `Win` shape is already per-instance).
 const workspaceBar = document.getElementById("workspace-bar")!;
 
-/** Expand/collapse the EM-Data dock to a desired state, via its own toggle so
- *  emdata.ts stays the single owner of the dock's collapsed logic. */
-function setEmDataOpen(open: boolean): void {
-  const dock = document.getElementById("emdata-dock");
-  const toggle = document.getElementById("emdata-toggle") as HTMLButtonElement | null;
-  if (!dock || !toggle) return;
-  const collapsed = dock.classList.contains("collapsed");
-  if (open === collapsed) toggle.click(); // flip only when needed
-}
-
 /** Light the leader's active chip; keep workspace.ts's persisted id in step.
  *  Pure reflection — never triggers a workspace apply (no re-entrancy). */
 function reflectWorkspaceInBar(id: WorkspaceId): void {
@@ -5422,9 +5422,24 @@ function buildPane(pane: Pane, activeId: string): HTMLElement {
         : "") +
       `<span class="tile-hint">${t("tile.activate")}</span>`;
     area.appendChild(bar);
-    const cv = document.createElement("canvas");
-    area.appendChild(cv);
-    tileCanvases.set(pane.winId, cv);
+    if (win && win.type === "graph") {
+      const cv = document.createElement("canvas");
+      area.appendChild(cv);
+      tileCanvases.set(pane.winId, cv);
+    } else {
+      // WIN5 · a secondary Table/Doc area says WHAT it holds rather than
+      // drawing a canvas that would show the wrong thing entirely. One click
+      // promotes it and the real surface mounts there.
+      const note = document.createElement("div");
+      note.className = "tile-note";
+      note.textContent =
+        win?.type === "table"
+          ? t("tile.tableNote")
+          : win?.type === "doc"
+            ? t("tile.docNote")
+            : "";
+      area.appendChild(note);
+    }
     // clicking anywhere in a secondary area promotes it — the editable window
     // follows the pointer's intent, which is the whole point of tiling
     area.addEventListener("mousedown", () => selectWindow(pane.winId));
@@ -5528,33 +5543,148 @@ function validCurrentChapter(): number | null {
 // consts) so the early updateWindowHeader path never hits a TDZ.
 const TRANSFORM_TYPES: WindowType[] = ["graph", "narrative", "table", "doc"];
 
+/**
+ * WIN5 · which SURFACE of the window area is showing. The area has four: the
+ * canvas, the narrative overlay, the table and the documents. Exactly one is
+ * visible, and this is the only place that decides — a window type maps to a
+ * surface, and nothing else touches their visibility.
+ */
+function applyWindowSurface(type: WindowType): void {
+  const show = (id: string, on: boolean): void => {
+    document.getElementById(id)?.classList.toggle("hidden", !on);
+  };
+  show("table-view", type === "table");
+  show("doc-view", type === "doc");
+  if (type === "table") renderEmData();
+  if (type === "doc") renderDocView();
+}
+
+// ── WIN5 · the Doc window ───────────────────────────────────────────────────
+//
+// "Doc" in an EM graph means the SOURCES: the DocumentNodes the paradata chain
+// hangs from (D.1 Rilievo Maiuri 1931, D.2 Fotografia storica…). This window is
+// their reading and editing surface — the list on the left, the current one on
+// the right, its fields writing through `store.updateNode` like every other
+// editor. Deliberately NOT a rich text editor: EMStudio has no document body to
+// edit, and inventing one would be a second model of what a source is.
+
+function currentDocId(): string | null {
+  const v = winCurrent(activeWin(), "doc");
+  return typeof v === "string" ? v : null;
+}
+
+function documentsInGraph(): EmNode[] {
+  return (store?.doc.graph.nodes ?? []).filter((n) => n.node_type === "document");
+}
+
+function renderDocView(): void {
+  const list = document.getElementById("doc-view-list");
+  const detail = document.getElementById("doc-view-detail");
+  if (!list || !detail) return;
+  list.innerHTML = "";
+  detail.innerHTML = "";
+  const docs = documentsInGraph();
+  if (!docs.length) {
+    detail.innerHTML =
+      `<div class="doc-empty">${t("doc.empty")}</div>`;
+    return;
+  }
+  const currentId = currentDocId();
+  const current = docs.find((d) => d.id === currentId) ?? docs[0];
+  for (const d of docs) {
+    const b = document.createElement("button");
+    b.className = "doc-item" + (d.id === current.id ? " current" : "");
+    const data = (d.data ?? {}) as Record<string, unknown>;
+    const sub = String(data.title ?? data.filename ?? d.description ?? "");
+    b.innerHTML =
+      `${escapeHtml(d.name || d.id)}` +
+      (sub ? `<span class="doc-sub">${escapeHtml(sub)}</span>` : "");
+    b.addEventListener("click", () => {
+      setWinCurrent(activeWin(), "doc", d.id);
+      renderDocView();
+    });
+    list.appendChild(b);
+  }
+  // the current document's fields, straight onto the node
+  const data = (current.data ?? {}) as Record<string, unknown>;
+  const field = (
+    label: string,
+    value: string,
+    commit: (v: string) => void,
+  ): void => {
+    const l = document.createElement("label");
+    l.className = "doc-field";
+    l.textContent = label;
+    const inp = document.createElement("input");
+    inp.className = "doc-input";
+    inp.value = value;
+    inp.addEventListener("change", () => commit(inp.value));
+    detail.appendChild(l);
+    detail.appendChild(inp);
+  };
+  const setData = (key: string, v: string): void => {
+    if (!store) return;
+    store.updateNode(current.id, {
+      data: { ...(current.data ?? {}), [key]: v },
+    } as Partial<EmNode>);
+    renderDocView();
+  };
+  field(t("doc.name"), current.name ?? "", (v) =>
+    store?.updateNode(current.id, { name: v }),
+  );
+  field(t("doc.title"), String(data.title ?? ""), (v) => setData("title", v));
+  field(t("doc.filename"), String(data.filename ?? ""), (v) =>
+    setData("filename", v),
+  );
+  field(t("doc.year"), String(data.year ?? ""), (v) => setData("year", v));
+  field(t("doc.description"), current.description ?? "", (v) =>
+    store?.updateNode(current.id, { description: v }),
+  );
+
+  // what hangs off this document — the reason a source is in the graph at all
+  const extractors = (store?.doc.graph.edges ?? []).filter(
+    (e) => e.edge_type === "extracted_from" && e.target === current.id,
+  );
+  const links = document.createElement("div");
+  links.className = "doc-links";
+  links.textContent = t("doc.extractors", { n: String(extractors.length) });
+  detail.appendChild(links);
+  const jump = document.createElement("button");
+  jump.className = "insp-btn";
+  jump.textContent = t("doc.reveal");
+  jump.addEventListener("click", () => {
+    setWinType(activeWin(), "graph");
+    mountWindow(activeWin());
+    updateWindowHeader();
+    renderTiles();
+    select(current.id);
+    centerOn(current.id);
+  });
+  detail.appendChild(jump);
+}
+
 /** Mount a window's editor in the central area. The ONE place that knows how a
  *  window type becomes something on screen — `applyWorkspace` and the transform
  *  both go through it, so they can never drift apart. */
 function mountWindow(win: Win): void {
   if (win.type === "narrative") {
-    setEmDataOpen(false);
-    setMode("narrative");
+    setMode("narrative"); // the narrative overlay owns the area
+    applyWindowSurface("narrative");
     return;
   }
-  if (win.type === "table") {
-    // the EM-Data dock IS the table surface; keep a canvas mode behind it (never
-    // the narrative overlay) and open the dock.
+  if (win.type === "table" || win.type === "doc") {
+    // WIN5 · a real window, not the dock: the surface fills the area. Leave the
+    // canvas mode alone underneath (never the narrative overlay) so switching
+    // back finds the projection you left.
     if (centralMode === "narrative") setMode(view);
-    setEmDataOpen(true);
+    applyWindowSurface(win.type);
     return;
   }
-  setEmDataOpen(false);
+  applyWindowSurface("graph");
   setMode(winMode(win));
 }
 
 function transformWindow(type: WindowType): void {
-  if (type === "doc") {
-    // Refused rather than half-mounted: a window type with no editor would be an
-    // empty area with no way to tell "not built yet" from "broken".
-    toast(t("win.docStub"));
-    return;
-  }
   const win = activeWin();
   if (win.type === type) return;
   setWinType(win, type);
@@ -5866,14 +5996,11 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
         EM_DATA_SHEETS.map((sheet) => ({
           label: sheet.label,
           run: () => {
-            const sel = document.getElementById("emdata-sheet") as HTMLSelectElement | null;
-            if (!sel) return;
-            sel.value = sheet.key;
-            sel.dispatchEvent(new Event("change"));
+            setSheet(sheet.key);
+            const sel = document.getElementById("table-view-sheet") as HTMLSelectElement | null;
+            if (sel) sel.value = sheet.key;
           },
-          checked: () =>
-            (document.getElementById("emdata-sheet") as HTMLSelectElement | null)?.value ===
-            sheet.key,
+          checked: () => currentSheetKey() === sheet.key,
         })),
     },
     {
@@ -5903,7 +6030,38 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
       ],
     },
   ],
-  doc: [], // stub window: no commands to offer
+  // WIN5 · the Doc window is real, so it has commands: the sources of the graph
+  // are created and removed through the SAME EM-Data mutators the Documents
+  // sheet uses (one way to make a document, whichever window you are in).
+  doc: [
+    {
+      label: "Documento",
+      items: () => [
+        {
+          label: "Nuovo documento",
+          run: () => {
+            if (!store) return;
+            const id = addRow(store, "Documents");
+            if (id) setWinCurrent(activeWin(), "doc", id);
+            renderDocView();
+          },
+          disabledReason: () => (store ? null : "Nessun grafo aperto."),
+        },
+        {
+          label: "Elimina documento corrente",
+          run: () => {
+            const id = currentDocId();
+            if (!store || !id) return;
+            deleteRow(store, id);
+            setWinCurrent(activeWin(), "doc", null);
+            renderDocView();
+          },
+          disabledReason: () =>
+            currentDocId() ? null : "Seleziona un documento nell'elenco.",
+        },
+      ],
+    },
+  ],
 };
 
 /** Build the header's menus for the ACTIVE window's type. */
@@ -7217,6 +7375,32 @@ applyWorkspace(activeWorkspace());
 // EM-Data dock (DP-81): a live tabular view on the active store. Reads `store`
 // through a getter so it always sees the current slot; re-renders from the
 // store's onChange (wired in wireStore).
+// WIN5 · the Table WINDOW is a second host of the same table (the dock is the
+// first). Its sheet selector drives the shared choice, so dock and window never
+// show two different sheets.
+{
+  const sheetSel = document.getElementById("table-view-sheet") as HTMLSelectElement | null;
+  if (sheetSel) {
+    sheetSel.innerHTML = EM_DATA_SHEETS.map(
+      (sh) => `<option value="${sh.key}">${sh.label}</option>`,
+    ).join("");
+    sheetSel.value = currentSheetKey();
+    sheetSel.addEventListener("change", () => {
+      setSheet(sheetSel.value as SheetKey);
+      updateWindowHeader(); // the Tabella menu ticks the current sheet
+    });
+  }
+  const body = document.getElementById("table-view-body");
+  if (body)
+    addEmDataHost({
+      body,
+      count: document.getElementById("table-view-count"),
+      actions: document.getElementById("table-view-actions"),
+      enabled: () =>
+        !document.getElementById("table-view")?.classList.contains("hidden"),
+    });
+}
+
 initEmData({
   getStore: () => store,
   // CURRENT-ELEMENT · the row lives on the window, not in the table module

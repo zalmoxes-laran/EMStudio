@@ -40,6 +40,41 @@ export function setVolatileProvider(fn: VolatileProvider): void {
 let currentRowOf: () => string | null = () => null;
 let setCurrentRow: (id: string | null) => void = () => {};
 
+/**
+ * WIN5 · where a table is drawn. EM-Data used to be one dock with hardcoded
+ * ids; a Table WINDOW needs the same table in its own area, so the renderer
+ * takes a HOST and every host registers itself. One renderer, many mounts — the
+ * dock and the window can never drift into two different tables.
+ */
+export interface EmDataHost {
+  body: HTMLElement;
+  count?: HTMLElement | null;
+  actions?: HTMLElement | null;
+  /** false while the host is hidden (a collapsed dock, a window not shown) */
+  enabled: () => boolean;
+}
+
+const hosts: EmDataHost[] = [];
+
+export function addEmDataHost(host: EmDataHost): void {
+  hosts.push(host);
+  renderEmData();
+}
+
+/** The sheet every host shows. One choice for the whole app: the dock and the
+ *  Table window are two views of the same table, not two tables. */
+export function currentSheetKey(): SheetKey {
+  return currentSheet;
+}
+
+export function setSheet(key: SheetKey): void {
+  currentSheet = key;
+  localStorage.setItem(LS_SHEET, key);
+  const sel = $<HTMLSelectElement>("emdata-sheet");
+  if (sel) sel.value = key;
+  renderEmData();
+}
+
 export function initEmData(opts: {
   getStore: () => DocumentStore | null;
   currentRow?: () => string | null;
@@ -99,6 +134,15 @@ export function initEmData(opts: {
     window.addEventListener("pointerup", onUp);
   });
 
+  const dockBody = $("emdata-body");
+  if (dockBody)
+    addEmDataHost({
+      body: dockBody,
+      count: $("emdata-count"),
+      actions: $("emdata-actions"),
+      enabled: () => !$("emdata-dock")?.classList.contains("collapsed"),
+    });
+
   renderEmData();
 }
 
@@ -117,11 +161,14 @@ function setCollapsed(collapsed: boolean): void {
 /** Rebuild the visible table from the store. Called on every store change and
  *  on sheet switch. Cheap: a few hundred rows of plain DOM. */
 export function renderEmData(): void {
-  const dock = $("emdata-dock");
-  const body = $("emdata-body");
-  const countEl = $("emdata-count");
-  const actions = $("emdata-actions");
-  if (!dock || !body || dock.classList.contains("collapsed")) return;
+  for (const h of hosts) if (h.enabled()) renderEmDataInto(h);
+}
+
+/** Draw the current sheet into one host. */
+function renderEmDataInto(host: EmDataHost): void {
+  const body = host.body;
+  const countEl = host.count;
+  const actions = host.actions;
 
   const store = getStore();
   if (!store) {

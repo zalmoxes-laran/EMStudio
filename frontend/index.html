@@ -285,6 +285,24 @@
              threading it through that machinery would have changed the graph
              view to add something beside it. -->
         <div id="narrative-view" class="hidden"></div>
+        <!-- WIN5 · Table and Doc as REAL windows: two more surfaces of the
+             window area, siblings of the narrative overlay, shown when the
+             window's type says so. The Table surface renders the SAME EM-Data
+             table as the bottom dock (one renderer, two mounts); the Doc surface
+             is the graph's documents — the sources the paradata chain hangs
+             from — with their fields editable. -->
+        <div id="table-view" class="hidden">
+          <div id="table-view-head">
+            <select id="table-view-sheet" title="Scegli la tabella"></select>
+            <span id="table-view-actions"></span>
+            <span id="table-view-count" class="emdata-count"></span>
+          </div>
+          <div id="table-view-body"></div>
+        </div>
+        <div id="doc-view" class="hidden">
+          <div id="doc-view-list"></div>
+          <div id="doc-view-detail"></div>
+        </div>
         <canvas id="overview" title="Overview — click to move the viewport"></canvas>
       </div>
       </div>

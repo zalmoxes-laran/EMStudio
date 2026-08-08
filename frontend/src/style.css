@@ -4444,3 +4444,114 @@ body.sync-active #footer-brand #em-version {
   opacity: 1;
   background: var(--accent);
 }
+
+/* ── WIN5 · Table and Doc window surfaces ───────────────────────────────────
+   Siblings of #narrative-view: they fill the window area below the docked bar
+   and are shown according to the window's type. */
+#table-view,
+#doc-view {
+  position: absolute;
+  inset: var(--winbar-h, 0px) 0 0 0;
+  z-index: 5;
+  background: var(--bg-subtle);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#table-view.hidden,
+#doc-view.hidden {
+  display: none;
+}
+#table-view-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
+}
+#table-view-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+/* Doc: the list of documents on the left, the current one on the right */
+#doc-view {
+  flex-direction: row;
+}
+#doc-view-list {
+  width: 240px;
+  flex: 0 0 240px;
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  padding: 6px;
+}
+#doc-view-detail {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 14px 18px;
+}
+.doc-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.doc-item:hover {
+  background: var(--bg-elevated);
+}
+.doc-item.current {
+  border-color: var(--accent);
+  font-weight: 600;
+}
+.doc-item .doc-sub {
+  display: block;
+  opacity: 0.6;
+  font-size: 11px;
+}
+.doc-empty {
+  padding: 24px;
+  opacity: 0.7;
+  font-size: 13px;
+  max-width: 46ch;
+  line-height: 1.5;
+}
+.doc-field {
+  display: block;
+  margin: 10px 0 4px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-faint);
+}
+.doc-input {
+  width: 100%;
+  max-width: 520px;
+  padding: 6px 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text);
+  font-size: 13px;
+}
+.doc-links {
+  margin-top: 18px;
+  font-size: 12.5px;
+  opacity: 0.85;
+}
+/* a secondary area that is not a canvas: say what it is, do not draw a wrong one */
+.tile-note {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.55;
+  font-size: 12.5px;
+}
