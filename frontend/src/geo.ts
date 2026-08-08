@@ -106,6 +106,38 @@ export function needsBridge(geo: GeoRef): boolean {
   return !geo.ok && geo.reason === "needs-reprojection";
 }
 
+/**
+ * GEO1 · the SITE POSITION — a symbolic lon/lat point for "where the site is on
+ * the map". This is NOT the shift: the shift (`GeoPositionNode`) is the 3D
+ * anchor/origin and is untouched here. The site position is graph-scope
+ * metadata stored on the graph-self node's `data.site_position`
+ * (`{ lon, lat, crs }`, DP-65 / MIG1-A). Returns `null` when the graph is not
+ * positioned — NEVER a fabricated 0/0 (BUGFIX-EPOCH lesson). Consumed by the
+ * narrative mini-map and the graph overview.
+ */
+export interface SitePosition {
+  lon: number;
+  lat: number;
+  /** CRS of the point; site positions are authored in WGS84. */
+  crs: string;
+}
+
+export function readSitePosition(doc: unknown): SitePosition | null {
+  const graph = (doc as { graph?: { nodes?: Array<Record<string, unknown>> } })
+    ?.graph;
+  const nodes = graph?.nodes;
+  if (!Array.isArray(nodes)) return null;
+  const root = nodes.find((n) => n.node_type === "graph");
+  const sp = (root?.data as Record<string, unknown> | undefined)?.site_position as
+    | Record<string, unknown>
+    | undefined;
+  if (!sp) return null;
+  const lon = num(sp.lon ?? sp.lng ?? sp.longitude);
+  const lat = num(sp.lat ?? sp.latitude);
+  if (lon === null || lat === null) return null;
+  return { lon, lat, crs: typeof sp.crs === "string" ? sp.crs : "EPSG:4326" };
+}
+
 export interface ReprojectResult {
   points: [number, number][];
 }

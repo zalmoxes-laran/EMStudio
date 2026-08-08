@@ -104,6 +104,13 @@ export interface OsmMapOptions {
   markerLabel?: string;
   /** Called after every pan/zoom, so the caller can remember the camera. */
   onViewChange?: (v: OsmView) => void;
+  /**
+   * GEO1 · picker mode. When set, a plain click (not a drag) reports the
+   * clicked ground point in lon/lat and moves the marker there — the same
+   * Web-Mercator math the tiles use, so it works even offline (no basemap, but
+   * the coordinate is exact). Absent = a read-only map (the narrative embed).
+   */
+  onPick?: (lat: number, lon: number) => void;
 }
 
 /**
@@ -339,8 +346,26 @@ export function createOsmMap(opts: OsmMapOptions): OsmMap {
   // A drag inside the embed must not also count as "reveal this node in the
   // graph": the embed is clickable, and panning a map is not a click.
   root.addEventListener("click", (e) => {
-    if (moved) e.stopPropagation();
+    if (moved) {
+      e.stopPropagation();
+      return;
+    }
+    // GEO1 · picker mode: a plain click drops the site position here. Ignore
+    // clicks on the controls/attribution. The ground point is read with the
+    // same tile math, so it is exact with or without a basemap.
+    if (opts.onPick && !(e.target as HTMLElement).closest(".osm-zoom, .osm-attr")) {
+      const r = root.getBoundingClientRect();
+      const originX = cx - r.width / 2;
+      const originY = cy - r.height / 2;
+      const lon = xToLon(originX + (e.clientX - r.left), zoom);
+      const lat = yToLat(originY + (e.clientY - r.top), zoom);
+      markerLat = lat;
+      markerLon = lon;
+      render();
+      opts.onPick(lat, lon);
+    }
   });
+  if (opts.onPick) root.classList.add("osm-picker");
 
   // Wheel: only with a modifier. A map that swallowed the wheel would trap the
   // reader's scroll halfway through a chapter, which is the single most

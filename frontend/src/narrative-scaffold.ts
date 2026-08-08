@@ -31,9 +31,11 @@ function siteName(store: DocumentStore): string {
 
 function introText(store: DocumentStore): string {
   const bits = [`${siteName(store)} — ${PLACEHOLDER}`];
-  // whatever the template can offer: a site position if the graph carries one
-  const geo = store.doc.graph.nodes.find((n) => n.node_type === "geo_position");
-  if (geo) bits.push(`(posizione: ${String(geo.name ?? geo.id)})`);
+  // GEO1: the SITE POSITION (symbolic lon/lat, graph-scope) — NOT the shift.
+  // The shift (geo_position) is the 3D anchor and may sit far from the site;
+  // it is not "where the site is". Absent = say nothing (no fabricated point).
+  const sp = store.readSitePosition();
+  if (sp) bits.push(`(posizione: ${sp.lat.toFixed(4)}, ${sp.lon.toFixed(4)})`);
   return bits.join(" ");
 }
 

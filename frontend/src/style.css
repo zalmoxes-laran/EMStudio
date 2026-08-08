@@ -2730,6 +2730,32 @@ body.sync-active #footer-brand #em-version {
   touch-action: none;
   user-select: none;
 }
+
+/* GEO1 · picker mode: a click drops the site position, so the cursor invites it
+   (grab while dragging still wins via .dragging). */
+.osm.osm-picker {
+  cursor: crosshair;
+}
+.osm.osm-picker.dragging {
+  cursor: grabbing;
+}
+
+/* GEO1 · site-position editor in the graph-scope inspector. */
+.insp-geo-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 6px;
+}
+.insp-geo-coord {
+  flex: 1;
+  min-width: 0;
+}
+.insp-geo-map {
+  margin-top: 6px;
+}
+.insp-geo-map:empty {
+  margin-top: 0;
+}
 .osm.dragging {
   cursor: grabbing;
 }

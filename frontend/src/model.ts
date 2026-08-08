@@ -1746,6 +1746,46 @@ export class DocumentStore {
     });
   }
 
+  // ── GEO1 · site position (symbolic lon/lat) — DISTINCT from the shift ──────
+  // The shift (GeoPositionNode, node_type "geo_position") stays the 3D anchor.
+  // The SITE POSITION is "where the site is on the map": a graph-scope symbolic
+  // point stored on the graph-self node's `data.site_position` ({lon,lat,crs}),
+  // like em_id. Absent = not positioned (no fabricated 0/0). The two never mix.
+
+  /** The site position, or null when the graph is not positioned. */
+  readSitePosition(): { lon: number; lat: number; crs: string } | null {
+    const root = this.graphRootNode();
+    const sp = (root?.data as Record<string, unknown> | undefined)
+      ?.site_position as Record<string, unknown> | undefined;
+    if (!sp) return null;
+    const lon = Number(sp.lon);
+    const lat = Number(sp.lat);
+    if (!Number.isFinite(lon) || !Number.isFinite(lat)) return null;
+    return { lon, lat, crs: typeof sp.crs === "string" ? sp.crs : "EPSG:4326" };
+  }
+
+  /** Set the site position (creates the graph-self node if needed). One undo
+   *  step. Distinct from the shift — never touches the GeoPositionNode. */
+  setSitePosition(lon: number, lat: number, crs = "EPSG:4326"): void {
+    this.batch(() => {
+      const root = this.ensureGraphRootNode();
+      const d = (root.data ??= {}) as Record<string, unknown>;
+      d.site_position = { lon, lat, crs };
+      this.emit();
+    });
+  }
+
+  /** Clear the site position (back to "not positioned"). Leaves the shift and
+   *  the graph-self node otherwise intact. */
+  clearSitePosition(): void {
+    const root = this.graphRootNode();
+    const d = root?.data as Record<string, unknown> | undefined;
+    if (!d || !("site_position" in d)) return;
+    this.checkpoint();
+    delete d.site_position;
+    this.emit();
+  }
+
   /** Find the (single) HDT-O singleton node carrying a given role marker. The
    *  proposition_set (HC16) IS the graph-self node (node_type `graph`) and may
    *  already exist as the graph-scope paradata anchor (DP-65) without the
