@@ -56,6 +56,10 @@ cp "$CFG/s3Dgraphy_node_datamodel.json" "$DST/"
 # (generated parent/node_type hierarchy that rules.ts reads).
 cp "$CFG/node_registry.generated.json" "$DST/"
 cp "$CFG/em_qualia_types.json" "$DST/"
+# TRAD1 · multilingual datamodel descriptions/labels (sidecar keyed by class;
+# en = source, other langs + validated_<lang> flags). rules.ts reads the active
+# locale from it with an English fallback. Optional (older s3Dgraphy has none).
+[ -f "$CFG/datamodel_translations.json" ] && cp "$CFG/datamodel_translations.json" "$DST/"
 mkdir -p "$DST/icons2d"
 # BOTH raster and vector. Only `*.png` was copied here, which is why EMStudio drew
 # no SVG icons even after 28 of them shipped in s3Dgraphy: the renderer prefers

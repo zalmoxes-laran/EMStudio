@@ -68,6 +68,7 @@ import {
   narrativeViewTypes,
   narrativeViewTypeDescription,
   nodeTypeForClass,
+  resourceTypeOfLocator,
   typeDescription,
   NODE_DATAMODEL_VERSION,
   CONNECTIONS_VERSION,
@@ -2866,6 +2867,14 @@ async function mapAux(auxId: string): Promise<void> {
   // is transformed to nodes by the s3Dgraphy mapping); a bare em_data.xlsx has no
   // mapping (read directly). dosco / resource_collection are folder-based and use
   // a different endpoint — flagged as follow-up.
+  // AUX2B · resource_collection is a FOLDER: scan it via the bridge
+  // (/scan-resources, which already exists) and bring its orphan files in as
+  // VOLATILE ResourceNodes (same volatile→bake cycle as the xlsx types). dosco
+  // (documents harvest) still needs a dedicated endpoint — flagged.
+  if (f.fileType === "resource_collection") {
+    await mapResourceCollection(f, auxId);
+    return;
+  }
   if (
     f.fileType !== "emdb_xlsx" &&
     f.fileType !== "pyarchinit" &&
@@ -2901,6 +2910,58 @@ async function mapAux(auxId: string): Promise<void> {
     toast(
       `map failed (${e instanceof Error ? e.message : e}). The bridge (dev.sh) ` +
         `must be running to map an xlsx via the s3Dgraphy registry.`,
+    );
+  }
+}
+
+/**
+ * AUX2B · map a `resource_collection` FOLDER as VOLATILE ResourceNodes.
+ *
+ * Reuses the existing `/scan-resources` (which returns the folder's orphan files
+ * with stable ids: `{resource_id, key_id, filename, rel_path}`) and the AUX2
+ * volatile path (`store.mapVolatile`): the files enter the graph as ResourceNode
+ * (node_type from the vendored registry) marked volatile — blue on the canvas
+ * and the EM-Data table, excluded from save until baked. No new mapping logic;
+ * no schema invention. Linking a resource to a node (the "hat") stays a later
+ * step — here they arrive as the orphan resources the Shelf already models.
+ */
+async function mapResourceCollection(
+  f: { id: string; name: string; locator: string },
+  auxId: string,
+): Promise<void> {
+  if (!store) return;
+  const nt = nodeTypeForClass("ResourceNode") ?? "resource";
+  toast(`scanning ${f.name}…`);
+  try {
+    const res = await fetch(`${await bridgeUrl()}/scan-resources`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ folder: f.locator, doc: store.doc }),
+    });
+    if (!res.ok) throw new Error(`bridge ${res.status}`);
+    const payload = (await res.json()) as {
+      shelf?: Array<{ resource_id: string; filename: string; rel_path: string }>;
+    };
+    const shelf = payload.shelf ?? [];
+    const nodes: EmNode[] = shelf.map((r) => ({
+      id: r.resource_id,
+      name: r.filename,
+      node_type: nt,
+      description: "",
+      data: { url: r.rel_path, url_type: resourceTypeOfLocator(r.filename) },
+    }));
+    const added = store.mapVolatile(auxId, nodes, []);
+    const aux = emtree.active()?.auxiliaryFiles.find((x) => x.id === auxId);
+    if (aux) {
+      aux.mapped = true;
+      aux.baked = false;
+    }
+    refreshEMTree();
+    toast(`mapped ${f.name} — ${added} volatile resource(s) in blue; save excludes them until baked`);
+  } catch (e) {
+    toast(
+      `scan failed (${e instanceof Error ? e.message : e}). The bridge (dev.sh) ` +
+        `must be running to scan a resource folder.`,
     );
   }
 }

@@ -9,6 +9,8 @@ import connections from "./assets/s3Dgraphy_connections_datamodel.json";
 import nodeRegistry from "./assets/node_registry.generated.json";
 import nodeDatamodel from "./assets/s3Dgraphy_node_datamodel.json";
 import visualRules from "./assets/em_visual_rules.json";
+import datamodelTranslations from "./assets/datamodel_translations.json";
+import { getLocale } from "./i18n";
 
 interface EdgeTypeDef {
   name?: string;
@@ -296,9 +298,28 @@ export function edgeTypeFor(
   return allowedEdgeTypes(sourceType, targetType)[0];
 }
 
+// TRAD1 · multilingual descriptions from the vendored sidecar (keyed by class).
+// en is the source; other langs are translation surface with validated_<lang>.
+const _TRANSLATIONS = (
+  datamodelTranslations as {
+    entries?: Record<string, Record<string, Record<string, string | boolean>>>;
+  }
+).entries ?? {};
+
+/** The datamodel description of a node type in the ACTIVE locale, English
+ *  fallback (TRAD1). Chain: sidecar[class].description[locale] → sidecar en →
+ *  the datamodel's own English string (which the sidecar's en mirrors). */
 export function typeDescription(nodeType: string | undefined): string {
   const className = TYPE_TO_CLASS.get(nodeType ?? "");
-  return (className && CLASS_ENTRIES[className]?.description) || "";
+  if (!className) return "";
+  const field = _TRANSLATIONS[className]?.description;
+  if (field) {
+    const loc = field[getLocale()];
+    if (typeof loc === "string" && loc.trim()) return loc;
+    const en = field.en;
+    if (typeof en === "string" && en.trim()) return en;
+  }
+  return CLASS_ENTRIES[className]?.description || "";
 }
 
 function intersects(allowed: string[] | undefined, anc: string[]): boolean {
