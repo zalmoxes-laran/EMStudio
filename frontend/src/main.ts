@@ -69,6 +69,9 @@ import {
   narrativeViewTypeDescription,
   nodeTypeForClass,
   typeDescription,
+  NODE_DATAMODEL_VERSION,
+  CONNECTIONS_VERSION,
+  VISUAL_RULES_VERSION,
 } from "./rules";
 import { sceneToSvg } from "./svg-export";
 import {
@@ -381,6 +384,11 @@ function setModeIndicator(sidecar: boolean): void {
     hostInfo = {};
     sidecarDetail.innerHTML = "";
   }
+  // MENU1 · reflect the active session mode in the Mode menu (a leading ✓).
+  document.getElementById("btn-mode-standalone")
+    ?.classList.toggle("mode-active", !sidecar);
+  document.getElementById("btn-mode-sidecar")
+    ?.classList.toggle("mode-active", sidecar);
 }
 setModeIndicator(false);
 
@@ -3159,6 +3167,70 @@ btnSync.addEventListener("click", () => {
         info.textContent = "sync: disconnected (is Blender's server running?)";
     },
   });
+});
+
+// ---------- MENU1 · Mode menu (Standalone / Sidecar / Hub) ----------
+// Reuses the existing sync toggle (btnSync) rather than reimplementing it:
+// Sidecar connects if not connected, Standalone disconnects if connected. Hub
+// is disabled (em-server, later). The active mode's ✓ is set by setModeIndicator.
+document.getElementById("btn-mode-standalone")?.addEventListener("click", () => {
+  if (sync.connected) btnSync.click(); // disconnect → back to local document
+});
+document.getElementById("btn-mode-sidecar")?.addEventListener("click", () => {
+  if (!sync.connected) btnSync.click(); // connect → live-synced to the host
+});
+
+// ---------- MENU1 · Help menu (About / Updates / Ontology models) ----------
+const RELEASES_URL = "https://github.com/EmanuelDemetrescu/EMStudio/releases";
+function helpPopover(title: string, rows: Array<[string, string]>): void {
+  document.getElementById("help-pop")?.remove();
+  const pop = document.createElement("div");
+  pop.id = "help-pop";
+  pop.className = "help-pop";
+  const h = document.createElement("div");
+  h.className = "help-pop-title";
+  h.textContent = title;
+  pop.appendChild(h);
+  for (const [k, v] of rows) {
+    const r = document.createElement("div");
+    r.className = "help-pop-row";
+    const kk = document.createElement("span");
+    kk.className = "help-pop-k";
+    kk.textContent = k;
+    const vv = document.createElement("span");
+    vv.textContent = v;
+    r.append(kk, vv);
+    pop.appendChild(r);
+  }
+  document.body.appendChild(pop);
+  const close = (e: MouseEvent): void => {
+    if (!pop.contains(e.target as Node)) {
+      pop.remove();
+      document.removeEventListener("pointerdown", close, true);
+    }
+  };
+  setTimeout(() => document.addEventListener("pointerdown", close, true), 0);
+}
+document.getElementById("btn-help-about")?.addEventListener("click", () => {
+  helpPopover("EMStudio", [
+    ["Version", __EMSTUDIO_VERSION__],
+    ["EM language", EM_VERSION],
+    ["License", "GPL-3.0 · CNR ISPC — StratiGraph (HE GA 101232855)"],
+  ]);
+});
+document.getElementById("btn-help-updates")?.addEventListener("click", () => {
+  // No in-app updater yet — point at the releases page (stub, declared).
+  toast("Nessun updater in-app: apri le release su GitHub.");
+  window.open(RELEASES_URL, "_blank", "noopener,noreferrer");
+});
+document.getElementById("btn-help-onto")?.addEventListener("click", () => {
+  helpPopover("Ontology models (under the hood)", [
+    ["Node datamodel", NODE_DATAMODEL_VERSION],
+    ["Connections", CONNECTIONS_VERSION],
+    ["Visual rules", VISUAL_RULES_VERSION],
+    ["EM ontology", "em.ttl · w3id.org/em"],
+    ["HDT-O", "hdto_extension.ttl (ECCCH)"],
+  ]);
 });
 
 // ---------- Settings modal (sync target, …) ----------

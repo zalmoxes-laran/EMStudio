@@ -110,6 +110,17 @@ export const DATAMODEL_VERSION = String(
 );
 export const EM_VERSION = DATAMODEL_VERSION.split(".").slice(0, 2).join(".");
 
+/** MENU1 · datamodel versions surfaced in Help → Ontology models (the vendored
+ *  single-source configs — ADR-001). Read from the same JSONs the UI is built
+ *  from, so they never drift from what actually ships. */
+export const NODE_DATAMODEL_VERSION = String(
+  (nodeDatamodel as Record<string, unknown>)["s3Dgraphy_data_model_version"] ?? "?",
+);
+export const CONNECTIONS_VERSION = DATAMODEL_VERSION;
+export const VISUAL_RULES_VERSION = String(
+  (visualRules as Record<string, unknown>)["version"] ?? "?",
+);
+
 /** Class ancestry for a runtime node_type (always includes "Node"). */
 export function ancestorsOf(nodeType: string | undefined): string[] {
   const className = TYPE_TO_CLASS.get(nodeType ?? "");

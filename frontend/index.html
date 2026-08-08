@@ -38,6 +38,10 @@
         <span class="brand-word">EMStudio</span>
         <span id="app-version" class="app-ver" title="EMStudio build version"></span>
       </span>
+      <!-- MENU1 · leader bar: File · Modifica · Mode · Help. The generic
+           .dropdown/.dd-toggle/.dd-menu wiring (main.ts) auto-attaches; items
+           keep their IDs so existing handlers (open/save/import/export/undo/
+           redo/settings/sync) are reused, not reimplemented. -->
       <div class="dropdown" id="dd-file">
         <button class="dd-toggle" title="File operations"><span data-i18n="toolbar.file">File</span> ▾</button>
         <div class="dd-menu hidden">
@@ -49,25 +53,47 @@
           >
             <span data-i18n="toolbar.importGraphml">Import GraphML…</span>
           </button>
+          <!-- MENU1 · Export is now a section of File, right after Import -->
+          <div class="dd-sep"></div>
+          <div class="dd-label" data-i18n="toolbar.export">Export</div>
+          <button id="btn-svg" title="Export current view as SVG">SVG</button>
+          <button id="btn-graphml" title="Export as yEd GraphML (needs the local dev bridge — see dev.sh)">GraphML</button>
+          <button id="btn-ttl" title="Export as RDF/CIDOC Turtle (.ttl) via the s3Dgraphy projection">Turtle (.ttl)</button>
+          <div class="dd-sep"></div>
           <button id="btn-save" title="Save .em.json (⌘S)" data-i18n="toolbar.save">Save</button>
           <button id="btn-save-as" title="Save .em.json to a new file (⇧⌘S)" data-i18n="toolbar.saveAs">Save As…</button>
         </div>
       </div>
-      <div class="dropdown" id="dd-export">
-        <button class="dd-toggle" title="Export"><span data-i18n="toolbar.export">Export</span> ▾</button>
+      <div class="dropdown" id="dd-edit">
+        <button class="dd-toggle" title="Edit"><span data-i18n="toolbar.edit">Edit</span> ▾</button>
         <div class="dd-menu hidden">
-          <button id="btn-svg" title="Export current view as SVG">SVG</button>
-          <button id="btn-graphml" title="Export as yEd GraphML (needs the local dev bridge — see dev.sh)">GraphML</button>
-          <button id="btn-ttl" title="Export as RDF/CIDOC Turtle (.ttl) via the s3Dgraphy projection">Turtle (.ttl)</button>
+          <button id="btn-undo" data-i18n-title="toolbar.undo" disabled><span data-i18n="toolbar.undoItem">Undo</span></button>
+          <button id="btn-redo" data-i18n-title="toolbar.redo" disabled><span data-i18n="toolbar.redoItem">Redo</span></button>
+          <div class="dd-sep"></div>
+          <button id="btn-settings" data-i18n-title="toolbar.settings"><span data-i18n="toolbar.settingsItem">Settings…</span></button>
         </div>
       </div>
-      <button id="btn-sync" title="Connect to Blender/EMtools for live selection sync (ADR-002)" data-i18n="toolbar.sync">Sync</button>
+      <div class="dropdown" id="dd-mode">
+        <button class="dd-toggle" title="Session mode"><span data-i18n="toolbar.mode">Mode</span> ▾</button>
+        <div class="dd-menu hidden">
+          <button id="btn-mode-standalone" title="Standalone: editing a local .em.json"><span data-i18n="toolbar.modeStandalone">Standalone</span></button>
+          <button id="btn-mode-sidecar" title="Sidecar: live-synced to a host (Blender/EMtools) — ADR-002"><span data-i18n="toolbar.modeSidecar">Sidecar (sync)</span></button>
+          <button id="btn-mode-hub" disabled title="Hub: em-server multi-user session (coming later)"><span data-i18n="toolbar.modeHub">Hub</span></button>
+        </div>
+      </div>
+      <div class="dropdown" id="dd-help">
+        <button class="dd-toggle" title="Help"><span data-i18n="toolbar.help">Help</span> ▾</button>
+        <div class="dd-menu hidden">
+          <button id="btn-help-about"><span data-i18n="toolbar.about">About EMStudio</span></button>
+          <button id="btn-help-updates"><span data-i18n="toolbar.updates">Check for updates…</span></button>
+          <button id="btn-help-onto"><span data-i18n="toolbar.ontologies">Ontology models…</span></button>
+        </div>
+      </div>
+      <!-- sync stays in the DOM (hidden) so its existing handler is reused;
+           the Mode menu drives connect/disconnect. -->
+      <button id="btn-sync" class="hidden" title="Connect to Blender/EMtools for live selection sync (ADR-002)" data-i18n="toolbar.sync">Sync</button>
       <button id="btn-resources" title="Resources: the shared Resource layer (Documents · RM · DTC · Shelf) via the bridge" data-i18n="toolbar.resources">Resources</button>
-      <button id="btn-settings" data-i18n-title="toolbar.settings" aria-label="Settings">⚙</button>
       <span id="dirty-dot" class="hidden" title="unsaved changes">●</span>
-      <span class="tb-sep"></span>
-      <button id="btn-undo" data-i18n-title="toolbar.undo" disabled>↺</button>
-      <button id="btn-redo" data-i18n-title="toolbar.redo" disabled>↻</button>
       <span class="tb-sep"></span>
       <div id="view-toggle" role="group">
         <button id="btn-matrix" class="active" data-i18n="toolbar.matrix">Matrix</button>

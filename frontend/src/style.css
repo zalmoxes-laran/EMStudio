@@ -947,8 +947,66 @@ body.sync-active #mode-indicator::before {
   white-space: nowrap;
   min-height: 0;
 }
-#toolbar .dd-menu button:hover {
+#toolbar .dd-menu button:hover:not(:disabled) {
   background: var(--bg-accent-soft);
+}
+/* MENU1 · disabled menu item (e.g. Hub, or undo/redo with nothing to do) */
+#toolbar .dd-menu button:disabled {
+  color: var(--text-faint);
+  cursor: default;
+}
+/* MENU1 · section separator + label inside a dropdown menu */
+.dd-menu .dd-sep {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--border);
+}
+.dd-menu .dd-label {
+  padding: 3px 10px 1px;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-faint);
+}
+/* MENU1 · active session mode gets a leading check */
+#toolbar .dd-menu button.mode-active::before {
+  content: "✓ ";
+  color: var(--accent-ink);
+}
+/* MENU1 · Help → About / Ontology models popover */
+.help-pop {
+  position: fixed;
+  top: 46px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1200;
+  min-width: 300px;
+  max-width: 420px;
+  background: var(--bg-panel);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.28);
+  padding: 14px 16px;
+  font-size: 13px;
+}
+.help-pop-title {
+  font-weight: 700;
+  font-size: 14px;
+  margin-bottom: 8px;
+}
+.help-pop-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 3px 0;
+  border-top: 1px solid var(--border);
+}
+.help-pop-row:first-of-type {
+  border-top: 0;
+}
+.help-pop-k {
+  color: var(--text-faint);
 }
 
 /* right-click context menu (D3: Group) */
