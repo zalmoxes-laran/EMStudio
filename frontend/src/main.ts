@@ -23,8 +23,10 @@ import {
 } from "./logpanel";
 import { DocumentStore } from "./model";
 import {
+  HAS_PARADATA_NODEGROUP,
   initialName,
   nameStatusMap,
+  paradataGroupRenameOnAttach,
   renameOnAttach,
   type NameCheck,
 } from "./naming";
@@ -157,6 +159,7 @@ import {
 import { GROUP_HEADER, GROUP_PAD } from "./views/matrix";
 import { setupSearch } from "./search";
 import { initEmData, renderEmData, setVolatileProvider } from "./emdata";
+import { EM_DATA_SHEETS } from "./em-data";
 import { isVolatile } from "./volatile";
 import { addRecent, removeRecent, type RecentFile } from "./recent";
 import {
@@ -167,6 +170,7 @@ import {
   activeWindowType,
   addWindow,
   closeWindow,
+  GRAPH_MODES,
   setActiveWin,
   setActiveWorkspace,
   setWinMode,
@@ -220,7 +224,13 @@ let view: ViewKind = "matrix";
 let centralMode: CentralMode = "matrix";
 /** The modes the central-area selector offers, in order. Add `table`/`dtc` here
  *  (and a branch in `setMode`) when they land — the seam, not the feature. */
-const CENTRAL_MODES: CentralMode[] = ["matrix", "graph", "dtc", "narrative"];
+const CENTRAL_MODES: CentralMode[] = [
+  "matrix",
+  "graph",
+  "dtc",
+  "multigraph",
+  "narrative",
+];
 // Graph-view layout: chosen algorithm + manual position overrides (drags /
 // liquid clustering). Overrides persist across rebuilds in-session and are
 // cleared on a fresh Layout, an algorithm change, or a new/loaded document.
@@ -230,11 +240,15 @@ const graphOverrides = new Map<string, { x: number; y: number }>();
 // different places in the two projections, so one shared map would teleport a
 // node in Graph view because it was arranged in DTC.
 const dtcOverrides = new Map<string, { x: number; y: number }>();
+// MULTIGRAPH · its own drag map, for the same reason: the node sits elsewhere in
+// each projection.
+const multigraphOverrides = new Map<string, { x: number; y: number }>();
 /** The manual-drag map of the current canvas projection, or null where drags are
  *  not overrides at all (Matrix stores positions in the document layout). */
 function canvasOverrides(): Map<string, { x: number; y: number }> | null {
   if (view === "graph") return graphOverrides;
   if (view === "dtc") return dtcOverrides;
+  if (view === "multigraph") return multigraphOverrides;
   return null;
 }
 // Matrix VIEW layout: an em-core layout of the FILTERED subgraph, so the Matrix
@@ -305,6 +319,7 @@ const circleState: Record<ViewKind, Set<CircleKey>> = {
   matrix: defaultVisibleCircles("matrix"),
   graph: defaultVisibleCircles("graph"),
   dtc: defaultVisibleCircles("dtc"),
+  multigraph: defaultVisibleCircles("multigraph"),
 };
 // Recompute the hidden type sets from the current view's visible circles.
 function recomputeHiddenFromCircles(): void {
@@ -1255,15 +1270,23 @@ function updateInfo(): void {
 }
 
 // The visible subgraph after folding + the "circles of detail" filter — one
-// filtered view shared by both projections. Structural nodes/edges (containers,
+// filtered view shared by every projection. Structural nodes/edges (containers,
 // epoch, membership) are never filtered (see filters.ts).
-function filteredView(): {
+//
+// MULTIGRAPH · `wholeGraph` is the mode that says "show me everything hanging
+// off this graph": it keeps the graph-scope / HDT-O layer (the GraphNode and its
+// paradata group carrying author, licence, embargo, site position) and leaves
+// every ornament a real node instead of a badge. The rings still apply on top —
+// they simply all start on in that view — so this is one filter with a switch,
+// not a second, divergible reader.
+function filteredView(opts: { wholeGraph?: boolean } = {}): {
   nodes: EmDocument["graph"]["nodes"];
   edges: EmDocument["graph"]["edges"];
   badges: Map<string, number>;
   adornments: Map<string, AdornmentBadge[]>;
 } {
   const doc = store!.doc;
+  const wholeGraph = !!opts.wholeGraph;
   const folded = new Set(doc.layout?.folded_groups ?? []);
   const foldedView = folded.size
     ? applyFolding(doc, buildMembership(doc), folded)
@@ -1277,7 +1300,7 @@ function filteredView(): {
   const isHdto = (n: EmDocument["graph"]["nodes"][number]): boolean =>
     HDTO_HIDDEN_TYPES.has(n.node_type) ||
     !!(n.data as Record<string, unknown> | undefined)?.hdto_role;
-  if (vNodes.some(isHdto)) {
+  if (!wholeGraph && vNodes.some(isHdto)) {
     vNodes = vNodes.filter((n) => !isHdto(n));
     const keep = new Set(vNodes.map((n) => n.id));
     vEdges = vEdges.filter((e) => keep.has(e.source) && keep.has(e.target));
@@ -1346,8 +1369,22 @@ function filteredView(): {
       adornments.set(n.id, arr);
     }
   }
-  vNodes = vNodes.filter((n) => !isAdornmentNodeType(n.node_type));
-  vEdges = vEdges.filter((e) => !ADORNMENT_EDGE_TYPES.has(e.edge_type ?? ""));
+  // BUGS-UI · the badge is a PREVIEW, not a replacement. An ornament that is a
+  // MEMBER of a paradata group stays a REAL node inside that group — it is
+  // paradata like the qualia beside it — so it can be seen, selected and
+  // edited; only ornaments floating loose on the canvas collapse into their
+  // badge (which is what BADGE1 was actually after: no stray box + edge next to
+  // every node). The membership edge keeps drawing; the semantic
+  // `has_author`/… edge stays folded into the badge either way.
+  const pdgMembers = new Set<string>();
+  for (const e of doc.graph.edges)
+    if (e.edge_type === "is_in_paradata_nodegroup") pdgMembers.add(e.source);
+  if (!wholeGraph) {
+    vNodes = vNodes.filter(
+      (n) => !isAdornmentNodeType(n.node_type) || pdgMembers.has(n.id),
+    );
+    vEdges = vEdges.filter((e) => !ADORNMENT_EDGE_TYPES.has(e.edge_type ?? ""));
+  }
   return {
     nodes: vNodes,
     edges: vEdges,
@@ -1406,6 +1443,14 @@ function buildScenes(): void {
   // WIN2 · the DTC projection reads the SAME filtered view (folding + circles
   // still apply) through the digital-twin-creation relations.
   scenes.dtc = buildDtcScene(fview.nodes, fview.edges, dtcOverrides);
+  // MULTIGRAPH · the same layered projection as Graph, over the WHOLE view:
+  // ornaments as nodes and the graph-scope layer included, so author, licence,
+  // embargo and the site position are visible and selectable (and therefore
+  // editable in the Inspector) instead of living only in a side panel.
+  scenes.multigraph = buildGraphScene(doc, filteredView({ wholeGraph: true }), {
+    algorithm: graphAlgorithm,
+    overrides: multigraphOverrides,
+  });
   updateChronoBanner();
 }
 
@@ -1610,6 +1655,9 @@ function applyCanvasView(v: ViewKind): void {
   view = v;
   // (selector "active" state is set by setMode, from CENTRAL_MODES; the layout
   // controls are per-mode and live in the window header — updateWindowHeader.)
+  // WIN3 · the left panel's CONTENT follows the mode (DTC offers the DTC chunks,
+  // not the stratigraphic types), so a mode change rebuilds it.
+  if (changed) buildPaletteForMode();
   // each view keeps its own "circles of detail" depth → re-derive the hidden
   // sets and rebuild when the active view changes.
   if (changed && store) {
@@ -1725,7 +1773,7 @@ function activateSlot(id: string, opts: { rebuildOnly?: boolean } = {}): void {
     // a different size. Only projections actually shown have one.
     const winId = activeWin().id;
     const camera: SlotViewState["camera"] = {};
-    for (const v of ["matrix", "graph", "dtc"] as ViewKind[]) {
+    for (const v of ["matrix", "graph", "dtc", "multigraph"] as ViewKind[]) {
       const vp = winViewports.get(viewportKey(winId, v));
       if (vp) camera[v] = { x: vp.x, y: vp.y, scale: vp.scale };
     }
@@ -1754,9 +1802,11 @@ function activateSlot(id: string, opts: { rebuildOnly?: boolean } = {}): void {
   for (const [nodeId, position] of target.viewState.graphOverrides) {
     graphOverrides.set(nodeId, position);
   }
-  // DTC drags are not parked per slot (yet): another document's substrate has
-  // other node ids, so carrying them over would place nothing and confuse much.
+  // DTC / multigraph drags are not parked per slot (yet): another document's
+  // substrate has other node ids, so carrying them over would place nothing and
+  // confuse much.
   dtcOverrides.clear();
+  multigraphOverrides.clear();
   phasesCollapsed.clear();
   for (const epoch of target.viewState.phasesCollapsed) {
     phasesCollapsed.add(epoch);
@@ -1869,12 +1919,19 @@ function loadDocument(
     // Silent and non-blocking: nothing moves, so there is nothing to explain, and
     // a failure leaves the document exactly as it was on disk.
     void reassertSizes().finally(() => {
+      // BUGS-UI · the geometry is only FINAL here (sizes re-asserted / layout
+      // computed). Any camera framed earlier in the load framed a half-built
+      // scene, so forget them: the first entry into each mode now frames the
+      // document as it actually is. Without this the WIN2 per-instance camera
+      // kept a stale frame — the previous document's zoom, or an empty one.
+      resetWindowCameras();
       setViewOnLoad(scenes.matrix ? "matrix" : "graph");
     });
   } else {
     logInfo("no stored positions — computing a fresh layout via em-core");
     void runLayout(true)
       .then(() => {
+        resetWindowCameras(); // frame the FINISHED layout, not the empty scene
         setViewOnLoad("matrix");
         fit();
       })
@@ -1882,6 +1939,7 @@ function loadDocument(
         const msg = e instanceof Error ? e.message : String(e);
         info.textContent = `auto-layout failed: ${msg}`;
         logError(`auto-layout failed: ${msg}`);
+        resetWindowCameras();
         setViewOnLoad(scenes.matrix ? "matrix" : "graph");
       });
   }
@@ -2114,7 +2172,12 @@ async function openDocument(): Promise<void> {
 }
 
 // ---------- placing (palette) ----------
-const paletteUi = buildPalette(
+// WIN3 · the palette is rebuilt when the canvas projection changes, because its
+// CONTENT is per-mode (DTC offers the DTC chunks, not the stratigraphic types).
+// One factory, called again — not a second palette that could drift.
+let paletteUi: ReturnType<typeof buildPalette>;
+function buildPaletteForMode(): void {
+  paletteUi = buildPalette(
   document.getElementById("palette")!,
   (t, kind, isResource) => {
     if (!store) {
@@ -2147,7 +2210,10 @@ const paletteUi = buildPalette(
       hintBar.classList.add("hidden");
     }
   },
-);
+  { mode: view },
+  );
+}
+buildPaletteForMode();
 
 /**
  * Ask em-core to re-assert node SIZES on the layout we already have (EM3).
@@ -2526,6 +2592,17 @@ function createEdge(source: string, target: string, edgeType: string): void {
   if (renamed) {
     store.updateNode(source, { name: renamed });
     toast(`numbered ${renamed}`);
+  }
+  // BUGS-UI · the same trigger for a paradata group: a PDG dropped from the
+  // palette is born with a generic label and only learns its referent when this
+  // edge is drawn — from then on it is `PD_<referent>`, like the groups created
+  // by the ornament attach and by the epoch chronology.
+  if (edgeType === HAS_PARADATA_NODEGROUP) {
+    const pdgName = paradataGroupRenameOnAttach(store.doc, target);
+    if (pdgName) {
+      store.updateNode(target, { name: pdgName });
+      toast(`named ${pdgName}`);
+    }
   }
 }
 
@@ -2906,7 +2983,27 @@ document.querySelectorAll<HTMLElement>(".dropdown").forEach((dd) => {
   });
   menu.addEventListener("click", () => menu.classList.add("hidden"));
 });
-document.addEventListener("click", closeAllDropdowns);
+// BUGS-UI · nested sub-menus inside a dropdown (File ▸ Export). The toggle must
+// NOT bubble: the parent menu closes on any click inside it, so an un-stopped
+// click would close the very menu the flyout hangs from. Picking an item does
+// bubble — that closes both, which is what finishing a command should do.
+function closeAllSubmenus(): void {
+  document.querySelectorAll(".dd-sub-menu").forEach((m) => m.classList.add("hidden"));
+}
+document.querySelectorAll<HTMLElement>(".dd-sub").forEach((sub) => {
+  const toggle = sub.querySelector<HTMLButtonElement>(".dd-sub-toggle")!;
+  const menu = sub.querySelector<HTMLElement>(".dd-sub-menu")!;
+  toggle.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const willOpen = menu.classList.contains("hidden");
+    closeAllSubmenus();
+    if (willOpen) menu.classList.remove("hidden");
+  });
+});
+document.addEventListener("click", () => {
+  closeAllDropdowns();
+  closeAllSubmenus();
+});
 
 const fileInput = document.getElementById("file-input") as HTMLInputElement;
 /**
@@ -4416,11 +4513,13 @@ function closeWorkspace(): void {
   matrixViewLayout = null;
   graphOverrides.clear();
   dtcOverrides.clear();
+  multigraphOverrides.clear();
   resetWindowCameras();
   phasesCollapsed.clear();
   scenes.matrix = null;
   scenes.graph = null;
   scenes.dtc = null;
+  scenes.multigraph = null;
   dropHint.classList.remove("hidden");
   info.textContent = t("toast.openOrDrop");
   select(null);
@@ -5223,10 +5322,6 @@ function transformWindow(type: WindowType): void {
   updateWindowHeader();
 }
 
-// WIN2 · the modes a graph window can show, in header order. They ARE the canvas
-// projections (ViewKind) — the window picks one, the app no longer has "a view".
-const GRAPH_MODES: ViewKind[] = ["matrix", "graph", "dtc"];
-
 /** Change the mode of the ACTIVE window (per-instance): record it on the window,
  *  then mount that projection. Another graph window keeps its own mode. */
 function setWindowMode(mode: ViewKind): void {
@@ -5276,11 +5371,13 @@ function updateWindowHeader(): void {
     document.getElementById(id)?.classList.toggle("hidden", !on);
   };
   show("window-mode", isGraph);
-  show("win-fit", isGraph);
-  // Layout is a Matrix action (em-core swimlanes); the algorithm belongs to the
-  // Graph projection; DTC is a deterministic layered projection, so neither.
-  show("win-layout", mode === "matrix");
-  show("win-algo", mode === "graph");
+  // WIN3 · fit / layout / algorithm are now ITEMS of the Vista and Layout menus.
+  // Their controls stay in the DOM (they own the behaviour, the menus drive
+  // them) but are never shown: two ways to click the same thing, side by side,
+  // is the duplication this step went to remove.
+  show("win-fit", false);
+  show("win-layout", false);
+  show("win-algo", false);
   const modeLabel = document.getElementById("win-mode-label");
   if (modeLabel && mode) modeLabel.textContent = t(`mode.${mode}`);
   document
@@ -5288,6 +5385,7 @@ function updateWindowHeader(): void {
     .forEach((b) => b.classList.toggle("active", b.dataset.wm === mode));
   const algo = document.getElementById("win-algo") as HTMLSelectElement | null;
   if (algo) algo.value = graphAlgorithm;
+  renderWindowMenus(); // the menus belong to the TYPE — rebuild when it changes
   renderInstanceStrip();
 }
 
@@ -5326,6 +5424,227 @@ function renderInstanceStrip(): void {
   }
 }
 
+// ── WIN3 · the per-type menu registry ────────────────────────────────────────
+// The window header is a BAR: type · mode · the menus of that window type. The
+// menus are DATA — `WINDOW_MENUS[type]` — so adding one is an entry here, not a
+// rewrite of the header. Every item runs an EXISTING command (often by driving
+// the control that already owns it), so there is one implementation of fit,
+// layout, add-chapter, add-row, export… and the menu is only a way in.
+interface WinMenuItem {
+  label: string;
+  run: () => void;
+  /** a ✓ in the menu — for the items that pick a state, not an action */
+  checked?: () => boolean;
+  /** greyed out with the reason in the tooltip, rather than silently missing */
+  disabledReason?: () => string | null;
+}
+interface WinMenu {
+  label: string;
+  items: () => WinMenuItem[];
+}
+
+const click = (id: string): void => document.getElementById(id)?.click();
+
+const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
+  graph: [
+    {
+      label: "Vista",
+      items: () => [
+        { label: "Adatta alla finestra", run: () => fit() },
+        { label: "Filtri (cerchi di dettaglio)…", run: () => click("btn-view-props") },
+        ...GRAPH_MODES.map((m) => ({
+          label: t(`mode.${m}`),
+          run: () => setWindowMode(m),
+          checked: () => winMode(activeWin()) === m,
+        })),
+      ],
+    },
+    {
+      label: "Layout",
+      items: () => {
+        const mode = winMode(activeWin());
+        const algoItems = (["layered", "radial", "force"] as GraphAlgorithm[]).map(
+          (a) => ({
+            label: a[0].toUpperCase() + a.slice(1),
+            run: () => {
+              const sel = document.getElementById("graph-layout") as HTMLSelectElement;
+              sel.value = a;
+              sel.dispatchEvent(new Event("change"));
+            },
+            checked: () => graphAlgorithm === a,
+            disabledReason: () =>
+              mode === "matrix"
+                ? "L'algoritmo vale per le proiezioni a grafo; Matrix usa le corsie di em-core."
+                : null,
+          }),
+        );
+        return [
+          {
+            label: "Ricalcola layout",
+            run: () => click("btn-layout"),
+            disabledReason: () =>
+              mode === "matrix"
+                ? null
+                : "In questa proiezione il layout si rigenera cambiando algoritmo.",
+          },
+          ...algoItems,
+        ];
+      },
+    },
+  ],
+  narrative: [
+    {
+      label: "Capitolo",
+      items: () => [
+        {
+          label: "Aggiungi capitolo",
+          run: () => {
+            if (!store) return;
+            const narr = narrativesIn(store.doc).find((n) => n.id === selectedNarrativeId)
+              ?? narrativesIn(store.doc)[0];
+            if (!narr) return;
+            nedit.addChapter(store, narr.id);
+            refreshNarrativeView();
+          },
+          disabledReason: () =>
+            store && narrativesIn(store.doc).length ? null : "Nessuna narrativa in questo grafo.",
+        },
+        {
+          label: "Modifica narrativa",
+          run: () => click("btn-narrative-edit"),
+        },
+      ],
+    },
+    {
+      label: "Inserisci",
+      items: () => [
+        {
+          label: "Mappa del sito",
+          run: () => {
+            if (!store) return;
+            const narr = narrativesIn(store.doc).find((n) => n.id === selectedNarrativeId)
+              ?? narrativesIn(store.doc)[0];
+            if (!narr) return;
+            if (!narr.chapters.length) nedit.addChapter(store, narr.id);
+            const cs = narrativesIn(store.doc).find((n) => n.id === narr.id)?.chapters ?? [];
+            nedit.addEmbed(store, narr.id, Math.max(0, cs.length - 1),
+                           store.ensureGraphRootId(), "map");
+            refreshNarrativeView();
+          },
+          disabledReason: () =>
+            store && narrativesIn(store.doc).length ? null : "Nessuna narrativa in questo grafo.",
+        },
+        // The other block types are inserted from a chapter's own + button,
+        // which knows WHICH chapter and WHICH node — a menu has neither, and a
+        // menu item that guesses the chapter is worse than no menu item.
+        ...narrativeViewTypes().map((vt) => ({
+          label: vt,
+          run: () => toast("Inserisci questo blocco dal + del capitolo (sa quale capitolo e quale nodo)."),
+          disabledReason: () => "Si inserisce dal + del capitolo.",
+        })),
+      ],
+    },
+    {
+      label: "IA",
+      items: () => [
+        {
+          label: "Rigenera bozza del capitolo",
+          run: () => toast("La rigenerazione parte dal ✨ del capitolo: la bozza è di QUEL capitolo."),
+          disabledReason: () => "Si lancia dal ✨ del capitolo.",
+        },
+      ],
+    },
+  ],
+  table: [
+    {
+      label: "Tabella",
+      items: () =>
+        EM_DATA_SHEETS.map((sheet) => ({
+          label: sheet.label,
+          run: () => {
+            const sel = document.getElementById("emdata-sheet") as HTMLSelectElement | null;
+            if (!sel) return;
+            sel.value = sheet.key;
+            sel.dispatchEvent(new Event("change"));
+          },
+          checked: () =>
+            (document.getElementById("emdata-sheet") as HTMLSelectElement | null)?.value ===
+            sheet.key,
+        })),
+    },
+    {
+      label: "Righe",
+      items: () => [
+        {
+          label: "Aggiungi riga",
+          run: () => {
+            const btn = [...document.querySelectorAll<HTMLButtonElement>("#emdata-actions button")]
+              .find((b) => /row/i.test(b.textContent ?? ""));
+            if (btn) btn.click();
+            else toast("Questo foglio non accetta righe nuove.");
+          },
+        },
+        {
+          label: "Elimina riga",
+          run: () => toast("Elimina una riga dalla ✕ in fondo alla riga stessa."),
+          disabledReason: () => "Si elimina dalla ✕ della riga.",
+        },
+      ],
+    },
+    {
+      label: "Esporta",
+      items: () => [
+        { label: "SVG", run: () => click("btn-svg") },
+        { label: "GraphML", run: () => click("btn-graphml") },
+        { label: "Turtle (.ttl)", run: () => click("btn-ttl") },
+      ],
+    },
+  ],
+  doc: [], // stub window: no commands to offer
+};
+
+/** Build the header's menus for the ACTIVE window's type. */
+function renderWindowMenus(): void {
+  const host = document.getElementById("window-menus");
+  if (!host) return;
+  host.innerHTML = "";
+  for (const menu of WINDOW_MENUS[activeWindowType()]) {
+    const dd = document.createElement("div");
+    dd.className = "dropdown win-menu";
+    const toggle = document.createElement("button");
+    toggle.className = "dd-toggle win-menu-toggle";
+    toggle.innerHTML = `${menu.label} <span class="win-type-caret">▾</span>`;
+    const list = document.createElement("div");
+    list.className = "dd-menu hidden";
+    toggle.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const willOpen = list.classList.contains("hidden");
+      closeAllDropdowns();
+      closeAllSubmenus();
+      if (!willOpen) return;
+      // built on OPEN, so ✓ and disabled reasons are current every time
+      list.innerHTML = "";
+      for (const item of menu.items()) {
+        const b = document.createElement("button");
+        const reason = item.disabledReason?.() ?? null;
+        b.textContent = (item.checked?.() ? "✓ " : "") + item.label;
+        if (reason) {
+          b.disabled = true;
+          b.title = reason;
+        } else {
+          b.addEventListener("click", item.run);
+        }
+        list.appendChild(b);
+      }
+      list.classList.remove("hidden");
+    });
+    list.addEventListener("click", () => list.classList.add("hidden"));
+    dd.appendChild(toggle);
+    dd.appendChild(list);
+    host.appendChild(dd);
+  }
+}
+
 function renderWindowModeMenu(): void {
   const menu = document.getElementById("window-mode-menu");
   if (!menu) return;
@@ -5360,6 +5679,7 @@ function renderWindowTypeMenu(): void {
 function initWindowHeader(): void {
   renderWindowTypeMenu();
   renderWindowModeMenu();
+  renderWindowMenus();
   updateWindowHeader();
 }
 initWindowHeader();

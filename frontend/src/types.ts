@@ -69,8 +69,10 @@ export interface EmDocument {
 
 /** A canvas PROJECTION of the graph — each carries its own viewport, scene and
  *  "circles of detail". `dtc` (WIN2) reads the same nodes through their
- *  digital-twin-creation relations; it is a projection, not a second model. */
-export type ViewKind = "matrix" | "graph" | "dtc";
+ *  digital-twin-creation relations; `multigraph` (MULTIGRAPH) shows the graph
+ *  WITH everything attached to it — paradata, ornaments, graph-scope nodes — so
+ *  they can be seen and set. Both are projections, not second models. */
+export type ViewKind = "matrix" | "graph" | "dtc" | "multigraph";
 
 /** DP-82 · the MODE of the central area — what it currently shows. `matrix`,
  *  `graph` and `dtc` are canvas projections (they carry their own viewport/

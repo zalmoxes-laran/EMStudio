@@ -190,6 +190,18 @@ export function edgeCircle(edgeType: string | undefined): CircleKey | null {
   const cls = edgeEndpointClasses(t);
   if (cls.has("AuthorNode") || cls.has("LicenseNode") || cls.has("EmbargoNode"))
     return "edges_author";
+  // BUGS-UI · an edge that POINTS AT a paradata group is a paradata edge, tested
+  // before the epoch/resource branch below: `has_paradata_nodegroup` admits
+  // EpochNode as a source, so the epoch rule used to claim it and the "Paradata
+  // edges" ring could neither show nor hide it. Read off the RAW target (not the
+  // endpoint union): `has_first_epoch` also ADMITS a ParadataNodeGroup — as a
+  // source — and is a temporal edge, not a paradata one.
+  const rawTarget = edgeEndpointsRaw(t).target;
+  if (
+    rawTarget.length > 0 &&
+    rawTarget.every((c) => c === "ParadataNodeGroup" || c === "ParadataNode")
+  )
+    return "edges_paradata";
   // epoch links are structural in the swimlane view (epochs ARE lanes), plus
   // resources/geo/representation/HDT — none of these is a paradata edge
   if (
@@ -208,8 +220,11 @@ export function edgeCircle(edgeType: string | undefined): CircleKey | null {
 
 /** The set of circles visible by default in a given view. Matrix hides the outer
  *  rings; Graph and DTC show them — the DTC substrate IS resources and links, so
- *  the projection would be empty under the Matrix defaults. */
+ *  the projection would be empty under the Matrix defaults. MULTIGRAPH turns
+ *  every ring on: "show me everything attached to this graph" is the whole point
+ *  of that mode, and a ring left off would silently hide what it came to find. */
 export function defaultVisibleCircles(view: ViewKind): Set<CircleKey> {
+  if (view === "multigraph") return new Set(CIRCLES.map((c) => c.key));
   const out = new Set<CircleKey>();
   for (const c of CIRCLES) if (view === "matrix" ? c.matrix : c.graph) out.add(c.key);
   return out;

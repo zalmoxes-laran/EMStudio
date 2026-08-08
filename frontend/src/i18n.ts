@@ -75,10 +75,11 @@ const EN: Dict = {
   "win.narrative": "Narrative",
   "win.table": "Table",
   "win.doc": "Doc",
-  // WIN2 · the DTC projection
+  // WIN2 · the canvas projections a graph window can show
   "mode.matrix": "Matrix",
   "mode.graph": "Graph",
   "mode.dtc": "DTC",
+  "mode.multigraph": "Multigraph",
   "win.add": "Add a graph window to this workspace",
   "win.close": "Close this window",
   "win.docStub": "The Doc window is not available yet.",
@@ -206,6 +207,7 @@ const IT: Dict = {
   "mode.matrix": "Matrix",
   "mode.graph": "Grafo",
   "mode.dtc": "DTC",
+  "mode.multigraph": "Multigrafo",
   "win.add": "Aggiungi una finestra grafo a questo workspace",
   "win.close": "Chiudi questa finestra",
   "win.docStub": "La finestra Doc non è ancora disponibile.",

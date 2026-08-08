@@ -12,6 +12,7 @@ import type {
   Swimlane,
 } from "./types";
 import { MEMBERSHIP_EDGES } from "./folding";
+import { paradataGroupName } from "./naming";
 import { edgeTypeFor, nodeTypeForClass } from "./rules";
 import { VOLATILE_KEY } from "./volatile";
 
@@ -473,6 +474,13 @@ export class DocumentStore {
   }
 
   // ---- Epoch temporal paradata (EM 1.6) --------------------------------
+  //
+  // BUGS-UI · the DISPLAY NAME of a paradata group is `PD_<referent>`
+  // (`PD_US_100`), not a prose caption: the group is read next to its referent
+  // in lists, in the EMTree and on the canvas, where "US_100 · paradata" is the
+  // referent's name plus noise. Ids stay UUIDs — this is the label only.
+
+  // ---- (helper shared by every PDG creation site) ------------------------
   // An epoch's absolute chronology (start/end) is authored as two PropertyNodes
   // — absolute_time_start / absolute_time_end — inside the epoch's
   // ParadataNodeGroup (has_paradata_nodegroup, datamodel 1.6.1). The property
@@ -516,7 +524,7 @@ export class DocumentStore {
       const g = this.addNode(
         {
           id: this.newId(),
-          name: `${ref.name ?? "node"} · paradata`,
+          name: paradataGroupName(ref.name),
           node_type: "ParadataNodeGroup",
           description: "",
         },
@@ -590,7 +598,7 @@ export class DocumentStore {
       const g = this.addNode(
         {
           id: this.newId(),
-          name: `${epoch.name ?? "Epoch"} · paradata`,
+          name: paradataGroupName(epoch.name),
           node_type: "ParadataNodeGroup",
           description: "",
         },
@@ -692,7 +700,7 @@ export class DocumentStore {
       const pdgId = this.newId();
       g.nodes.push({
         id: pdgId,
-        name: `${epoch.name ?? "Epoch"} · paradata`,
+        name: paradataGroupName(epoch.name),
         node_type: "ParadataNodeGroup",
         description: "",
       });

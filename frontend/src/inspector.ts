@@ -1,6 +1,6 @@
 import type { DocumentStore, HdtoFields } from "./model";
 import { edgeStyle, nodeStyle } from "./palette";
-import { isGroupType, isStratigraphicType } from "./rules";
+import { classOf, isGroupType, isStratigraphicType } from "./rules";
 import { BADGE_RULES, resolveEffective, sourceLabel } from "./funnel";
 import type { AuthorityCandidate, AuthorityRef, EmEdge, EmNode } from "./types";
 import { qualiaList } from "./vocab";
@@ -178,6 +178,87 @@ function buildAuthorityField(
   facetSel.addEventListener("change", queryNow);
 }
 
+/**
+ * MULTIGRAPH · the site-position section, mounted in TWO places by the same
+ * function: the canvas panel (no selection) and the graph-self node's own
+ * inspector. The multigraph mode exists so graph-scope things can be found by
+ * looking at the graph — selecting the GraphNode and not finding where the site
+ * lives would defeat it. One renderer, so the two can never drift.
+ */
+function renderSitePosition(host: HTMLElement, store: DocumentStore): void {
+    host.appendChild(el("h3", "insp-sect", "Site position (map)"));
+    const sp0 = store.readSitePosition();
+    const spStatus = el(
+      "div",
+      "insp-hint",
+      sp0
+        ? `Positioned · ${sp0.lat.toFixed(5)}, ${sp0.lon.toFixed(5)} (${sp0.crs})`
+        : "Not positioned — pick a point on the map or type coordinates. Distinct from the 3D shift (GeoPositionNode).",
+    );
+    host.appendChild(spStatus);
+
+    const coordRow = el("div", "insp-geo-row");
+    const latIn = document.createElement("input");
+    latIn.className = "insp-name-input insp-geo-coord";
+    latIn.placeholder = "lat";
+    latIn.value = sp0 ? String(sp0.lat) : "";
+    const lonIn = document.createElement("input");
+    lonIn.className = "insp-name-input insp-geo-coord";
+    lonIn.placeholder = "lon";
+    lonIn.value = sp0 ? String(sp0.lon) : "";
+    const commitCoords = (): void => {
+      const lat = Number(latIn.value.trim());
+      const lon = Number(lonIn.value.trim());
+      if (latIn.value.trim() === "" && lonIn.value.trim() === "") {
+        store.clearSitePosition();
+        return;
+      }
+      if (Number.isFinite(lat) && Number.isFinite(lon))
+        store.setSitePosition(lon, lat);
+    };
+    latIn.addEventListener("change", commitCoords);
+    lonIn.addEventListener("change", commitCoords);
+    coordRow.appendChild(latIn);
+    coordRow.appendChild(lonIn);
+    host.appendChild(coordRow);
+
+    const geoBtns = el("div", "insp-geo-row");
+    const pickBtn = document.createElement("button");
+    pickBtn.className = "insp-btn";
+    pickBtn.type = "button";
+    pickBtn.textContent = sp0 ? "Pick again on map" : "Pick on map";
+    geoBtns.appendChild(pickBtn);
+    if (sp0) {
+      const clearBtn = document.createElement("button");
+      clearBtn.className = "insp-btn";
+      clearBtn.type = "button";
+      clearBtn.textContent = "Clear";
+      clearBtn.addEventListener("click", () => store.clearSitePosition());
+      geoBtns.appendChild(clearBtn);
+    }
+    host.appendChild(geoBtns);
+
+    // The picker mounts inline on demand — a click on the map drops the point
+    // (setSitePosition), which re-renders this panel showing the coordinates.
+    const mapHost = el("div", "insp-geo-map");
+    host.appendChild(mapHost);
+    pickBtn.addEventListener("click", () => {
+      if (mapHost.firstChild) {
+        mapHost.textContent = "";
+        return;
+      }
+      const map = createOsmMap({
+        lat: sp0?.lat ?? 41.9,
+        lon: sp0?.lon ?? 12.5,
+        zoom: sp0 ? 15 : 4,
+        markerLabel: "site",
+        onPick: (lat, lon) => store.setSitePosition(lon, lat),
+      });
+      mapHost.appendChild(map.el);
+      map.activate();
+    });
+}
+
 export function renderInspector(
   root: HTMLElement,
   store: DocumentStore,
@@ -308,77 +389,7 @@ export function renderInspector(
     // site_position), separate from the GeoPositionNode SHIFT (the 3D anchor,
     // edited elsewhere). Pick on a mini-map or type lon/lat; empty = not
     // positioned (no fabricated 0/0). Read by the narrative mini-map / overview.
-    panel.appendChild(el("h3", "insp-sect", "Site position (map)"));
-    const sp0 = store.readSitePosition();
-    const spStatus = el(
-      "div",
-      "insp-hint",
-      sp0
-        ? `Positioned · ${sp0.lat.toFixed(5)}, ${sp0.lon.toFixed(5)} (${sp0.crs})`
-        : "Not positioned — pick a point on the map or type coordinates. Distinct from the 3D shift (GeoPositionNode).",
-    );
-    panel.appendChild(spStatus);
-
-    const coordRow = el("div", "insp-geo-row");
-    const latIn = document.createElement("input");
-    latIn.className = "insp-name-input insp-geo-coord";
-    latIn.placeholder = "lat";
-    latIn.value = sp0 ? String(sp0.lat) : "";
-    const lonIn = document.createElement("input");
-    lonIn.className = "insp-name-input insp-geo-coord";
-    lonIn.placeholder = "lon";
-    lonIn.value = sp0 ? String(sp0.lon) : "";
-    const commitCoords = (): void => {
-      const lat = Number(latIn.value.trim());
-      const lon = Number(lonIn.value.trim());
-      if (latIn.value.trim() === "" && lonIn.value.trim() === "") {
-        store.clearSitePosition();
-        return;
-      }
-      if (Number.isFinite(lat) && Number.isFinite(lon))
-        store.setSitePosition(lon, lat);
-    };
-    latIn.addEventListener("change", commitCoords);
-    lonIn.addEventListener("change", commitCoords);
-    coordRow.appendChild(latIn);
-    coordRow.appendChild(lonIn);
-    panel.appendChild(coordRow);
-
-    const geoBtns = el("div", "insp-geo-row");
-    const pickBtn = document.createElement("button");
-    pickBtn.className = "insp-btn";
-    pickBtn.type = "button";
-    pickBtn.textContent = sp0 ? "Pick again on map" : "Pick on map";
-    geoBtns.appendChild(pickBtn);
-    if (sp0) {
-      const clearBtn = document.createElement("button");
-      clearBtn.className = "insp-btn";
-      clearBtn.type = "button";
-      clearBtn.textContent = "Clear";
-      clearBtn.addEventListener("click", () => store.clearSitePosition());
-      geoBtns.appendChild(clearBtn);
-    }
-    panel.appendChild(geoBtns);
-
-    // The picker mounts inline on demand — a click on the map drops the point
-    // (setSitePosition), which re-renders this panel showing the coordinates.
-    const mapHost = el("div", "insp-geo-map");
-    panel.appendChild(mapHost);
-    pickBtn.addEventListener("click", () => {
-      if (mapHost.firstChild) {
-        mapHost.textContent = "";
-        return;
-      }
-      const map = createOsmMap({
-        lat: sp0?.lat ?? 41.9,
-        lon: sp0?.lon ?? 12.5,
-        zoom: sp0 ? 15 : 4,
-        markerLabel: "site",
-        onPick: (lat, lon) => store.setSitePosition(lon, lat),
-      });
-      mapHost.appendChild(map.el);
-      map.activate();
-    });
+    renderSitePosition(panel, store);
 
     // ── HDT-O (ECHOES D7.1) per-graph panel ────────────────────────────────
     // This graph = a Study (HC9) whose proposition set (HC16) is about a
@@ -892,6 +903,12 @@ export function renderInspector(
       root.appendChild(dl);
     }
   }
+
+  // MULTIGRAPH · the graph-self node carries the graph-scope facts, and the
+  // multigraph mode puts it ON the canvas — so selecting it must offer the site
+  // position, not send the reader back to the no-selection Canvas panel to look
+  // for it. Same renderer as that panel (renderSitePosition).
+  if (classOf(node.node_type) === "GraphNode") renderSitePosition(root, store);
 
   // connections grouped by edge type and direction, deletable
   const groups = new Map<

@@ -165,11 +165,19 @@ function monoBorder(fill: string): string {
   return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255 > 0.5 ? "#000000" : "#FFFFFF";
 }
 
-// Decorator geometry (DEC1) — a FIXED size in SCREEN px, never scaled with the
-// world: zooming out does not grow the chip relative to the canvas (the size
-// adds nothing; to read the label you zoom in). One source, reused by the
-// ornament badges (BADGE1, top-right) and the PD decorator (PD1, bottom-left).
-export const BADGE_PX = 16; // chip side, CSS px
+// Decorator geometry — the chip side AT 100% ZOOM, in CSS px.
+//
+// BUGS-UI (INVERTS DEC1/PD1): decorators now SCALE WITH THE NODE they hang on.
+// DEC1 pinned them to a fixed screen size, which kept them readable but made a
+// zoomed-out graph a field of chips as big as the nodes themselves — the
+// decoration competing with the thing decorated. They are drawn after the world
+// transform is reset (so the text stays crisp and the hit rects stay screen
+// space), but every dimension is multiplied by `vp.scale`, which is exactly what
+// the node's own box does: the ratio chip-to-node is now constant at any zoom.
+// Accepted consequence: zoomed far out they become small, like everything else.
+// One source, reused by the ornament badges (BADGE1, top-right) and the PD
+// decorator (PD1, bottom-left).
+export const BADGE_PX = 16; // chip side at scale 1, CSS px
 const BADGE_GAP = 3; // gap between stacked chips, CSS px
 const BADGE_ICON_INSET = 0.16; // icon inset as a fraction of the chip
 // A node's rectangle in SCREEN (CSS px) space, from its world box and the vp.
@@ -638,7 +646,8 @@ export function render(
         ctx.fillText(label, n.x + n.w / 2, y0 + ih * 0.62);
       }
       if (n.useCount) {
-        const r = 6.5 / Math.sqrt(vp.scale);
+        // BUGS-UI · world-constant, like every other node decorator
+        const r = 6.5;
         const bx = x0 + iw + 1;
         const by = y0 + ih + 1;
         ctx.beginPath();
@@ -865,7 +874,10 @@ export function render(
 
     // folded-group badge (count of hidden nodes)
     if (n.badge) {
-      const r = 9 / Math.sqrt(vp.scale);
+      // BUGS-UI · a world-constant radius: the count badge scales with the node
+      // exactly like the ornament chips (it used to grow as 1/sqrt(scale),
+      // a half-measure that made it swell on a zoomed-out canvas).
+      const r = 9;
       const bx = n.x + n.w;
       const by = n.y;
       ctx.beginPath();
@@ -955,35 +967,39 @@ export function render(
     }
   }
 
-  // ── BADGE1 / DEC1 · ornament badges, FIXED screen-space size ────────────────
-  // Drawn with the device-pixel transform (not the world one) so every chip is
-  // BADGE_PX regardless of zoom — anchored to the node's top-right SCREEN corner.
-  // If more badges than fit along the top edge, the overflow collapses to a "+N"
-  // chip (click selects the referent, whose Inspector lists them all). Hit rects
-  // are screen-space and match the drawing exactly (like pdTagHits).
+  // ── BADGE1 · ornament badges, SCALED WITH THE NODE (BUGS-UI) ────────────────
+  // Drawn with the device-pixel transform (not the world one) so the glyphs and
+  // text stay crisp and the hit rects are screen space — but every dimension is
+  // `BADGE_PX * vp.scale`, so the chip keeps a CONSTANT RATIO to the node box it
+  // hangs on instead of a constant pixel size (this inverts DEC1). If more
+  // badges than fit along the top edge, the overflow collapses to a "+N" chip
+  // (click selects the referent, whose Inspector lists them all). Hit rects
+  // match the drawing exactly, at any zoom.
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   adornmentHits = [];
+  const badgePx = BADGE_PX * vp.scale;
+  const badgeGap = BADGE_GAP * vp.scale;
   for (const n of scene.nodes) {
     const ads = n.adornments;
     if (!ads || !ads.length) continue;
     const r = nodeScreenRect(n, vp);
-    if (r.x + r.w < -BADGE_PX || r.x > viewW || r.y + r.h < -BADGE_PX || r.y > viewH)
+    if (r.x + r.w < -badgePx || r.x > viewW || r.y + r.h < -badgePx || r.y > viewH)
       continue; // node (plus its badge row) entirely off-screen
-    const step = BADGE_PX + BADGE_GAP;
-    const fit = Math.max(1, Math.floor((r.w + BADGE_GAP) / step));
+    const step = badgePx + badgeGap;
+    const fit = Math.max(1, Math.floor((r.w + badgeGap) / step));
     const showAll = ads.length <= fit;
     const nShown = showAll ? ads.length : Math.max(1, fit - 1);
     const slots = showAll ? ads.length : nShown + 1; // last slot = "+N"
-    const topY = r.y - BADGE_PX * 0.55; // straddle the top edge
+    const topY = r.y - badgePx * 0.55; // straddle the top edge
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     for (let i = 0; i < slots; i++) {
-      const bx = r.x + r.w - (i + 1) * BADGE_PX - i * BADGE_GAP;
+      const bx = r.x + r.w - (i + 1) * badgePx - i * badgeGap;
       const isMore = !showAll && i === slots - 1;
       ctx.beginPath();
       if (typeof ctx.roundRect === "function")
-        ctx.roundRect(bx, topY, BADGE_PX, BADGE_PX, BADGE_PX * 0.22);
-      else ctx.rect(bx, topY, BADGE_PX, BADGE_PX);
+        ctx.roundRect(bx, topY, badgePx, badgePx, badgePx * 0.22);
+      else ctx.rect(bx, topY, badgePx, badgePx);
       ctx.fillStyle = canvasTheme().handleFill;
       ctx.fill();
       ctx.lineWidth = 1;
@@ -991,9 +1007,9 @@ export function render(
       ctx.stroke();
       if (isMore) {
         ctx.fillStyle = labelOn(canvasTheme().handleFill);
-        ctx.font = `700 ${Math.round(BADGE_PX * 0.5)}px system-ui, sans-serif`;
-        ctx.fillText(`+${ads.length - nShown}`, bx + BADGE_PX / 2, topY + BADGE_PX / 2 + 0.5);
-        adornmentHits.push({ ornamentId: n.id, x: bx, y: topY, w: BADGE_PX, h: BADGE_PX });
+        ctx.font = `700 ${Math.round(badgePx * 0.5)}px system-ui, sans-serif`;
+        ctx.fillText(`+${ads.length - nShown}`, bx + badgePx / 2, topY + badgePx / 2 + 0.5);
+        adornmentHits.push({ ornamentId: n.id, x: bx, y: topY, w: badgePx, h: badgePx });
         continue;
       }
       const b = ads[i];
@@ -1002,12 +1018,12 @@ export function render(
       // no ornament node on this referent. The node's own value is a full badge.
       if (b.inherited) ctx.globalAlpha = 0.5;
       const img = imageFor(b.kind);
-      const pad = BADGE_PX * BADGE_ICON_INSET;
-      if (img) ctx.drawImage(img, bx + pad, topY + pad, BADGE_PX - 2 * pad, BADGE_PX - 2 * pad);
+      const pad = badgePx * BADGE_ICON_INSET;
+      if (img) ctx.drawImage(img, bx + pad, topY + pad, badgePx - 2 * pad, badgePx - 2 * pad);
       else {
         ctx.fillStyle = labelOn(canvasTheme().handleFill);
-        ctx.font = `700 ${Math.round(BADGE_PX * 0.62)}px system-ui, sans-serif`;
-        ctx.fillText((b.kind[0] || "?").toUpperCase(), bx + BADGE_PX / 2, topY + BADGE_PX / 2 + 0.5);
+        ctx.font = `700 ${Math.round(badgePx * 0.62)}px system-ui, sans-serif`;
+        ctx.fillText((b.kind[0] || "?").toUpperCase(), bx + badgePx / 2, topY + badgePx / 2 + 0.5);
       }
       if (b.inherited) {
         // dashed outline marks it as a funnel-inherited preview, not a real node
@@ -1015,28 +1031,29 @@ export function render(
         ctx.setLineDash([2, 1.5]);
         ctx.lineWidth = 1;
         ctx.strokeStyle = canvasTheme().accent;
-        ctx.strokeRect(bx + 0.5, topY + 0.5, BADGE_PX - 1, BADGE_PX - 1);
+        ctx.strokeRect(bx + 0.5, topY + 0.5, badgePx - 1, badgePx - 1);
         ctx.setLineDash([]);
         continue; // no hit rect for an inherited badge
       }
       if (b.ornamentId === state.selectedId) {
         ctx.strokeStyle = accentColor();
         ctx.lineWidth = 2;
-        ctx.strokeRect(bx - 1, topY - 1, BADGE_PX + 2, BADGE_PX + 2);
+        ctx.strokeRect(bx - 1, topY - 1, badgePx + 2, badgePx + 2);
       }
-      adornmentHits.push({ ornamentId: b.ornamentId, x: bx, y: topY, w: BADGE_PX, h: BADGE_PX });
+      adornmentHits.push({ ornamentId: b.ornamentId, x: bx, y: topY, w: badgePx, h: badgePx });
     }
   }
   ctx.textAlign = "left";
   ctx.textBaseline = "top";
 
   // ── PD1 · collapsed ParadataNodeGroup tablets, bottom-left of the referent ───
-  // A folded PDG with a node referent shows as a small "PD" tablet (fixed
-  // screen size, the Paradata tab colour) at the referent's bottom-left — the
-  // ornament badges of BADGE1 are top-right, so the two never collide. Single
-  // click selects the group; double click enters the hypergraph (main.ts).
+  // A folded PDG with a node referent shows as a small "PD" tablet (the Paradata
+  // tab colour) at the referent's bottom-left — the ornament badges of BADGE1
+  // are top-right, so the two never collide. Single click selects the group;
+  // double click enters the hypergraph (main.ts). BUGS-UI: sized off `badgePx`,
+  // so it scales with its referent like the badges do.
   pdDecoratorHits = [];
-  const PD_W = Math.round(BADGE_PX * 1.5);
+  const PD_W = badgePx * 1.5;
   const pdFill = nodeStyle("ParadataNodeGroup").labelBackground || groupHeaderFill();
   // BUGFIX-PDG · drawn from the REFERENT node (`pdCollapsed` = the PDG id), so the
   // collapsed PDG needs no SceneGroup — nothing draws a phantom box behind it.
@@ -1047,26 +1064,26 @@ export function render(
     if (r.x + r.w < 0 || r.x - PD_W > viewW || r.y > viewH || r.y + r.h < 0)
       continue;
     const tx = r.x - PD_W * 0.12; // bottom-left, nudged just outside the corner
-    const ty = r.y + r.h - BADGE_PX * 0.55; // straddle the bottom edge
+    const ty = r.y + r.h - badgePx * 0.55; // straddle the bottom edge
     ctx.beginPath();
-    if (typeof ctx.roundRect === "function") ctx.roundRect(tx, ty, PD_W, BADGE_PX, 3);
-    else ctx.rect(tx, ty, PD_W, BADGE_PX);
+    if (typeof ctx.roundRect === "function") ctx.roundRect(tx, ty, PD_W, badgePx, 3);
+    else ctx.rect(tx, ty, PD_W, badgePx);
     ctx.fillStyle = pdFill;
     ctx.fill();
     ctx.lineWidth = 1;
     ctx.strokeStyle = canvasTheme().chipBorder;
     ctx.stroke();
     ctx.fillStyle = labelOn(pdFill);
-    ctx.font = `700 ${Math.round(BADGE_PX * 0.55)}px system-ui, sans-serif`;
+    ctx.font = `700 ${Math.round(badgePx * 0.55)}px system-ui, sans-serif`;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText("PD", tx + PD_W / 2, ty + BADGE_PX / 2 + 0.5);
+    ctx.fillText("PD", tx + PD_W / 2, ty + badgePx / 2 + 0.5);
     if (pdgId === state.selectedId) {
       ctx.strokeStyle = accentColor();
       ctx.lineWidth = 2;
-      ctx.strokeRect(tx - 1, ty - 1, PD_W + 2, BADGE_PX + 2);
+      ctx.strokeRect(tx - 1, ty - 1, PD_W + 2, badgePx + 2);
     }
-    pdDecoratorHits.push({ pdgId, x: tx, y: ty, w: PD_W, h: BADGE_PX });
+    pdDecoratorHits.push({ pdgId, x: tx, y: ty, w: PD_W, h: badgePx });
   }
   ctx.textAlign = "left";
   ctx.textBaseline = "top";

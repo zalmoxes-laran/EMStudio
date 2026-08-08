@@ -36,8 +36,14 @@ export interface Win {
  *  the window chooses which canvas projection it shows. */
 export type GraphMode = ViewKind;
 
+/** The modes a graph window offers, in header order. THE list: `main.ts` builds
+ *  the menu from it and `winMode` validates against it, so a new projection is
+ *  one entry here rather than two lists that can disagree (which is exactly how
+ *  `multigraph` first shipped invisible to `winMode`). */
+export const GRAPH_MODES: GraphMode[] = ["matrix", "graph", "dtc", "multigraph"];
+
 /** The fixed workspace presets in the leader bar. */
-export type WorkspaceId = "canvas" | "narrative" | "table" | "dtc";
+export type WorkspaceId = "canvas" | "narrative" | "table";
 
 export interface WorkspacePreset {
   id: WorkspaceId;
@@ -51,16 +57,24 @@ export interface WorkspacePreset {
   graphMode?: GraphMode;
 }
 
+/**
+ * WIN3 · leader = WORKSPACE (which set of windows), header = THIS WINDOW (its
+ * type and its menus). The DTC preset used to sit here too, and that was the one
+ * real duplicate: DTC is a MODE of a graph window, offered in the header's Mode
+ * dropdown and in its Vista menu, so a chip that also switched to it made the
+ * same choice reachable at two levels with different meanings. It is gone from
+ * the leader; nothing is lost (the mode is one click away, per window, which is
+ * where a per-window state belongs).
+ */
 export const WORKSPACES: WorkspacePreset[] = [
   { id: "canvas", labelKey: "ws.canvas", icon: "▦", windowType: "graph", graphMode: "matrix" },
   { id: "narrative", labelKey: "ws.narrative", icon: "❧", windowType: "narrative" },
   { id: "table", labelKey: "ws.table", icon: "▤", windowType: "table" },
-  { id: "dtc", labelKey: "ws.dtc", icon: "◈", windowType: "graph", graphMode: "dtc" },
 ];
 
 /** Per-window-TYPE display metadata for the window header + transform dropdown
- *  (WIN1 checkpoint 2). DTC is a mode of the graph window, so it is not a
- *  transform target here — it is reached via the DTC workspace preset. */
+ *  (WIN1 checkpoint 2). DTC is a MODE of the graph window, so it is not a
+ *  transform target here — it is reached from the header's Mode dropdown. */
 export const WINDOW_TYPE_META: Record<WindowType, { icon: string; labelKey: string }> = {
   graph: { icon: "▦", labelKey: "win.graph" },
   narrative: { icon: "❧", labelKey: "win.narrative" },
@@ -268,7 +282,7 @@ export function setWinType(win: Win, type: WindowType): void {
 /** The mode of a graph window (its canvas projection). */
 export function winMode(win: Win): GraphMode {
   const m = win.state["mode"];
-  return m === "graph" || m === "dtc" || m === "matrix" ? m : "matrix";
+  return GRAPH_MODES.includes(m as GraphMode) ? (m as GraphMode) : "matrix";
 }
 
 /** Record a graph window's mode. Pure state — `main.ts` owns the mounting. */

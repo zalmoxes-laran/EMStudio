@@ -222,6 +222,11 @@ const PROVENANCE_EDGES = new Set([
   "has_property",
   "extracted_from",
   "has_documentation",
+  // BUGS-UI · a node's link to its paradata group is the same statement as
+  // `has_property` one level up ("this is what I know about this node, and how
+  // I know it"), so it carries the provenance ink rather than reading as a
+  // structural connector.
+  "has_paradata_nodegroup",
 ]);
 
 export function edgeInk(edgeType?: string): string {

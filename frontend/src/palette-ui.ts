@@ -257,14 +257,32 @@ function groupSwatch(nodeType: string): HTMLCanvasElement {
   return c;
 }
 
+/**
+ * WIN3 · the left panel is PER-MODE. In the DTC projection the stratigraphic
+ * types are the wrong offer — what you place there are the DTC chunks — so the
+ * palette mounts the DTC layer alone, open. Everywhere else it mounts the full
+ * authoring surface. Drag & drop (DND1) is untouched: the filter only hides
+ * buttons, it never builds a second kind of item.
+ */
+export interface PaletteOptions {
+  /** the canvas projection the palette is being built for */
+  mode?: string;
+}
+
 export function buildPalette(
   root: HTMLElement,
   onPick: (nodeType: string, kind?: string, isResource?: boolean) => void,
+  paletteOpts: PaletteOptions = {},
 ): { setActive: (activeKey: string | null) => void } {
   root.innerHTML = "";
+  const dtcOnly = paletteOpts.mode === "dtc";
   // keyed by a display key: node_type for plain items, `${nodeType}:${kind}` for
   // the DTC by-kind items (so several DTC items share a node_type without colliding).
   const buttons = new Map<string, HTMLButtonElement>();
+  // WIN3 · every item registers its searchable text here, so the filter box is a
+  // single pass over what was actually mounted (no second source of truth for
+  // "what is in the palette").
+  const searchable: { btn: HTMLButtonElement; text: string }[] = [];
 
   const makeItem = (
     t: string,
@@ -287,6 +305,8 @@ export function buildPalette(
     const display = opts?.display ?? nodeLabel(t);
     const description = typeDescription(t);
     attachHoverCard(b, display, t, description);
+    // name AND type: an archaeologist searches "USV", a developer "virtual"
+    searchable.push({ btn: b, text: `${display} ${t} ${opts?.kind ?? ""}`.toLowerCase() });
     // Drag ALONGSIDE the click (DND1): a `<button>` is not draggable by
     // default, which is the whole reason no `dragstart` ever fired here. The
     // click-to-arm → click-the-canvas gesture is untouched; both instantiate.
@@ -346,6 +366,7 @@ export function buildPalette(
     const toggle = document.createElement("button");
     toggle.className = "pal-sect pal-sect-toggle";
     const wrap = document.createElement("div");
+    wrap.className = "pal-sect-wrap";
     let open = startOpen;
     const paint = (): void => {
       toggle.textContent = `${open ? "▾" : "▸"} ${label}`;
@@ -363,16 +384,50 @@ export function buildPalette(
     paint();
   };
 
-  for (const section of SECTIONS) {
-    collapsibleSection(
-      section.label,
-      "",
-      (wrap) => {
-        for (const t of section.types) makeItem(t, wrap);
-      },
-      true,
-    );
-  }
+  // ── WIN3 · filter / search, above everything it filters ────────────────────
+  const filterBox = document.createElement("input");
+  filterBox.type = "search";
+  filterBox.className = "pal-filter";
+  filterBox.placeholder = "Filtra i tipi…";
+  filterBox.title =
+    "Filtra le voci del pannello per nome o tipo. Le voci filtrate restano " +
+    "trascinabili sul canvas.";
+  root.appendChild(filterBox);
+  const applyFilter = (): void => {
+    const q = filterBox.value.trim().toLowerCase();
+    for (const { btn, text } of searchable)
+      btn.classList.toggle("pal-hidden", !!q && !text.includes(q));
+    // a section whose every item is filtered out is noise → hide the section,
+    // and open the ones that still have a match so the hit is visible without
+    // a second click.
+    for (const sect of root.querySelectorAll<HTMLElement>(".pal-sect-wrap")) {
+      const shown = [...sect.querySelectorAll(".pal-item")].filter(
+        (b) => !b.classList.contains("pal-hidden"),
+      ).length;
+      const toggle = sect.previousElementSibling as HTMLButtonElement | null;
+      const empty = q !== "" && shown === 0;
+      sect.classList.toggle("pal-hidden", empty);
+      toggle?.classList.toggle("pal-hidden", empty);
+      // open a folded section that has a match, through its OWN toggle — the
+      // open/closed state lives in the closure, and a second copy of it here is
+      // how a panel starts lying about what it shows.
+      if (q && shown > 0 && toggle?.getAttribute("aria-expanded") === "false")
+        toggle.click();
+    }
+  };
+  filterBox.addEventListener("input", applyFilter);
+
+  if (!dtcOnly)
+    for (const section of SECTIONS) {
+      collapsibleSection(
+        section.label,
+        "",
+        (wrap) => {
+          for (const t of section.types) makeItem(t, wrap);
+        },
+        true,
+      );
+    }
 
   // The gated advanced layers use the same mechanism, folded by default.
   const gatedSection = (
@@ -383,7 +438,7 @@ export function buildPalette(
 
   // Gated HDT-O authoring layer (ECHOES D7.1). Types from the datamodel's
   // `hdto_nodes` section; items show the human label.
-  const hdtoTypes = hdtoAuthoringTypes();
+  const hdtoTypes = dtcOnly ? [] : hdtoAuthoringTypes();
   if (hdtoTypes.length)
     gatedSection(
       "HDT-O (advanced)",
@@ -398,8 +453,11 @@ export function buildPalette(
   // per-kind glyph. Creating a node sets node.data.dtc_kind (via onPick's 2nd arg).
   const dtcKinds = dtcAuthoringKinds();
   if (dtcKinds.length)
-    gatedSection(
-      "DTC (advanced)",
+    (dtcOnly
+      ? (label: string, title: string, fill: (wrap: HTMLElement) => void): void =>
+          collapsibleSection(label, title, fill, true)
+      : gatedSection)(
+      dtcOnly ? "DTC" : "DTC (advanced)",
       "Digital Twin Chain authoring (ECHOES) — provenance that produces documents; gated, the stratigraphic palette is unaffected.",
       (wrap) => {
         for (const d of dtcKinds)

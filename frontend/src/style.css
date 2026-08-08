@@ -988,6 +988,42 @@ body.sync-active #mode-indicator::before {
   margin: 4px 6px;
   background: var(--border);
 }
+/* BUGS-UI · nested sub-menu (File ▸ Export): a flyout to the right of its row,
+   styled as the parent menu so the nesting reads as depth, not as a new
+   surface. */
+.dd-sub {
+  position: relative;
+}
+#toolbar .dd-sub .dd-sub-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+}
+.dd-sub-caret {
+  opacity: 0.55;
+  font-size: 10px;
+}
+.dd-sub-menu {
+  position: absolute;
+  top: -4px;
+  left: 100%;
+  margin-left: 4px;
+  z-index: 901;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
+  padding: 4px;
+  min-width: 150px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.dd-sub-menu.hidden {
+  display: none;
+}
 .dd-menu .dd-label {
   padding: 3px 10px 1px;
   font-size: 10.5px;
@@ -4227,4 +4263,68 @@ body.sync-active #footer-brand #em-version {
 .insp-prop-own .insp-prop-source {
   background: var(--ok-soft);
   color: var(--ok-ink);
+}
+
+/* WIN3 · left panel: per-mode content + filter box. `pal-hidden` is the filter's
+   own hide (kept separate from `.hidden`, which callers use for whole panels). */
+.pal-filter {
+  width: 100%;
+  margin: 0 0 6px;
+  padding: 5px 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text);
+  font-size: 12px;
+}
+.pal-filter:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.pal-hidden {
+  display: none !important;
+}
+
+/* WIN3 · the window header as a translucent BAR overlaying the canvas: it holds
+   the type, the mode and the per-type menus without ever resizing the canvas
+   underneath (which is why it floats rather than taking a row of layout). */
+#window-header {
+  background: color-mix(in srgb, var(--bg-panel) 72%, transparent);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 4px 6px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.14);
+}
+/* inside the bar the controls lose their own chrome — the BAR is the surface */
+#window-header .win-type-toggle,
+#window-header .win-mode-toggle,
+#window-header .win-act,
+#window-header .wi-chip,
+#window-header #win-algo {
+  box-shadow: none;
+}
+#window-menus {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+#window-header .win-menu-toggle {
+  height: 30px;
+  padding: 0 9px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+#window-header .win-menu-toggle:hover {
+  background: var(--bg-elevated);
+  border-color: var(--border);
+}
+#window-header .win-menu .dd-menu button[disabled] {
+  opacity: 0.45;
+  cursor: default;
 }

@@ -53,12 +53,22 @@
           >
             <span data-i18n="toolbar.importGraphml">Import GraphML…</span>
           </button>
-          <!-- MENU1 · Export is now a section of File, right after Import -->
+          <!-- BUGS-UI · Export is a nested SUB-MENU (was a section of File):
+               three formats flat in the File list read as three File commands.
+               The items keep their ids, so the existing export handlers are
+               reused untouched. -->
           <div class="dd-sep"></div>
-          <div class="dd-label" data-i18n="toolbar.export">Export</div>
-          <button id="btn-svg" title="Export current view as SVG">SVG</button>
-          <button id="btn-graphml" title="Export as yEd GraphML (needs the local dev bridge — see dev.sh)">GraphML</button>
-          <button id="btn-ttl" title="Export as RDF/CIDOC Turtle (.ttl) via the s3Dgraphy projection">Turtle (.ttl)</button>
+          <div class="dd-sub">
+            <button class="dd-sub-toggle" title="Export the current document">
+              <span data-i18n="toolbar.export">Export</span>
+              <span class="dd-sub-caret">▸</span>
+            </button>
+            <div class="dd-sub-menu hidden">
+              <button id="btn-svg" title="Export current view as SVG">SVG</button>
+              <button id="btn-graphml" title="Export as yEd GraphML (needs the local dev bridge — see dev.sh)">GraphML</button>
+              <button id="btn-ttl" title="Export as RDF/CIDOC Turtle (.ttl) via the s3Dgraphy projection">Turtle (.ttl)</button>
+            </div>
+          </div>
           <div class="dd-sep"></div>
           <button id="btn-save" title="Save .em.json (⌘S)" data-i18n="toolbar.save">Save</button>
           <button id="btn-save-as" title="Save .em.json to a new file (⇧⌘S)" data-i18n="toolbar.saveAs">Save As…</button>
@@ -189,9 +199,15 @@
             </button>
             <div id="window-mode-menu" class="dd-menu hidden"></div>
           </div>
-          <button id="win-fit" class="win-act" title="Fit to view (0)">⤢</button>
-          <button id="win-layout" class="win-act" title="Recompute this window's layout">⧉</button>
-          <select id="win-algo" title="Graph layout algorithm">
+          <!-- WIN3 · the per-type menus, built by main.ts from WINDOW_MENUS.
+               Adding a menu is an entry in that registry, not a markup change. -->
+          <div id="window-menus"></div>
+          <!-- WIN2 controls kept in the DOM: the Vista/Layout menus drive them,
+               so fit / layout / algorithm still have exactly one implementation.
+               Hidden — the menus are the surface now. -->
+          <button id="win-fit" class="win-act hidden" title="Fit to view (0)">⤢</button>
+          <button id="win-layout" class="win-act hidden" title="Recompute this window's layout">⧉</button>
+          <select id="win-algo" class="hidden" title="Graph layout algorithm">
             <option value="layered">Layered</option>
             <option value="radial">Radial</option>
             <option value="force">Force</option>

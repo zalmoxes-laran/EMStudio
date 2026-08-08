@@ -216,4 +216,22 @@ const LOOSE = { strictDocumentNames: false };
     "the FIRST extracted_from edge wins, in document order — same answer every time");
 }
 
+// ── BUGS-UI · paradata group naming: PD_<referent> ──────────────────────────
+{
+  eq(N.paradataGroupName("US_100"), "PD_US_100", "a group is named after its referent");
+  eq(N.paradataGroupName("  US_100  "), "PD_US_100", "surrounding space never reaches the label");
+  eq(N.paradataGroupName(undefined), "PD", "no referent name → the bare prefix, never 'PD_undefined'");
+  eq(N.paradataGroupName(""), "PD", "an empty name is not a name");
+
+  const d = doc([["u1", "US", "US_100"], ["g1", "ParadataNodeGroup", "ParadataNodeGroup 1"]]);
+  eq(N.paradataGroupRenameOnAttach(d, "g1"), null, "unattached → nothing to derive it from");
+  d.graph.edges.push({
+    edge_type: N.HAS_PARADATA_NODEGROUP, source: "u1", target: "g1",
+  });
+  eq(N.paradataGroupRenameOnAttach(d, "g1"), "PD_US_100", "the edge is what names it");
+  d.graph.nodes.find((n) => n.id === "g1").name = "PD_US_100";
+  eq(N.paradataGroupRenameOnAttach(d, "g1"), null, "already correct → a no-op, no toast churn");
+  eq(N.paradataGroupRenameOnAttach(d, "u1"), null, "the referent itself is never renamed by this path");
+}
+
 console.log(`naming: ${checks} checks passed`);

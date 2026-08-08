@@ -347,3 +347,43 @@ export function renameOnAttach(doc: NamingDoc, extractorId: string): string | nu
   if (!derived) return null;
   return nameOf(node) === derived ? null : derived;
 }
+
+/** The edge that gives a paradata group its referent (owner → group). */
+export const HAS_PARADATA_NODEGROUP = "has_paradata_nodegroup";
+
+/**
+ * BUGS-UI · the display name of a paradata group: **`PD_<referent>`** — the
+ * group of `US_100` is `PD_US_100`.
+ *
+ * A paradata group is always read NEXT TO its referent (in the EMTree, in the
+ * node list, as a tablet on the node), where a prose caption like
+ * "US_100 · paradata" is the referent's name plus noise. The `PD_` prefix says
+ * what the box is in the two characters the eye already has to cross.
+ *
+ * Ids stay UUIDs — this is the LABEL only.
+ */
+export function paradataGroupName(referentName: string | undefined): string {
+  const base = (referentName ?? "").trim();
+  return base ? `PD_${base}` : "PD";
+}
+
+/**
+ * The name a paradata group should take once it is attached to a referent, or
+ * null when it already has it. The counterpart of `renameOnAttach` for the
+ * connect gesture: a PDG created from the palette is born with a generic label
+ * and only learns its referent when the `has_paradata_nodegroup` edge is drawn.
+ */
+export function paradataGroupRenameOnAttach(
+  doc: NamingDoc,
+  pdgId: string,
+): string | null {
+  const pdg = doc.graph.nodes.find((n) => n.id === pdgId);
+  if (!pdg) return null;
+  const edge = (doc.graph.edges ?? []).find(
+    (e) => e.edge_type === HAS_PARADATA_NODEGROUP && e.target === pdgId,
+  );
+  const referent = doc.graph.nodes.find((n) => n.id === edge?.source);
+  if (!referent) return null;
+  const derived = paradataGroupName(nameOf(referent) || referent.id);
+  return nameOf(pdg) === derived ? null : derived;
+}
