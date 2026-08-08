@@ -206,7 +206,9 @@ export function edgeCircle(edgeType: string | undefined): CircleKey | null {
   return "edges_other";
 }
 
-/** The set of circles visible by default in a given view. */
+/** The set of circles visible by default in a given view. Matrix hides the outer
+ *  rings; Graph and DTC show them — the DTC substrate IS resources and links, so
+ *  the projection would be empty under the Matrix defaults. */
 export function defaultVisibleCircles(view: ViewKind): Set<CircleKey> {
   const out = new Set<CircleKey>();
   for (const c of CIRCLES) if (view === "matrix" ? c.matrix : c.graph) out.add(c.key);

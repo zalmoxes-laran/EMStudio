@@ -217,6 +217,13 @@ function dtcNodeTypes(): Set<string> {
   return out;
 }
 
+/** True when a node_type belongs to the gated DTC authoring layer (`dtc_nodes`).
+ *  The DTC projection asks THIS — never a hardcoded prefix list — so a new DTC
+ *  class in the datamodel joins the view with no code change. */
+export function isDtcNodeType(nodeType: string | undefined): boolean {
+  return !!nodeType && dtcNodeTypes().has(nodeType);
+}
+
 const DTC_KINDS =
   (
     visualRules as unknown as {

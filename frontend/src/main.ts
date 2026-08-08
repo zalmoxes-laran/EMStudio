@@ -171,6 +171,7 @@ import {
 } from "./workspace";
 import type { CentralMode, EmDocument, EmEdge, EmNode, ViewKind } from "./types";
 import { buildDtcGenesisScene, buildGroupScene } from "./views/context";
+import { buildDtcScene } from "./views/dtc";
 import { buildGraphScene, type GraphAlgorithm } from "./views/graph";
 import { buildMatrixScene } from "./views/matrix";
 
@@ -210,12 +211,23 @@ let view: ViewKind = "matrix";
 let centralMode: CentralMode = "matrix";
 /** The modes the central-area selector offers, in order. Add `table`/`dtc` here
  *  (and a branch in `setMode`) when they land — the seam, not the feature. */
-const CENTRAL_MODES: CentralMode[] = ["matrix", "graph", "narrative"];
+const CENTRAL_MODES: CentralMode[] = ["matrix", "graph", "dtc", "narrative"];
 // Graph-view layout: chosen algorithm + manual position overrides (drags /
 // liquid clustering). Overrides persist across rebuilds in-session and are
 // cleared on a fresh Layout, an algorithm change, or a new/loaded document.
 let graphAlgorithm: GraphAlgorithm = "layered";
 const graphOverrides = new Map<string, { x: number; y: number }>();
+// WIN2 · the DTC projection keeps its OWN drag overrides: the same node sits at
+// different places in the two projections, so one shared map would teleport a
+// node in Graph view because it was arranged in DTC.
+const dtcOverrides = new Map<string, { x: number; y: number }>();
+/** The manual-drag map of the current canvas projection, or null where drags are
+ *  not overrides at all (Matrix stores positions in the document layout). */
+function canvasOverrides(): Map<string, { x: number; y: number }> | null {
+  if (view === "graph") return graphOverrides;
+  if (view === "dtc") return dtcOverrides;
+  return null;
+}
 // Matrix VIEW layout: an em-core layout of the FILTERED subgraph, so the Matrix
 // recompacts (no gaps) when detail-rings hide nodes. null = use the archival
 // doc.layout. Recomputed on filter change / view→matrix (see refreshMatrixViewLayout).
@@ -229,6 +241,7 @@ const scenes: Partial<Record<ViewKind, Scene | null>> = {};
 const viewports: Record<ViewKind, Viewport> = {
   matrix: new Viewport(),
   graph: new Viewport(),
+  dtc: new Viewport(),
 };
 let hoverId: string | null = null;
 let selectedId: string | null = null;
@@ -260,6 +273,7 @@ const HDTO_HIDDEN_TYPES = hdtoProfileTypes();
 const circleState: Record<ViewKind, Set<CircleKey>> = {
   matrix: defaultVisibleCircles("matrix"),
   graph: defaultVisibleCircles("graph"),
+  dtc: defaultVisibleCircles("dtc"),
 };
 // Recompute the hidden type sets from the current view's visible circles.
 function recomputeHiddenFromCircles(): void {
@@ -1358,6 +1372,9 @@ function buildScenes(): void {
     algorithm: graphAlgorithm,
     overrides: graphOverrides,
   });
+  // WIN2 · the DTC projection reads the SAME filtered view (folding + circles
+  // still apply) through the digital-twin-creation relations.
+  scenes.dtc = buildDtcScene(fview.nodes, fview.edges, dtcOverrides);
   updateChronoBanner();
 }
 
@@ -1506,11 +1523,13 @@ function setMode(m: CentralMode): void {
   for (const mode of CENTRAL_MODES)
     MODE_BUTTONS[mode]?.classList.toggle("active", mode === m);
   // WIN1 · keep the workspace leader in step when the mode changes by any route
-  // (Narrative button, Matrix/Graph, boot). narrative→"narrative", the canvas
-  // modes→"canvas" (DTC is only entered via the leader itself, so a direct
-  // Matrix/Graph click reads as the Canvas workspace). No re-entrancy: this only
-  // updates the leader's own active chip + the persisted id, never calls setMode.
-  reflectWorkspaceInBar(narrative ? "narrative" : "canvas");
+  // (Narrative button, Matrix/Graph/DTC, boot). Each mode maps to the workspace
+  // that owns it; matrix/graph both read as the Canvas workspace. No re-entrancy:
+  // this only updates the leader's own active chip + the persisted id, never
+  // calls setMode.
+  reflectWorkspaceInBar(
+    narrative ? "narrative" : m === "dtc" ? "dtc" : "canvas",
+  );
   // The narrative overlay's visibility IS "the mode is narrative" (this replaced
   // the separate `narrativeOpen` flag — no second, divergible state).
   narrativeViewEl.classList.toggle("hidden", !narrative);
@@ -1549,11 +1568,12 @@ function applyCanvasView(v: ViewKind): void {
   view = v;
   // (selector "active" state is set by setMode, from CENTRAL_MODES)
   // Layout controls are per-view: Matrix uses the "Layout" button (em-core
-  // swimlanes); Graph uses the algorithm dropdown (layered/radial/force). Show
-  // only the relevant one so they don't look redundant.
+  // swimlanes); Graph uses the algorithm dropdown (layered/radial/force); DTC is
+  // a deterministic layered projection with no algorithm choice, so it shows
+  // neither. Show only the relevant one so they don't look redundant.
   const graphLayoutSel = document.getElementById("graph-layout");
   if (graphLayoutSel) graphLayoutSel.style.display = v === "graph" ? "" : "none";
-  btnLayout.style.display = v === "graph" ? "none" : "";
+  btnLayout.style.display = v === "matrix" ? "" : "none";
   // each view keeps its own "circles of detail" depth → re-derive the hidden
   // sets and rebuild when the active view changes.
   if (changed && store) {
@@ -1571,6 +1591,10 @@ function applyCanvasView(v: ViewKind): void {
   if (scenes[v] === null && v === "matrix") {
     info.textContent =
       "no layout section — run: emstudio layout file.em.json -o out.em.json";
+  } else if (v === "dtc" && (scenes.dtc?.nodes.length ?? 0) === 0) {
+    // An empty canvas has to say WHY: this graph cites no digital-twin chain,
+    // which is a fact about the document, not a failure of the view.
+    info.textContent = t("dtc.empty");
   } else {
     updateInfo();
   }
@@ -1679,6 +1703,9 @@ function activateSlot(id: string, opts: { rebuildOnly?: boolean } = {}): void {
   for (const [nodeId, position] of target.viewState.graphOverrides) {
     graphOverrides.set(nodeId, position);
   }
+  // DTC drags are not parked per slot (yet): another document's substrate has
+  // other node ids, so carrying them over would place nothing and confuse much.
+  dtcOverrides.clear();
   phasesCollapsed.clear();
   for (const epoch of target.viewState.phasesCollapsed) {
     phasesCollapsed.add(epoch);
@@ -4038,7 +4065,7 @@ function renderCirclesPanel(): void {
   head.className = "fp-head";
   const hint = document.createElement("span");
   hint.className = "fp-hint";
-  hint.textContent = `Detail level — ${view === "matrix" ? "Matrix" : "Graph"} view`;
+  hint.textContent = `Detail level — ${t(`mode.${view}`)} view`;
   const close = document.createElement("button");
   close.className = "fp-close";
   close.textContent = "✕";
@@ -4336,9 +4363,11 @@ function closeWorkspace(): void {
   selectedNarrativeId = null;
   matrixViewLayout = null;
   graphOverrides.clear();
+  dtcOverrides.clear();
   phasesCollapsed.clear();
   scenes.matrix = null;
   scenes.graph = null;
+  scenes.dtc = null;
   dropHint.classList.remove("hidden");
   info.textContent = t("toast.openOrDrop");
   select(null);
@@ -5165,11 +5194,11 @@ function applyWorkspace(id: WorkspaceId): void {
     reflectWorkspaceInBar("table");
     return;
   }
-  // graph window (canvas / dtc). DTC full mode = WIN2; for now it opens Graph.
+  // graph window (canvas / dtc): the preset's graph mode IS a canvas projection
+  // (WIN2 made `dtc` one), so the preset applies with no special case — setMode
+  // lights the right leader chip on its own.
   setEmDataOpen(false);
-  setMode(preset.graphMode === "graph" || preset.graphMode === "dtc" ? "graph" : "matrix");
-  // setMode reflected "canvas"; for the DTC preset keep DTC lit instead.
-  if (id === "dtc") reflectWorkspaceInBar("dtc");
+  setMode(preset.graphMode ?? "matrix");
 }
 
 function setWorkspace(id: WorkspaceId): void {
@@ -5630,8 +5659,9 @@ canvas.addEventListener("pointerdown", (e) => {
       dragMemberIds = [...selectedIds].filter((id) => id !== hit.id);
       dragIsGroupMove = false; // move each node respecting its own container
     }
-  } else if (hit && view === "graph" && !inContext()) {
-    // Graph view: drag a node to place it (persisted as a graphOverride).
+  } else if (hit && canvasOverrides() && !inContext()) {
+    // Graph / DTC view: drag a node to place it (persisted as an override in
+    // THIS projection's map, see canvasOverrides).
     // Shift = LIQUID — the connected 1-hop cluster follows, for manual grouping.
     dragMode = "graphnode";
     dragNodeId = hit.id;
@@ -5721,10 +5751,11 @@ canvas.addEventListener("pointermove", (e) => {
           else if (ed.target === dragNodeId) targets.add(ed.source);
         }
       }
+      const overrides = canvasOverrides() ?? graphOverrides;
       for (const id of targets) {
         const sn = s?.byId.get(id);
-        const base = graphOverrides.get(id) ?? (sn ? { x: sn.x, y: sn.y } : null);
-        if (base) graphOverrides.set(id, { x: base.x + ddx, y: base.y + ddy });
+        const base = overrides.get(id) ?? (sn ? { x: sn.x, y: sn.y } : null);
+        if (base) overrides.set(id, { x: base.x + ddx, y: base.y + ddy });
       }
       lastX = e.clientX;
       lastY = e.clientY;

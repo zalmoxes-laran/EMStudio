@@ -67,13 +67,16 @@ export interface EmDocument {
   layout?: EmLayout;
 }
 
-export type ViewKind = "matrix" | "graph";
+/** A canvas PROJECTION of the graph — each carries its own viewport, scene and
+ *  "circles of detail". `dtc` (WIN2) reads the same nodes through their
+ *  digital-twin-creation relations; it is a projection, not a second model. */
+export type ViewKind = "matrix" | "graph" | "dtc";
 
-/** DP-82 · the MODE of the central area — what it currently shows. `matrix` and
- *  `graph` are canvas projections (they carry their own viewport/scene/circles,
- *  see `ViewKind`); `narrative` reads the graph as a story. Extensible: `table`
- *  and `dtc` (and a future `3d`) slot in here without touching the callers — the
- *  enum + the render dispatch are the single extension point. */
+/** DP-82 · the MODE of the central area — what it currently shows. `matrix`,
+ *  `graph` and `dtc` are canvas projections (they carry their own viewport/
+ *  scene/circles, see `ViewKind`); `narrative` reads the graph as a story.
+ *  Extensible: `table` (and a future `3d`) slots in here without touching the
+ *  callers — the enum + the render dispatch are the single extension point. */
 export type CentralMode = ViewKind | "narrative";
 
 /** A resolved authority cross-reference stored on a node/qualia

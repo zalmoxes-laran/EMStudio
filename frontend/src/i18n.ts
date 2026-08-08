@@ -75,6 +75,12 @@ const EN: Dict = {
   "win.narrative": "Narrative",
   "win.table": "Table",
   "win.doc": "Doc",
+  // WIN2 · the DTC projection
+  "mode.matrix": "Matrix",
+  "mode.graph": "Graph",
+  "mode.dtc": "DTC",
+  "dtc.empty":
+    "DTC — no digital-twin chain in this graph yet (no dtc_ relation, no linked resource).",
   "toolbar.edit": "Edit",
   "toolbar.undoItem": "Undo",
   "toolbar.redoItem": "Redo",
@@ -193,6 +199,12 @@ const IT: Dict = {
   "win.narrative": "Narrativa",
   "win.table": "Tabella",
   "win.doc": "Doc",
+  // WIN2 · la proiezione DTC
+  "mode.matrix": "Matrix",
+  "mode.graph": "Grafo",
+  "mode.dtc": "DTC",
+  "dtc.empty":
+    "DTC — questo grafo non ha ancora una catena di gemello digitale (nessuna relazione dtc_, nessuna risorsa collegata).",
   "toolbar.edit": "Modifica",
   "toolbar.undoItem": "Annulla",
   "toolbar.redoItem": "Ripristina",
