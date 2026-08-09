@@ -177,6 +177,7 @@ import {
   activeWindowType,
   closeWindow,
   GRAPH_MODES,
+  applyDefaultLayout,
   canJoin,
   joinWindow,
   siblingIdsOf,
@@ -4415,7 +4416,11 @@ tabLog.addEventListener("click", () => showTab("log"));
 // ── EMTree ────────────────────────────────────────────────────────────────────
 
 function refreshEMTree(): void {
-  if (activeTab !== "emtree") return; // rebuilt on show; no work while hidden
+  // WIN6 · the panel may live in the aside (shown by its tab) OR inside an
+  // EMtree WINDOW, where the aside's tab state says nothing about it. Skip the
+  // work only when it is nowhere visible.
+  if (activeTab !== "emtree" && emtreeEl.parentElement?.id !== "panel-view-body")
+    return; // rebuilt on show; no work while hidden
   // The panel asks for its text by key and `t` resolves it in the active
   // language: ET1 already went through a key lookup, so I18N1 was this one line.
   renderEMTree(emtreeEl, emtree, emtreeHandlers, t);
@@ -4960,7 +4965,8 @@ function revealFromWarning(nodeId: string): void {
 /** Redraw the Log tab — only when it is the visible one; there is no point
  *  rebuilding a hidden DOM on every sync message. */
 function refreshLogPanel(): void {
-  if (activeTab !== "log") return;
+  // WIN6 · same as the EMTree: the log panel can live in an Inspector WINDOW
+  if (activeTab !== "log" && logpanelEl.parentElement?.id !== "panel-view-body") return;
   renderLogPanel(logpanelEl, store?.doc ?? null, EM_VERSION, revealFromWarning);
 }
 onLogChange(refreshLogPanel);
@@ -5643,6 +5649,37 @@ function buildPane(pane: Pane, activeId: string): HTMLElement {
       if (activeWin().id === winIdOf) return;
       selectWindow(winIdOf);
     });
+    // ── the palette drop lands on THIS window ──────────────────────────────
+    //
+    // A drag from the palette is an HTML5 drag: pointer events do not fire, so
+    // focus-follows-mouse cannot hand the editor over mid-drag and the drop
+    // would be delivered to whichever canvas happened to be the editor —
+    // creating the node in the wrong window. So a secondary area accepts the
+    // drop itself: it takes the focus and places the node at the point of the
+    // GRAPH that was pointed at, in this area's own camera.
+    area.addEventListener("dragover", (e) => {
+      if (!paletteDragPayload(e)) return;
+      e.preventDefault();
+      area.classList.add("drop-target");
+    });
+    area.addEventListener("dragleave", () => area.classList.remove("drop-target"));
+    area.addEventListener("drop", (e) => {
+      area.classList.remove("drop-target");
+      const p = paletteDragPayload(e);
+      if (!p) return;
+      e.preventDefault();
+      if (!store) {
+        toast("Open a document first");
+        return;
+      }
+      const wpt = worldAt(e);
+      selectWindow(winIdOf);
+      placingType = p.nodeType;
+      placingKind = p.kind ?? null;
+      placingIsResource = !!p.isResource;
+      if (wpt) placeNode(wpt.x, wpt.y);
+      else cancelPlacing();
+    });
     area.addEventListener("pointerdown", (e) => {
       // PAN, same gesture as the canvas (middle button or Space held): this
       // moves a CAMERA, not the document, so it must NOT steal the focus — the
@@ -5781,7 +5818,14 @@ function validCurrentChapter(): number | null {
 // now a legitimate arrangement.) DTC is a graph MODE, not a transform target;
 // Doc has no editor yet. Elements are looked up at call time (not module-load
 // consts) so the early updateWindowHeader path never hits a TDZ.
-const TRANSFORM_TYPES: WindowType[] = ["graph", "narrative", "table", "doc"];
+const TRANSFORM_TYPES: WindowType[] = [
+  "graph",
+  "narrative",
+  "table",
+  "emtree",
+  "inspector",
+  "doc",
+];
 
 /**
  * WIN5 · which SURFACE of the window area is showing. The area has four: the
@@ -5795,6 +5839,10 @@ function applyWindowSurface(type: WindowType): void {
   };
   show("table-view", type === "table");
   show("doc-view", type === "doc");
+  const hosted = type === "emtree" || type === "inspector";
+  show("panel-view", hosted);
+  if (hosted) renderPanelWindow(type);
+  else releasePanels();
   // The overview map answers "where am I on the canvas", and the funnel filters
   // NODES AND CONNECTORS — both are questions only a canvas window has. On a
   // table or a document they would act on something that is not on screen.
@@ -5910,6 +5958,135 @@ function renderDocView(): void {
   detail.appendChild(jump);
 }
 
+// ── WIN6 · side panels as WINDOWS ───────────────────────────────────────────
+//
+// The Inspector, the EMTree, the outliner, the log and StratiMiner were
+// singletons in the right-hand aside, outside the window system: they could not
+// be tiled, resized or focused like everything else. They are now WINDOW TYPES.
+//
+// The panels themselves are not rebuilt: the existing elements are MOVED into
+// the window's surface and moved back to `#side` when the window stops showing
+// them. They keep their identity, their handlers and their state — only their
+// address changes. That is what makes this a re-parenting rather than a second
+// implementation of five panels.
+
+/** Which panels a window type shows, in tab order. */
+const PANEL_TABS: Partial<Record<WindowType, { id: string; labelKey: string }[]>> = {
+  emtree: [
+    { id: "emtree", labelKey: "panel.multigraph" },
+    { id: "nodelist", labelKey: "panel.outliner" },
+  ],
+  inspector: [
+    { id: "inspector", labelKey: "panel.inspector" },
+    { id: "logpanel", labelKey: "panel.log" },
+    { id: "stratiminer", labelKey: "panel.stratiminer" },
+  ],
+};
+
+/** Every panel element that can be re-homed. Named once: the release pass and
+ *  the "is this thing mounted anywhere?" guards both read it. */
+const PANEL_ELEMENT_IDS = [
+  "emtree",
+  "nodelist",
+  "inspector",
+  "logpanel",
+  "stratiminer",
+];
+
+/** The panel a hosted window is currently showing. Per WINDOW (not per type):
+ *  two Inspector windows can sit on different tabs, and that is what makes the
+ *  second one a live view of its own rather than a duplicate of the first. */
+function panelIdOf(win: Win): string {
+  const tabs = PANEL_TABS[win.type] ?? [];
+  const v = winCurrent(win, "panel");
+  return typeof v === "string" && tabs.some((t) => t.id === v) ? v : (tabs[0]?.id ?? "");
+}
+
+/** The panel each hosted window is currently showing (per window). */
+function currentPanelId(type: WindowType): string {
+  const win = activeWin();
+  return win.type === type ? panelIdOf(win) : (PANEL_TABS[type]?.[0]?.id ?? "");
+}
+
+/** True when a panel element is mounted somewhere the user can see it — the
+ *  aside's active tab, the active window's surface, or a secondary area.
+ *  WIN6 broadened the aside-tab guard once; WIN7 broadens it again, and this is
+ *  now the ONE place that answers the question. */
+function panelIsMounted(el: HTMLElement, asideTab: boolean): boolean {
+  const parent = el.parentElement;
+  if (parent?.id === "panel-view-body") return true;
+  if (parent?.classList.contains("tile-panel-body")) return true;
+  return asideTab;
+}
+
+/** Ask a panel to redraw itself, whichever window it is living in. */
+function refreshPanelById(id: string): void {
+  if (id === "emtree") refreshEMTree();
+  else if (id === "nodelist") nodeList.refresh();
+  else if (id === "inspector") refreshInspector();
+  else if (id === "logpanel") refreshLogPanel();
+  else if (id === "stratiminer") refreshStratiMiner();
+}
+
+/** Send every panel currently living in a TILED area back to the aside.
+ *
+ *  Called before the tree is torn down: `renderTiles` resets `#tile-root`'s
+ *  innerHTML, which would DESTROY a panel that had been moved into a secondary
+ *  area — and with it every handler wired to it at boot. */
+function releaseTilePanels(): void {
+  const side = document.getElementById("side");
+  if (!side) return;
+  for (const id of PANEL_ELEMENT_IDS) {
+    const el = document.getElementById(id);
+    if (!el?.parentElement?.classList.contains("tile-panel-body")) continue;
+    el.classList.add("hidden"); // the aside shows one at a time, via its tabs
+    side.appendChild(el);
+  }
+}
+
+/** Send every hosted panel back to the aside it came from. */
+function releasePanels(): void {
+  const side = document.getElementById("side");
+  const body = document.getElementById("panel-view-body");
+  if (!side || !body) return;
+  while (body.firstChild) {
+    const el = body.firstChild as HTMLElement;
+    el.classList.add("hidden"); // the aside shows one at a time, via its tabs
+    side.appendChild(el);
+  }
+}
+
+/** Mount the panels of a hosted window type into the window's surface. */
+function renderPanelWindow(type: WindowType): void {
+  const tabsHost = document.getElementById("panel-view-tabs");
+  const body = document.getElementById("panel-view-body");
+  const tabs = PANEL_TABS[type];
+  if (!tabsHost || !body || !tabs) return;
+  releasePanels();
+  const showing = currentPanelId(type);
+  tabsHost.innerHTML = "";
+  for (const tab of tabs) {
+    const b = document.createElement("button");
+    b.textContent = t(tab.labelKey);
+    b.classList.toggle("active", tab.id === showing);
+    b.addEventListener("click", () => {
+      setWinCurrent(activeWin(), "panel", tab.id);
+      renderPanelWindow(type);
+    });
+    tabsHost.appendChild(b);
+  }
+  const el = document.getElementById(showing);
+  if (el) {
+    el.classList.remove("hidden");
+    body.appendChild(el);
+  }
+  // the panels are built on demand by their own renderers
+  if (showing === "emtree") refreshEMTree();
+  if (showing === "nodelist") nodeList.refresh();
+  if (showing === "inspector") refreshInspector();
+  if (showing === "logpanel") refreshLogPanel();
+}
+
 /** Mount a window's editor in the central area. The ONE place that knows how a
  *  window type becomes something on screen — `applyWorkspace` and the transform
  *  both go through it, so they can never drift apart. */
@@ -5919,7 +6096,12 @@ function mountWindow(win: Win): void {
     applyWindowSurface("narrative");
     return;
   }
-  if (win.type === "table" || win.type === "doc") {
+  if (
+    win.type === "table" ||
+    win.type === "doc" ||
+    win.type === "emtree" ||
+    win.type === "inspector"
+  ) {
     // WIN5 · a real window, not the dock: the surface fills the area. Leave the
     // canvas mode alone underneath (never the narrative overlay) so switching
     // back finds the projection you left.
@@ -6045,6 +6227,20 @@ function renderInstanceStrip(): void {
   };
   mkSplit("row", "⇥", "win.splitRight");
   mkSplit("col", "⇤", "win.splitDown");
+  // WIN6 · the IDE preset: editor + Tabular band + EMtree/Inspector column.
+  // A button rather than a boot-time default, so it never overwrites an
+  // arrangement someone has shaped.
+  const preset = document.createElement("button");
+  preset.className = "wi-chip wi-add";
+  preset.textContent = "⌗";
+  preset.title = t("win.defaultLayout");
+  preset.addEventListener("click", () => {
+    applyDefaultLayout();
+    renderTiles();
+    mountWindow(activeWin());
+    updateWindowHeader();
+  });
+  strip.appendChild(preset);
   // JOIN · this area absorbs its neighbour and the split collapses. Shown only
   // when there IS a neighbour to absorb, so the bar never offers a dead verb.
   if (canJoin(activeWin().id)) {
@@ -6303,6 +6499,8 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
   // WIN5 · the Doc window is real, so it has commands: the sources of the graph
   // are created and removed through the SAME EM-Data mutators the Documents
   // sheet uses (one way to make a document, whichever window you are in).
+  emtree: [],
+  inspector: [],
   doc: [
     {
       label: "Documento",

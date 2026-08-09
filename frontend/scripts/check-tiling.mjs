@@ -201,4 +201,52 @@ const eq = (got, want, what) => {
     "a lone area has no neighbour to join");
 }
 
+// ── WIN7 · magnify: one area fills the workspace, and the tree comes back ───
+{
+  const a = W.activeWin("canvas");
+  const b = W.splitWindow(a.id, "row", "canvas");
+  const c = W.splitWindow(b.id, "col", "canvas"); // a nested arrangement to keep
+  const before = JSON.stringify(W.layoutOf("canvas"));
+  const wins = W.windowsOf("canvas").map((w) => w.id).sort();
+
+  ok(W.maximizedWin("canvas") === null, "nothing is magnified to begin with");
+  ok(W.toggleMaximize(b.id, "canvas"), "an area can be magnified");
+  eq(W.maximizedWin("canvas"), b.id, "and the workspace says which one");
+  eq(W.layoutOf("canvas").kind, "leaf", "the workspace shows a single area");
+  eq(W.paneIds(W.layoutOf("canvas")), [b.id], "and it is the magnified one");
+  eq(W.activeWin("canvas").id, b.id, "magnifying focuses it — not a picture");
+  eq(
+    W.windowsOf("canvas").map((w) => w.id).sort(),
+    wins,
+    "no window is lost while one fills the screen",
+  );
+
+  // magnifying another one swaps, keeping the arrangement to return to
+  W.toggleMaximize(c.id, "canvas");
+  eq(W.maximizedWin("canvas"), c.id, "magnifying a second area swaps");
+
+  ok(!W.toggleMaximize(c.id, "canvas"), "toggling the magnified area comes back");
+  eq(W.maximizedWin("canvas"), null, "nothing is magnified any more");
+  eq(
+    JSON.stringify(W.layoutOf("canvas")),
+    before,
+    "and the arrangement returns EXACTLY as it was — ratios and nesting included",
+  );
+
+  // a structural edit while magnified ends the magnification instead of
+  // corrupting the tree (repairLayout would otherwise re-append the hidden ones)
+  W.toggleMaximize(b.id, "canvas");
+  W.splitWindow(b.id, "row", "canvas");
+  eq(W.maximizedWin("canvas"), null, "splitting while magnified brings the arrangement back");
+  eq(
+    [...W.paneIds(W.layoutOf("canvas"))].sort(),
+    W.windowsOf("canvas").map((w) => w.id).sort(),
+    "and the tree still places every window exactly once",
+  );
+
+  ok(!W.toggleMaximize("nope", "canvas"), "an unknown area cannot be magnified");
+  while (W.windowsOf("canvas").length > 1)
+    W.joinWindow(W.activeWin("canvas").id, "canvas");
+}
+
 console.log(`tiling: ${checks} checks passed`);

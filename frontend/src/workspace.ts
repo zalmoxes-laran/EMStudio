@@ -22,7 +22,15 @@ import type { ViewKind } from "./types";
 
 /** The kinds of editor a window can host. DTC is a MODE of the graph window
  *  (WIN2), not a type of its own. */
-export type WindowType = "graph" | "narrative" | "table" | "doc";
+export type WindowType =
+  | "graph"
+  | "narrative"
+  | "table"
+  | "doc"
+  // WIN6 · the side panels became window types of their own: everything in the
+  // shell is a window now, so anything can be tiled, resized and focused.
+  | "emtree"
+  | "inspector";
 
 /** A single window instance — its own id + type + type-specific state. */
 export interface Win {
@@ -78,8 +86,10 @@ export const WORKSPACES: WorkspacePreset[] = [
 export const WINDOW_TYPE_META: Record<WindowType, { icon: string; labelKey: string }> = {
   graph: { icon: "▦", labelKey: "win.graph" },
   narrative: { icon: "❧", labelKey: "win.narrative" },
-  table: { icon: "▤", labelKey: "win.table" },
+  table: { icon: "▤", labelKey: "win.tabular" },
   doc: { icon: "▧", labelKey: "win.doc" },
+  emtree: { icon: "⌸", labelKey: "win.emtree" },
+  inspector: { icon: "◉", labelKey: "win.inspector" },
 };
 
 /** The window type the active workspace currently shows — the ACTIVE window's
@@ -172,6 +182,10 @@ interface WorkspaceWindows {
   activeId: string;
   /** the arrangement; absent in layouts saved before WIN5 → rebuilt as a leaf */
   layout?: Pane;
+  /** WIN7 · the window currently filling the workspace, if one is magnified */
+  maxOf?: string;
+  /** WIN7 · the arrangement to come back to when it is un-magnified */
+  saved?: Pane;
 }
 
 function seedWindows(preset: WorkspacePreset): WorkspaceWindows {
@@ -219,7 +233,22 @@ function loadRegistry(): Record<WorkspaceId, WorkspaceWindows> {
       // The tree is the authority on WHERE, the window list on WHAT: a restored
       // tree is pruned of ids that no longer exist and completed with windows it
       // never mentioned, so the two can never disagree after a bad save.
-      restored.layout = repairLayout(entry.layout, restored.wins);
+      //
+      // WIN7 · a MAGNIFIED workspace is the one case where the tree deliberately
+      // does not place every window: repairing the single leaf would re-append
+      // the hidden ones and the magnification would be lost on reload. So the
+      // repair is applied to the SAVED arrangement, and the leaf is rebuilt.
+      const maxOf =
+        typeof entry.maxOf === "string" && wins.some((w) => w.id === entry.maxOf)
+          ? entry.maxOf
+          : undefined;
+      if (maxOf) {
+        restored.saved = repairLayout(entry.saved, restored.wins);
+        restored.maxOf = maxOf;
+        restored.layout = { kind: "leaf", winId: maxOf };
+      } else {
+        restored.layout = repairLayout(entry.layout, restored.wins);
+      }
       seeded[preset.id] = restored;
     }
   } catch {
@@ -308,6 +337,7 @@ export function splitWindow(
   const entry = registry[ws];
   const src = entry.wins.find((w) => w.id === winId);
   if (!src) return null;
+  endMagnification(ws); // shaping the arrangement brings the arrangement back
   const clone = addWindow(src.type, { ...src.state }, ws); // appends + activates
   // `addWindow` gave the clone a home of its own (any window must have one);
   // here we want it in a SPECIFIC place, so prune that provisional leaf first —
@@ -355,6 +385,7 @@ export function canJoin(winId: string, ws: WorkspaceId = active): boolean {
  */
 export function joinWindow(winId: string, ws: WorkspaceId = active): boolean {
   const entry = registry[ws];
+  endMagnification(ws);
   if (!canJoin(winId, ws)) return false;
   let absorbed: string[] = [];
   const walk = (p: Pane): Pane => {
@@ -416,6 +447,113 @@ export function setSplitRatio(
   persistWindows();
 }
 
+// ───────────────────────── WIN7 · magnify (full-screen area) ─────────────────
+//
+// One area fills the workspace and the others step aside — Blender's Ctrl+Space,
+// and the gesture every tiling editor has, because an arrangement good for
+// keeping four things in view is rarely the one you want while working on one.
+//
+// It is a STATE, not a rearrangement: the tree you had is kept whole in `saved`
+// and put back untouched on the way out. That is why nothing is renegotiated —
+// ratios, nesting and which window was where all survive, so magnifying is never
+// a decision you have to undo by hand afterwards.
+//
+// The one place this cuts across the rest of the model is `repairLayout`, whose
+// job is to place EVERY window: run on a magnified leaf it would re-append the
+// hidden ones. So a structural edit (split, join, close, add, preset) ends the
+// magnification first and operates on the real arrangement — you are shaping the
+// arrangement, so the arrangement comes back.
+
+/** The window filling the workspace, or null when the arrangement is showing. */
+export function maximizedWin(ws: WorkspaceId = active): string | null {
+  return registry[ws].maxOf ?? null;
+}
+
+/** Put the saved arrangement back. Returns false when nothing was magnified. */
+function unmaximize(ws: WorkspaceId): boolean {
+  const entry = registry[ws];
+  if (!entry.maxOf) return false;
+  entry.layout = repairLayout(entry.saved, entry.wins);
+  entry.maxOf = undefined;
+  entry.saved = undefined;
+  return true;
+}
+
+/**
+ * Magnify `winId` — or, if it is already magnified, come back.
+ *
+ * Magnifying also FOCUSES the window: an area alone on screen that does not take
+ * the edits would be a picture of a window.
+ */
+export function toggleMaximize(winId: string, ws: WorkspaceId = active): boolean {
+  const entry = registry[ws];
+  if (!entry.wins.some((w) => w.id === winId)) return false;
+  if (entry.maxOf === winId) {
+    unmaximize(ws);
+    persistWindows();
+    return false;
+  }
+  // magnifying a second window while one is already magnified: swap, keeping the
+  // arrangement that was saved the first time (it is still the one to return to)
+  if (!entry.maxOf) entry.saved = entry.layout;
+  entry.maxOf = winId;
+  entry.activeId = winId;
+  entry.layout = { kind: "leaf", winId };
+  persistWindows();
+  return true;
+}
+
+/** End any magnification before a structural edit. Internal to this module. */
+function endMagnification(ws: WorkspaceId): void {
+  if (unmaximize(ws)) persistWindows();
+}
+
+/**
+ * WIN6 · the IDE arrangement, built on demand.
+ *
+ * Editor in the middle, a column on the right with **EMtree above the
+ * Inspector**, and the **Tabular** band cutting across from the left up to that
+ * column. It is a PRESET, not a cage: every area is then splittable, joinable
+ * and resizable like any other, and the arrangement is persisted as it is left.
+ *
+ * Applied only on request (a menu action or a first run with no saved
+ * arrangement), never on top of one the user has already shaped.
+ */
+export function applyDefaultLayout(ws: WorkspaceId = active): void {
+  const entry = registry[ws];
+  entry.maxOf = undefined; // the preset IS an arrangement: nothing to come back to
+  entry.saved = undefined;
+  const editor = entry.wins[0] ?? seedWindows(workspacePreset(ws)).wins[0];
+  editor.type = "graph";
+  const tabular: Win = { id: `${ws}:tabular`, type: "table", state: {} };
+  const tree: Win = { id: `${ws}:emtree`, type: "emtree", state: {} };
+  const insp: Win = { id: `${ws}:inspector`, type: "inspector", state: {} };
+  entry.wins = [editor, tabular, tree, insp];
+  entry.activeId = editor.id;
+  entry.layout = {
+    kind: "split",
+    dir: "row",
+    ratio: 0.72,
+    // left: the editor with the Tabular band under it
+    a: {
+      kind: "split",
+      dir: "col",
+      ratio: 0.68,
+      a: { kind: "leaf", winId: editor.id },
+      b: { kind: "leaf", winId: tabular.id },
+    },
+    // right: EMtree above the Inspector
+    b: {
+      kind: "split",
+      dir: "col",
+      ratio: 0.42,
+      a: { kind: "leaf", winId: tree.id },
+      b: { kind: "leaf", winId: insp.id },
+    },
+  };
+  persistWindows();
+}
+
 /** Every window of a workspace, in creation order. */
 export function windowsOf(ws: WorkspaceId = active): Win[] {
   return registry[ws].wins;
@@ -446,6 +584,7 @@ export function addWindow(
   ws: WorkspaceId = active,
 ): Win {
   const entry = registry[ws];
+  endMagnification(ws);
   let n = entry.wins.length + 1;
   while (entry.wins.some((w) => w.id === `${ws}:${n}`)) n++;
   const win: Win = { id: `${ws}:${n}`, type, state };
@@ -462,6 +601,7 @@ export function addWindow(
 export function closeWindow(winId: string, ws: WorkspaceId = active): boolean {
   const entry = registry[ws];
   if (entry.wins.length < 2) return false;
+  endMagnification(ws);
   const i = entry.wins.findIndex((w) => w.id === winId);
   if (i < 0) return false;
   entry.wins.splice(i, 1);

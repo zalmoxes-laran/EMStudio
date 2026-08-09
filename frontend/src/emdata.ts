@@ -57,6 +57,12 @@ export interface EmDataHost {
 const hosts: EmDataHost[] = [];
 
 export function addEmDataHost(host: EmDataHost): void {
+  // WIN7 · a host whose body has left the document belonged to a tiled area that
+  // no longer exists (the tree is rebuilt on every arrangement change). Drop it
+  // here rather than leaving the registry to grow by one on every split — and so
+  // `renderEmData` never walks a list of dead mounts.
+  for (let i = hosts.length - 1; i >= 0; i--)
+    if (!hosts[i].body.isConnected) hosts.splice(i, 1);
   hosts.push(host);
   renderEmData();
 }

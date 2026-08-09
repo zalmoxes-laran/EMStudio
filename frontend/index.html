@@ -302,6 +302,17 @@
           </div>
           <div id="table-view-body"></div>
         </div>
+        <!-- WIN6 · panels as WINDOWS. This surface hosts one of the existing
+             side panels, MOVED here while a window of that type is showing it
+             (and moved back to `#side` when it is not) — the panels keep their
+             identity, their handlers and their state; only their address
+             changes. The tab strip above is built by main.ts from the window
+             type: EMtree = Multigraph + Outliner, Inspector = Inspector + Log +
+             StratiMiner. -->
+        <div id="panel-view" class="hidden">
+          <div id="panel-view-tabs"></div>
+          <div id="panel-view-body"></div>
+        </div>
         <div id="doc-view" class="hidden">
           <div id="doc-view-list"></div>
           <div id="doc-view-detail"></div>
