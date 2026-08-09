@@ -62,13 +62,48 @@ export interface EmDataHost {
 const hosts: EmDataHost[] = [];
 
 export function addEmDataHost(host: EmDataHost): void {
-  // WIN7 · a host whose body has left the document belonged to a tiled area that
-  // no longer exists (the tree is rebuilt on every arrangement change). Drop it
-  // here rather than leaving the registry to grow by one on every split — and so
-  // `renderEmData` never walks a list of dead mounts.
-  for (let i = hosts.length - 1; i >= 0; i--)
-    if (!hosts[i].body.isConnected) hosts.splice(i, 1);
   hosts.push(host);
+  renderEmData();
+}
+
+/**
+ * Unregister a host. Callers that create hosts for a transient area (the tiled
+ * secondary areas) must call this when the area goes, or the registry grows by
+ * one on every split.
+ *
+ * WIN-FIX1 · this used to be an implicit sweep inside `addEmDataHost`, dropping
+ * every host whose body was not `isConnected`. That reasoning had a hole big
+ * enough to lose the table through: `renderTiles` DETACHES the live area before
+ * rebuilding the tree, so a secondary host registering during that rebuild found
+ * the FOCUSED window's body disconnected and pruned it — permanently. The
+ * symptom was the one E.D. reported: move the mouse into the Tabular window and
+ * its contents vanish, because the window it had just become the focused one of
+ * no longer had a mount. Ownership is explicit now; nothing is inferred from a
+ * DOM state that is legitimately temporary.
+ */
+export function removeEmDataHost(host: EmDataHost): void {
+  const i = hosts.indexOf(host);
+  if (i >= 0) hosts.splice(i, 1);
+}
+
+/**
+ * HDR1 · the Tabular window's own full search — a plain substring over every
+ * cell of the current sheet, applied at render.
+ *
+ * Filtering the ROWS rather than highlighting them, because a table read with
+ * its non-matching rows still in place answers no question: you search a table
+ * to get the handful that match. One filter for the whole app, like the sheet —
+ * the Tabular windows are views of the same table, not different tables.
+ */
+let rowFilter = "";
+
+export function emDataFilter(): string {
+  return rowFilter;
+}
+
+export function setEmDataFilter(q: string): void {
+  if (q === rowFilter) return;
+  rowFilter = q;
   renderEmData();
 }
 
@@ -119,7 +154,22 @@ function renderEmDataInto(host: EmDataHost): void {
   }
 
   const table = buildTable(store, currentSheet, volatileProvider);
-  if (countEl) countEl.textContent = `${table.rows.length} rows`;
+  // HDR1 · the window's search, applied here so every mount agrees on what is
+  // showing. Matched against the row's OWN id plus every cell, because the id is
+  // what you usually have in hand ("US.101") and it is not always a column.
+  const q = rowFilter.trim().toLowerCase();
+  const all = table.rows;
+  const rows = q
+    ? all.filter(
+        (r) =>
+          r.id.toLowerCase().includes(q) ||
+          Object.values(r.cells).some((v) => String(v ?? "").toLowerCase().includes(q)),
+      )
+    : all;
+  if (countEl)
+    countEl.textContent = q
+      ? `${rows.length} / ${all.length} rows`
+      : `${all.length} rows`;
 
   // per-sheet actions (add row / add claim)
   if (actions) {
@@ -148,7 +198,7 @@ function renderEmDataInto(host: EmDataHost): void {
     .map((c) => `<th>${c.label}</th>`)
     .join("")}<th></th></tr>`;
 
-  const rowsHtml = table.rows
+  const rowsHtml = rows
     .map((row) => {
       const cells = table.columns
         .map((col) => renderCell(col, row.id, row.cells[col.key] ?? ""))

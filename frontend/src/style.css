@@ -159,9 +159,14 @@ body.sync-active #statusbar {
   color: #d7f5e8;
 }
 
+/* HDR1 · the wordmark sits on the bar's CENTRE LINE. With the workspace tabs
+   anchored to the bottom edge, `align-items: center` on the header would have
+   stretched the row and left the logo riding at the top; `align-self` pins it
+   to the middle regardless of how tall the tabs make the bar. */
 #brand {
   display: inline-flex;
   align-items: center;
+  align-self: center;
   gap: 7px;
   font-weight: 700;
   letter-spacing: 0.4px;
@@ -206,31 +211,58 @@ body.sync-active #statusbar {
   background: rgba(255, 255, 255, 0.22);
 }
 
-/* WIN1 · workspace leader (Canvas/Narrative/Table/DTC) */
+/* HDR1 · WORKSPACE TABS. Tabs and not chips-in-a-box: they are places you go,
+   the set is open-ended (you can add your own), and the active one should look
+   like the sheet the whole app is sitting on. Anchored to the bottom edge of the
+   header, the way a tab meets its page. */
 #workspace-bar {
   display: flex;
-  gap: 2px;
-  border-radius: 6px;
-  overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.25);
+  align-items: flex-end;
+  align-self: stretch;
+  gap: 3px;
+  margin-bottom: -6px;
 }
-#workspace-bar .ws-chip {
+#workspace-bar .ws-tab {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  border: none;
-  border-radius: 0;
-  background: transparent;
-  padding: 4px 9px;
+  gap: 6px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 7px 7px 0 0;
+  background: rgba(255, 255, 255, 0.10);
+  padding: 5px 11px 7px;
   cursor: pointer;
+  white-space: nowrap;
 }
-#workspace-bar .ws-chip .ws-ic {
+#workspace-bar .ws-tab:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+#workspace-bar .ws-tab .ws-ic {
   font-size: 12px;
   opacity: 0.85;
 }
-#workspace-bar .ws-chip.active {
-  background: rgba(255, 255, 255, 0.3);
+#workspace-bar .ws-tab.active {
+  background: var(--bg-panel);
+  color: var(--text);
+  border-color: var(--border);
   font-weight: 600;
+}
+#workspace-bar .ws-tab.active .ws-ic {
+  opacity: 1;
+}
+#workspace-bar .ws-tab .ws-x {
+  opacity: 0.45;
+  font-size: 13px;
+  line-height: 1;
+  margin-left: 1px;
+}
+#workspace-bar .ws-tab .ws-x:hover {
+  opacity: 1;
+}
+#workspace-bar .ws-add {
+  padding: 5px 10px 7px;
+  font-weight: 600;
+  opacity: 0.75;
 }
 
 #view-toggle {
@@ -1156,12 +1188,7 @@ body.sync-active #mode-indicator::before {
   color: var(--text);
   font-weight: 600;
 }
-/* WIN7 · this tab's panel has moved into a window: say so instead of offering a
-   tab that un-hides an element which is somewhere else. */
-#side-tabs button.tab-elsewhere {
-  opacity: 0.4;
-  font-style: italic;
-}
+
 
 #inspector {
   flex: 1;
@@ -1513,8 +1540,8 @@ body.sync-active #mode-indicator::before {
   border-bottom: 1px solid var(--border);
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.10);
 }
-#window-header .win-type-toggle,
-#window-header .win-mode-toggle {
+.win-header .win-type-toggle,
+.win-header .win-mode-toggle {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -1528,18 +1555,18 @@ body.sync-active #mode-indicator::before {
   font-size: 12.5px;
   cursor: pointer;
 }
-#window-header .win-type-toggle:hover,
-#window-header .win-mode-toggle:hover {
+.win-header .win-type-toggle:hover,
+.win-header .win-mode-toggle:hover {
   background: var(--bg-panel);
   border-color: var(--accent);
 }
-#window-header .win-mode-label {
+.win-header .win-mode-label {
   font-weight: 600;
 }
 /* the window's own actions — square buttons matching the header pills */
-#window-header .win-act,
-#window-header #win-algo,
-#window-header .wi-chip {
+.win-header .win-act,
+.win-header .win-algo,
+.win-header .wi-chip {
   height: 30px;
   background: var(--bg-elevated);
   border: 1px solid var(--border);
@@ -1549,58 +1576,110 @@ body.sync-active #mode-indicator::before {
   font-size: 12.5px;
   cursor: pointer;
 }
-#window-header .win-act {
+.win-header .win-act {
   width: 30px;
   padding: 0;
 }
-#window-header #win-algo {
+.win-header .win-algo {
   padding: 0 6px;
 }
-#window-header .win-act:hover,
-#window-header #win-algo:hover,
-#window-header .wi-chip:hover {
+.win-header .win-act:hover,
+.win-header .win-algo:hover,
+.win-header .wi-chip:hover {
   background: var(--bg-panel);
   border-color: var(--accent);
 }
-#window-header .win-sep {
+.win-header .win-sep {
   width: 1px;
   height: 18px;
   background: var(--border);
   opacity: 0.8;
 }
-#win-instances {
+.win-header .win-arrange {
   display: flex;
   align-items: center;
   gap: 4px;
+  margin-left: auto;
 }
-#window-header .wi-chip {
+.win-header .wi-chip {
   min-width: 26px;
   padding: 0 7px;
 }
-#window-header .wi-chip.active {
+.win-header .wi-chip.active {
   border-color: var(--accent);
   color: var(--accent-ink);
   font-weight: 600;
 }
-#window-header .wi-chip.wi-add,
-#window-header .wi-chip.wi-close {
+.win-header .wi-chip.wi-add,
+.win-header .wi-chip.wi-close {
   opacity: 0.75;
   font-weight: 400;
 }
-#window-header .win-type-icon {
-  font-size: 13px;
-  opacity: 0.9;
+/* HDR1 · the TYPE is an icon alone. Bigger and at full strength, because it is
+   now the only thing saying what this window is — the name lives in the
+   dropdown, where you are choosing. */
+.win-header .win-type-icon {
+  font-size: 17px;
+  line-height: 1;
+  opacity: 1;
 }
-#window-header .win-type-label {
+.win-header .win-type-toggle {
+  padding: 0 7px;
+  gap: 3px;
+}
+/* HDR1 · the window's own full search, in its own bar */
+.win-header .win-search {
+  position: relative;
+  flex: 0 1 190px;
+  min-width: 90px;
+}
+.win-header .win-search-input {
+  width: 100%;
+  height: 26px;
+  padding: 0 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 12px;
+}
+.win-header .win-search-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.win-header .win-search-results {
+  position: fixed;
+  z-index: 950;
+  max-height: 50vh;
+  overflow-y: auto;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  min-width: 220px;
+}
+.win-header .win-search-results.hidden {
+  display: none;
+}
+/* WIN-FIX1 · an UNFOCUSED area's bar is the same bar, one step back. Dimmed, not
+   different: a second kind of bar would make its window a second kind of thing,
+   which is exactly what the thin label strip used to do. */
+.win-header.tile-bar {
+  opacity: 0.82;
+}
+.win-header.tile-bar:hover {
+  opacity: 1;
+}
+.win-header .win-type-label {
   font-weight: 600;
 }
-#window-header .win-type-caret {
+.win-header .win-type-caret {
   opacity: 0.6;
 }
 /* Opened from a scrolling bar, a menu would be trapped inside it (and turn the
    bar into a scroller of its own contents). It is placed FIXED instead, at the
    toggle's screen position — see `placeBarMenu` in main.ts. */
-#window-header .dd-menu {
+.win-header .dd-menu {
   position: fixed;
   top: auto;
   left: auto;
@@ -1609,7 +1688,7 @@ body.sync-active #mode-indicator::before {
   overflow-y: auto;
   z-index: 950;
 }
-#window-header .dd-menu button {
+.win-header .dd-menu button {
   display: flex;
   align-items: center;
   gap: 7px;
@@ -1623,14 +1702,14 @@ body.sync-active #mode-indicator::before {
   font-size: 13px;
   cursor: pointer;
 }
-#window-header .dd-menu button:hover {
+.win-header .dd-menu button:hover {
   background: var(--bg-accent-soft);
 }
-#window-header .dd-menu button.active {
+.win-header .dd-menu button.active {
   font-weight: 600;
   color: var(--accent-ink);
 }
-#window-header .dd-menu .wt-ic {
+.win-header .dd-menu .wt-ic {
   opacity: 0.9;
 }
 
@@ -4286,11 +4365,11 @@ body.sync-active #footer-brand #em-version {
 /* WIN3/WIN4 · inside the bar the controls lose their own chrome — the BAR is
    the surface. (WIN3 shipped this bar as a translucent floating overlay; WIN4
    docked it, so the blur and the rounded card are gone.) */
-#window-header .win-type-toggle,
-#window-header .win-mode-toggle,
-#window-header .win-act,
-#window-header .wi-chip,
-#window-header #win-algo {
+.win-header .win-type-toggle,
+.win-header .win-mode-toggle,
+.win-header .win-act,
+.win-header .wi-chip,
+.win-header .win-algo {
   box-shadow: none;
 }
 #window-menus {
@@ -4302,7 +4381,7 @@ body.sync-active #footer-brand #em-version {
 #window-header > * {
   flex: 0 0 auto;
 }
-#window-header .win-menu-toggle {
+.win-header .win-menu-toggle {
   height: 30px;
   padding: 0 9px;
   background: transparent;
@@ -4312,11 +4391,11 @@ body.sync-active #footer-brand #em-version {
   font-size: 12.5px;
   cursor: pointer;
 }
-#window-header .win-menu-toggle:hover {
+.win-header .win-menu-toggle:hover {
   background: var(--bg-elevated);
   border-color: var(--border);
 }
-#window-header .win-menu .dd-menu button[disabled] {
+.win-header .win-menu .dd-menu button[disabled] {
   opacity: 0.45;
   cursor: default;
 }
@@ -4377,53 +4456,24 @@ body.sync-active #footer-brand #em-version {
   background: var(--canvas-bg);
   overflow: hidden;
 }
+/* WIN-FIX1 · a secondary area's bar is the SAME bar as the focused one — same
+   height, same controls, same scroll-when-it-does-not-fit. */
 .tile-area > .tile-bar {
   display: flex;
   align-items: center;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
   gap: 6px;
   padding: 5px 8px;
   height: calc(var(--winbar-row) + 10px);
+  flex: 0 0 auto;
   box-sizing: border-box;
-  /* one row, like the focused bar: wrapped text made a 40px bar hold two lines
-     of clipped words on a narrow area */
-  white-space: nowrap;
-  overflow: hidden;
   background: var(--bg-panel);
   border-bottom: 1px solid var(--border);
   font-size: 12.5px;
   color: var(--text);
-  cursor: pointer;
-}
-.tile-area > .tile-bar .tile-ic {
-  opacity: 0.9;
-}
-.tile-area > .tile-bar .tile-mode {
-  opacity: 0.7;
-}
-.tile-area > .tile-bar .tile-hint {
-  margin-left: auto;
-  opacity: 0.55;
-  font-size: 11px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-/* WIN7 · the magnify verb, on every area's bar */
-.tile-area > .tile-bar .tile-mag {
-  flex: 0 0 auto;
-  margin-left: 6px;
-  padding: 0 5px;
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  color: var(--text);
-  font-size: 11px;
-  line-height: 17px;
-  opacity: 0.6;
-  cursor: pointer;
-}
-.tile-area > .tile-bar .tile-mag:hover {
-  opacity: 1;
-  background: var(--bg-elevated);
 }
 /* the magnify chip of the focused window's bar, while it IS magnified */
 #win-instances .wi-chip.wi-on {
@@ -4439,18 +4489,25 @@ body.sync-active #footer-brand #em-version {
 /* EVERY window is framed by a 1px white hairline — the frame says "this is a
    window", so it belongs to all of them. The one that takes the edits is the
    same frame at full strength; the others are dimmed, which reads as depth
-   rather than as a different kind of border. */
+   rather than as a different kind of border.
+
+   WIN-FIX1 · a BORDER, not an outline. An outline is drawn over the box and a
+   child with a background paints on top of it — so the docked header, which
+   starts at the very top of the area, ate the frame along its whole top edge.
+   A border reserves space instead: the header begins inside it, and the frame
+   stays visible all the way round. Everything positioned against the area is
+   laid out from the padding box, so nothing else had to move. */
 #tile-root .tile-area,
 #tile-root > #canvas-wrap,
 #tile-root .tile-split > #canvas-wrap {
-  outline: 1px solid rgba(255, 255, 255, 0.35);
-  outline-offset: -1px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  box-sizing: border-box;
 }
 /* the focused one at full strength — specific enough to beat the id selectors
    above (a class alone lost to `#tile-root > #canvas-wrap`) */
 #tile-root .tile-area.tile-active,
 #tile-root #canvas-wrap.tile-active {
-  outline-color: #fff;
+  border-color: #fff;
 }
 /* the divider between two areas */
 .tile-div {
@@ -4695,10 +4752,18 @@ body.sync-active #footer-brand #em-version {
   outline-offset: -2px;
 }
 /* the ✎ toggle shows whether the narrative is in writing mode */
-#window-header .win-act.win-act-on {
+.win-header .win-act.win-act-on {
   background: var(--accent);
   color: #fff;
   border-color: var(--accent);
+}
+
+/* HDR1 · a narrative-window search hit. Marked in place, not filtered out: a
+   story read with its non-matching paragraphs removed is not the story. */
+#narrative-view .nv-hit {
+  background: var(--bg-accent-soft);
+  box-shadow: inset 3px 0 0 var(--accent);
+  border-radius: 4px;
 }
 
 /* WIN7 · "here is the block you came for" — a brief outline after a panel has
@@ -4776,11 +4841,11 @@ body.sync-active #footer-brand #em-version {
   display: none;
 }
 
-/* WIN7 · the aside with every one of its panels re-homed into windows: a strip
-   of tabs over an empty box is the shape of a broken panel, so it steps aside
-   until a panel comes back. */
-#side.side-empty {
-  display: none;
+/* WIN-FIX1 · `#side` is a PARKING PLACE, never a panel. The panels are
+   singletons wired at boot, so they need somewhere to be while no window and no
+   floating tool is showing them — but nothing ever puts it on screen. */
+#side.side-parking {
+  display: none !important;
 }
 
 /* WIN6 · a side panel hosted INSIDE a window area */

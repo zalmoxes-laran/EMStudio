@@ -50,35 +50,144 @@ export type GraphMode = ViewKind;
  *  `multigraph` first shipped invisible to `winMode`). */
 export const GRAPH_MODES: GraphMode[] = ["matrix", "graph", "dtc", "multigraph"];
 
-/** The fixed workspace presets in the leader bar. */
-export type WorkspaceId = "canvas" | "narrative" | "table";
+/**
+ * HDR1 · a workspace id is now just a string, because workspaces are no longer a
+ * fixed set of three. They are TABS you pick from and can add to, the way
+ * Blender's are: a few come with the app, the rest are yours.
+ */
+export type WorkspaceId = string;
 
 export interface WorkspacePreset {
   id: WorkspaceId;
-  /** i18n key for the leader label. */
-  labelKey: string;
-  /** a compact glyph for the leader chip. */
+  /** i18n key for the tab label — built-ins only. */
+  labelKey?: string;
+  /** verbatim label — workspaces the user made carry their own name. */
+  label?: string;
+  /** a compact glyph for the tab. */
   icon: string;
   /** the window type this preset centres on. */
   windowType: WindowType;
   /** for a graph preset, the mode its FIRST window opens in. */
   graphMode?: GraphMode;
+  /** built-ins cannot be deleted or renamed. */
+  builtin?: boolean;
+  /** seed this workspace with the IDE arrangement the first time it is opened. */
+  arrangement?: "ide";
 }
 
 /**
  * WIN3 · leader = WORKSPACE (which set of windows), header = THIS WINDOW (its
  * type and its menus). The DTC preset used to sit here too, and that was the one
  * real duplicate: DTC is a MODE of a graph window, offered in the header's Mode
- * dropdown and in its Vista menu, so a chip that also switched to it made the
- * same choice reachable at two levels with different meanings. It is gone from
- * the leader; nothing is lost (the mode is one click away, per window, which is
- * where a per-window state belongs).
+ * dropdown, so a chip that also switched to it made the same choice reachable at
+ * two levels with different meanings.
+ *
+ * HDR1 · **the IDE arrangement is a WORKSPACE, not a button.** It was a `⌗` in
+ * the window bar, which put "which arrangement am I in" one level below where
+ * every other arrangement choice lives — and made it an action you performed
+ * rather than a place you were. As a tab it is what it always was: a workspace,
+ * next to the others, with its own remembered layout.
+ *
+ * `canvas` keeps its id (now labelled "Graph editing") because the persisted
+ * arrangements and the tiling checks are keyed by it.
  */
-export const WORKSPACES: WorkspacePreset[] = [
-  { id: "canvas", labelKey: "ws.canvas", icon: "▦", windowType: "graph", graphMode: "matrix" },
-  { id: "narrative", labelKey: "ws.narrative", icon: "❧", windowType: "narrative" },
-  { id: "table", labelKey: "ws.table", icon: "▤", windowType: "table" },
+const BUILTIN_WORKSPACES: WorkspacePreset[] = [
+  { id: "canvas", labelKey: "ws.graphEditing", icon: "▦", windowType: "graph", graphMode: "matrix", builtin: true },
+  { id: "ide", labelKey: "ws.ide", icon: "⌗", windowType: "graph", graphMode: "matrix", builtin: true, arrangement: "ide" },
+  { id: "narrative", labelKey: "ws.narrative", icon: "❧", windowType: "narrative", builtin: true },
+  { id: "table", labelKey: "ws.table", icon: "▤", windowType: "table", builtin: true },
 ];
+
+const CUSTOM_KEY = "emstudio.workspaces.custom";
+
+function loadCustom(): WorkspacePreset[] {
+  try {
+    const raw = localStorage.getItem(CUSTOM_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as WorkspacePreset[];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (w) =>
+        w && typeof w.id === "string" && !BUILTIN_WORKSPACES.some((b) => b.id === w.id),
+    );
+  } catch {
+    return [];
+  }
+}
+
+/** Every workspace tab, built-ins first. Mutated by add/remove below — the tab
+ *  bar reads it, so a new workspace is one entry and no markup. */
+export const WORKSPACES: WorkspacePreset[] = [
+  ...BUILTIN_WORKSPACES,
+  ...loadCustom(),
+];
+
+function persistCustom(): void {
+  try {
+    localStorage.setItem(
+      CUSTOM_KEY,
+      JSON.stringify(WORKSPACES.filter((w) => !w.builtin)),
+    );
+  } catch {
+    /* storage disabled */
+  }
+}
+
+/** The label to put on a tab: a built-in asks the dictionary, a user workspace
+ *  carries its own name (a name someone typed is not a translation). */
+export function workspaceLabel(
+  w: WorkspacePreset,
+  t: (k: string) => string,
+): string {
+  return w.label ?? (w.labelKey ? t(w.labelKey) : w.id);
+}
+
+/**
+ * HDR1 · make a new workspace, seeded from the arrangement you are looking at.
+ *
+ * Duplicating the current one rather than starting from a blank window: you make
+ * a workspace when the thing in front of you is nearly right, and starting from
+ * empty would throw away the reason you pressed the button.
+ */
+export function addWorkspace(label: string): WorkspacePreset {
+  let n = WORKSPACES.length + 1;
+  while (WORKSPACES.some((w) => w.id === `ws${n}`)) n++;
+  const src = registry[active];
+  const ws: WorkspacePreset = {
+    id: `ws${n}`,
+    label: label.trim() || `Workspace ${n}`,
+    icon: "◈",
+    windowType: activeWin().type,
+  };
+  WORKSPACES.push(ws);
+  // deep copy: the new workspace must not share window objects with the old one,
+  // or renaming a mode in either would change both
+  registry[ws.id] = JSON.parse(JSON.stringify(src)) as WorkspaceWindows;
+  persistCustom();
+  persistWindows();
+  return ws;
+}
+
+/** Rename a workspace the user made. Built-ins keep their dictionary label. */
+export function renameWorkspace(id: WorkspaceId, label: string): boolean {
+  const ws = WORKSPACES.find((w) => w.id === id);
+  if (!ws || ws.builtin || !label.trim()) return false;
+  ws.label = label.trim();
+  persistCustom();
+  return true;
+}
+
+/** Remove a workspace the user made. Built-ins stay. */
+export function removeWorkspace(id: WorkspaceId): boolean {
+  const i = WORKSPACES.findIndex((w) => w.id === id);
+  if (i < 0 || WORKSPACES[i].builtin) return false;
+  WORKSPACES.splice(i, 1);
+  delete registry[id];
+  if (active === id) active = WORKSPACES[0].id;
+  persistCustom();
+  persistWindows();
+  return true;
+}
 
 /** Per-window-TYPE display metadata for the window header + transform dropdown
  *  (WIN1 checkpoint 2). DTC is a MODE of the graph window, so it is not a
@@ -160,6 +269,10 @@ export function onWorkspaceChange(fn: (id: WorkspaceId) => void): void {
 
 const WINDOWS_KEY = "emstudio.windows";
 
+/** Arrangements by workspace id. An index signature, not a fixed Record: HDR1
+ *  made the set of workspaces open-ended. */
+type Registry = Record<WorkspaceId, WorkspaceWindows>;
+
 /**
  * WIN5 · the spatial arrangement of a workspace: a binary split TREE, the same
  * shape Blender (and every tiling editor) uses.
@@ -200,22 +313,20 @@ function seedWindows(preset: WorkspacePreset): WorkspaceWindows {
   return { wins: [win], activeId: win.id, layout: { kind: "leaf", winId: win.id } };
 }
 
-function seedRegistry(): Record<WorkspaceId, WorkspaceWindows> {
-  const out = {} as Record<WorkspaceId, WorkspaceWindows>;
+function seedRegistry(): Registry {
+  const out: Registry = {};
   for (const preset of WORKSPACES) out[preset.id] = seedWindows(preset);
   return out;
 }
 
 /** Restore the registry, falling back to the seed for anything malformed — a
  *  corrupted arrangement must never keep the app from opening. */
-function loadRegistry(): Record<WorkspaceId, WorkspaceWindows> {
+function loadRegistry(): Registry {
   const seeded = seedRegistry();
   try {
     const raw = localStorage.getItem(WINDOWS_KEY);
     if (!raw) return seeded;
-    const parsed = JSON.parse(raw) as Partial<
-      Record<WorkspaceId, WorkspaceWindows>
-    >;
+    const parsed = JSON.parse(raw) as Partial<Registry>;
     for (const preset of WORKSPACES) {
       const entry = parsed[preset.id];
       if (!entry || !Array.isArray(entry.wins) || entry.wins.length === 0)

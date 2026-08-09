@@ -99,6 +99,12 @@
       <div class="dropdown" id="dd-tools">
         <button class="dd-toggle" title="Tools — one-shot instruments"><span data-i18n="toolbar.tools">Tools</span> ▾</button>
         <div class="dd-menu hidden">
+          <!-- PALETTE1 · the node palette is a panel you open, not a fixed
+               column. Open, it shows the types the FOCUSED window can place. -->
+          <button id="btn-tool-palette" title="Node palette: the types the focused window can place">
+            <span data-i18n="toolbar.palette">Node palette</span>
+          </button>
+          <div class="dd-sep"></div>
           <button id="btn-tool-stratiminer" title="StratiMiner: build a graph from a folder of unstructured sources, via the reviewable em_data.xlsx table">
             <span data-i18n="tab.stratiminer">StratiMiner</span>
           </button>
@@ -129,11 +135,14 @@
       <!-- MENU-AUDIT · Risorse moved into the Strumenti menu (see above). -->
       <span id="dirty-dot" class="hidden" title="unsaved changes">●</span>
       <span class="tb-sep"></span>
-      <!-- WIN1 · workspace leader: fixed presets (Canvas/Narrative/Table/DTC).
-           The higher-level switcher that absorbs MODE1; each preset mounts the
-           existing editors. Populated by main.ts from workspace.ts. -->
-      <div id="workspace-bar" role="group" aria-label="Workspaces"></div>
-      <span class="tb-sep"></span>
+      <!-- HDR1 · WORKSPACE TABS — the master header's only switcher, and the one
+           question it answers: which workspace. The built-ins (Graph editing ·
+           IDE · Narrativa · Tabular) sit beside the ones you make with `+`;
+           the IDE arrangement is a workspace here rather than a `⌗` button
+           buried in the window bar. Populated by main.ts from workspace.ts.
+           The node search left this bar: it is now PER WINDOW (HDR1), because a
+           search that belongs to no window has no scope to search. -->
+      <div id="workspace-bar" role="tablist" aria-label="Workspaces"></div>
       <!-- WIN2 · the view-toggle was ABSORBED into the Graph window header (the
            mode belongs to the window, not to the app). The buttons stay in the
            DOM, hidden: they remain the single owners of the mode handlers, and
@@ -175,7 +184,13 @@
            include folders (DosCo, resource collection) and databases, and a
            filter that guessed would hide the file the user came for. -->
       <input type="file" id="aux-file-input" hidden />
-      <div id="search-wrap">
+      <!-- HDR1 · the master search box is GONE from here. It searched "the
+           document" from a bar that belongs to no window, which in a tiled shell
+           means it had no scope. Every window carries its own full search now
+           (graph · table · narrative), and the Outliner always had one. The
+           input stays in the DOM, hidden, because `setupSearch` is still the one
+           implementation and the per-window boxes are built on it. -->
+      <div id="search-wrap" class="hidden">
         <input id="search" type="search" placeholder="Search nodes…" data-i18n-placeholder="toolbar.search" autocomplete="off" />
         <div id="search-results" class="hidden"></div>
       </div>
@@ -202,62 +217,19 @@
       <div id="tile-root">
       <div id="canvas-wrap">
         <canvas id="canvas"></canvas>
-        <!-- WIN4 · the window header is a DOCKED bar, full width at the top of
-             the window area: the canvas starts BELOW it and is shorter by its
-             height (viewSize subtracts it), so the bar no longer floats over the
-             epoch bands anchored at the top of the matrix. Every tiled area will
-             carry its own copy of this bar (WIN5).
-             Contents, left to right: window TYPE (transform) · MODE (the single
-             place the projection is chosen) · the per-type menus (WINDOW_MENUS)
-             · the window actions as ICON BUTTONS · the instance strip.
+        <!-- WIN4/HDR1 · the window header is a DOCKED bar, full width at the
+             top of the window area: the canvas starts BELOW it and is shorter by
+             its height (viewSize subtracts it), so the bar never floats over the
+             epoch bands anchored at the top of the matrix.
+             WIN-FIX1 · EVERY area now carries one — this element is the ACTIVE
+             area's, and the secondary areas get the same bar built by the same
+             function (`buildAreaHeader` in main.ts). Its contents are therefore
+             GENERATED, not markup: type (icon only) · mode · the per-type menus
+             · the window actions · split/magnify · that window's own search.
              The toolbar's own view-toggle / fit / layout / algorithm stay in the
-             DOM, hidden: they remain the single owners of the behaviour and this
-             bar drives them. -->
-        <div id="window-header">
-          <div id="window-type" class="dropdown">
-            <button class="dd-toggle win-type-toggle" title="Window type — transform this window">
-              <span id="win-type-icon" class="win-type-icon">▦</span>
-              <span id="win-type-label" class="win-type-label">Graph</span>
-              <span class="win-type-caret">▾</span>
-            </button>
-            <div id="window-type-menu" class="dd-menu hidden"></div>
-          </div>
-          <div id="window-mode" class="dropdown">
-            <button class="dd-toggle win-mode-toggle" title="Mode — the projection THIS window shows">
-              <span id="win-mode-label" class="win-mode-label">Matrix</span>
-              <span class="win-type-caret">▾</span>
-            </button>
-            <div id="window-mode-menu" class="dd-menu hidden"></div>
-          </div>
-          <!-- WIN3 · the per-type menus, built by main.ts from WINDOW_MENUS.
-               Adding a menu is an entry in that registry, not a markup change. -->
-          <div id="window-menus"></div>
-          <!-- WIN4 · window ACTIONS as icon buttons, not menu items: they are
-               one-click verbs on this window's camera, and a verb behind two
-               clicks is a menu pretending to be a toolbar. -->
-          <button id="win-act-fit" class="win-act" title="Adatta alla finestra (0)">⤢</button>
-          <!-- narrative windows: writing is a MODE of the window, so it is a
-               button in the bar and not an item buried in a menu -->
-          <button id="win-act-edit" class="win-act" title="Modifica la narrativa (scrivi, riordina, inserisci)">✎</button>
-          <!-- WIN7 · narrativa a un click. Writing with the AI and placing the
-               site both need DATA that lives elsewhere — who writes and with
-               which key (Settings ▸ AI), where the site is (the graph's site
-               position). These two open exactly that panel, from where the
-               writing is happening. -->
-          <button id="win-act-ai" class="win-act" title="Dati per la bozza IA: provider, modello, key">⌁</button>
-          <button id="win-act-geo" class="win-act" title="Posizione del sito: il punto che la mappa del capitolo legge">⌖</button>
-          <button id="win-act-zoom1" class="win-act" title="Ridimensiona a 1:1 (zoom 100%)">1:1</button>
-          <!-- kept in the DOM, hidden: the owners of fit / layout / algorithm -->
-          <button id="win-fit" class="win-act hidden" title="Fit to view (0)">⤢</button>
-          <button id="win-layout" class="win-act hidden" title="Recompute this window's layout">⧉</button>
-          <select id="win-algo" class="hidden" title="Graph layout algorithm">
-            <option value="layered">Layered</option>
-            <option value="radial">Radial</option>
-            <option value="force">Force</option>
-          </select>
-          <span class="win-sep"></span>
-          <div id="win-instances" role="group" aria-label="Windows"></div>
-        </div>
+             DOM, hidden: they remain the single owners of the behaviour and
+             these bars drive them. -->
+        <div id="window-header" class="win-header"></div>
         <div id="chrono-banner" class="hidden"></div>
         <!-- The empty state has to offer BOTH ways of getting a graph. Dropping
              a file assumes one already exists; StratiMiner is for when it does
@@ -326,8 +298,11 @@
              is the graph's documents — the sources the paradata chain hangs
              from — with their fields editable. -->
         <div id="table-view" class="hidden">
+          <!-- HDR1 · the sheet SELECT left this head: which sheet a Tabular
+               window shows is that window's MODE, and it lives in its header
+               with every other window's mode. What stays here is what belongs to
+               the table itself — its row actions and how many rows there are. -->
           <div id="table-view-head">
-            <select id="table-view-sheet" title="Scegli la tabella"></select>
             <span id="table-view-actions"></span>
             <span id="table-view-count" class="emdata-count"></span>
           </div>
@@ -351,32 +326,16 @@
         <canvas id="overview" title="Overview — click to move the viewport"></canvas>
       </div>
       </div>
-      <button id="collapse-right" class="col-toggle hidden" data-i18n-title="layout.hideRight">›</button>
-      <aside id="side" class="hidden">
-        <div id="side-tabs">
-          <button id="tab-inspector" class="active" data-i18n="tab.inspector">Inspector</button>
-          <button id="tab-nodes" data-i18n="tab.nodes">Nodes</button>
-          <button
-            id="tab-emtree"
-            title="EMTree: the graphs open in this workspace, and their auxiliary files"
-          >
-            <span data-i18n="tab.emtree">EMTree</span>
-          </button>
-          <!-- WIN7 · StratiMiner left the aside: it is a Tools ▸ instrument now,
-               opening as a floating one-shot panel. Kept in the DOM, hidden, so
-               its tab handler stays wired and the SideTab type keeps its member;
-               the button is never shown. -->
-          <button
-            id="tab-stratiminer"
-            class="hidden"
-            title="StratiMiner: build a graph from a folder of unstructured sources, via the reviewable em_data.xlsx table"
-          >
-            <span data-i18n="tab.stratiminer">StratiMiner</span>
-          </button>
-          <button id="tab-log" data-i18n-title="tab.logTitle">
-            <span data-i18n="tab.log">Log</span>
-          </button>
-        </div>
+      <!-- WIN-FIX1 · the right-hand ASIDE is retired. It carried the tabs
+           Inspector / Nodes / EMTree / Log, all of which are WINDOWS now
+           (WIN6/WIN7) — so it had become a strip of tabs whose panels lived
+           somewhere else, and a collapse handle for a column with nothing in it.
+           The element itself STAYS, permanently hidden, as the parking place a
+           panel returns to when no window and no floating tool is showing it:
+           the panels are singletons with handlers wired at boot, and they must
+           have somewhere to be that is not the document's root. Nothing ever
+           un-hides it. -->
+      <aside id="side" class="hidden side-parking" aria-hidden="true">
         <div id="inspector"></div>
         <div id="nodelist" class="hidden"></div>
         <div id="emtree" class="hidden"></div>

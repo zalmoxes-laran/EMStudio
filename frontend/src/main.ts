@@ -159,18 +159,28 @@ import { GROUP_HEADER, GROUP_PAD } from "./views/matrix";
 import { setupSearch } from "./search";
 import {
   addEmDataHost,
+  removeEmDataHost,
+  emDataFilter,
+  setEmDataFilter,
+  type EmDataHost,
   currentSheetKey,
   initEmData,
   renderEmData,
   setSheet,
   setVolatileProvider,
 } from "./emdata";
-import { addRow, deleteRow, EM_DATA_SHEETS, type SheetKey } from "./em-data";
+import { addRow, deleteRow, EM_DATA_SHEETS } from "./em-data";
 import { isVolatile } from "./volatile";
 import { addRecent, removeRecent, type RecentFile } from "./recent";
 import {
   WORKSPACES,
   WINDOW_TYPE_META,
+  addWorkspace,
+  removeWorkspace,
+  renameWorkspace,
+  workspaceLabel,
+  workspacePreset,
+  isTiled,
   activeWin,
   activeWorkspace,
   activeWindowType,
@@ -424,13 +434,6 @@ const btnUndo = document.getElementById("btn-undo") as HTMLButtonElement;
 const btnRedo = document.getElementById("btn-redo") as HTMLButtonElement;
 const dirtyDot = document.getElementById("dirty-dot")!;
 const sidePanel = document.getElementById("side")!;
-const tabInspector = document.getElementById("tab-inspector") as HTMLButtonElement;
-const tabNodes = document.getElementById("tab-nodes") as HTMLButtonElement;
-const tabEmtree = document.getElementById("tab-emtree") as HTMLButtonElement;
-const tabStratiminer = document.getElementById(
-  "tab-stratiminer",
-) as HTMLButtonElement;
-const tabLog = document.getElementById("tab-log") as HTMLButtonElement;
 const emtreeEl = document.getElementById("emtree") as HTMLDivElement;
 // POL1: the always-present "+ epoch" for Matrix view. Declared up here with the
 // other element refs because `updateToolbar` (much earlier in the file) toggles it.
@@ -1674,10 +1677,9 @@ function setMode(m: CentralMode): void {
   // and doc surfaces belong to their window types, not to a mode.
   if (!narrative && win.type === "graph") applyWindowSurface("graph");
   btnNarrativeEdit.classList.toggle("hidden", !narrative);
-  // NARRWS1 · the left palette is PER-MODE: the node-type palette is useless in
-  // narrative mode, so it is replaced by the narrative building-blocks palette.
-  paletteEl.classList.toggle("hidden", narrative);
-  narrativePaletteEl.classList.toggle("hidden", !narrative);
+  // NARRWS1/PALETTE1 · the left palette is PER-MODE and PER-WINDOW, and it is
+  // only there at all when you have opened it (Tools ▸ Palette).
+  reflectPalette();
   if (narrative) {
     // keep `view` (matrix/graph) as the canvas sub-view to restore on the way back.
     // NARR1 · entering narrative with no story yet → scaffold one from the graph
@@ -1947,7 +1949,6 @@ function loadDocument(
   activateSlot(slot.id, { rebuildOnly: true });
   chronoBannerDismissed = false; // re-evaluate chronology for the new document
   dropHint.classList.add("hidden");
-  sidePanel.classList.remove("hidden");
   updateBreadcrumb();
   // Matrix needs stored node POSITIONS. A doc may carry a layout object with
   // NO usable positions — a fresh graph, or a Blender sync snapshot (its emjson
@@ -2127,7 +2128,6 @@ function clearDocument(): void {
   selectedIds = new Set();
   marquee = null;
   dropHint.classList.remove("hidden");
-  sidePanel.classList.add("hidden");
   info.textContent = "open or drop an .em.json file";
   updateToolbar();
   updateBreadcrumb();
@@ -2277,10 +2277,84 @@ function buildPaletteForMode(): void {
       hintBar.classList.add("hidden");
     }
   },
-  { mode: view },
+  // PALETTE1 · the palette shows what the FOCUSED window can place. A graph
+  // window in DTC mode offers the DTC glyphs, anywhere else the stratigraphic
+  // types (WIN3's per-mode content, now read from the window rather than from
+  // the app's `view`, because in a tiled shell those are different things).
+  { mode: paletteModeOfActiveWindow() },
   );
 }
+
+/** The projection whose palette belongs to the focused window, or null when that
+ *  window places nothing (a table, a panel, the narrative). */
+function paletteModeOfActiveWindow(): string | undefined {
+  const win = activeWin();
+  return win.type === "graph" ? winMode(win) : undefined;
+}
 buildPaletteForMode();
+
+// ── PALETTE1 · the palette is a PANEL you open ──────────────────────────────
+//
+// It used to be a fixed column, always there, showing one general offer for the
+// whole workspace. Two things were wrong with that in a tiled shell: it cost the
+// canvas its width whether or not you were placing anything, and "the types you
+// can place" is a fact about a WINDOW — the focused one — not about the app.
+//
+// So: one palette, opened and closed from Tools, showing the types of the window
+// that has the focus. Closed, the column is gone and the canvas has the space.
+// The drop itself is untouched (DND1/WIN6: every area accepts a drop and places
+// in its own camera), and so is the filter box at the top.
+
+const PALETTE_OPEN_KEY = "emstudio.palette.open";
+
+function paletteOpen(): boolean {
+  try {
+    return localStorage.getItem(PALETTE_OPEN_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function setPaletteOpen(open: boolean): void {
+  try {
+    localStorage.setItem(PALETTE_OPEN_KEY, String(open));
+  } catch {
+    /* storage disabled */
+  }
+  reflectPalette();
+}
+
+/**
+ * Show or hide the palette column, and put the FOCUSED window's offer in it.
+ *
+ * Called on every focus change and mode change, so the palette is never showing
+ * the types of a window you are no longer in — which is the failure the old
+ * always-on palette had no way even to notice.
+ */
+function reflectPalette(): void {
+  const open = paletteOpen();
+  const win = activeWin();
+  const narrative = centralMode === "narrative" && win.type === "narrative";
+  // a window that places nothing has no palette; opening one for it would be an
+  // empty column claiming to be a tool
+  const places = win.type === "graph" || narrative;
+  leftCol.classList.toggle("hidden", !open || !places);
+  paletteEl.classList.toggle("hidden", narrative);
+  narrativePaletteEl.classList.toggle("hidden", !narrative);
+  const item = document.getElementById("btn-tool-palette");
+  if (item) item.classList.toggle("mode-active", open);
+  if (!open || !places) return;
+  if (narrative) renderNarrativePalette();
+  else buildPaletteForMode();
+}
+
+document.getElementById("btn-tool-palette")?.addEventListener("click", () => {
+  setPaletteOpen(!paletteOpen());
+  requestAnimationFrame(() => {
+    resizeCanvas();
+    draw();
+  });
+});
 
 /**
  * Ask em-core to re-assert node SIZES on the layout we already have (EM3).
@@ -4426,90 +4500,52 @@ btnViewProps.addEventListener("click", () => {
   else closeFilterPanel();
 });
 
-// side panel tabs
-type SideTab = "inspector" | "nodes" | "emtree" | "stratiminer" | "log";
-let activeTab: SideTab = "inspector";
-/** The aside tab → the panel element it shows. */
-const SIDE_TAB_PANEL: Record<SideTab, string> = {
-  inspector: "inspector",
-  nodes: "nodelist",
-  emtree: "emtree",
-  stratiminer: "stratiminer",
-  log: "logpanel",
-};
-
-function showTab(which: SideTab): void {
-  activeTab = which;
-  tabInspector.classList.toggle("active", which === "inspector");
-  tabNodes.classList.toggle("active", which === "nodes");
-  tabEmtree.classList.toggle("active", which === "emtree");
-  tabStratiminer.classList.toggle("active", which === "stratiminer");
-  tabLog.classList.toggle("active", which === "log");
-  inspector.classList.toggle("hidden", which !== "inspector");
-  nodelistEl.classList.toggle("hidden", which !== "nodes");
-  emtreeEl.classList.toggle("hidden", which !== "emtree");
-  stratiminerEl.classList.toggle("hidden", which !== "stratiminer");
-  logpanelEl.classList.toggle("hidden", which !== "log");
-  if (which === "log") refreshLogPanel();
-  if (which === "stratiminer") refreshStratiMiner();
-  if (which === "emtree") refreshEMTree();
-  reflectSideTabs();
-}
-
-/**
- * WIN7 · the aside tells the truth about what it still holds.
- *
- * A panel that has moved into a window is not in the aside any more, and the
- * tab for it used to un-hide an element that was somewhere else entirely — a
- * tab that visibly did nothing. It is now greyed out, saying where its panel is,
- * and clicking through to the window is the way to it. No tug-of-war: the
- * WINDOW wins, always, because that is the arrangement someone built on purpose.
- */
-function reflectSideTabs(): void {
-  const tabs: [HTMLButtonElement, SideTab][] = [
-    [tabInspector, "inspector"],
-    [tabNodes, "nodes"],
-    [tabEmtree, "emtree"],
-    [tabStratiminer, "stratiminer"],
-    [tabLog, "log"],
-  ];
-  for (const [btn, key] of tabs) {
-    const el = document.getElementById(SIDE_TAB_PANEL[key]);
-    const away = !!el && el.parentElement !== sidePanel;
-    btn.classList.toggle("tab-elsewhere", away);
-    if (away) btn.title = t("tab.elsewhere");
-    else btn.removeAttribute("title");
-  }
-}
-tabInspector.addEventListener("click", () => showTab("inspector"));
-tabNodes.addEventListener("click", () => showTab("nodes"));
-tabEmtree.addEventListener("click", () => showTab("emtree"));
-tabStratiminer.addEventListener("click", () => showTab("stratiminer"));
-tabLog.addEventListener("click", () => showTab("log"));
+// WIN-FIX1 · the side-panel TABS are gone with the aside they belonged to.
+//
+// Inspector / Nodes / EMTree / Log are WINDOWS now (WIN6, WIN7), and StratiMiner
+// is a floating tool. What was left of the aside was a strip of tabs whose
+// panels lived somewhere else and a collapse handle for an empty column. The
+// `#side` element stays in the DOM, permanently hidden, as the PARKING PLACE a
+// panel returns to when nothing is showing it — those panels are singletons with
+// handlers wired at boot, so they must always have somewhere to be.
+//
+// Everything that used to ask "which aside tab is active?" now asks the only
+// question that is left: is this panel mounted in a window or a tool?
 
 // ── EMTree ────────────────────────────────────────────────────────────────────
 
 function refreshEMTree(): void {
-  // WIN6/WIN7 · the panel may live in the aside (shown by its tab), inside the
-  // FOCUSED EMtree window, or inside a secondary area — where the aside's tab
-  // state says nothing about it. Skip the work only when it is nowhere visible.
-  if (!panelIsMounted(emtreeEl, activeTab === "emtree"))
-    return; // rebuilt on show; no work while hidden
+  // WIN6/WIN7/WIN-FIX1 · the panel lives in a window (focused or not) or in the
+  // floating tool. Skip the work only when it is nowhere visible.
+  if (!panelIsMounted(emtreeEl)) return; // rebuilt on show; no work while hidden
   // The panel asks for its text by key and `t` resolves it in the active
   // language: ET1 already went through a key lookup, so I18N1 was this one line.
   renderEMTree(emtreeEl, emtree, emtreeHandlers, t);
 }
 
 /**
- * Open the workspace tab even with no document loaded.
+ * Open the EMtree — the graphs of this workspace — even with no document loaded.
  *
- * Same reasoning as StratiMiner's empty-state entry: the side panel appears only
- * once a graph is open, and the tree is where you go to OPEN one. Reached from the
- * empty-state hint.
+ * Reached from the empty-state hint ("open the workspace"), which is exactly the
+ * moment it matters: the tree is where you go to OPEN a graph, so gating it
+ * behind having one would put the tool behind the problem it solves.
+ *
+ * WIN-FIX1 · it is a WINDOW now, not an aside tab. If the arrangement already
+ * has an EMtree area, go there; otherwise this window becomes one — the same
+ * transform every other "show me that instead" performs.
  */
 function openEMTree(): void {
-  sidePanel.classList.remove("hidden");
-  showTab("emtree");
+  const existing = windowsOf().find((w) => w.type === "emtree");
+  if (existing) {
+    selectWindow(existing.id);
+    return;
+  }
+  const win = activeWin();
+  setWinType(win, "emtree");
+  setWinCurrent(win, "panel", "emtree");
+  mountWindow(win);
+  renderTiles();
+  renderAreaHeaders();
 }
 
 const emtreeHandlers: EMTreeHandlers = {
@@ -4879,43 +4915,36 @@ btnAddEpoch.addEventListener("click", (e) => {
   addEpochEmMode();
 });
 
-// ── POL1 · collapsing the side columns ────────────────────────────────────────
+// ── POL1 · collapsing the LEFT column ────────────────────────────────────────
 //
-// A stratigraphic matrix is wide, and on a laptop the two columns cost most of
-// the canvas. The handle sits on the column's own edge so there is nothing to
-// hunt for when you want it back, and the arrow always points at what will
-// happen: `‹` folds the left column away, `›` brings it back.
+// A stratigraphic matrix is wide, and on a laptop the palette column costs a
+// good part of the canvas. The handle sits on the column's own edge so there is
+// nothing to hunt for when you want it back, and the arrow always points at what
+// will happen: `‹` folds it away, `›` brings it back.
 //
 // Session-only, not persisted: a collapsed palette restored on next launch would
 // greet the user with a tool that appears to have lost its palette.
+//
+// WIN-FIX1 · the RIGHT handle went with the aside. There is no right column any
+// more — the Inspector and the EMtree are windows, and a window is resized by
+// dragging its divider like every other.
 const collapseLeftBtn = document.getElementById("collapse-left") as HTMLButtonElement;
-const collapseRightBtn = document.getElementById("collapse-right") as HTMLButtonElement;
 const leftCol = document.getElementById("left-col")!;
 let leftCollapsed = false;
-let rightCollapsed = false;
 
-/** Arrows, titles, and whether the right handle is offered at all. Cheap: safe to
- *  call from `updateToolbar`, which runs on every state change. */
+/** Arrow and title of the left handle. Cheap: safe to call from `updateToolbar`,
+ *  which runs on every state change. */
 function paintColumnToggles(): void {
   leftCol.classList.toggle("collapsed", leftCollapsed);
   collapseLeftBtn.textContent = leftCollapsed ? "›" : "‹";
   collapseLeftBtn.title = t(leftCollapsed ? "layout.showLeft" : "layout.hideLeft");
-
-  sidePanel.classList.toggle("collapsed", rightCollapsed);
-  collapseRightBtn.textContent = rightCollapsed ? "‹" : "›";
-  collapseRightBtn.title = t(rightCollapsed ? "layout.showRight" : "layout.hideRight");
-  // The right handle only makes sense once the side panel exists — with no
-  // document open there is nothing to reveal.
-  collapseRightBtn.classList.toggle(
-    "hidden", sidePanel.classList.contains("hidden"));
 }
 
 /** The collapse itself: repaint, then resize the canvas, which is sized from its
  *  container. Kept apart from `paintColumnToggles` so the frequent caller does not
  *  schedule a redraw on every toolbar update. */
-function toggleColumn(which: "left" | "right"): void {
-  if (which === "left") leftCollapsed = !leftCollapsed;
-  else rightCollapsed = !rightCollapsed;
+function toggleColumn(): void {
+  leftCollapsed = !leftCollapsed;
   paintColumnToggles();
   requestAnimationFrame(() => {
     resizeCanvas();
@@ -4923,8 +4952,8 @@ function toggleColumn(which: "left" | "right"): void {
   });
 }
 
-collapseLeftBtn.addEventListener("click", () => toggleColumn("left"));
-collapseRightBtn.addEventListener("click", () => toggleColumn("right"));
+collapseLeftBtn.addEventListener("click", toggleColumn);
+
 
 function smSet(patch: Partial<typeof smState>): void {
   smState = { ...smState, ...patch };
@@ -5122,9 +5151,8 @@ function revealFromWarning(nodeId: string): void {
 /** Redraw the Log tab — only when it is the visible one; there is no point
  *  rebuilding a hidden DOM on every sync message. */
 function refreshLogPanel(): void {
-  // WIN6/WIN7 · same as the EMTree: the log panel can live in an Inspector
-  // WINDOW, focused or not
-  if (!panelIsMounted(logpanelEl, activeTab === "log")) return;
+  // same as the EMTree: the log panel lives in an Inspector WINDOW, focused or not
+  if (!panelIsMounted(logpanelEl)) return;
   renderLogPanel(logpanelEl, store?.doc ?? null, EM_VERSION, revealFromWarning);
 }
 onLogChange(refreshLogPanel);
@@ -5745,28 +5773,13 @@ function buildPane(pane: Pane, activeId: string): HTMLElement {
     area.style.flex = "1 1 0";
     area.dataset.win = pane.winId;
     const bar = document.createElement("div");
-    bar.className = "tile-bar";
-    const meta = win ? WINDOW_TYPE_META[win.type] : null;
-    bar.innerHTML =
-      `<span class="tile-ic">${meta?.icon ?? "▦"}</span>` +
-      `<span>${meta ? t(meta.labelKey) : "?"}</span>` +
-      (win && win.type === "graph"
-        ? `<span class="tile-mode">· ${t(`mode.${winMode(win)}`)}</span>`
-        : "") +
-      `<span class="tile-hint">${t("tile.activate")}</span>`;
-    // WIN7 · every window's bar carries the magnify verb, this one included: a
-    // gesture that only the focused area offers would mean focusing first, and
-    // the whole point is to go straight to the thing you want to look at.
-    const mag = document.createElement("button");
-    mag.className = "tile-mag";
-    mag.textContent = "⛶";
-    mag.title = t("win.maximize");
-    mag.addEventListener("mousedown", (e) => e.stopPropagation());
-    mag.addEventListener("click", (e) => {
-      e.stopPropagation();
-      magnifyWindow(pane.winId); // magnifying focuses it too (workspace.ts)
-    });
-    bar.appendChild(mag);
+    // WIN-FIX1 · this area's own HEADER. Left empty here and filled by
+    // `renderAreaHeaders` with the SAME bar the focused window gets — every area
+    // is a window, so every area says what it is and offers its own verbs. It
+    // used to be a thin label strip ("Grafo · Matrix — clicca per lavorare qui"),
+    // which is what made three quarters of an arrangement read as panes rather
+    // than windows.
+    bar.className = "tile-bar win-header";
     area.appendChild(bar);
     if (win && win.type === "graph") {
       const cv = document.createElement("canvas");
@@ -5967,6 +5980,8 @@ function renderTiles(): void {
   closeAllSubmenus();
   tileCanvases.clear();
   tileSurfaces.length = 0;
+  // the areas that owned these are about to be discarded whole
+  for (const h of tileEmDataHosts.splice(0)) removeEmDataHost(h);
   // WIN7 · a panel living in a secondary area would be DESTROYED by the reset
   // below (with every handler wired to it at boot) — send it home first. The
   // same reason `#canvas-wrap` is detached rather than left to be cleared.
@@ -5975,6 +5990,7 @@ function renderTiles(): void {
   canvasWrapEl.remove();
   tileRoot.innerHTML = "";
   tileRoot.appendChild(buildPane(layoutOf(), activeWin().id));
+  renderAreaHeaders(); // WIN-FIX1 · every area gets its bar, this pass
   syncSecondaryPanels();
   // The table hosts registered while their areas were still detached, so the
   // render that `addEmDataHost` fires found them disabled (`isConnected` false).
@@ -6240,15 +6256,22 @@ function currentPanelId(type: WindowType): string {
   return win.type === type ? panelIdOf(win) : (PANEL_TABS[type]?.[0]?.id ?? "");
 }
 
-/** True when a panel element is mounted somewhere the user can see it — the
- *  aside's active tab, the active window's surface, or a secondary area.
- *  WIN6 broadened the aside-tab guard once; WIN7 broadens it again, and this is
- *  now the ONE place that answers the question. */
-function panelIsMounted(el: HTMLElement, asideTab: boolean): boolean {
+/**
+ * True when a panel element is mounted somewhere the user can SEE it: the
+ * focused window's surface, a secondary area, or the floating tool.
+ *
+ * WIN6 broadened an "is the aside tab active?" guard once, WIN7 again, and
+ * WIN-FIX1 retired the aside altogether — so the question finally has one
+ * answer, in one place: is this thing on screen? Anything parked in `#side` is
+ * not, by construction.
+ */
+function panelIsMounted(el: HTMLElement): boolean {
   const parent = el.parentElement;
-  if (parent?.id === "panel-view-body") return true;
-  if (parent?.classList.contains("tile-panel-body")) return true;
-  return asideTab;
+  return (
+    parent?.id === "panel-view-body" ||
+    parent?.id === "tool-float-body" ||
+    !!parent?.classList.contains("tile-panel-body")
+  );
 }
 
 /** Ask a panel to redraw itself, whichever window it is living in. */
@@ -6321,6 +6344,11 @@ function releasePanels(): void {
  *  with the tree; a surface whose area is gone is simply not in the list. */
 const tileSurfaces: Array<() => void> = [];
 
+/** The EM-Data hosts THIS module created for secondary areas. Owned explicitly
+ *  (WIN-FIX1) so they are unregistered when their area goes, and so nothing has
+ *  to guess from the DOM which mounts are still alive. */
+const tileEmDataHosts: EmDataHost[] = [];
+
 function refreshTileSurfaces(): void {
   for (const fn of tileSurfaces) fn();
 }
@@ -6352,9 +6380,11 @@ function buildSecondarySurface(area: HTMLElement, win: Win): void {
     body.className = "tile-tablebody";
     area.appendChild(head);
     area.appendChild(body);
-    // `isConnected` and not a visibility flag: this host lives exactly as long
-    // as its area does, and the area is discarded whole on the next re-tile.
-    addEmDataHost({ body, count, enabled: () => body.isConnected });
+    // This host lives exactly as long as its area does; `renderTiles` drops it
+    // (tileEmDataHosts) when the tree is rebuilt.
+    const host: EmDataHost = { body, count, enabled: () => body.isConnected };
+    tileEmDataHosts.push(host);
+    addEmDataHost(host);
     return;
   }
   if (PANEL_TABS[win.type]) {
@@ -6457,16 +6487,9 @@ function syncSecondaryPanels(): void {
  * collapse handle with it) and comes back the moment a panel does.
  */
 function reflectEmptyAside(): void {
-  const side = document.getElementById("side");
-  if (!side || side.classList.contains("hidden")) return;
-  const homeless = PANEL_ELEMENT_IDS.every(
-    (id) => document.getElementById(id)?.parentElement !== side,
-  );
-  side.classList.toggle("side-empty", homeless);
-  document
-    .getElementById("collapse-right")
-    ?.classList.toggle("hidden", homeless || side.classList.contains("hidden"));
-  reflectSideTabs();
+  // WIN-FIX1 · nothing left to reflect: `#side` is a parking place, never shown.
+  // Kept as a named no-op call site so the panel-mounting passes still read as
+  // "and then tell the aside", which is where the next thing about it would go.
 }
 
 /** Mount the panels of a hosted window type into the window's surface. */
@@ -6527,14 +6550,6 @@ function mountWindow(win: Win): void {
   setMode(winMode(win));
 }
 
-function transformWindow(type: WindowType): void {
-  const win = activeWin();
-  if (win.type === type) return;
-  setWinType(win, type);
-  mountWindow(win);
-  updateWindowHeader();
-}
-
 /** Change the mode of the ACTIVE window (per-instance): record it on the window,
  *  then mount that projection. Another graph window keeps its own mode. */
 function setWindowMode(mode: ViewKind): void {
@@ -6549,6 +6564,7 @@ function selectWindow(winId: string): void {
   if (win.type === "graph") setMode(winMode(win));
   else mountWindow(win);
   updateWindowHeader();
+  reflectPalette(); // PALETTE1 · it offers what THIS window can place
 }
 
 /**
@@ -6578,142 +6594,408 @@ function closeActiveWindow(): void {
   updateWindowHeader();
 }
 
-function updateWindowHeader(): void {
-  const type = activeWindowType();
-  const meta = WINDOW_TYPE_META[type];
-  const icon = document.getElementById("win-type-icon");
-  const label = document.getElementById("win-type-label");
-  if (icon) icon.textContent = meta.icon;
-  if (label) label.textContent = t(meta.labelKey);
-  document
-    .querySelectorAll<HTMLButtonElement>("#window-type-menu button[data-wt]")
-    .forEach((b) => b.classList.toggle("active", b.dataset.wt === type));
+/**
+ * HDR1 / WIN-FIX1 · **the window header, built for ONE window.**
+ *
+ * It used to be a singleton block of markup inside `#canvas-wrap`, which meant
+ * exactly one area could have a header — the focused one. Every other area got a
+ * thin label strip, so a four-area arrangement had one window that looked like a
+ * window and three that looked like panes. Now this function builds the bar, and
+ * every area calls it: the focused one fills `#window-header` (still inside
+ * `#canvas-wrap`, so the docked-bar height that shortens the canvas is measured
+ * from the same element as before), the others fill their own.
+ *
+ * The handlers close over `win`, never over `activeWin()`, because a bar can
+ * belong to a window that is not the focused one.
+ *
+ * HDR1 changes to what the bar shows:
+ *  · the TYPE is an icon alone — the name is in the dropdown, where you are
+ *    choosing, and a word repeated in every bar is a word you stop reading;
+ *  · the MODE reads "Matrix Mode", "Units mode" — a mode named as a mode;
+ *  · the Tabular SHEET became that window's mode, because that is what it is:
+ *    which projection of the document this window shows;
+ *  · the instance chips (1 2 3 4) and the ⇥ ⇤ pair are GONE. They switched
+ *    between windows, which is what clicking on a window already does now that
+ *    the windows are side by side. The SPLIT verbs stayed, with glyphs that say
+ *    what they do: → a new area beside, ↓ a new area below.
+ */
+function buildAreaHeader(win: Win, active: boolean): DocumentFragment {
+  const frag = document.createDocumentFragment();
+  const type = win.type;
 
-  // The mode + canvas actions belong to a GRAPH window; on any other window type
-  // they would act on something that isn't there.
-  const isGraph = type === "graph";
-  const mode = isGraph ? winMode(activeWin()) : null;
-  const show = (id: string, on: boolean): void => {
-    document.getElementById(id)?.classList.toggle("hidden", !on);
-  };
-  show("window-mode", isGraph);
-  // WIN4 · the window's camera verbs are BUTTONS (fit, 1:1) and only make sense
-  // on a canvas window. `win-fit`/`win-layout`/`win-algo` stay hidden: they own
-  // the behaviour, the bar drives them.
-  show("win-act-fit", isGraph);
-  show("win-act-zoom1", isGraph);
-  // ✎ · writing IS a mode of a narrative window, so it lives in the bar as a
-  // toggle you can see the state of, not as a menu item you have to go and read.
-  const isNarrative = type === "narrative";
-  show("win-act-edit", isNarrative);
-  // WIN7 · the two data panels a narrative window sends you to
-  show("win-act-ai", isNarrative);
-  show("win-act-geo", isNarrative);
-  document
-    .getElementById("win-act-edit")
-    ?.classList.toggle("win-act-on", isNarrative && narrativeEditing);
-  show("win-fit", false);
-  show("win-layout", false);
-  show("win-algo", false);
-  const modeLabel = document.getElementById("win-mode-label");
-  if (modeLabel && mode) modeLabel.textContent = t(`mode.${mode}`);
-  document
-    .querySelectorAll<HTMLButtonElement>("#window-mode-menu button[data-wm]")
-    .forEach((b) => b.classList.toggle("active", b.dataset.wm === mode));
-  const algo = document.getElementById("win-algo") as HTMLSelectElement | null;
-  if (algo) algo.value = graphAlgorithm;
-  renderWindowMenus(); // the menus belong to the TYPE — rebuild when it changes
-  renderInstanceStrip();
-}
-
-/** The instance strip: one chip per window of this workspace, plus add/close.
- *  Hidden as a strip when a single window would make it noise — the "+" stays. */
-function renderInstanceStrip(): void {
-  const strip = document.getElementById("win-instances");
-  if (!strip) return;
-  strip.innerHTML = "";
-  const wins = windowsOf();
-  const current = activeWin();
-  if (wins.length > 1)
-    wins.forEach((w, i) => {
-      const b = document.createElement("button");
-      b.className = "wi-chip" + (w.id === current.id ? " active" : "");
-      b.textContent = String(i + 1);
-      b.title = `${t(WINDOW_TYPE_META[w.type].labelKey)}${
-        w.type === "graph" ? ` · ${t(`mode.${winMode(w)}`)}` : ""
-      }`;
-      b.addEventListener("click", () => selectWindow(w.id));
-      strip.appendChild(b);
-    });
-  // WIN5 · the two ways to get another area, side by side with the instance
-  // chips: split this area vertically (a new area to the RIGHT) or horizontally
-  // (BELOW). The old "+" (a window with no place of its own) is gone: with
-  // tiling, every window has a place.
-  const mkSplit = (dir: "row" | "col", glyph: string, key: string): void => {
+  // ── the window TYPE: icon only, name in the dropdown ──────────────────────
+  const typeDd = document.createElement("div");
+  typeDd.className = "dropdown win-type";
+  const typeTog = document.createElement("button");
+  typeTog.className = "dd-toggle win-type-toggle";
+  typeTog.title = t("win.typeTitle");
+  typeTog.innerHTML =
+    `<span class="win-type-icon">${WINDOW_TYPE_META[type].icon}</span>` +
+    `<span class="win-type-caret">▾</span>`;
+  const typeMenu = document.createElement("div");
+  typeMenu.className = "dd-menu hidden";
+  for (const tt of TRANSFORM_TYPES) {
+    const meta = WINDOW_TYPE_META[tt];
     const b = document.createElement("button");
-    b.className = "wi-chip wi-add";
-    b.textContent = glyph;
-    b.title = t(key);
-    b.addEventListener("click", () => {
-      splitWindow(activeWin().id, dir);
-      renderTiles();
-      updateWindowHeader();
-    });
-    strip.appendChild(b);
-  };
-  mkSplit("row", "⇥", "win.splitRight");
-  mkSplit("col", "⇤", "win.splitDown");
-  // WIN7 · magnify. Beside the split verbs because it is the same family of
-  // gesture — how much of the screen this area gets — and because that is the
-  // one place in the bar that is about the ARRANGEMENT rather than the content.
-  const magnified = maximizedWin() === current.id;
-  const mag = document.createElement("button");
-  // same glyph in both states, lit when it is on — the ✎ toggle's rule: a
-  // toggle you can see the state of, not two buttons that swap places
-  mag.className = "wi-chip wi-add" + (magnified ? " wi-on" : "");
-  mag.textContent = "⛶";
-  mag.title = t(magnified ? "win.unmaximize" : "win.maximize");
-  mag.addEventListener("click", () => magnifyWindow(current.id));
-  strip.appendChild(mag);
-  // WIN6 · the IDE preset: editor + Tabular band + EMtree/Inspector column.
-  // A button rather than a boot-time default, so it never overwrites an
-  // arrangement someone has shaped.
-  const preset = document.createElement("button");
-  preset.className = "wi-chip wi-add";
-  preset.textContent = "⌗";
-  preset.title = t("win.defaultLayout");
-  preset.addEventListener("click", () => {
-    applyDefaultLayout();
-    renderTiles();
-    mountWindow(activeWin());
-    updateWindowHeader();
-  });
-  strip.appendChild(preset);
-  // JOIN · this area absorbs its neighbour and the split collapses. Shown only
-  // when there IS a neighbour to absorb, so the bar never offers a dead verb.
-  if (canJoin(activeWin().id)) {
-    const j = document.createElement("button");
-    j.className = "wi-chip wi-add";
-    j.textContent = "⊟";
-    j.title = t("win.join");
-    j.addEventListener("click", () => {
-      joinWindow(activeWin().id);
-      renderTiles();
-      const win = activeWin();
-      if (win.type === "graph") setMode(winMode(win));
-      else mountWindow(win);
-      updateWindowHeader();
-    });
-    strip.appendChild(j);
+    b.dataset.wt = tt;
+    b.classList.toggle("active", tt === type);
+    b.innerHTML = `<span class="wt-ic">${meta.icon}</span> ${t(meta.labelKey)}`;
+    b.addEventListener("click", () => transformWindowOf(win, tt));
+    typeMenu.appendChild(b);
   }
-  if (wins.length > 1) {
+  wireBarDropdown(typeTog, typeMenu);
+  typeDd.append(typeTog, typeMenu);
+  frag.appendChild(typeDd);
+
+  // ── the MODE: which projection of the document THIS window shows ──────────
+  const modes = headerModesOf(win);
+  if (modes) {
+    const modeDd = document.createElement("div");
+    modeDd.className = "dropdown win-mode";
+    const modeTog = document.createElement("button");
+    modeTog.className = "dd-toggle win-mode-toggle";
+    modeTog.title = t("win.modeTitle");
+    modeTog.innerHTML =
+      `<span class="win-mode-label">${escapeHtml(modes.currentLabel)}</span>` +
+      `<span class="win-type-caret">▾</span>`;
+    const modeMenu = document.createElement("div");
+    modeMenu.className = "dd-menu hidden";
+    for (const m of modes.items) {
+      const b = document.createElement("button");
+      b.textContent = m.label;
+      b.classList.toggle("active", m.current);
+      b.addEventListener("click", m.run);
+      modeMenu.appendChild(b);
+    }
+    wireBarDropdown(modeTog, modeMenu);
+    modeDd.append(modeTog, modeMenu);
+    frag.appendChild(modeDd);
+  }
+
+  // ── the per-type MENUS (WINDOW_MENUS) ─────────────────────────────────────
+  for (const menu of WINDOW_MENUS[type]) {
+    const dd = document.createElement("div");
+    dd.className = "dropdown win-menu";
+    const toggle = document.createElement("button");
+    toggle.className = "dd-toggle win-menu-toggle";
+    toggle.innerHTML = `${menu.label} <span class="win-type-caret">▾</span>`;
+    const list = document.createElement("div");
+    list.className = "dd-menu hidden";
+    // built on OPEN, so ✓ and disabled reasons are current every time
+    wireBarDropdown(toggle, list, () => {
+      list.innerHTML = "";
+      for (const item of menu.items()) {
+        const b = document.createElement("button");
+        const reason = item.disabledReason?.() ?? null;
+        b.textContent = (item.checked?.() ? "✓ " : "") + item.label;
+        if (reason) {
+          b.disabled = true;
+          b.title = reason;
+        } else {
+          b.addEventListener("click", item.run);
+        }
+        list.appendChild(b);
+      }
+    });
+    list.addEventListener("click", () => list.classList.add("hidden"));
+    dd.append(toggle, list);
+    frag.appendChild(dd);
+  }
+
+  // ── the window ACTIONS: one-click verbs on THIS window ────────────────────
+  const act = (glyph: string, title: string, on: boolean, run: () => void): void => {
+    const b = document.createElement("button");
+    b.className = "win-act" + (on ? " win-act-on" : "");
+    b.textContent = glyph;
+    b.title = title;
+    b.addEventListener("click", (e) => {
+      e.stopPropagation();
+      run();
+    });
+    frag.appendChild(b);
+  };
+  if (type === "graph") {
+    act("⤢", t("win.fitTitle"), false, () => {
+      focusThen(win, () => fit());
+    });
+    act("1:1", t("win.zoom1Title"), false, () => {
+      focusThen(win, () => {
+        const vp = viewport();
+        const { w, h } = viewSize();
+        if (vp.scale > 0) vp.zoomAt(w / 2, h / 2, 1 / vp.scale);
+        draw();
+      });
+    });
+  }
+  if (type === "narrative") {
+    // ✎ · writing IS a mode of a narrative window, so it is a toggle you can see
+    // the state of, not an item buried in a menu
+    act("✎", t("win.editTitle"), narrativeEditing, () =>
+      focusThen(win, () => {
+        click("btn-narrative-edit");
+        renderAreaHeaders();
+      }),
+    );
+    // WIN7 · the two data panels a narrative window sends you to
+    act("⌁", t("win.aiTitle"), false, () => openSettings("settings-sect-ai"));
+    act("⌖", t("win.geoTitle"), false, () => focusThen(win, revealSitePosition));
+  }
+
+  const spacer = document.createElement("span");
+  spacer.className = "win-sep";
+  frag.appendChild(spacer);
+
+  // ── that window's own SEARCH (HDR1) ───────────────────────────────────────
+  const search = buildWindowSearch(win);
+  if (search) frag.appendChild(search);
+
+  // ── the arrangement verbs: split, magnify, join, close ────────────────────
+  const arr = document.createElement("span");
+  arr.className = "win-arrange";
+  const chip = (glyph: string, title: string, on: boolean, run: () => void): void => {
+    const b = document.createElement("button");
+    b.className = "wi-chip wi-add" + (on ? " wi-on" : "");
+    b.textContent = glyph;
+    b.title = title;
+    b.addEventListener("click", (e) => {
+      e.stopPropagation();
+      run();
+    });
+    arr.appendChild(b);
+  };
+  chip("→", t("win.splitRight"), false, () => splitAreaOf(win, "row"));
+  chip("↓", t("win.splitDown"), false, () => splitAreaOf(win, "col"));
+  const magnified = maximizedWin() === win.id;
+  chip("⛶", t(magnified ? "win.unmaximize" : "win.maximize"), magnified, () =>
+    magnifyWindow(win.id),
+  );
+  if (canJoin(win.id))
+    chip("⊟", t("win.join"), false, () => {
+      joinWindow(win.id);
+      renderTiles();
+      const w = activeWin();
+      if (w.type === "graph") setMode(winMode(w));
+      else mountWindow(w);
+      renderAreaHeaders();
+    });
+  if (windowsOf().length > 1) {
     const close = document.createElement("button");
     close.className = "wi-chip wi-close";
     close.textContent = "×";
     close.title = t("win.close");
-    close.addEventListener("click", closeActiveWindow);
-    strip.appendChild(close);
+    close.addEventListener("click", (e) => {
+      e.stopPropagation();
+      setActiveWin(win.id);
+      closeActiveWindow();
+    });
+    arr.appendChild(close);
   }
+  frag.appendChild(arr);
+  if (!active) frag.querySelectorAll("*").forEach((el) => el.classList.add("hdr-passive"));
+  return frag;
+}
+
+/**
+ * Run something that acts on the FOCUSED window, from a bar that may belong to
+ * another one. Focusing first is not a formality: `fit()` and the rest read
+ * `activeWin()` for the camera, and silently fitting the wrong window is the
+ * kind of bug that looks like the button doing nothing.
+ */
+function focusThen(win: Win, run: () => void): void {
+  if (activeWin().id !== win.id) selectWindow(win.id);
+  run();
+}
+
+/** Split the area of a SPECIFIC window (its own bar's verb). */
+function splitAreaOf(win: Win, dir: "row" | "col"): void {
+  setActiveWin(win.id);
+  splitWindow(win.id, dir);
+  renderTiles();
+  const w = activeWin();
+  if (w.type === "graph") setMode(winMode(w));
+  else mountWindow(w);
+  renderAreaHeaders();
+}
+
+/** Transform a SPECIFIC window in place (its own bar's type dropdown). */
+function transformWindowOf(win: Win, type: WindowType): void {
+  if (win.type === type) return;
+  setActiveWin(win.id);
+  setWinType(win, type);
+  renderTiles();
+  mountWindow(win);
+  renderAreaHeaders();
+}
+
+/**
+ * The MODES a window offers in its header, or null when it has none.
+ *
+ * HDR1 folded the Tabular sheet selector in here. It had been a `<select>` in the
+ * table's own head plus (until MENU-AUDIT) a menu listing the same sheets — but
+ * "which sheet" is the same kind of fact as "which projection": it is what this
+ * window is showing, per instance, which is the definition of a mode. One
+ * concept, one control, in the place every window keeps it.
+ */
+function headerModesOf(win: Win): {
+  currentLabel: string;
+  items: { label: string; current: boolean; run: () => void }[];
+} | null {
+  if (win.type === "graph") {
+    const cur = winMode(win);
+    return {
+      currentLabel: t("mode.label", { mode: t(`mode.${cur}`) }),
+      items: GRAPH_MODES.map((m) => ({
+        label: t("mode.label", { mode: t(`mode.${m}`) }),
+        current: m === cur,
+        run: () => focusThen(win, () => setWindowMode(m)),
+      })),
+    };
+  }
+  if (win.type === "table") {
+    const cur = currentSheetKey();
+    // "US view" was a sheet NAME in a selector; as a mode it reads "US view
+    // Mode", which says the same word twice. The sheet keys are the names.
+    const label = (k: string): string =>
+      t("mode.label", {
+        mode: (EM_DATA_SHEETS.find((s) => s.key === k)?.label ?? k).replace(
+          / view$/,
+          "",
+        ),
+      });
+    return {
+      currentLabel: label(cur),
+      items: EM_DATA_SHEETS.map((sheet) => ({
+        label: label(sheet.key),
+        current: sheet.key === cur,
+        run: () =>
+          focusThen(win, () => {
+            setSheet(sheet.key);
+            renderAreaHeaders();
+          }),
+      })),
+    };
+  }
+  return null;
+}
+
+/**
+ * A bar dropdown. The generic `.dropdown` wiring in the toolbar runs ONCE at
+ * module load over the markup that existed then, so generated bars wire their
+ * own — and place their menus by hand, because a bar that scrolls would clip a
+ * menu laid out inside it.
+ */
+function wireBarDropdown(
+  toggle: HTMLElement,
+  menu: HTMLElement,
+  build?: () => void,
+): void {
+  toggle.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const willOpen = menu.classList.contains("hidden");
+    closeAllDropdowns();
+    closeAllSubmenus();
+    if (!willOpen) return;
+    build?.();
+    menu.classList.remove("hidden");
+    placeBarMenu(toggle, menu);
+  });
+}
+
+/**
+ * HDR1 · the window's OWN search box — full search, over what THIS window holds.
+ *
+ * The master header had one box that searched "the document". In a tiled shell
+ * that is a search with no scope: which of the four things on screen was it
+ * supposed to take you to? So each window carries its own, and it searches what
+ * that window is actually showing — nodes in a graph, rows in a table, the prose
+ * and titles of a narrative. (The Outliner already had one, at the top of its
+ * list, and it stays where it is.)
+ */
+function buildWindowSearch(win: Win): HTMLElement | null {
+  if (win.type !== "graph" && win.type !== "table" && win.type !== "narrative")
+    return null;
+  const wrap = document.createElement("div");
+  wrap.className = "win-search";
+  const input = document.createElement("input");
+  input.type = "search";
+  input.autocomplete = "off";
+  input.className = "win-search-input";
+  input.placeholder = t(
+    win.type === "graph"
+      ? "win.searchGraph"
+      : win.type === "table"
+        ? "win.searchTable"
+        : "win.searchNarrative",
+  );
+  wrap.appendChild(input);
+  // a click in the box must not be read as a gesture on the window underneath
+  input.addEventListener("pointerdown", (e) => e.stopPropagation());
+
+  if (win.type === "graph") {
+    const results = document.createElement("div");
+    results.className = "win-search-results hidden";
+    wrap.appendChild(results);
+    // the SAME implementation the master box used — one search, many mounts
+    setupSearch(
+      input,
+      results,
+      () => store?.doc ?? null,
+      (id) => {
+        focusThen(win, () => {
+          if (inContext()) {
+            contextStack = [];
+            rebuildContext();
+          }
+          select(id);
+          centerOn(id);
+        });
+      },
+    );
+    return wrap;
+  }
+  if (win.type === "table") {
+    input.value = emDataFilter();
+    input.addEventListener("input", () => {
+      setEmDataFilter(input.value);
+    });
+    return wrap;
+  }
+  // narrative: find in the prose, and take you to it
+  input.addEventListener("input", () => {
+    highlightNarrative(input.value);
+  });
+  return wrap;
+}
+
+/**
+ * Rebuild the header of EVERY area (WIN-FIX1 §1).
+ *
+ * The focused area's bar is `#window-header` — the element `windowBarHeight()`
+ * measures and `--winbar-h` is published from, so the canvas keeps being exactly
+ * as much shorter as the bar is tall. The others are the `.tile-bar` of their
+ * area. Same builder, same contents, one dimmed.
+ */
+function renderAreaHeaders(): void {
+  const active = activeWin();
+  const head = document.getElementById("window-header");
+  if (head) {
+    head.innerHTML = "";
+    head.appendChild(buildAreaHeader(active, true));
+  }
+  for (const bar of document.querySelectorAll<HTMLElement>(".tile-area > .tile-bar")) {
+    const win = windowsOf().find((w) => w.id === bar.parentElement?.dataset.win);
+    if (!win) continue;
+    bar.innerHTML = "";
+    bar.appendChild(buildAreaHeader(win, false));
+  }
+  // the bar can wrap to two rows on a narrow area: republish the height it takes
+  resizeCanvas();
+}
+
+/** Kept as the name every caller already uses. The header IS rebuilt now rather
+ *  than mutated in place — there is no longer a fixed set of ids to poke. */
+function updateWindowHeader(): void {
+  renderAreaHeaders();
 }
 
 // ── WIN3 · the per-type menu registry ────────────────────────────────────────
@@ -7000,113 +7282,8 @@ function placeBarMenu(toggle: HTMLElement, menu: HTMLElement): void {
   menu.style.top = `${Math.round(top)}px`;
 }
 
-function renderWindowMenus(): void {
-  const host = document.getElementById("window-menus");
-  if (!host) return;
-  host.innerHTML = "";
-  for (const menu of WINDOW_MENUS[activeWindowType()]) {
-    const dd = document.createElement("div");
-    dd.className = "dropdown win-menu";
-    const toggle = document.createElement("button");
-    toggle.className = "dd-toggle win-menu-toggle";
-    toggle.innerHTML = `${menu.label} <span class="win-type-caret">▾</span>`;
-    const list = document.createElement("div");
-    list.className = "dd-menu hidden";
-    toggle.addEventListener("click", (e) => {
-      e.stopPropagation();
-      const willOpen = list.classList.contains("hidden");
-      closeAllDropdowns();
-      closeAllSubmenus();
-      if (!willOpen) return;
-      // built on OPEN, so ✓ and disabled reasons are current every time
-      list.innerHTML = "";
-      for (const item of menu.items()) {
-        const b = document.createElement("button");
-        const reason = item.disabledReason?.() ?? null;
-        b.textContent = (item.checked?.() ? "✓ " : "") + item.label;
-        if (reason) {
-          b.disabled = true;
-          b.title = reason;
-        } else {
-          b.addEventListener("click", item.run);
-        }
-        list.appendChild(b);
-      }
-      list.classList.remove("hidden");
-      placeBarMenu(toggle, list);
-    });
-    list.addEventListener("click", () => list.classList.add("hidden"));
-    dd.appendChild(toggle);
-    dd.appendChild(list);
-    host.appendChild(dd);
-  }
-}
-
-function renderWindowModeMenu(): void {
-  const menu = document.getElementById("window-mode-menu");
-  if (!menu) return;
-  menu.innerHTML = "";
-  for (const mode of GRAPH_MODES) {
-    const b = document.createElement("button");
-    b.dataset.wm = mode;
-    b.textContent = t(`mode.${mode}`);
-    b.addEventListener("click", () => setWindowMode(mode));
-    menu.appendChild(b);
-  }
-}
-
-function renderWindowTypeMenu(): void {
-  const menu = document.getElementById("window-type-menu");
-  if (!menu) return;
-  menu.innerHTML = "";
-  for (const type of TRANSFORM_TYPES) {
-    const meta = WINDOW_TYPE_META[type];
-    const b = document.createElement("button");
-    b.dataset.wt = type;
-    b.innerHTML = `<span class="wt-ic">${meta.icon}</span> ${t(meta.labelKey)}`;
-    b.addEventListener("click", () => transformWindow(type));
-    menu.appendChild(b);
-  }
-  updateWindowHeader();
-}
-
-/** Build the header once, and again on a locale change. The window ACTIONS are
- *  wired to the existing toolbar controls rather than reimplemented: those
- *  handlers stay the single owners of fit / layout / algorithm. */
-function initWindowHeader(): void {
-  renderWindowTypeMenu();
-  renderWindowModeMenu();
-  renderWindowMenus();
-  updateWindowHeader();
-}
-initWindowHeader();
-onLocaleChange(initWindowHeader);
-document.getElementById("win-fit")?.addEventListener("click", () => fit());
-// WIN4 · the two camera verbs of this window, as buttons. "Adatta" frames the
-// scene; "1:1" drops the zoom back to actual size around the centre of the
-// window — the complement you want after a fit on a large graph, built on the
-// same `zoomAt` the +/- keys use (no second camera path).
-document.getElementById("win-act-fit")?.addEventListener("click", () => fit());
-document.getElementById("win-act-edit")?.addEventListener("click", () => {
-  click("btn-narrative-edit"); // the toggle's owner stays the existing button
-  updateWindowHeader(); // …the bar only shows what it is now
-});
-
-// ── WIN7 · narrativa a un click ─────────────────────────────────────────────
-//
-// Two things a narrative needs that are not IN the narrative: who writes the
-// draft (and with which key), and where the site is on the map. Both had a
-// panel already — Settings ▸ AI, and the graph card of the Inspector — and
-// neither was reachable from the story you were writing. These two buttons are
-// that reach. They open the EXISTING panels, scrolled to the exact block: no
-// second place to enter an API key, no second site position.
-
-document.getElementById("win-act-ai")?.addEventListener("click", () => {
-  openSettings("settings-sect-ai");
-});
-
 /**
- * Bring the Inspector's graph card up with the SITE POSITION in view.
+ * WIN7 · bring the Inspector's graph card up with the SITE POSITION in view.
  *
  * The site position is a graph-scope fact (GEO1), so the panel that holds it is
  * the Inspector's no-selection state — which means clearing the selection first.
@@ -7114,7 +7291,7 @@ document.getElementById("win-act-ai")?.addEventListener("click", () => {
  * workspace has one, the aside otherwise. Both are handled, because "open the
  * panel" has to mean the same thing in either.
  */
-document.getElementById("win-act-geo")?.addEventListener("click", () => {
+function revealSitePosition(): void {
   if (!store) {
     toast("Apri prima un grafo: la posizione è un dato del grafo.");
     return;
@@ -7127,36 +7304,40 @@ document.getElementById("win-act-geo")?.addEventListener("click", () => {
   if (inWindow && insp?.parentElement?.id !== "panel-view-body") {
     // an Inspector area already holds it (or is about to): work there
     if (activeWin().id !== inWindow.id) selectWindow(inWindow.id);
-  } else if (!inWindow) {
-    sidePanel.classList.remove("hidden");
-    showTab("inspector");
   }
   refreshInspector();
   const anchor = document.getElementById("insp-site-position");
   if (!anchor) {
-    toast("Pannello posizione non disponibile: apri l'Ispettore su questo grafo.");
+    toast("Pannello posizione non disponibile: apri una finestra Ispettore su questo grafo.");
     return;
   }
   revealBlock(anchor);
-});
-document.getElementById("win-act-zoom1")?.addEventListener("click", () => {
-  const vp = viewport();
-  const { w, h } = viewSize();
-  if (vp.scale > 0) vp.zoomAt(w / 2, h / 2, 1 / vp.scale);
-  draw();
-});
-document
-  .getElementById("win-layout")
-  ?.addEventListener("click", (ev) =>
-    btnLayout.dispatchEvent(
-      new MouseEvent("click", { altKey: (ev as MouseEvent).altKey }),
-    ),
-  );
-document.getElementById("win-algo")?.addEventListener("change", (ev) => {
-  const sel = document.getElementById("graph-layout") as HTMLSelectElement;
-  sel.value = (ev.target as HTMLSelectElement).value;
-  sel.dispatchEvent(new Event("change"));
-});
+}
+
+/**
+ * HDR1 · find in the narrative — highlight every match in the prose and titles
+ * of the story this window is showing, and take you to the first.
+ *
+ * A find over rendered text rather than a re-render with a filter: a story read
+ * with its non-matching paragraphs removed is not the story, and the question a
+ * search answers here ("where did I write about the threshold?") wants the
+ * passage in its place.
+ */
+function highlightNarrative(query: string): void {
+  const host = narrativeViewEl;
+  host.querySelectorAll(".nv-hit").forEach((el) => el.classList.remove("nv-hit"));
+  const q = query.trim().toLowerCase();
+  if (!q) return;
+  let first: HTMLElement | null = null;
+  for (const el of host.querySelectorAll<HTMLElement>(
+    ".nv-chapter-title, .nv-prose, .nv-block-row, .nv-lede",
+  )) {
+    if (!el.textContent?.toLowerCase().includes(q)) continue;
+    el.classList.add("nv-hit");
+    first ??= el;
+  }
+  first?.scrollIntoView({ block: "center", behavior: "auto" });
+}
 
 /** Apply a workspace: mount the editor of its ACTIVE window via the existing
  *  shell. WIN2 · the window decides, not the preset — the preset only seeded the
@@ -7168,27 +7349,82 @@ function applyWorkspace(id: WorkspaceId): void {
 
 function setWorkspace(id: WorkspaceId): void {
   setActiveWorkspace(id);
+  // HDR1 · a workspace can DECLARE an arrangement (the IDE one does). It is
+  // applied the first time you open it and never again: after that the
+  // arrangement is yours, and a preset that re-asserted itself on every visit
+  // would throw away the split you made the last time you were there.
+  const preset = workspacePreset(id);
+  if (preset.arrangement === "ide" && !isTiled(id)) applyDefaultLayout(id);
   renderTiles(); // WIN5 · each workspace has its own arrangement
-  // the leader chip follows the WORKSPACE and nothing else — mounting an editor
-  // never moves it (that is what made a transformed window possible).
+  // the tab follows the WORKSPACE and nothing else — mounting an editor never
+  // moves it (that is what made a transformed window possible).
   reflectWorkspaceInBar(id);
   applyWorkspace(id);
 }
 
+/**
+ * HDR1 · the workspace TABS — the master header's only switcher.
+ *
+ * What used to be here (three chips, plus a search box, plus a `⌗` button hidden
+ * down in the window bar) was three levels of "where am I" spread across two
+ * bars. Now the master header answers one question — **which workspace** — and
+ * the tabs are the answer, the IDE arrangement among them. A `+` makes a new one
+ * from whatever you are looking at; the ones you made can be renamed
+ * (double-click) and closed (middle-click or the ×), the built-ins cannot.
+ */
 function renderWorkspaceBar(): void {
   workspaceBar.innerHTML = "";
   for (const w of WORKSPACES) {
     const b = document.createElement("button");
     b.dataset.ws = w.id;
-    b.className = "ws-chip" + (w.id === activeWorkspace() ? " active" : "");
-    b.title = t(w.labelKey);
-    b.innerHTML = `<span class="ws-ic">${w.icon}</span><span class="ws-lb">${t(w.labelKey)}</span>`;
+    const isActive = w.id === activeWorkspace();
+    b.className = "ws-tab" + (isActive ? " active" : "");
+    const label = workspaceLabel(w, t);
+    b.title = label;
+    b.innerHTML =
+      `<span class="ws-ic">${w.icon}</span><span class="ws-lb">${escapeHtml(label)}</span>`;
     b.addEventListener("click", () => setWorkspace(w.id));
+    if (!w.builtin) {
+      // rename in place: a workspace you made is named after what you use it for,
+      // and that changes
+      b.addEventListener("dblclick", (e) => {
+        e.stopPropagation();
+        const next = prompt(t("ws.renamePrompt"), label);
+        if (next == null || !renameWorkspace(w.id, next)) return;
+        renderWorkspaceBar();
+      });
+      const x = document.createElement("span");
+      x.className = "ws-x";
+      x.textContent = "×";
+      x.title = t("ws.close");
+      x.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (!removeWorkspace(w.id)) return;
+        renderWorkspaceBar();
+        setWorkspace(activeWorkspace());
+      });
+      b.appendChild(x);
+    }
     workspaceBar.appendChild(b);
   }
+  const add = document.createElement("button");
+  add.className = "ws-tab ws-add";
+  add.textContent = "+";
+  add.title = t("ws.addTitle");
+  add.addEventListener("click", () => {
+    const name = prompt(t("ws.addPrompt"), t("ws.addDefault"));
+    if (name == null) return;
+    const ws = addWorkspace(name);
+    renderWorkspaceBar();
+    setWorkspace(ws.id);
+  });
+  workspaceBar.appendChild(add);
 }
 renderWorkspaceBar();
 onLocaleChange(renderWorkspaceBar);
+// HDR1 · the bars are BUILT from the dictionary, so a language change rebuilds
+// them; there is no fixed markup left to re-label in place.
+onLocaleChange(renderAreaHeaders);
 
 document.getElementById("btn-fit")!.addEventListener("click", fit);
 const btnLayout = document.getElementById("btn-layout") as HTMLButtonElement;
@@ -8404,25 +8640,15 @@ updateToolbar();
 // without a store).
 renderTiles(); // WIN5 · lay out the arrangement this session was left in
 applyWorkspace(activeWorkspace());
+reflectPalette(); // PALETTE1 · open only if it was left open, and for THIS window
 
 // EM-Data (DP-81): a live tabular view on the active store. Reads `store`
 // through a getter so it always sees the current slot; re-renders from the
 // store's onChange (wired in wireStore).
-// WIN6-RESIDUAL · the Tabular WINDOW is the table's only home now (the dock is
-// retired). Its sheet selector drives the shared choice, which every other mount
-// — a secondary Tabular area — reads, so two tables never show two sheets.
+// WIN6-RESIDUAL · the Tabular WINDOW is the table's only home (the dock is
+// retired). HDR1 · and the sheet is that window's MODE, chosen in its header —
+// the `<select>` that used to sit in this head is gone with it.
 {
-  const sheetSel = document.getElementById("table-view-sheet") as HTMLSelectElement | null;
-  if (sheetSel) {
-    sheetSel.innerHTML = EM_DATA_SHEETS.map(
-      (sh) => `<option value="${sh.key}">${sh.label}</option>`,
-    ).join("");
-    sheetSel.value = currentSheetKey();
-    sheetSel.addEventListener("change", () => {
-      setSheet(sheetSel.value as SheetKey);
-      updateWindowHeader(); // the Tabella menu ticks the current sheet
-    });
-  }
   const body = document.getElementById("table-view-body");
   if (body)
     addEmDataHost({
