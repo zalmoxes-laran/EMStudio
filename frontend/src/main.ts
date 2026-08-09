@@ -5630,26 +5630,21 @@ function buildPane(pane: Pane, activeId: string): HTMLElement {
         window.addEventListener("pointerup", up);
         return;
       }
+      // WHICH POINT OF THE GRAPH was indicated — resolved HERE, in this area's
+      // own camera, before anything moves. Then: promote, and apply the click.
+      //
+      // Selecting is done directly rather than by replaying the event on the
+      // real canvas: a synthetic pointerdown cannot carry a live pointer
+      // capture, so the drag it started would be dropped halfway — and a
+      // gesture that works only sometimes is worse than one with a stated
+      // boundary. Clicking a node in a reference area SELECTS it (Inspector,
+      // EM-Data and the other areas all follow); dragging it starts from the
+      // next press, in the area that is now the editor.
+      const wpt = worldAt(e);
+      const sc = scenes[modeOf()] ?? null;
+      const hit = wpt && sc ? hitTest(sc, wpt.x, wpt.y) : null;
       selectWindow(winIdOf); // the wrapper moves into this rectangle, now
-      // …and the gesture carries on, on the real canvas, with the SAME pointer
-      // id — still captured, so a drag started here keeps working.
-      canvas.dispatchEvent(
-        new PointerEvent("pointerdown", {
-          pointerId: e.pointerId,
-          pointerType: e.pointerType,
-          isPrimary: e.isPrimary,
-          clientX: e.clientX,
-          clientY: e.clientY,
-          button: e.button,
-          buttons: e.buttons,
-          shiftKey: e.shiftKey,
-          altKey: e.altKey,
-          ctrlKey: e.ctrlKey,
-          metaKey: e.metaKey,
-          bubbles: true,
-          cancelable: true,
-        }),
-      );
+      select(hit ? hit.id : null);
     });
     // the secondary bar is laid out already; measure it after the append below
     addCornerGrips(area, pane.winId, `${bar.offsetHeight || 29}px`);
