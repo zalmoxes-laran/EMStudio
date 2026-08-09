@@ -136,16 +136,31 @@ body {
 }
 
 /* ---------- toolbar ---------- */
+/* HDR-ALIGN · ONE ROW, at any width.
+   The bar used to `flex-wrap`, which was the right fix when it could overflow
+   and clip (GUI refinements, July): nothing in it could shrink. But with the
+   workspace tabs in it, wrapping is what broke the alignment — flexbox wraps
+   BEFORE it shrinks, so as soon as the tabs did not fit they went to a second
+   row 34px below the menus, and no amount of vertical centring could reach them
+   there. Now nothing wraps: the fixed chrome keeps its size, and the ONE element
+   that can grow without limit — the tab strip — scrolls instead. */
 #toolbar {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 8px 10px;
   padding: 6px 12px;
   background: var(--brand);
   color: var(--on-brand);
   flex: 0 0 auto;
   min-height: 46px;
+}
+/* the chrome keeps its size; only the tab strip gives way */
+#toolbar > #brand,
+#toolbar > .dropdown,
+#toolbar > button,
+#toolbar > span {
+  flex: 0 0 auto;
 }
 
 /* Live-sync mode: unmistakable green tint on header + footer so it is always
@@ -211,41 +226,62 @@ body.sync-active #statusbar {
   background: rgba(255, 255, 255, 0.22);
 }
 
-/* HDR1 · WORKSPACE TABS. Tabs and not chips-in-a-box: they are places you go,
-   the set is open-ended (you can add your own), and the active one should look
-   like the sheet the whole app is sitting on. Anchored to the bottom edge of the
-   header, the way a tab meets its page. */
+/* HDR1/HDR-ALIGN · WORKSPACE TABS, on the master-header's own line.
+   They first shipped anchored to the bottom edge of the bar ("a tab meets its
+   page"), which read well in a mockup and badly in the bar: `align-self:
+   stretch` plus a negative margin made them taller than every other control, and
+   as soon as the header ran out of width they wrapped to a second row 34px below
+   the menus. Blender's workspace tabs are simply part of the topbar — same row,
+   same height, same line. So are these now: identical box metrics to a menu
+   button, centred on the bar's axis, and the active one differs only in colour
+   so switching tabs cannot change the bar's height — nor its WIDTH: a bold
+   active label would re-measure the tab and shift every tab after it, which is
+   the same twitch one level down. Background and text colour carry the state. */
 #workspace-bar {
   display: flex;
-  align-items: flex-end;
-  align-self: stretch;
+  align-items: center;
+  align-self: center;
   gap: 3px;
-  margin-bottom: -6px;
+  /* the only element allowed to give way: when the tabs run out of room they
+     scroll, and the bar stays one row tall at any width */
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+#workspace-bar::-webkit-scrollbar {
+  display: none;
 }
 #workspace-bar .ws-tab {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  border: 1px solid transparent;
-  border-bottom: none;
-  border-radius: 7px 7px 0 0;
-  background: rgba(255, 255, 255, 0.10);
-  padding: 5px 11px 7px;
+  flex: 0 0 auto;
+  /* the metrics of `#toolbar button`, stated here so the two can never drift */
+  padding: 4px 12px;
+  font-size: 13px;
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--on-brand);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 6px;
   cursor: pointer;
   white-space: nowrap;
 }
 #workspace-bar .ws-tab:hover {
-  background: rgba(255, 255, 255, 0.2);
+  background: rgba(255, 255, 255, 0.22);
 }
 #workspace-bar .ws-tab .ws-ic {
   font-size: 12px;
   opacity: 0.85;
 }
+/* ACTIVE · colour only. No border-width change, no padding change, no font-size
+   change — anything that alters the box would make the bar twitch on every
+   workspace switch, which is the thing the alignment pass exists to stop. */
 #workspace-bar .ws-tab.active {
   background: var(--bg-panel);
   color: var(--text);
-  border-color: var(--border);
-  font-weight: 600;
+  border-color: var(--bg-panel);
 }
 #workspace-bar .ws-tab.active .ws-ic {
   opacity: 1;
@@ -260,7 +296,7 @@ body.sync-active #statusbar {
   opacity: 1;
 }
 #workspace-bar .ws-add {
-  padding: 5px 10px 7px;
+  padding: 4px 10px;
   font-weight: 600;
   opacity: 0.75;
 }
@@ -904,13 +940,16 @@ body.sync-active #mode-indicator::before {
    the epoch bands pinned to the top of the matrix. */
 #canvas {
   position: absolute;
-  left: 0;
+  /* PALETTE-FIX · the in-area palette narrows the canvas the same way the docked
+     header shortens it: one declared measurement, and the drawing area never
+     hides behind a panel you can drop onto. */
+  left: var(--palette-w, 0px);
   bottom: 0;
   /* A <canvas> is replaced content: offsets alone do NOT stretch it (width/height
      resolve to the intrinsic 300x150), which is why the box is stated here.
      `calc` keeps the drawing area exactly the wrapper minus the docked bar, with
      no dependency on a JS callback having run first. */
-  width: 100%;
+  width: calc(100% - var(--palette-w, 0px));
   height: calc(100% - var(--winbar-h, 0px));
   cursor: grab;
 }
@@ -2112,14 +2151,62 @@ body.sync-active #footer-brand #em-version {
 
 /* ---------- palette ---------- */
 /* left column: node palette (scrolls) above the edge legend (pinned bottom) */
+/* PALETTE-FIX · the palette is a SIDEBAR OF THE ACTIVE AREA — Blender's
+   N-panel. It used to be a column of `<main>`, as tall as the whole app and
+   belonging to no window in particular; now it is positioned inside
+   `#canvas-wrap`, below that area's docked header, and it goes with the area.
+   The canvas is narrowed by exactly its width (`--palette-w`, published by
+   `reflectPalette`) rather than covered, so nothing you can drop onto is
+   hidden behind it and the camera follows automatically — `viewSize()` reads
+   the canvas element. */
 #left-col {
+  position: absolute;
+  top: var(--winbar-h, 0px);
+  left: 0;
+  bottom: 0;
+  z-index: 20;
   display: flex;
   flex-direction: column;
-  width: 148px;
-  flex: 0 0 auto;
+  width: var(--palette-w, 148px);
   min-height: 0;
   border-right: 1px solid var(--border);
   background: var(--bg-panel);
+  box-shadow: 2px 0 10px rgba(0, 0, 0, 0.18);
+}
+#left-col.hidden {
+  display: none;
+}
+/* the chevron that opens it, on the area's own inner edge — small, discreet,
+   always reachable, and it travels with the panel so the way out is where the
+   way in was */
+#palette-chevron {
+  position: absolute;
+  top: calc(var(--winbar-h, 0px) + 10px);
+  left: var(--palette-w, 0px);
+  z-index: 22;
+  width: 16px;
+  height: 34px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-panel);
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-left: none;
+  border-radius: 0 6px 6px 0;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.75;
+}
+#palette-chevron:hover {
+  opacity: 1;
+  color: var(--text);
+  border-color: var(--accent);
+}
+#palette-chevron.hidden {
+  display: none;
 }
 
 #palette {
@@ -4542,13 +4629,25 @@ body.sync-active #footer-brand #em-version {
 #doc-view.hidden {
   display: none;
 }
-#table-view-head {
+/* FOCUS-NOJITTER · ONE head for the table, focused area or not. `#table-view-head`
+   and the secondary `.tile-tablehead` had different padding and font sizes, so
+   taking the focus re-measured the head and the rows below it stepped down 10.5px
+   — the same defect as the panel tab strip, one surface along. The `min-height`
+   is what makes the two equal regardless of what each one holds (a `+ row`
+   button here, a sheet name there): the box is declared, not inferred from its
+   contents. */
+#table-view-head,
+.tile-tablehead {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 6px 10px;
+  min-height: 35px;
+  box-sizing: border-box;
+  flex: 0 0 auto;
   border-bottom: 1px solid var(--border);
   background: var(--bg-panel);
+  font-size: 12px;
 }
 #table-view-body {
   flex: 1;
@@ -4630,17 +4729,6 @@ body.sync-active #footer-brand #em-version {
    Same content as the focused window's, at the size the area happens to be.
    They are views, not editors: the pointer entering the area promotes it and
    the real surface takes over, so nothing here has to be reachable. */
-.tile-tablehead {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 8px;
-  flex: 0 0 auto;
-  background: var(--bg-subtle);
-  border-bottom: 1px solid var(--border);
-  font-size: 11.5px;
-  color: var(--text-faint);
-}
 .tile-tablehead .tile-sheet {
   font-weight: 600;
   color: var(--text);
@@ -4659,37 +4747,9 @@ body.sync-active #footer-brand #em-version {
   background: var(--bg-panel);
   overflow: hidden;
 }
-.tile-panel-tabs {
-  display: flex;
-  gap: 6px;
-  padding: 4px 8px;
-  flex: 0 0 auto;
-  border-bottom: 1px solid var(--border);
-  font-size: 11.5px;
-}
-.tile-panel-tab {
-  opacity: 0.5;
-}
-.tile-panel-tab.active {
-  opacity: 1;
-  font-weight: 600;
-}
-.tile-panel-body {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  display: flex;
-  flex-direction: column;
-}
-.tile-panel-body > * {
-  display: block;
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-}
-.tile-panel-body > .hidden {
-  display: none;
-}
+/* FOCUS-NOJITTER · the secondary strip and body carry `.panel-tabs`/`.panel-body`
+   too, so their metrics come from the one rule set above. Nothing type-specific
+   is left here. */
 /* Doc, as two boxes in whatever space the area has */
 .tile-doclist {
   flex: 0 0 34%;
@@ -4861,43 +4921,57 @@ body.sync-active #footer-brand #em-version {
 #panel-view.hidden {
   display: none;
 }
-#panel-view-tabs {
+/* FOCUS-NOJITTER · ONE tab strip, whichever area the panel is living in.
+   There were two: `<button>`s at 12.5px in the focused window and `<span>`s at
+   11.5px in a secondary area. Taking the focus therefore re-measured the strip
+   (22.5px → 29.5px) and pushed the panel below it down by 7px, with each tab
+   growing ~22×11px — the "tabs that dance" E.D. saw on the EMtree window. The
+   markup is now the same element with the same class in both, so the focus
+   changes nothing but a colour. */
+.panel-tabs {
   display: flex;
   gap: 2px;
   padding: 4px 6px 0;
   border-bottom: 1px solid var(--border);
   flex: 0 0 auto;
 }
-#panel-view-tabs button {
+/* a secondary area's strip is a LABEL, not a control: same box, no interaction
+   (stepping into the area promotes it, which is when the tabs become live) */
+.panel-tabs-passive {
+  pointer-events: none;
+}
+.panel-tab {
   padding: 5px 10px;
   border: 0;
   background: transparent;
   color: var(--text);
   font-size: 12.5px;
+  font-family: inherit;
+  line-height: normal;
   border-radius: 7px 7px 0 0;
   cursor: pointer;
   opacity: 0.7;
 }
-#panel-view-tabs button:hover {
+.panel-tab:hover {
   background: var(--bg-elevated);
 }
-#panel-view-tabs button.active {
+.panel-tab.active {
   background: var(--bg-elevated);
   opacity: 1;
   font-weight: 600;
 }
-#panel-view-body {
+.panel-body {
   flex: 1;
   min-height: 0;
   overflow: auto;
 }
 /* a panel that has moved into a window fills it, without the aside's own frame */
-#panel-view-body > * {
+.panel-body > * {
   display: block;
   height: 100%;
   overflow: auto;
 }
-#panel-view-body > .hidden {
+.panel-body > .hidden {
   display: none;
 }
 /* a secondary area accepting a palette drop */

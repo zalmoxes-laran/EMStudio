@@ -101,6 +101,22 @@ export function emDataFilter(): string {
   return rowFilter;
 }
 
+/** Add a row to the sheet on screen — the `Righe ▸` menu's own path, now that
+ *  the head has no buttons. Returns the new node id, or null. */
+export function addEmDataRow(store: DocumentStore): string | null {
+  const id = addRow(store, currentSheet);
+  if (id) renderEmData();
+  return id;
+}
+
+/** Open/close the claim form of the Claims sheet (the sheet's one special
+ *  gesture: a claim is not a row you fill in cell by cell). */
+export function toggleEmDataClaimForm(store: DocumentStore): boolean {
+  if (currentSheet !== "Claims") return false;
+  toggleClaimForm(store);
+  return true;
+}
+
 export function setEmDataFilter(q: string): void {
   if (q === rowFilter) return;
   rowFilter = q;
@@ -171,25 +187,13 @@ function renderEmDataInto(host: EmDataHost): void {
       ? `${rows.length} / ${all.length} rows`
       : `${all.length} rows`;
 
-  // per-sheet actions (add row / add claim)
-  if (actions) {
-    actions.innerHTML = "";
-    if (table.canAdd) {
-      const btn = document.createElement("button");
-      btn.textContent = "+ row";
-      btn.onclick = () => {
-        const id = addRow(store, currentSheet);
-        if (id) renderEmData();
-      };
-      actions.appendChild(btn);
-    }
-    if (currentSheet === "Claims") {
-      const btn = document.createElement("button");
-      btn.textContent = "+ claim";
-      btn.onclick = () => toggleClaimForm(store);
-      actions.appendChild(btn);
-    }
-  }
+  // FOCUS-NOJITTER · NO buttons in the head any more. `+ row` and `+ claim` were
+  // rendered only into the FOCUSED window's head, so entering and leaving a
+  // Tabular window made a button appear and disappear and stepped the rows —
+  // and both duplicated the header's own `Righe ▸` menu, which is where a
+  // command on this window belongs (MENU-AUDIT). The head now holds one thing,
+  // the row count, and it is the same thing whether the window has the focus.
+  if (actions) actions.innerHTML = "";
 
   const claimForm =
     currentSheet === "Claims" ? '<div id="emdata-claimform-slot"></div>' : "";

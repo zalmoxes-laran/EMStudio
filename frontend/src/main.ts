@@ -159,6 +159,8 @@ import { GROUP_HEADER, GROUP_PAD } from "./views/matrix";
 import { setupSearch } from "./search";
 import {
   addEmDataHost,
+  addEmDataRow,
+  toggleEmDataClaimForm,
   removeEmDataHost,
   emDataFilter,
   setEmDataFilter,
@@ -2325,35 +2327,67 @@ function setPaletteOpen(open: boolean): void {
 }
 
 /**
- * Show or hide the palette column, and put the FOCUSED window's offer in it.
+ * Show or hide the palette sidebar of the ACTIVE AREA, and put that window's
+ * offer in it.
  *
  * Called on every focus change and mode change, so the palette is never showing
  * the types of a window you are no longer in — which is the failure the old
- * always-on palette had no way even to notice.
+ * always-on column had no way even to notice.
+ *
+ * PALETTE-FIX · the width is published as `--palette-w` on the area, exactly the
+ * way the docked header publishes `--winbar-h`: the canvas is NARROWED by it
+ * rather than covered, so nothing you can drop onto ends up behind the panel and
+ * the camera follows without a second measurement anywhere.
  */
 function reflectPalette(): void {
   const open = paletteOpen();
   const win = activeWin();
   const narrative = centralMode === "narrative" && win.type === "narrative";
-  // a window that places nothing has no palette; opening one for it would be an
-  // empty column claiming to be a tool
   const places = win.type === "graph" || narrative;
-  leftCol.classList.toggle("hidden", !open || !places);
+  const showing = open && places;
+  leftCol.classList.toggle("hidden", !showing);
   paletteEl.classList.toggle("hidden", narrative);
   narrativePaletteEl.classList.toggle("hidden", !narrative);
+  wrap.style.setProperty("--palette-w", showing ? `${PALETTE_W}px` : "0px");
   const item = document.getElementById("btn-tool-palette");
   if (item) item.classList.toggle("mode-active", open);
-  if (!open || !places) return;
+  // the chevron is offered only where a palette is possible — on a Tabular or an
+  // Inspector area it would open nothing, and a control that does nothing is
+  // worse than one that is not there
+  const chev = document.getElementById("palette-chevron");
+  if (chev) {
+    chev.classList.toggle("hidden", !places);
+    chev.textContent = showing ? "‹" : "›";
+    chev.title = t(showing ? "palette.close" : "palette.open");
+    chev.setAttribute("aria-expanded", String(showing));
+  }
+  if (!showing) return;
   if (narrative) renderNarrativePalette();
   else buildPaletteForMode();
 }
 
-document.getElementById("btn-tool-palette")?.addEventListener("click", () => {
+/** The sidebar's width. One number: the CSS reads it through `--palette-w`. */
+const PALETTE_W = 148;
+
+/** Open or close the palette, from either of its two doors. */
+function togglePalette(): void {
   setPaletteOpen(!paletteOpen());
   requestAnimationFrame(() => {
     resizeCanvas();
     draw();
   });
+}
+
+document.getElementById("btn-tool-palette")?.addEventListener("click", togglePalette);
+// PALETTE-FIX · the chevron on the area's inner edge — Blender's N-panel toggle.
+// It travels with the panel (`left: var(--palette-w)`), so the way out is where
+// the way in was. `pointerdown` is stopped: the areas read pointer gestures, and
+// a click on a control of the area is not a gesture on its content.
+const paletteChevron = document.getElementById("palette-chevron");
+paletteChevron?.addEventListener("pointerdown", (e) => e.stopPropagation());
+paletteChevron?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  togglePalette();
 });
 
 /**
@@ -4915,44 +4949,19 @@ btnAddEpoch.addEventListener("click", (e) => {
   addEpochEmMode();
 });
 
-// ── POL1 · collapsing the LEFT column ────────────────────────────────────────
+// PALETTE-FIX · the old app-level column handles are gone, both of them.
 //
-// A stratigraphic matrix is wide, and on a laptop the palette column costs a
-// good part of the canvas. The handle sits on the column's own edge so there is
-// nothing to hunt for when you want it back, and the arrow always points at what
-// will happen: `‹` folds it away, `›` brings it back.
-//
-// Session-only, not persisted: a collapsed palette restored on next launch would
-// greet the user with a tool that appears to have lost its palette.
-//
-// WIN-FIX1 · the RIGHT handle went with the aside. There is no right column any
-// more — the Inspector and the EMtree are windows, and a window is resized by
-// dragging its divider like every other.
-const collapseLeftBtn = document.getElementById("collapse-left") as HTMLButtonElement;
+// The right one went with the aside (WIN-FIX1). The left one collapsed a column
+// of `<main>` that no longer exists: the palette is a sidebar of the ACTIVE AREA
+// now, and the thing that opens and closes it is the chevron on that area's own
+// edge (plus Tools ▸ Palette nodi). Two handles for one panel, one of them
+// outside the window the panel belongs to, was the shape of the confusion.
 const leftCol = document.getElementById("left-col")!;
-let leftCollapsed = false;
 
-/** Arrow and title of the left handle. Cheap: safe to call from `updateToolbar`,
- *  which runs on every state change. */
-function paintColumnToggles(): void {
-  leftCol.classList.toggle("collapsed", leftCollapsed);
-  collapseLeftBtn.textContent = leftCollapsed ? "›" : "‹";
-  collapseLeftBtn.title = t(leftCollapsed ? "layout.showLeft" : "layout.hideLeft");
-}
+/** Kept as a no-op call site: `updateToolbar` still asks the chrome to repaint,
+ *  and this is where anything about the area's own panels would go. */
+function paintColumnToggles(): void {}
 
-/** The collapse itself: repaint, then resize the canvas, which is sized from its
- *  container. Kept apart from `paintColumnToggles` so the frequent caller does not
- *  schedule a redraw on every toolbar update. */
-function toggleColumn(): void {
-  leftCollapsed = !leftCollapsed;
-  paintColumnToggles();
-  requestAnimationFrame(() => {
-    resizeCanvas();
-    draw();
-  });
-}
-
-collapseLeftBtn.addEventListener("click", toggleColumn);
 
 
 function smSet(patch: Partial<typeof smState>): void {
@@ -5783,6 +5792,16 @@ function buildPane(pane: Pane, activeId: string): HTMLElement {
     area.appendChild(bar);
     if (win && win.type === "graph") {
       const cv = document.createElement("canvas");
+      // FOCUS-NOJITTER · a graph window with the palette OPEN keeps that width
+      // reserved whether or not it has the focus. Without this, leaving the
+      // window closed its sidebar and gave the 148px back to the drawing, so the
+      // graph re-framed itself wider the moment the pointer crossed the divider
+      // — the rescale E.D. saw on the way out. The window is the same size in
+      // both states now; only the sidebar's contents stop being reachable.
+      if (paletteOpen()) {
+        cv.style.marginLeft = `${PALETTE_W}px`;
+        cv.style.width = `calc(100% - ${PALETTE_W}px)`;
+      }
       area.appendChild(cv);
       tileCanvases.set(pane.winId, cv);
     } else if (win) {
@@ -6365,16 +6384,15 @@ function tileNote(area: HTMLElement, text: string): void {
 function buildSecondarySurface(area: HTMLElement, win: Win): void {
   if (win.type === "table") {
     // the same renderer as the focused Tabular window, one more mount
+    // FOCUS-NOJITTER · the head holds exactly what the FOCUSED window's head
+    // holds — the row count, nothing else. It used to carry the sheet name too,
+    // which (a) is the window's MODE now, stated in its header two centimetres
+    // above, and (b) existed only here, so entering the window made it vanish
+    // and the rows move.
     const head = document.createElement("div");
     head.className = "tile-tablehead";
-    const sheet = document.createElement("span");
-    sheet.className = "tile-sheet";
-    sheet.textContent =
-      EM_DATA_SHEETS.find((s) => s.key === currentSheetKey())?.label ??
-      currentSheetKey();
     const count = document.createElement("span");
     count.className = "emdata-count";
-    head.appendChild(sheet);
     head.appendChild(count);
     const body = document.createElement("div");
     body.className = "tile-tablebody";
@@ -6392,9 +6410,9 @@ function buildSecondarySurface(area: HTMLElement, win: Win): void {
     host.className = "tile-panel";
     host.dataset.win = win.id;
     const tabs = document.createElement("div");
-    tabs.className = "tile-panel-tabs";
+    tabs.className = "tile-panel-tabs panel-tabs panel-tabs-passive";
     const body = document.createElement("div");
-    body.className = "tile-panel-body";
+    body.className = "tile-panel-body panel-body";
     host.appendChild(tabs);
     host.appendChild(body);
     area.appendChild(host);
@@ -6453,8 +6471,13 @@ function syncSecondaryPanels(): void {
     const taken = claimed.has(showing);
     tabs.innerHTML = "";
     for (const tab of PANEL_TABS[win.type] ?? []) {
-      const chip = document.createElement("span");
-      chip.className = "tile-panel-tab" + (tab.id === showing ? " active" : "");
+      // FOCUS-NOJITTER · a BUTTON with the same class as the focused strip's, so
+      // the two strips measure identically and taking the focus moves nothing.
+      // Inert (the strip carries `panel-tabs-passive`): a secondary area is a
+      // view, and the pointer entering it promotes the area anyway.
+      const chip = document.createElement("button");
+      chip.className = "panel-tab" + (tab.id === showing ? " active" : "");
+      chip.tabIndex = -1;
       chip.textContent = t(tab.labelKey);
       tabs.appendChild(chip);
     }
@@ -6502,9 +6525,13 @@ function renderPanelWindow(type: WindowType): void {
   const showing = currentPanelId(type);
   tabsHost.innerHTML = "";
   for (const tab of tabs) {
+    // FOCUS-NOJITTER · the SAME element and the same class a secondary area
+    // builds (`syncSecondaryPanels`). It used to be a bare <button> here and a
+    // <span> there, at two font sizes — so taking the focus grew the strip by
+    // 7px and pushed the panel down. One implementation, one measurement.
     const b = document.createElement("button");
+    b.className = "panel-tab" + (tab.id === showing ? " active" : "");
     b.textContent = t(tab.labelKey);
-    b.classList.toggle("active", tab.id === showing);
     b.addEventListener("click", () => {
       setWinCurrent(activeWin(), "panel", tab.id);
       renderPanelWindow(type);
@@ -7190,16 +7217,28 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
       label: "Righe",
       items: () => [
         {
+          // FOCUS-NOJITTER · calls the mutator directly. It used to click a
+          // `+ row` button in the table's head — a button that only existed in
+          // the FOCUSED window's head, which is what made the head change size
+          // on every focus change. The head has no buttons now; this menu is
+          // where a command on this window lives.
           label: "Aggiungi riga",
           run: () => {
-            // WIN6-RESIDUAL · the head of the Tabular WINDOW, not the retired
-            // dock's: the "+ row" button the table renderer puts there is still
-            // the single owner of adding a row.
-            const btn = [...document.querySelectorAll<HTMLButtonElement>("#table-view-actions button")]
-              .find((b) => /row/i.test(b.textContent ?? ""));
-            if (btn) btn.click();
-            else toast("Questo foglio non accetta righe nuove.");
+            if (!store) return;
+            if (!addEmDataRow(store))
+              toast("Questo foglio non accetta righe nuove.");
           },
+          disabledReason: () => (store ? null : "Nessun grafo aperto."),
+        },
+        {
+          label: "Aggiungi claim",
+          run: () => {
+            if (store) toggleEmDataClaimForm(store);
+          },
+          disabledReason: () =>
+            currentSheetKey() === "Claims"
+              ? null
+              : "I claim si aggiungono dal foglio Claims.",
         },
         {
           label: "Elimina riga corrente",
