@@ -5605,6 +5605,28 @@ function buildPane(pane: Pane, activeId: string): HTMLElement {
       tileHover.set(winIdOf, null);
       drawTiles();
     });
+    // ── FOCUS FOLLOWS MOUSE (Blender) ─────────────────────────────────────
+    //
+    // The editor moves to the area the pointer is IN, before any button is
+    // pressed. So by the time you press, the real canvas — the whole
+    // interaction machine, not a copy of it — is already under the cursor:
+    // click, drag, rubber-band and connector all work here exactly as they do
+    // anywhere else, from the FIRST gesture. No promoting click, no replay.
+    //
+    // Why this and not two interaction machines running side by side: there is
+    // one pointer. Two machines would differ only in holding two half-finished
+    // gestures at once (a marquee in one area while a connector hangs in the
+    // other), which no hand can produce. What was actually missing was that the
+    // machine be where the hand is — this is that, and it is what Blender does.
+    //
+    // Guarded: never mid-drag (moving the mouse across a divider while dragging
+    // a node must not hand the node to another window), and never while placing
+    // a node from the palette.
+    area.addEventListener("pointerenter", () => {
+      if (dragMode !== "none" || connect || placingType) return;
+      if (activeWin().id === winIdOf) return;
+      selectWindow(winIdOf);
+    });
     area.addEventListener("pointerdown", (e) => {
       // PAN, same gesture as the canvas (middle button or Space held): this
       // moves a CAMERA, not the document, so it must NOT steal the focus — the
@@ -5630,20 +5652,13 @@ function buildPane(pane: Pane, activeId: string): HTMLElement {
         window.addEventListener("pointerup", up);
         return;
       }
-      // WHICH POINT OF THE GRAPH was indicated — resolved HERE, in this area's
-      // own camera, before anything moves. Then: promote, and apply the click.
-      //
-      // Selecting is done directly rather than by replaying the event on the
-      // real canvas: a synthetic pointerdown cannot carry a live pointer
-      // capture, so the drag it started would be dropped halfway — and a
-      // gesture that works only sometimes is worse than one with a stated
-      // boundary. Clicking a node in a reference area SELECTS it (Inspector,
-      // EM-Data and the other areas all follow); dragging it starts from the
-      // next press, in the area that is now the editor.
+      // A press that reaches HERE means the pointer entered without the focus
+      // following (mid-drag, or placing a node): take the focus now and resolve
+      // the click in this area's own camera, so nothing is lost.
       const wpt = worldAt(e);
       const sc = scenes[modeOf()] ?? null;
       const hit = wpt && sc ? hitTest(sc, wpt.x, wpt.y) : null;
-      selectWindow(winIdOf); // the wrapper moves into this rectangle, now
+      selectWindow(winIdOf);
       select(hit ? hit.id : null);
     });
     // the secondary bar is laid out already; measure it after the append below
