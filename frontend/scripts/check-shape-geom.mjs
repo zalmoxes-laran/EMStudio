@@ -155,4 +155,35 @@ ok(pointInShape("rounded_rectangle", glyph, 132 - 1, 216),
 ok(!pointInShape("rounded_rectangle", glyph, 150, 216),
   "a click in the OLD margin (past the square) does not");
 
+// ── the rubber band's entry point into the view (cross-area connector) ──────
+{
+  const view = { x0: 0, y0: 0, x1: 100, y1: 100 };
+  const near = (p, x, y) => p && Math.abs(p.x - x) < 1e-6 && Math.abs(p.y - y) < 1e-6;
+
+  ok(
+    near(mod.segmentEntry({ x: 20, y: 20 }, { x: 60, y: 60 }, view), 20, 20),
+    "a start already inside the view is its own entry point",
+  );
+  ok(
+    near(mod.segmentEntry({ x: -50, y: 50 }, { x: 50, y: 50 }, view), 0, 50),
+    "coming from the left, the band starts on the left edge",
+  );
+  ok(
+    near(mod.segmentEntry({ x: 50, y: -30 }, { x: 50, y: 40 }, view), 50, 0),
+    "coming from above, it starts on the top edge",
+  );
+  ok(
+    near(mod.segmentEntry({ x: -20, y: -20 }, { x: 40, y: 40 }, view), 0, 0),
+    "a diagonal approach enters at the corner it crosses",
+  );
+  ok(
+    mod.segmentEntry({ x: -50, y: -50 }, { x: -10, y: -10 }, view) === null,
+    "a segment that never reaches the view has no entry point — nothing to draw",
+  );
+  ok(
+    mod.segmentEntry({ x: 200, y: 50 }, { x: 150, y: 50 }, view) === null,
+    "…and neither has one that moves away from it",
+  );
+}
+
 console.log(`shape-geom: ${checks} checks passed`);

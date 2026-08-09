@@ -1188,7 +1188,7 @@ function updateToolbar(): void {
   // does nothing is a worse answer than an absent one; the epoch "+" belongs to
   // Matrix, which is the EM mode.
   btnAddEpoch.classList.toggle("hidden", !store || view !== "matrix");
-  btnViewProps.classList.toggle("hidden", !store);
+  refreshFunnel();
   if (!store && filterPanelOpen()) closeFilterPanel();
   paintColumnToggles(); // the right handle appears with the side panel
   updateWindowTitle();
@@ -3026,7 +3026,10 @@ document.querySelectorAll<HTMLElement>(".dropdown").forEach((dd) => {
     e.stopPropagation();
     const willOpen = menu.classList.contains("hidden");
     closeAllDropdowns();
-    if (willOpen) menu.classList.remove("hidden");
+    if (!willOpen) return;
+    menu.classList.remove("hidden");
+    // a menu in the window bar is `fixed` (the bar scrolls) → place it by hand
+    if (dd.closest("#window-header")) placeBarMenu(toggle, menu);
   });
   menu.addEventListener("click", () => menu.classList.add("hidden"));
 });
@@ -4225,7 +4228,20 @@ function openFilterPanel(): void {
 }
 function closeFilterPanel(): void {
   filterPanel.classList.add("hidden");
-  btnViewProps.classList.remove("hidden");
+  refreshFunnel();
+}
+
+/**
+ * The funnel is shown when it has something to filter: a document open, a CANVAS
+ * window (nodes and connectors are not on a table or a document), and the panel
+ * itself not already open in its place. One rule, called from every route that
+ * could change one of those three — otherwise each route re-decides and they
+ * disagree, which is how the funnel ended up on the narrative.
+ */
+function refreshFunnel(): void {
+  const belongs =
+    !!store && activeWindowType() === "graph" && !filterPanelOpen();
+  btnViewProps.classList.toggle("hidden", !belongs);
 }
 // Monochrome (B/W) display toggle — every node draws black-bordered + white
 // (shapes disambiguate). A pure presentation option (not a filter), so it lives
@@ -5704,6 +5720,10 @@ function buildPane(pane: Pane, activeId: string): HTMLElement {
 /** Lay the workspace's tree out. Cheap and idempotent: called on any change to
  *  the arrangement (split, close, activate, ratio) and after a workspace switch. */
 function renderTiles(): void {
+  // Any menu open right now belongs to a bar that is about to move — leaving it
+  // up would float it over the new arrangement, detached from anything.
+  closeAllDropdowns();
+  closeAllSubmenus();
   tileCanvases.clear();
   // detach the live area before rebuilding, so it survives the innerHTML reset
   canvasWrapEl.remove();
@@ -5775,10 +5795,13 @@ function applyWindowSurface(type: WindowType): void {
   };
   show("table-view", type === "table");
   show("doc-view", type === "doc");
-  // The overview map answers "where am I on the canvas" — a question only a
-  // canvas window has. On a table or a document it would be a picture of
-  // something that is not on screen.
-  show("overview", type === "graph");
+  // The overview map answers "where am I on the canvas", and the funnel filters
+  // NODES AND CONNECTORS — both are questions only a canvas window has. On a
+  // table or a document they would act on something that is not on screen.
+  const isCanvasWindow = type === "graph";
+  show("overview", isCanvasWindow);
+  if (!isCanvasWindow && filterPanelOpen()) closeFilterPanel();
+  refreshFunnel();
   if (type === "table") renderEmData();
   if (type === "doc") renderDocView();
 }
@@ -5964,6 +5987,13 @@ function updateWindowHeader(): void {
   // the behaviour, the bar drives them.
   show("win-act-fit", isGraph);
   show("win-act-zoom1", isGraph);
+  // ✎ · writing IS a mode of a narrative window, so it lives in the bar as a
+  // toggle you can see the state of, not as a menu item you have to go and read.
+  const isNarrative = type === "narrative";
+  show("win-act-edit", isNarrative);
+  document
+    .getElementById("win-act-edit")
+    ?.classList.toggle("win-act-on", isNarrative && narrativeEditing);
   show("win-fit", false);
   show("win-layout", false);
   show("win-algo", false);
@@ -6162,7 +6192,6 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
               noChapter() ??
               (narr && ci === narr.chapters.length - 1 ? "È già l'ultimo." : null),
           },
-          { label: "Modifica narrativa", run: () => click("btn-narrative-edit") },
         ];
       },
     },
@@ -6306,6 +6335,35 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
 };
 
 /** Build the header's menus for the ACTIVE window's type. */
+/**
+ * Put a window-bar menu where its toggle is, in SCREEN coordinates.
+ *
+ * The bar scrolls horizontally when its controls do not fit, and a menu laid out
+ * inside a scroller is clipped by it — the menu became a second scrollbar inside
+ * the bar instead of opening over the canvas. The menus are therefore `fixed`
+ * and placed here, and kept inside the viewport so the last item is always
+ * reachable.
+ */
+function placeBarMenu(toggle: HTMLElement, menu: HTMLElement): void {
+  const r = toggle.getBoundingClientRect();
+  // hang it off the BAR, not off the toggle: the toggle is shorter than the bar,
+  // and anchoring to it drew the menu over the bar's own bottom edge.
+  const barBottom =
+    toggle.closest("#window-header")?.getBoundingClientRect().bottom ?? r.bottom;
+  menu.style.left = "0px";
+  menu.style.top = "0px";
+  const m = menu.getBoundingClientRect();
+  const left = Math.max(4, Math.min(r.left, window.innerWidth - m.width - 4));
+  // below the bar, unless there is no room down there
+  const below = barBottom + 2;
+  const top =
+    below + m.height <= window.innerHeight - 4
+      ? below
+      : Math.max(4, r.top - m.height - 4);
+  menu.style.left = `${Math.round(left)}px`;
+  menu.style.top = `${Math.round(top)}px`;
+}
+
 function renderWindowMenus(): void {
   const host = document.getElementById("window-menus");
   if (!host) return;
@@ -6339,6 +6397,7 @@ function renderWindowMenus(): void {
         list.appendChild(b);
       }
       list.classList.remove("hidden");
+      placeBarMenu(toggle, list);
     });
     list.addEventListener("click", () => list.classList.add("hidden"));
     dd.appendChild(toggle);
@@ -6392,6 +6451,10 @@ document.getElementById("win-fit")?.addEventListener("click", () => fit());
 // window — the complement you want after a fit on a large graph, built on the
 // same `zoomAt` the +/- keys use (no second camera path).
 document.getElementById("win-act-fit")?.addEventListener("click", () => fit());
+document.getElementById("win-act-edit")?.addEventListener("click", () => {
+  click("btn-narrative-edit"); // the toggle's owner stays the existing button
+  updateWindowHeader(); // …the bar only shows what it is now
+});
 document.getElementById("win-act-zoom1")?.addEventListener("click", () => {
   const vp = viewport();
   const { w, h } = viewSize();

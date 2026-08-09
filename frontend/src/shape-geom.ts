@@ -329,3 +329,42 @@ export function pointInShape(
     }
   }
 }
+
+/**
+ * Where a segment ENTERS the visible rectangle — the point the rubber band
+ * should start from when its real origin is off screen.
+ *
+ * Liang-Barsky, kept to the entry parameter: the band is drawn from there to the
+ * pointer, so the far end is always inside by construction. Returns null when the
+ * whole segment misses the view (nothing sensible to draw).
+ */
+export function segmentEntry(
+  a: { x: number; y: number },
+  b: { x: number; y: number },
+  r: { x0: number; y0: number; x1: number; y1: number },
+): { x: number; y: number } | null {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  let t0 = 0;
+  let t1 = 1;
+  const clip = (p: number, q: number): boolean => {
+    if (p === 0) return q >= 0; // parallel: inside iff not beyond the edge
+    const t = q / p;
+    if (p < 0) {
+      if (t > t1) return false;
+      if (t > t0) t0 = t;
+    } else {
+      if (t < t0) return false;
+      if (t < t1) t1 = t;
+    }
+    return true;
+  };
+  if (
+    clip(-dx, a.x - r.x0) &&
+    clip(dx, r.x1 - a.x) &&
+    clip(-dy, a.y - r.y0) &&
+    clip(dy, r.y1 - a.y)
+  )
+    return { x: a.x + t0 * dx, y: a.y + t0 * dy };
+  return null;
+}

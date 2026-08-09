@@ -13,7 +13,8 @@ import {
   type EdgeRoute,
 } from "./routing";
 import { BAND_GAP } from "./scene";
-import { drawBoxOf, handleAnchor, shapePath } from "./shape-geom";
+import {
+  segmentEntry, drawBoxOf, handleAnchor, shapePath } from "./shape-geom";
 import { canvasTheme, labelOn } from "./theme";
 import type { Scene, Viewport } from "./scene";
 
@@ -945,7 +946,30 @@ export function render(
     const from = scene.byId.get(state.connect.fromId);
     // The band starts at the source node's handle when that node is here, and
     // at the AREA EDGE the connector crossed when it is not (see `fromAnchor`).
-    const start = from ? handleAnchor(from) : state.connect.fromAnchor;
+    const origin = from ? handleAnchor(from) : state.connect.fromAnchor;
+    // The band must always have a VISIBLE start. Its origin can be off screen in
+    // two ways: the node is in another area (`fromAnchor`, set at the crossing)
+    // or it is in this scene but outside the current framing — panned away, or
+    // simply on a graph bigger than the window. Either way the line is clipped
+    // to the view and starts at the edge it comes in through, with a dot to say
+    // "it continues out there".
+    const end = { x: state.connect.x, y: state.connect.y };
+    const margin = 6 / vp.scale;
+    const view = {
+      x0: worldLeft + margin,
+      y0: -vp.y / vp.scale + margin,
+      x1: worldRight - margin,
+      y1: (viewH - vp.y) / vp.scale - margin,
+    };
+    const originVisible =
+      !!origin &&
+      origin.x >= view.x0 &&
+      origin.x <= view.x1 &&
+      origin.y >= view.y0 &&
+      origin.y <= view.y1;
+    const start =
+      origin && !originVisible ? segmentEntry(origin, end, view) : origin;
+    const anchored = !!start && !originVisible;
     if (start) {
       const colors = {
         valid: "#1a7f37",
@@ -965,7 +989,7 @@ export function render(
       ctx.setLineDash([]);
       // a small tick where the connector entered, so the line reads as coming
       // FROM somewhere rather than starting nowhere
-      if (!from) {
+      if (anchored) {
         ctx.beginPath();
         ctx.arc(start.x, start.y, 4 / vp.scale, 0, Math.PI * 2);
         ctx.fillStyle = c;
