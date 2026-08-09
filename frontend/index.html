@@ -212,22 +212,12 @@
              DOM, hidden: they remain the single owners of the behaviour and
              these bars drive them. -->
         <div id="window-header" class="win-header"></div>
-        <!-- PALETTE-FIX · the node palette is a SIDEBAR OF THIS AREA, not a
-             column of the app. It used to sit in <main> beside `#tile-root`,
-             which made it as tall as the whole window and gave it to nobody in
-             particular: in a tiled shell the types you can place are a fact
-             about the FOCUSED window, so the panel belongs inside that window's
-             area, below its header, and goes away with it. Blender's N-panel,
-             and its chevron: `#palette-chevron` sits on the area's own edge. -->
-        <div id="left-col" class="hidden">
-          <aside id="palette" title="Click a type, then click the canvas to place it"></aside>
-          <!-- NARRWS1: the narrative mode gets its OWN palette (narrative
-               building blocks, not node types). Shown only in narrative mode;
-               #palette is hidden there. -->
-          <aside id="narrative-palette" class="hidden"></aside>
-          <div id="legend" class="hidden"></div>
-        </div>
-        <button id="palette-chevron" class="hidden" type="button" aria-expanded="false"></button>
+        <!-- STEP A · the RESOURCES panel and its chevron are BUILT PER AREA
+             (`buildResourcePanel` in main.ts), not written here. They used to be
+             a single `#left-col` inside this element — which is the focused
+             area — so the panel followed the focus instead of belonging to the
+             window you opened it on. There is no singleton left: each area that
+             has a provider gets its own, and keeps it when the pointer leaves. -->
         <div id="chrono-banner" class="hidden"></div>
         <!-- The empty state has to offer BOTH ways of getting a graph. Dropping
              a file assumes one already exists; StratiMiner is for when it does
@@ -318,8 +308,8 @@
           <div id="panel-view-body" class="panel-body"></div>
         </div>
         <div id="doc-view" class="hidden">
-          <div id="doc-view-list"></div>
-          <div id="doc-view-detail"></div>
+          <div id="doc-view-list" class="doc-list"></div>
+          <div id="doc-view-detail" class="doc-detail"></div>
         </div>
         <canvas id="overview" title="Overview — click to move the viewport"></canvas>
       </div>

@@ -410,7 +410,6 @@ const info = document.getElementById("info")!;
 const tooltip = document.getElementById("tooltip")!;
 const dropHint = document.getElementById("drop-hint")!;
 const hintBar = document.getElementById("hint-bar")!;
-const legend = document.getElementById("legend")!;
 const inspector = document.getElementById("inspector")!;
 const breadcrumb = document.getElementById("breadcrumb")!;
 const edgeMenu = document.getElementById("edge-menu")!;
@@ -428,8 +427,6 @@ const MODE_BUTTONS: Partial<Record<CentralMode, HTMLButtonElement>> = {
   narrative: btnNarrative,
 };
 const narrativeViewEl = document.getElementById("narrative-view")!;
-const paletteEl = document.getElementById("palette")!;
-const narrativePaletteEl = document.getElementById("narrative-palette")!;
 const btnNarrativeEdit = document.getElementById(
   "btn-narrative-edit") as HTMLButtonElement;
 const btnUndo = document.getElementById("btn-undo") as HTMLButtonElement;
@@ -1171,23 +1168,27 @@ function promptDeleteEpoch(epochId: string): void {
   document.body.appendChild(modal);
 }
 
-function updateLegend(): void {
-  legend.innerHTML = "";
+/**
+ * The connector legend — WHAT THE EDGES MEAN, drawn into a Graph window's own
+ * resources panel.
+ *
+ * STEP A moved it here from a singleton `#legend` in the app-wide column. It was
+ * appearing under the NARRATIVE panel too, where it explains nothing: a story
+ * has no edges on screen. It belongs where edges are drawn, so it is part of the
+ * graph provider's offer and of nothing else.
+ */
+function renderLegendInto(host: HTMLElement): void {
   const s = scene();
-  if (!s) {
-    legend.classList.add("hidden");
-    return;
-  }
+  if (!s) return;
   const types = new Set<string>();
   for (const e of s.edges) types.add(e.edge.edge_type ?? "edge");
-  if (!types.size) {
-    legend.classList.add("hidden");
-    return;
-  }
+  if (!types.size) return;
+  const box = document.createElement("div");
+  box.className = "win-legend";
   const head = document.createElement("div");
   head.className = "pal-sect";
   head.textContent = "Relations";
-  legend.appendChild(head);
+  box.appendChild(head);
   for (const t of [...types].sort()) {
     const st = edgeStyle(t);
     const item = document.createElement("span");
@@ -1198,9 +1199,15 @@ function updateLegend(): void {
     sw.style.borderBottomStyle = st.dash.length ? "dashed" : "solid";
     item.appendChild(sw);
     item.appendChild(document.createTextNode(st.label));
-    legend.appendChild(item);
+    box.appendChild(item);
   }
-  legend.classList.remove("hidden");
+  host.appendChild(box);
+}
+
+/** The scene changed, so the edge types on screen may have: repaint the panels
+ *  that show them. */
+function updateLegend(): void {
+  renderResourcePanels();
 }
 
 function updateToolbar(): void {
@@ -1681,7 +1688,6 @@ function setMode(m: CentralMode): void {
   btnNarrativeEdit.classList.toggle("hidden", !narrative);
   // NARRWS1/PALETTE1 · the left palette is PER-MODE and PER-WINDOW, and it is
   // only there at all when you have opened it (Tools ▸ Palette).
-  reflectPalette();
   if (narrative) {
     // keep `view` (matrix/graph) as the canvas sub-view to restore on the way back.
     // NARR1 · entering narrative with no story yet → scaffold one from the graph
@@ -1727,7 +1733,7 @@ function applyCanvasView(v: ViewKind): void {
   // controls are per-mode and live in the window header — updateWindowHeader.)
   // WIN3 · the left panel's CONTENT follows the mode (DTC offers the DTC chunks,
   // not the stratigraphic types), so a mode change rebuilds it.
-  if (changed) buildPaletteForMode();
+  if (changed) renderResourcePanels(); // the offer follows the mode
   // each view keeps its own "circles of detail" depth → re-derive the hidden
   // sets and rebuild when the active view changes.
   if (changed && store) {
@@ -2244,10 +2250,13 @@ async function openDocument(): Promise<void> {
 // WIN3 · the palette is rebuilt when the canvas projection changes, because its
 // CONTENT is per-mode (DTC offers the DTC chunks, not the stratigraphic types).
 // One factory, called again — not a second palette that could drift.
-let paletteUi: ReturnType<typeof buildPalette>;
-function buildPaletteForMode(): void {
-  paletteUi = buildPalette(
-  document.getElementById("palette")!,
+/** Every palette currently mounted — one per open panel. STEP A made the panel
+ *  per-window, so there can be several, and the "what am I placing" highlight
+ *  belongs to all of them. Cleared whenever the panels are rebuilt. */
+const paletteUis: ReturnType<typeof buildPalette>[] = [];
+function buildPaletteForMode(host: HTMLElement, win: Win): void {
+  const ui = buildPalette(
+  host,
   (t, kind, isResource) => {
     if (!store) {
       toast("Open a document first");
@@ -2269,7 +2278,10 @@ function buildPaletteForMode(): void {
     placingType = active ? null : t;
     placingKind = active ? null : (kind ?? null);
     placingIsResource = active ? false : !!isResource;
-    paletteUi.setActive(placingType ? (placingKind ? key : t) : null);
+    // STEP A · the placing type is a fact about the SESSION, not about one
+    // panel: every mounted palette shows it, so two Graph windows with their
+    // panels open never disagree about what you are holding.
+    for (const p of paletteUis) p.setActive(placingType ? (placingKind ? key : t) : null);
     canvas.classList.toggle("placing", !!placingType);
     if (placingType) {
       const what = placingKind ?? placingType;
@@ -2279,21 +2291,14 @@ function buildPaletteForMode(): void {
       hintBar.classList.add("hidden");
     }
   },
-  // PALETTE1 · the palette shows what the FOCUSED window can place. A graph
-  // window in DTC mode offers the DTC glyphs, anywhere else the stratigraphic
-  // types (WIN3's per-mode content, now read from the window rather than from
-  // the app's `view`, because in a tiled shell those are different things).
-  { mode: paletteModeOfActiveWindow() },
+  // The palette shows what THIS window can place. A graph window in DTC mode
+  // offers the DTC glyphs, anywhere else the stratigraphic types (WIN3's
+  // per-mode content, read from the WINDOW — in a tiled shell "the window's
+  // projection" and "the app's view" are different things).
+  { mode: winMode(win) },
   );
+  paletteUis.push(ui);
 }
-
-/** The projection whose palette belongs to the focused window, or null when that
- *  window places nothing (a table, a panel, the narrative). */
-function paletteModeOfActiveWindow(): string | undefined {
-  const win = activeWin();
-  return win.type === "graph" ? winMode(win) : undefined;
-}
-buildPaletteForMode();
 
 // ── PALETTE1 · the palette is a PANEL you open ──────────────────────────────
 //
@@ -2307,88 +2312,141 @@ buildPaletteForMode();
 // The drop itself is untouched (DND1/WIN6: every area accepts a drop and places
 // in its own camera), and so is the filter box at the top.
 
-const PALETTE_OPEN_KEY = "emstudio.palette.open";
-
-function paletteOpen(): boolean {
-  try {
-    return localStorage.getItem(PALETTE_OPEN_KEY) === "true";
-  } catch {
-    return false;
-  }
-}
-
-function setPaletteOpen(open: boolean): void {
-  try {
-    localStorage.setItem(PALETTE_OPEN_KEY, String(open));
-  } catch {
-    /* storage disabled */
-  }
-  reflectPalette();
-}
-
 /**
- * Show or hide the palette sidebar of the ACTIVE AREA, and put that window's
- * offer in it.
+ * ─────────────── STEP A · the RESOURCES panel, anchored to its window ─────────
  *
- * Called on every focus change and mode change, so the palette is never showing
- * the types of a window you are no longer in — which is the failure the old
- * always-on column had no way even to notice.
+ * The panel used to belong to whichever window had the FOCUS: it lived inside
+ * `#canvas-wrap`, so moving the mouse to another area took it away and moving
+ * back brought it out again. It flickered, and worse, it was never really the
+ * panel *of* anything — you opened it on the Graph and it followed you to the
+ * table.
  *
- * PALETTE-FIX · the width is published as `--palette-w` on the area, exactly the
- * way the docked header publishes `--winbar-h`: the canvas is NARROWED by it
- * rather than covered, so nothing you can drop onto ends up behind the panel and
- * the camera follows without a second measurement anywhere.
+ * It is a panel of a WINDOW INSTANCE now. It is built into that window's own
+ * area, focused or not; it stays put when the pointer leaves; it closes only
+ * from its own chevron `‹` or from Tools. Two Graph windows side by side each
+ * have their own, independently.
+ *
+ * WHO has one is a REGISTRY, not a condition scattered through the code — and it
+ * decides the CONTENTS too, because "what can this window offer" is not always
+ * "the node types": a Graph offers the stratigraphic palette, a Narrative offers
+ * the blocks of a story. A window type with no entry here has no panel and no
+ * chevron, which is why a Tabular or an Inspector shows neither.
  */
-function reflectPalette(): void {
-  const open = paletteOpen();
-  const win = activeWin();
-  const narrative = centralMode === "narrative" && win.type === "narrative";
-  const places = win.type === "graph" || narrative;
-  const showing = open && places;
-  leftCol.classList.toggle("hidden", !showing);
-  paletteEl.classList.toggle("hidden", narrative);
-  narrativePaletteEl.classList.toggle("hidden", !narrative);
-  wrap.style.setProperty("--palette-w", showing ? `${PALETTE_W}px` : "0px");
-  const item = document.getElementById("btn-tool-palette");
-  if (item) item.classList.toggle("mode-active", open);
-  // the chevron is offered only where a palette is possible — on a Tabular or an
-  // Inspector area it would open nothing, and a control that does nothing is
-  // worse than one that is not there
-  const chev = document.getElementById("palette-chevron");
-  if (chev) {
-    chev.classList.toggle("hidden", !places);
-    chev.textContent = showing ? "‹" : "›";
-    chev.title = t(showing ? "palette.close" : "palette.open");
-    chev.setAttribute("aria-expanded", String(showing));
-  }
-  if (!showing) return;
-  if (narrative) renderNarrativePalette();
-  else buildPaletteForMode();
+interface ResourceProvider {
+  /** Fill `host` with this window's offer. */
+  render: (host: HTMLElement, win: Win) => void;
 }
 
-/** The sidebar's width. One number: the CSS reads it through `--palette-w`. */
-const PALETTE_W = 148;
+const RESOURCE_PROVIDERS: Partial<Record<WindowType, ResourceProvider>> = {
+  // the 46 stratigraphic types — or, in DTC Mode, the DTC glyphs (WIN3)
+  graph: {
+    render: (host, win) => {
+      buildPaletteForMode(host, win);
+      renderLegendInto(host);
+    },
+  },
+  // the narrative building blocks. NOT the node types, which are of no use
+  // while reading or writing a story — and NOT the connector legend, which
+  // explains EDGES and belongs where edges are drawn.
+  narrative: { render: (host) => renderNarrativePalette(host) },
+};
 
-/** Open or close the palette, from either of its two doors. */
-function togglePalette(): void {
-  setPaletteOpen(!paletteOpen());
+/** True when this window has something to offer — the ONE place that answers it. */
+function hasResources(win: Win): boolean {
+  return !!RESOURCE_PROVIDERS[win.type];
+}
+
+/** Is this window's panel open? Per INSTANCE, persisted with the window. */
+function resourcesOpen(win: Win): boolean {
+  return winCurrent(win, "resources") === true;
+}
+
+function setResourcesOpen(win: Win, open: boolean): void {
+  setWinCurrent(win, "resources", open ? true : null);
+  renderTiles(); // the panel is part of the area: the tree re-lays out with it
   requestAnimationFrame(() => {
     resizeCanvas();
     draw();
   });
 }
 
+/** The sidebar's width. One number: the CSS reads it through `--palette-w`. */
+const PALETTE_W = 148;
+
+/**
+ * Build the resources sidebar and its chevron into ONE area.
+ *
+ * Called for every area that has a provider — the focused one and the others
+ * alike, which is what makes the panel stay where it was put. The reserved width
+ * is published on the AREA as `--palette-w`, so the canvas of that window is
+ * narrowed by it in both states and the drawing never re-frames when the pointer
+ * crosses a divider (SHELL-POLISH's no-reflow rule).
+ */
+function buildResourcePanel(area: HTMLElement, win: Win): void {
+  const provider = RESOURCE_PROVIDERS[win.type];
+  if (!provider) {
+    area.style.setProperty("--palette-w", "0px");
+    return;
+  }
+  const open = resourcesOpen(win);
+  area.style.setProperty("--palette-w", open ? `${PALETTE_W}px` : "0px");
+  if (open) {
+    const panel = document.createElement("div");
+    panel.className = "win-resources";
+    // a gesture inside the panel is not a gesture on the window's content
+    panel.addEventListener("pointerdown", (e) => e.stopPropagation());
+    area.appendChild(panel);
+    provider.render(panel, win);
+  }
+  const chev = document.createElement("button");
+  chev.className = "win-res-chevron";
+  chev.type = "button";
+  chev.textContent = open ? "‹" : "›";
+  chev.title = t(open ? "palette.close" : "palette.open");
+  chev.setAttribute("aria-expanded", String(open));
+  chev.addEventListener("pointerdown", (e) => e.stopPropagation());
+  chev.addEventListener("click", (e) => {
+    e.stopPropagation();
+    setResourcesOpen(win, !open);
+  });
+  area.appendChild(chev);
+}
+
+/** Repaint every mounted panel in place — for a scene or document change, which
+ *  must not cost a re-tile. */
+function renderResourcePanels(): void {
+  paletteUis.length = 0;
+  for (const area of [
+    ...document.querySelectorAll<HTMLElement>(".tile-area"),
+    canvasWrapEl,
+  ]) {
+    const panel = area.querySelector<HTMLElement>(":scope > .win-resources");
+    if (!panel) continue;
+    const id = area === canvasWrapEl ? activeWin().id : area.dataset.win;
+    const win = windowsOf().find((w) => w.id === id);
+    const provider = win && RESOURCE_PROVIDERS[win.type];
+    if (!win || !provider) continue;
+    panel.textContent = "";
+    provider.render(panel, win);
+  }
+}
+
+/** Open or close the FOCUSED window's panel — Tools ▸ Palette nodi. The chevron
+ *  on each area does the same for its own window; both go through
+ *  `setResourcesOpen`, so there is one state and it belongs to the window. */
+function togglePalette(): void {
+  const win = activeWin();
+  if (!hasResources(win)) {
+    toast("Questa finestra non ha un pannello risorse.");
+    return;
+  }
+  setResourcesOpen(win, !resourcesOpen(win));
+}
+
 document.getElementById("btn-tool-palette")?.addEventListener("click", togglePalette);
-// PALETTE-FIX · the chevron on the area's inner edge — Blender's N-panel toggle.
-// It travels with the panel (`left: var(--palette-w)`), so the way out is where
-// the way in was. `pointerdown` is stopped: the areas read pointer gestures, and
-// a click on a control of the area is not a gesture on its content.
-const paletteChevron = document.getElementById("palette-chevron");
-paletteChevron?.addEventListener("pointerdown", (e) => e.stopPropagation());
-paletteChevron?.addEventListener("click", (e) => {
-  e.stopPropagation();
-  togglePalette();
-});
+// STEP A · the chevrons are BUILT PER AREA (`buildResourcePanel`) and wired
+// there, to their own window. There is no singleton to bind here any more —
+// that singleton was the follow-the-focus bug.
 
 /**
  * Ask em-core to re-assert node SIZES on the layout we already have (EM3).
@@ -2429,7 +2487,7 @@ function cancelPlacing(): void {
   placingType = null;
   placingKind = null;
   placingIsResource = false;
-  paletteUi.setActive(null);
+  for (const p of paletteUis) p.setActive(null);
   canvas.classList.remove("placing");
   hintBar.classList.add("hidden");
 }
@@ -4956,7 +5014,6 @@ btnAddEpoch.addEventListener("click", (e) => {
 // now, and the thing that opens and closes it is the chevron on that area's own
 // edge (plus Tools ▸ Palette nodi). Two handles for one panel, one of them
 // outside the window the panel belongs to, was the shape of the confusion.
-const leftCol = document.getElementById("left-col")!;
 
 /** Kept as a no-op call site: `updateToolbar` still asks the chrome to repaint,
  *  and this is where anything about the area's own panels would go. */
@@ -5427,11 +5484,11 @@ function refreshNarrativeView(): void {
       set: (i) => setCurrentChapterIndex(i),
     },
   );
-  renderNarrativePalette();
+  renderResourcePanels(); // the story changed: its blocks panel repaints
 }
 
 /**
- * NARRWS1 · the narrative mode's OWN left palette — narrative building blocks,
+ * NARRWS1 · the narrative mode's OWN resources panel — narrative building blocks,
  * NOT the graph node-types (which are useless while reading/writing a story).
  * Per-mode, coherent with MODE1/DP-82. "＋ Capitolo" and "🗺 Mappa del sito" are
  * direct, unambiguous actions (reuse the narrative-edit mutators); the embed
@@ -5440,10 +5497,13 @@ function refreshNarrativeView(): void {
  * button, which knows the target chapter and ref. Site map ties to GEO1: the
  * embed points at the graph-self node, whose map reads the site position.
  */
-function renderNarrativePalette(): void {
-  const host = narrativePaletteEl;
+function renderNarrativePalette(host: HTMLElement): void {
   host.textContent = "";
-  if (centralMode !== "narrative") return;
+  // STEP A · NO `centralMode` guard. This panel belongs to a NARRATIVE WINDOW,
+  // and `centralMode` describes whichever window has the focus — so the guard
+  // emptied the panel the moment the pointer moved to another area, which is
+  // the anchoring bug wearing a different hat. The window's type is the only
+  // condition that matters, and the provider registry has already checked it.
   const narr =
     narrativesIn(store?.doc ?? null).find((n) => n.id === selectedNarrativeId) ??
     narrativesIn(store?.doc ?? null)[0];
@@ -5771,8 +5831,10 @@ function buildPane(pane: Pane, activeId: string): HTMLElement {
       canvasWrapEl.classList.add("tile-active");
       canvasWrapEl.style.flex = "1 1 0";
       canvasWrapEl
-        .querySelectorAll(".tile-corner")
+        .querySelectorAll(".tile-corner, .win-resources, .win-res-chevron")
         .forEach((g) => g.remove()); // rebuilt below, so they never pile up
+      const activeWinObj = windowsOf().find((w) => w.id === pane.winId);
+      if (activeWinObj) buildResourcePanel(canvasWrapEl, activeWinObj);
       addCornerGrips(canvasWrapEl, pane.winId, "var(--winbar-h, 0px)");
       return canvasWrapEl;
     }
@@ -5791,17 +5853,12 @@ function buildPane(pane: Pane, activeId: string): HTMLElement {
     bar.className = "tile-bar win-header";
     area.appendChild(bar);
     if (win && win.type === "graph") {
+      // FOCUS-NOJITTER / STEP A · the width the panel takes is published on the
+      // AREA (`--palette-w`, set by `buildResourcePanel`) and the canvas reads
+      // it in CSS — in this area and in the focused one alike. So a window with
+      // its panel open is the same size whether or not it has the focus, and
+      // the drawing never re-frames when the pointer crosses a divider.
       const cv = document.createElement("canvas");
-      // FOCUS-NOJITTER · a graph window with the palette OPEN keeps that width
-      // reserved whether or not it has the focus. Without this, leaving the
-      // window closed its sidebar and gave the 148px back to the drawing, so the
-      // graph re-framed itself wider the moment the pointer crossed the divider
-      // — the rescale E.D. saw on the way out. The window is the same size in
-      // both states now; only the sidebar's contents stop being reachable.
-      if (paletteOpen()) {
-        cv.style.marginLeft = `${PALETTE_W}px`;
-        cv.style.width = `calc(100% - ${PALETTE_W}px)`;
-      }
       area.appendChild(cv);
       tileCanvases.set(pane.winId, cv);
     } else if (win) {
@@ -5811,6 +5868,9 @@ function buildPane(pane: Pane, activeId: string): HTMLElement {
       // in it — the arrangement was a promise rather than a workspace.
       buildSecondarySurface(area, win);
     }
+    // STEP A · this window's resources panel, if it has one open. Built here,
+    // in ITS area, which is what makes it stay put when the focus moves away.
+    if (win) buildResourcePanel(area, win);
     // ── a secondary area is a WORKING area, not a picture ──────────────────
     //
     // Its camera is its own, so pan and zoom happen HERE without stealing the
@@ -5999,6 +6059,7 @@ function renderTiles(): void {
   closeAllSubmenus();
   tileCanvases.clear();
   tileSurfaces.length = 0;
+  paletteUis.length = 0;
   // the areas that owned these are about to be discarded whole
   for (const h of tileEmDataHosts.splice(0)) removeEmDataHost(h);
   // WIN7 · a panel living in a secondary area would be DESTROYED by the reset
@@ -6128,10 +6189,19 @@ function documentsInGraph(): EmNode[] {
 /** The focused Doc window's surface. WIN7 split the rendering out (below) so a
  *  SECONDARY Doc area can paint the same thing into its own two boxes. */
 function renderDocView(): void {
+  const surface = document.getElementById("doc-view");
   const list = document.getElementById("doc-view-list");
   const detail = document.getElementById("doc-view-detail");
-  if (!list || !detail) return;
+  if (!surface || !list || !detail) return;
+  reflectDocWidth(surface);
   renderDocViewInto(activeWin(), list, detail);
+}
+
+/** A Doc surface wide enough for the list and the detail side by side gets the
+ *  row layout; a narrow one stacks them. Measured from the SURFACE, so the two
+ *  renderings answer it the same way and the focus never enters into it. */
+function reflectDocWidth(surface: HTMLElement): void {
+  surface.classList.toggle("doc-wide", surface.clientWidth >= 520);
 }
 
 /** Draw the sources of the graph for ONE window into ONE pair of boxes. The
@@ -6421,14 +6491,21 @@ function buildSecondarySurface(area: HTMLElement, win: Win): void {
     return;
   }
   if (win.type === "doc") {
+    // SURFACE-AUDIT · the same two boxes and the same classes the focused Doc
+    // window uses. The only thing that differs is the direction, and it is keyed
+    // to the AREA'S WIDTH (`doc-wide`), not to who has the focus — so entering
+    // this window reflows nothing.
+    const surface = document.createElement("div");
+    surface.className = "doc-surface";
     const list = document.createElement("div");
-    list.className = "tile-doclist";
+    list.className = "doc-list";
     const detail = document.createElement("div");
-    detail.className = "tile-docdetail";
-    area.appendChild(list);
-    area.appendChild(detail);
+    detail.className = "doc-detail";
+    surface.append(list, detail);
+    area.appendChild(surface);
     const paint = (): void => {
       if (!list.isConnected) return;
+      reflectDocWidth(surface);
       renderDocViewInto(win, list, detail);
     };
     tileSurfaces.push(paint);
@@ -6591,7 +6668,6 @@ function selectWindow(winId: string): void {
   if (win.type === "graph") setMode(winMode(win));
   else mountWindow(win);
   updateWindowHeader();
-  reflectPalette(); // PALETTE1 · it offers what THIS window can place
 }
 
 /**
@@ -7015,7 +7091,14 @@ function renderAreaHeaders(): void {
     bar.innerHTML = "";
     bar.appendChild(buildAreaHeader(win, false));
   }
-  // the bar can wrap to two rows on a narrow area: republish the height it takes
+  // STEP A · every area publishes the height ITS bar takes, the way the focused
+  // one always has (`--winbar-h`): the resources panel and its chevron sit below
+  // the bar in any area, and they read that one measurement rather than each
+  // guessing from a constant that would drift.
+  for (const area of document.querySelectorAll<HTMLElement>(".tile-area")) {
+    const bar = area.querySelector<HTMLElement>(":scope > .tile-bar");
+    area.style.setProperty("--winbar-h", `${bar?.offsetHeight ?? 0}px`);
+  }
   resizeCanvas();
 }
 
@@ -8679,7 +8762,6 @@ updateToolbar();
 // without a store).
 renderTiles(); // WIN5 · lay out the arrangement this session was left in
 applyWorkspace(activeWorkspace());
-reflectPalette(); // PALETTE1 · open only if it was left open, and for THIS window
 
 // EM-Data (DP-81): a live tabular view on the active store. Reads `store`
 // through a getter so it always sees the current slot; re-renders from the

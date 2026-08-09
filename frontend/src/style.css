@@ -1141,7 +1141,7 @@ body.sync-active #mode-indicator::before {
 
 #drop-hint {
   position: absolute;
-  inset: var(--winbar-h, 0px) 0 0 0; /* WIN4 · below the docked bar */
+  inset: var(--winbar-h, 0px) 0 0 var(--palette-w, 0px); /* WIN4 · below the docked bar; STEP A · beside the resources panel */
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -2151,15 +2151,15 @@ body.sync-active #footer-brand #em-version {
 
 /* ---------- palette ---------- */
 /* left column: node palette (scrolls) above the edge legend (pinned bottom) */
-/* PALETTE-FIX · the palette is a SIDEBAR OF THE ACTIVE AREA — Blender's
-   N-panel. It used to be a column of `<main>`, as tall as the whole app and
-   belonging to no window in particular; now it is positioned inside
-   `#canvas-wrap`, below that area's docked header, and it goes with the area.
-   The canvas is narrowed by exactly its width (`--palette-w`, published by
-   `reflectPalette`) rather than covered, so nothing you can drop onto is
-   hidden behind it and the camera follows automatically — `viewSize()` reads
-   the canvas element. */
-#left-col {
+/* STEP A · the RESOURCES panel — a sidebar of ONE WINDOW's area, focused or not.
+   It began as a column of `<main>` (as tall as the app, belonging to no window),
+   then as a sidebar of whichever area had the focus — which made it flicker in
+   and out as the pointer crossed a divider. It is built into the area of the
+   window it was opened on, and it stays there. The area publishes the width it
+   takes as `--palette-w`, and the canvas of that area is NARROWED by it (never
+   covered), in both focus states — so nothing you can drop onto hides behind a
+   panel, and the drawing never re-frames on a hover. */
+.win-resources {
   position: absolute;
   top: var(--winbar-h, 0px);
   left: 0;
@@ -2169,17 +2169,16 @@ body.sync-active #footer-brand #em-version {
   flex-direction: column;
   width: var(--palette-w, 148px);
   min-height: 0;
+  overflow-y: auto;
+  padding: 8px 6px;
+  box-sizing: border-box;
   border-right: 1px solid var(--border);
   background: var(--bg-panel);
   box-shadow: 2px 0 10px rgba(0, 0, 0, 0.18);
 }
-#left-col.hidden {
-  display: none;
-}
 /* the chevron that opens it, on the area's own inner edge — small, discreet,
-   always reachable, and it travels with the panel so the way out is where the
-   way in was */
-#palette-chevron {
+   and it travels with the panel so the way out is where the way in was */
+.win-res-chevron {
   position: absolute;
   top: calc(var(--winbar-h, 0px) + 10px);
   left: var(--palette-w, 0px);
@@ -2200,19 +2199,22 @@ body.sync-active #footer-brand #em-version {
   cursor: pointer;
   opacity: 0.75;
 }
-#palette-chevron:hover {
+.win-res-chevron:hover {
   opacity: 1;
   color: var(--text);
   border-color: var(--accent);
 }
-#palette-chevron.hidden {
-  display: none;
+/* the connector legend, at the foot of a GRAPH window's panel only */
+.win-legend {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+  flex: 0 0 auto;
 }
 
-#palette {
-  flex: 1 1 auto;
-  overflow-y: auto;
-  padding: 8px 6px;
+/* the palette items and the narrative blocks are laid straight into the panel */
+.win-resources > .pal-sect:first-child {
+  margin-top: 0;
 }
 
 /* QOL1 · recent files list in the EMTree panel */
@@ -2256,11 +2258,7 @@ body.sync-active #footer-brand #em-version {
 }
 
 /* NARRWS1 · the narrative-mode left palette (building blocks, not node types) */
-#narrative-palette {
-  flex: 1 1 auto;
-  overflow-y: auto;
-  padding: 8px 6px;
-}
+
 .np-sect {
   font-size: 10.5px;
   text-transform: uppercase;
@@ -2987,7 +2985,7 @@ body.sync-active #footer-brand #em-version {
    evidence beside it, so it is set like a page. */
 #narrative-view {
   position: absolute;
-  inset: var(--winbar-h, 0px) 0 0 0; /* WIN4 · below the docked bar */
+  inset: var(--winbar-h, 0px) 0 0 var(--palette-w, 0px); /* WIN4 · below the docked bar; STEP A · beside the resources panel */
   overflow-y: auto;
   background: var(--bg-subtle);
   padding: 28px 0 64px;
@@ -4489,11 +4487,21 @@ body.sync-active #footer-brand #em-version {
 
 /* CURRENT-ELEMENT · the chapter / row a window is working on. A left accent rule
    rather than a fill: the current element must be findable at a glance without
-   competing with the selection colours the content itself uses. */
+   competing with the selection colours the content itself uses.
+
+   The rule is drawn as an INSET SHADOW, not as a border. A border (with the
+   padding and negative margin that used to compensate for it) participates in
+   layout, so marking a chapter current nudged the whole block sideways — the
+   text moved under the reader. A shadow paints inside the box and takes no
+   space: the block does not move by a pixel, which is the same reason
+   `.emdata-current` marks its row this way. */
+.nv-chapter {
+  padding-left: 16px;
+  box-shadow: inset 4px 0 0 transparent;
+  border-radius: 2px;
+}
 .nv-chapter.nv-current {
-  border-left: 3px solid var(--accent);
-  padding-left: 13px;
-  margin-left: -16px;
+  box-shadow: inset 4px 0 0 var(--accent);
 }
 .emdata-table tr.emdata-current td {
   box-shadow: inset 0 -1px 0 var(--accent), inset 0 1px 0 var(--accent);
@@ -4571,7 +4579,10 @@ body.sync-active #footer-brand #em-version {
 .tile-area > canvas {
   flex: 1;
   min-height: 0;
-  width: 100%;
+  /* STEP A · the same width the focused area's canvas reserves, so a window with
+     its panel open measures the same whether or not it has the focus */
+  margin-left: var(--palette-w, 0px);
+  width: calc(100% - var(--palette-w, 0px));
 }
 /* EVERY window is framed by a 1px white hairline — the frame says "this is a
    window", so it belongs to all of them. The one that takes the edits is the
@@ -4618,7 +4629,7 @@ body.sync-active #footer-brand #em-version {
 #table-view,
 #doc-view {
   position: absolute;
-  inset: var(--winbar-h, 0px) 0 0 0;
+  inset: var(--winbar-h, 0px) 0 0 var(--palette-w, 0px);
   z-index: 5;
   background: var(--bg-subtle);
   display: flex;
@@ -4654,22 +4665,45 @@ body.sync-active #footer-brand #em-version {
   min-height: 0;
   overflow: auto;
 }
-/* Doc: the list of documents on the left, the current one on the right */
-#doc-view {
+/* SURFACE-AUDIT · the Doc surface, ONE rule set for both renderings.
+   The focused window laid it out as a row (list 240px on the left) and a
+   secondary area as a column (list 34% on top) — so entering a Doc window
+   reflowed it completely. The two situations DO differ, but by the AREA'S
+   WIDTH, not by who has the focus: 114px of detail beside a 240px list is
+   unusable, and a column is right there. So the direction is keyed to a
+   `.doc-wide` class that JS sets from the measured width — identical in both
+   focus states, because the area's width is. */
+#doc-view,
+.doc-surface {
+  flex-direction: column;
+}
+#doc-view.doc-wide,
+.doc-surface.doc-wide {
   flex-direction: row;
 }
-#doc-view-list {
-  width: 240px;
-  flex: 0 0 240px;
-  border-right: 1px solid var(--border);
+.doc-list {
+  flex: 0 0 34%;
   overflow-y: auto;
   padding: 6px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-subtle);
 }
-#doc-view-detail {
+.doc-wide > .doc-list {
+  flex: 0 0 240px;
+  border-bottom: none;
+  border-right: 1px solid var(--border);
+}
+.doc-detail {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   overflow-y: auto;
   padding: 14px 18px;
+  background: var(--bg-subtle);
+  font-size: 12px;
+}
+.doc-wide > .doc-detail {
+  font-size: inherit;
 }
 .doc-item {
   display: block;
@@ -4750,22 +4784,7 @@ body.sync-active #footer-brand #em-version {
 /* FOCUS-NOJITTER · the secondary strip and body carry `.panel-tabs`/`.panel-body`
    too, so their metrics come from the one rule set above. Nothing type-specific
    is left here. */
-/* Doc, as two boxes in whatever space the area has */
-.tile-doclist {
-  flex: 0 0 34%;
-  overflow: auto;
-  padding: 6px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-subtle);
-}
-.tile-docdetail {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  padding: 8px 12px;
-  background: var(--bg-subtle);
-  font-size: 12px;
-}
+/* (the Doc surface is styled once, above: `.doc-list` / `.doc-detail`.) */
 /* a secondary area that is not a canvas: say what it is, do not draw a wrong one */
 .tile-note {
   flex: 1;
@@ -4911,7 +4930,7 @@ body.sync-active #footer-brand #em-version {
 /* WIN6 · a side panel hosted INSIDE a window area */
 #panel-view {
   position: absolute;
-  inset: var(--winbar-h, 0px) 0 0 0;
+  inset: var(--winbar-h, 0px) 0 0 var(--palette-w, 0px);
   z-index: 5;
   background: var(--bg-panel);
   display: flex;
