@@ -380,6 +380,24 @@ export function joinWindow(winId: string, ws: WorkspaceId = active): boolean {
   return true;
 }
 
+/**
+ * The windows on the OTHER side of the split that directly holds `winId` — the
+ * ones a join would absorb. Empty when the area is not inside a split.
+ *
+ * Used by the corner gesture: dragging an area's corner onto a neighbour joins
+ * them, and "is that neighbour actually my sibling?" is the question that
+ * decides whether the gesture means anything.
+ */
+export function siblingIdsOf(winId: string, ws: WorkspaceId = active): string[] {
+  const walk = (p: Pane): string[] | null => {
+    if (p.kind === "leaf") return null;
+    if (p.a.kind === "leaf" && p.a.winId === winId) return paneIds(p.b);
+    if (p.b.kind === "leaf" && p.b.winId === winId) return paneIds(p.a);
+    return walk(p.a) ?? walk(p.b);
+  };
+  return walk(layoutOf(ws)) ?? [];
+}
+
 /** Move the divider of the split that contains `winId` as its FIRST child. */
 export function setSplitRatio(
   winId: string,

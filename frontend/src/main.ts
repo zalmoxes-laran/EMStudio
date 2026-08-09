@@ -179,6 +179,7 @@ import {
   GRAPH_MODES,
   canJoin,
   joinWindow,
+  siblingIdsOf,
   layoutOf,
   paneIds,
   setActiveWin,
@@ -5344,6 +5345,11 @@ const canvasWrapEl = document.getElementById("canvas-wrap")!;
 /** canvases of the secondary areas, by window id — redrawn with the main draw */
 const tileCanvases = new Map<string, HTMLCanvasElement>();
 
+/** The node the pointer is over in a SECONDARY area, per area. Hovering has to
+ *  work before an area is promoted — otherwise "is that the node I want?" can
+ *  only be answered by clicking, which is the thing you were trying to decide. */
+const tileHover = new Map<string, string | null>();
+
 /** Draw one secondary area: same renderer, that window's scene and camera. */
 function drawTile(winId: string, mode: ViewKind, cv: HTMLCanvasElement): void {
   const dpr = window.devicePixelRatio || 1;
@@ -5372,9 +5378,11 @@ function drawTile(winId: string, mode: ViewKind, cv: HTMLCanvasElement): void {
     s,
     vp,
     {
-      hoverId: null,
-      selectedId: null,
-      selectedIds: new Set<string>(),
+      // a secondary area shows the SAME selection as the document (selection is
+      // a fact about the graph, not about a window) and its own hover
+      hoverId: tileHover.get(winId) ?? null,
+      selectedId,
+      selectedIds,
       edgeVisible,
       hoverEdgeIdx: null,
       selectedEdgeIdx: -1,
@@ -5399,6 +5407,107 @@ function drawTiles(): void {
   }
 }
 
+// ── WIN5 · the corner gesture (Blender) ─────────────────────────────────────
+//
+// Every area carries two corner grips. Drag one and where you RELEASE says what
+// you meant:
+//
+//   · released INSIDE the same area  → SPLIT it. The dominant axis of the drag
+//     picks the direction: dragging sideways cuts a new area beside this one,
+//     dragging up/down cuts one above/below.
+//   · released ON A NEIGHBOURING AREA → JOIN: this area absorbs that one and
+//     the divider between them goes away.
+//
+// The same two verbs as the ⇥ / ⇤ / ⊟ buttons — the buttons stay, because a
+// gesture nobody discovers is not a feature. This is the direct-manipulation
+// way in, and it reads the geometry off the DOM: no second model of where the
+// areas are.
+
+/** The area element under a point, and the window it holds. */
+function areaAt(x: number, y: number): { el: HTMLElement; winId: string } | null {
+  const areas: { el: HTMLElement; winId: string }[] = [
+    { el: canvasWrapEl, winId: activeWin().id },
+    ...[...document.querySelectorAll<HTMLElement>(".tile-area")].map((el) => ({
+      el,
+      winId: el.dataset.win ?? "",
+    })),
+  ];
+  for (const a of areas) {
+    const r = a.el.getBoundingClientRect();
+    if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return a;
+  }
+  return null;
+}
+
+/**
+ * Attach the two corner grips to an area.
+ *
+ * `barOffset` pushes the TOP-LEFT grip below that area's docked bar: the two
+ * would otherwise overlap by a few pixels and the grip would occasionally eat a
+ * click meant for the window-type dropdown — a gesture stealing a menu is worse
+ * than a gesture nobody finds.
+ */
+function addCornerGrips(area: HTMLElement, winId: string, barOffset: string): void {
+  for (const corner of ["tl", "br"] as const) {
+    const grip = document.createElement("div");
+    grip.className = `tile-corner tile-corner-${corner}`;
+    if (corner === "tl") grip.style.top = barOffset;
+    grip.title = t("tile.corner");
+    grip.addEventListener("pointerdown", (e) => e.stopPropagation());
+    grip.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const x0 = e.clientX;
+      const y0 = e.clientY;
+      let target: HTMLElement | null = null;
+      const clearTarget = (): void => {
+        document
+          .querySelectorAll(".tile-join-target")
+          .forEach((el) => el.classList.remove("tile-join-target"));
+      };
+      const move = (ev: MouseEvent): void => {
+        clearTarget();
+        const over = areaAt(ev.clientX, ev.clientY);
+        // highlight only a neighbour we could actually absorb
+        const siblings = siblingIdsOf(winId);
+        if (over && over.winId !== winId && siblings.includes(over.winId)) {
+          over.el.classList.add("tile-join-target");
+          target = over.el;
+        } else {
+          target = null;
+        }
+      };
+      const up = (ev: MouseEvent): void => {
+        window.removeEventListener("mousemove", move);
+        window.removeEventListener("mouseup", up);
+        clearTarget();
+        const dx = ev.clientX - x0;
+        const dy = ev.clientY - y0;
+        if (Math.abs(dx) + Math.abs(dy) < 8) return; // a click, not a drag
+        const over = areaAt(ev.clientX, ev.clientY);
+        if (target && over && over.winId !== winId) {
+          // JOIN · the dragged area absorbs the one released on
+          setActiveWin(winId);
+          joinWindow(winId);
+        } else if (over && over.winId === winId) {
+          // SPLIT · the dominant axis decides the cut
+          splitWindow(winId, Math.abs(dx) >= Math.abs(dy) ? "row" : "col");
+        } else {
+          return; // released on nothing meaningful: do nothing, quietly
+        }
+        renderTiles();
+        const win = activeWin();
+        if (win.type === "graph") setMode(winMode(win));
+        else mountWindow(win);
+        updateWindowHeader();
+      };
+      window.addEventListener("mousemove", move);
+      window.addEventListener("mouseup", up);
+    });
+    area.appendChild(grip);
+  }
+}
+
 /** Build the DOM of one pane of the tree. */
 function buildPane(pane: Pane, activeId: string): HTMLElement {
   if (pane.kind === "leaf") {
@@ -5406,6 +5515,10 @@ function buildPane(pane: Pane, activeId: string): HTMLElement {
       // the live area IS the existing canvas wrapper, moved into place
       canvasWrapEl.classList.add("tile-active");
       canvasWrapEl.style.flex = "1 1 0";
+      canvasWrapEl
+        .querySelectorAll(".tile-corner")
+        .forEach((g) => g.remove()); // rebuilt below, so they never pile up
+      addCornerGrips(canvasWrapEl, pane.winId, "var(--winbar-h, 0px)");
       return canvasWrapEl;
     }
     const win = windowsOf().find((x) => x.id === pane.winId);
@@ -5442,9 +5555,104 @@ function buildPane(pane: Pane, activeId: string): HTMLElement {
             : "";
       area.appendChild(note);
     }
-    // clicking anywhere in a secondary area promotes it — the editable window
-    // follows the pointer's intent, which is the whole point of tiling
-    area.addEventListener("mousedown", () => selectWindow(pane.winId));
+    // ── a secondary area is a WORKING area, not a picture ──────────────────
+    //
+    // Its camera is its own, so pan and zoom happen HERE without stealing the
+    // focus (you look around a reference view without losing the one you were
+    // editing). Anything that touches the DOCUMENT promotes the area first and
+    // then continues in the same gesture: the pointerdown is replayed on the
+    // real canvas, which by then occupies exactly this rectangle. So the first
+    // click selects, drags, or starts a connector — it is not spent on
+    // "activating a window", which is the way this normally goes wrong.
+    const winIdOf = pane.winId;
+    const modeOf = (): ViewKind =>
+      win && win.type === "graph" ? winMode(win) : "matrix";
+    const worldAt = (e: { clientX: number; clientY: number }) => {
+      const cv = tileCanvases.get(winIdOf);
+      const vp = viewportFor(winIdOf, modeOf());
+      if (!cv) return null;
+      const r = cv.getBoundingClientRect();
+      return vp.toWorld(e.clientX - r.left, e.clientY - r.top);
+    };
+    area.addEventListener(
+      "wheel",
+      (e) => {
+        const cv = tileCanvases.get(winIdOf);
+        if (!cv) return;
+        e.preventDefault();
+        const r = cv.getBoundingClientRect();
+        viewportFor(winIdOf, modeOf()).zoomAt(
+          e.clientX - r.left,
+          e.clientY - r.top,
+          Math.exp(-e.deltaY * 0.0016),
+        );
+        drawTiles();
+      },
+      { passive: false },
+    );
+    area.addEventListener("pointermove", (e) => {
+      const w = worldAt(e);
+      const sc = scenes[modeOf()] ?? null;
+      const hit = w && sc ? hitTest(sc, w.x, w.y) : null;
+      const now = hit?.id ?? null;
+      if (tileHover.get(winIdOf) === now) return;
+      tileHover.set(winIdOf, now);
+      area.style.cursor = now ? "pointer" : "default";
+      drawTiles();
+    });
+    area.addEventListener("pointerleave", () => {
+      if (tileHover.get(winIdOf) == null) return;
+      tileHover.set(winIdOf, null);
+      drawTiles();
+    });
+    area.addEventListener("pointerdown", (e) => {
+      // PAN, same gesture as the canvas (middle button or Space held): this
+      // moves a CAMERA, not the document, so it must NOT steal the focus — the
+      // whole point of a reference area is looking around it while you keep
+      // working in the other one.
+      if (e.button === 1 || spaceHeld) {
+        e.preventDefault();
+        const vp = viewportFor(winIdOf, modeOf());
+        let lx = e.clientX;
+        let ly = e.clientY;
+        const move = (ev: PointerEvent): void => {
+          vp.x += ev.clientX - lx;
+          vp.y += ev.clientY - ly;
+          lx = ev.clientX;
+          ly = ev.clientY;
+          drawTiles();
+        };
+        const up = (): void => {
+          window.removeEventListener("pointermove", move);
+          window.removeEventListener("pointerup", up);
+        };
+        window.addEventListener("pointermove", move);
+        window.addEventListener("pointerup", up);
+        return;
+      }
+      selectWindow(winIdOf); // the wrapper moves into this rectangle, now
+      // …and the gesture carries on, on the real canvas, with the SAME pointer
+      // id — still captured, so a drag started here keeps working.
+      canvas.dispatchEvent(
+        new PointerEvent("pointerdown", {
+          pointerId: e.pointerId,
+          pointerType: e.pointerType,
+          isPrimary: e.isPrimary,
+          clientX: e.clientX,
+          clientY: e.clientY,
+          button: e.button,
+          buttons: e.buttons,
+          shiftKey: e.shiftKey,
+          altKey: e.altKey,
+          ctrlKey: e.ctrlKey,
+          metaKey: e.metaKey,
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    });
+    // the secondary bar is laid out already; measure it after the append below
+    addCornerGrips(area, pane.winId, `${bar.offsetHeight || 29}px`);
     return area;
   }
   const split = document.createElement("div");

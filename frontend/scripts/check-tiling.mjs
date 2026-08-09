@@ -183,4 +183,22 @@ const eq = (got, want, what) => {
   ok(!W.joinWindow(W.activeWin("canvas").id, "canvas"), "so the join refuses");
 }
 
+// ── who a corner drag could join with ───────────────────────────────────────
+{
+  const a = W.activeWin("canvas");
+  const b = W.splitWindow(a.id, "row", "canvas");
+  eq(W.siblingIdsOf(b.id, "canvas"), [a.id], "the neighbour of a split area is its sibling");
+  eq(W.siblingIdsOf(a.id, "canvas"), [b.id], "and the relation is symmetric");
+  // split the sibling: now A's neighbour is a SUB-TREE, and all of it is
+  // absorbable — which is what the gesture must be told
+  const c = W.splitWindow(b.id, "col", "canvas");
+  eq(W.siblingIdsOf(a.id, "canvas").sort(), [b.id, c.id].sort(),
+    "a neighbour that is itself split reports every window it holds");
+  ok(!W.siblingIdsOf("nope", "canvas").length, "an unknown area has no neighbour");
+  while (W.windowsOf("canvas").length > 1)
+    W.joinWindow(W.activeWin("canvas").id, "canvas");
+  eq(W.siblingIdsOf(W.activeWin("canvas").id, "canvas"), [],
+    "a lone area has no neighbour to join");
+}
+
 console.log(`tiling: ${checks} checks passed`);

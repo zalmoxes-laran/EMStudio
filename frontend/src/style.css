@@ -4555,3 +4555,39 @@ body.sync-active #footer-brand #em-version {
   opacity: 0.55;
   font-size: 12.5px;
 }
+
+/* WIN5 · the corner grips: drag inside to split, onto a neighbour to join.
+   Two per area (top-left and bottom-right) so every direction is reachable. */
+.tile-corner {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  z-index: 30;
+  opacity: 0.35;
+  background:
+    linear-gradient(var(--border), var(--border)) no-repeat,
+    linear-gradient(var(--border), var(--border)) no-repeat;
+}
+.tile-corner:hover {
+  opacity: 1;
+  background-color: var(--accent);
+}
+.tile-corner-tl {
+  top: 0;
+  left: 0;
+  cursor: nwse-resize;
+  background-size: 100% 2px, 2px 100%;
+  background-position: 0 0, 0 0;
+}
+.tile-corner-br {
+  right: 0;
+  bottom: 0;
+  cursor: nwse-resize;
+  background-size: 100% 2px, 2px 100%;
+  background-position: 0 100%, 100% 0;
+}
+/* the neighbour a release would absorb */
+.tile-join-target {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
