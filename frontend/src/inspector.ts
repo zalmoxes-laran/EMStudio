@@ -186,7 +186,12 @@ function buildAuthorityField(
  * lives would defeat it. One renderer, so the two can never drift.
  */
 function renderSitePosition(host: HTMLElement, store: DocumentStore): void {
-    host.appendChild(el("h3", "insp-sect", "Site position (map)"));
+    // WIN7 · the anchor the narrative window's ⌖ button scrolls to. The site
+    // position is what a "site map" block in a chapter reads, so getting to it
+    // has to be one click from where the map is being written.
+    const heading = el("h3", "insp-sect", "Site position (map)");
+    heading.id = "insp-site-position";
+    host.appendChild(heading);
     const sp0 = store.readSitePosition();
     const spStatus = el(
       "div",

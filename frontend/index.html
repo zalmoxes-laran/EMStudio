@@ -91,18 +91,42 @@
           <button id="btn-mode-hub" disabled title="Hub: em-server multi-user session (coming later)"><span data-i18n="toolbar.modeHub">Hub</span></button>
         </div>
       </div>
+      <!-- WIN7 · Tools: the one-shot instruments. They are not editors and never
+           were — StratiMiner exists to MAKE a graph and then get out of the way,
+           which is why it never fitted as a tab of the Inspector (a panel that
+           describes the graph you already have). A menu of them at app level,
+           each opening a floating panel that closes when its job is done. -->
+      <div class="dropdown" id="dd-tools">
+        <button class="dd-toggle" title="Tools — one-shot instruments"><span data-i18n="toolbar.tools">Tools</span> ▾</button>
+        <div class="dd-menu hidden">
+          <button id="btn-tool-stratiminer" title="StratiMiner: build a graph from a folder of unstructured sources, via the reviewable em_data.xlsx table">
+            <span data-i18n="tab.stratiminer">StratiMiner</span>
+          </button>
+          <!-- MENU-AUDIT · Risorse was a bare button loose in the leader bar,
+               between the menus and the workspace chips. It is an instrument
+               that reaches the bridge for the shared Resource layer — the same
+               kind of thing as StratiMiner, and this is where that kind lives.
+               The button keeps its id, so its handler is untouched. -->
+          <button id="btn-resources" title="Resources: the shared Resource layer (Documents · RM · DTC · Shelf) via the bridge" data-i18n="toolbar.resources">Resources</button>
+        </div>
+      </div>
       <div class="dropdown" id="dd-help">
         <button class="dd-toggle" title="Help"><span data-i18n="toolbar.help">Help</span> ▾</button>
         <div class="dd-menu hidden">
           <button id="btn-help-about"><span data-i18n="toolbar.about">About EMStudio</span></button>
           <button id="btn-help-updates"><span data-i18n="toolbar.updates">Check for updates…</span></button>
-          <button id="btn-help-onto"><span data-i18n="toolbar.ontologies">Ontology models…</span></button>
+          <!-- MENU-AUDIT · "Ontology models…" REMOVED. It listed five rows, two
+               of them hardcoded strings — while the version button in the footer
+               ("Extended Matrix 1.6") already opens the same breakdown built
+               from the datamodel's own `referenced_ontology_versions`, with the
+               source links. The same view offered twice, and the menu copy was
+               the poorer and the one that could go stale (invariant 1). -->
         </div>
       </div>
       <!-- sync stays in the DOM (hidden) so its existing handler is reused;
            the Mode menu drives connect/disconnect. -->
       <button id="btn-sync" class="hidden" title="Connect to Blender/EMtools for live selection sync (ADR-002)" data-i18n="toolbar.sync">Sync</button>
-      <button id="btn-resources" title="Resources: the shared Resource layer (Documents · RM · DTC · Shelf) via the bridge" data-i18n="toolbar.resources">Resources</button>
+      <!-- MENU-AUDIT · Risorse moved into the Strumenti menu (see above). -->
       <span id="dirty-dot" class="hidden" title="unsaved changes">●</span>
       <span class="tb-sep"></span>
       <!-- WIN1 · workspace leader: fixed presets (Canvas/Narrative/Table/DTC).
@@ -215,6 +239,13 @@
           <!-- narrative windows: writing is a MODE of the window, so it is a
                button in the bar and not an item buried in a menu -->
           <button id="win-act-edit" class="win-act" title="Modifica la narrativa (scrivi, riordina, inserisci)">✎</button>
+          <!-- WIN7 · narrativa a un click. Writing with the AI and placing the
+               site both need DATA that lives elsewhere — who writes and with
+               which key (Settings ▸ AI), where the site is (the graph's site
+               position). These two open exactly that panel, from where the
+               writing is happening. -->
+          <button id="win-act-ai" class="win-act" title="Dati per la bozza IA: provider, modello, key">⌁</button>
+          <button id="win-act-geo" class="win-act" title="Posizione del sito: il punto che la mappa del capitolo legge">⌖</button>
           <button id="win-act-zoom1" class="win-act" title="Ridimensiona a 1:1 (zoom 100%)">1:1</button>
           <!-- kept in the DOM, hidden: the owners of fit / layout / algorithm -->
           <button id="win-fit" class="win-act hidden" title="Fit to view (0)">⤢</button>
@@ -331,8 +362,13 @@
           >
             <span data-i18n="tab.emtree">EMTree</span>
           </button>
+          <!-- WIN7 · StratiMiner left the aside: it is a Tools ▸ instrument now,
+               opening as a floating one-shot panel. Kept in the DOM, hidden, so
+               its tab handler stays wired and the SideTab type keeps its member;
+               the button is never shown. -->
           <button
             id="tab-stratiminer"
+            class="hidden"
             title="StratiMiner: build a graph from a folder of unstructured sources, via the reviewable em_data.xlsx table"
           >
             <span data-i18n="tab.stratiminer">StratiMiner</span>
@@ -348,20 +384,11 @@
         <div id="logpanel" class="hidden"></div>
       </aside>
     </main>
-    <!-- EM-Data dock (DP-81): a full-width tabular VIEW on the graph, BELOW the
-         two side wings (which live inside <main>). Resizable from its top edge,
-         collapsible to a bar. Starts collapsed so it never disrupts the canvas
-         until opened. Content is built by emdata.ts from the DocumentStore. -->
-    <section id="emdata-dock" class="collapsed" aria-label="EM-Data tables">
-      <div id="emdata-resizer" title="Drag to resize"></div>
-      <div id="emdata-head">
-        <button id="emdata-toggle" class="emdata-toggle" title="Collapse / expand EM-Data" aria-expanded="false"><span class="emdata-caret">▴</span> EM-Data</button>
-        <select id="emdata-sheet" title="Choose a table"></select>
-        <span id="emdata-actions"></span>
-        <span id="emdata-count" class="emdata-count"></span>
-      </div>
-      <div id="emdata-body"></div>
-    </section>
+    <!-- WIN6-RESIDUAL · the EM-Data DOCK is gone. It was a full-width strip
+         below the side wings, and since WIN5 the Tabular window rendered the
+         very same table through the host registry — two homes for one thing.
+         The table now lives where every other editor lives: in a window
+         (`#table-view` above, leader chip "Tabular", or transform any area). -->
     <footer id="statusbar">
       <span id="footer-brand" title="Extended Matrix — EMStudio">
         <!-- Extended Matrix hourglass mark; frame uses currentColor so it
@@ -392,6 +419,19 @@
       <div id="breadcrumb" class="hidden"></div>
       <span id="info">open or drop an .em.json file</span>
     </footer>
+    <!-- WIN7 · the floating one-shot tool. A tool is not an editor: it is opened
+         from Tools ▸, it does one job, and it goes away — so it floats over the
+         arrangement instead of taking an area from it. The panel it shows is
+         MOVED in from `#side` and moved back on close, the same re-parenting the
+         window surfaces use: one implementation of StratiMiner, wherever it is
+         showing. Drag it by its title bar; it never blocks the app behind it. -->
+    <div id="tool-float" class="hidden" role="dialog" aria-label="Tool">
+      <div id="tool-float-bar">
+        <span id="tool-float-title">Tool</span>
+        <button id="tool-float-close" title="Close">×</button>
+      </div>
+      <div id="tool-float-body"></div>
+    </div>
     <div id="tooltip" class="hidden"></div>
     <div id="settings-modal" class="modal hidden">
       <div class="modal-card">
@@ -505,7 +545,11 @@
               riferimento: <b>sconsigliato</b>.
             </p>
           </section>
-          <section class="settings-sect">
+          <!-- WIN7 · the narrative window's ⌁ button opens Settings straight
+               here: "who writes the draft, and with which key" is the data the
+               AI needs, and hunting for it in a long dialog was the reason
+               generating a chapter felt like a dead end. -->
+          <section class="settings-sect" id="settings-sect-ai">
             <h4 data-i18n="settings.aiProvider">AI provider</h4>
             <p class="settings-hint">
               Chi scrive le bozze narrative. La chiave non viene <b>mai</b>

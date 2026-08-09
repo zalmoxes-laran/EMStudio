@@ -1,8 +1,16 @@
-// EM-Data dock renderer (DP-81). Draws the tabular VIEW built by em-data.ts and
+// EM-Data table renderer (DP-81). Draws the tabular VIEW built by em-data.ts and
 // wires cell edits back through the DocumentStore (same mutation path as the
-// Inspector). The dock is full-width below the side wings, resizable and
-// collapsible. It owns NO data — every render rebuilds from the store, so it
+// Inspector). It owns NO data — every render rebuilds from the store, so it
 // stays in sync with the canvas both ways.
+//
+// WIN6-RESIDUAL · the DOCK IS GONE. This started life as a full-width strip
+// below the side wings, collapsible and resizable; WIN5 gave the same renderer a
+// host registry so the Tabular WINDOW could show it too, and from that moment
+// there were two homes for one table — two places to look, two states to keep in
+// step, and a strip eating the bottom of a canvas that the tiling can already
+// divide however you like. The window is the home now: `Tabular` in the leader,
+// or transform any area into one. What the dock owned and the module kept is the
+// SHEET CHOICE (persisted), which was never the dock's to begin with.
 
 import type { DocumentStore } from "./model";
 import {
@@ -11,7 +19,6 @@ import {
   applyEdit,
   buildTable,
   deleteRow,
-  EM_DATA_SHEETS,
   type Column,
   type SheetKey,
   type VolatileProvider,
@@ -21,8 +28,6 @@ let getStore: () => DocumentStore | null = () => null;
 let currentSheet: SheetKey = "US";
 let volatileProvider: VolatileProvider = () => false;
 
-const LS_COLLAPSED = "emdata.collapsed";
-const LS_HEIGHT = "emdata.height";
 const LS_SHEET = "emdata.sheet";
 
 const $ = <T extends HTMLElement>(id: string) =>
@@ -76,8 +81,6 @@ export function currentSheetKey(): SheetKey {
 export function setSheet(key: SheetKey): void {
   currentSheet = key;
   localStorage.setItem(LS_SHEET, key);
-  const sel = $<HTMLSelectElement>("emdata-sheet");
-  if (sel) sel.value = key;
   renderEmData();
 }
 
@@ -89,79 +92,10 @@ export function initEmData(opts: {
   getStore = opts.getStore;
   if (opts.currentRow) currentRowOf = opts.currentRow;
   if (opts.setCurrentRow) setCurrentRow = opts.setCurrentRow;
-  const dock = $("emdata-dock");
-  const toggle = $<HTMLButtonElement>("emdata-toggle");
-  const resizer = $("emdata-resizer");
-  const sheetSel = $<HTMLSelectElement>("emdata-sheet");
-  if (!dock || !toggle || !resizer || !sheetSel) return;
-
-  // sheet selector
-  sheetSel.innerHTML = EM_DATA_SHEETS.map(
-    (s) => `<option value="${s.key}">${s.label}</option>`,
-  ).join("");
+  // The sheet the session was left on. The only piece of the retired dock's
+  // state that was ever about the TABLE rather than about the strip.
   currentSheet = (localStorage.getItem(LS_SHEET) as SheetKey) || "US";
-  sheetSel.value = currentSheet;
-  sheetSel.onchange = () => {
-    currentSheet = sheetSel.value as SheetKey;
-    localStorage.setItem(LS_SHEET, currentSheet);
-    renderEmData();
-  };
-
-  // collapsed state (default collapsed so it never hides the canvas unasked)
-  const startCollapsed = localStorage.getItem(LS_COLLAPSED) !== "false";
-  setCollapsed(startCollapsed);
-  toggle.onclick = () => setCollapsed(!dock.classList.contains("collapsed"));
-
-  // restore height
-  const savedH = Number(localStorage.getItem(LS_HEIGHT));
-  if (savedH >= 120) dock.style.height = `${savedH}px`;
-
-  // resize from the top edge
-  resizer.addEventListener("pointerdown", (ev) => {
-    ev.preventDefault();
-    const startY = ev.clientY;
-    const startH = dock.getBoundingClientRect().height;
-    const onMove = (e: PointerEvent) => {
-      const h = Math.max(
-        120,
-        Math.min(window.innerHeight - 160, startH + (startY - e.clientY)),
-      );
-      dock.style.height = `${h}px`;
-    };
-    const onUp = () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-      localStorage.setItem(
-        LS_HEIGHT,
-        String(Math.round(dock.getBoundingClientRect().height)),
-      );
-    };
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-  });
-
-  const dockBody = $("emdata-body");
-  if (dockBody)
-    addEmDataHost({
-      body: dockBody,
-      count: $("emdata-count"),
-      actions: $("emdata-actions"),
-      enabled: () => !$("emdata-dock")?.classList.contains("collapsed"),
-    });
-
   renderEmData();
-}
-
-function setCollapsed(collapsed: boolean): void {
-  const dock = $("emdata-dock");
-  const toggle = $<HTMLButtonElement>("emdata-toggle");
-  if (!dock || !toggle) return;
-  dock.classList.toggle("collapsed", collapsed);
-  toggle.setAttribute("aria-expanded", String(!collapsed));
-  const caret = toggle.querySelector(".emdata-caret");
-  if (caret) caret.textContent = collapsed ? "▴" : "▾";
-  localStorage.setItem(LS_COLLAPSED, String(collapsed));
-  if (!collapsed) renderEmData();
 }
 
 /** Rebuild the visible table from the store. Called on every store change and

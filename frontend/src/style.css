@@ -354,73 +354,17 @@ main {
   opacity: 0.9;
 }
 
-/* ---------- EM-Data dock (DP-81) ---------- */
-/* Full-width panel below the two side wings; a sibling of <main> in the body
-   column, so it spans the whole width and pushes main up. Resizable from the
-   top edge, collapsible to a thin bar. Theme-aware via the shared tokens. */
-#emdata-dock {
-  flex: 0 0 auto;
-  display: flex;
-  flex-direction: column;
-  height: 33vh;
-  min-height: 0;
-  background: var(--bg-panel);
-  border-top: 1px solid var(--border-strong);
-  position: relative;
-  overflow: hidden;
-}
-#emdata-dock.collapsed {
-  height: auto !important;
-}
-#emdata-dock.collapsed #emdata-body,
-#emdata-dock.collapsed #emdata-resizer {
-  display: none;
-}
-#emdata-resizer {
-  height: 6px;
-  cursor: ns-resize;
-  background: transparent;
-  flex: 0 0 auto;
-}
-#emdata-resizer:hover {
-  background: var(--accent);
-  opacity: 0.4;
-}
-#emdata-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 4px 12px;
-  flex: 0 0 auto;
-  background: var(--bg-subtle);
-  border-bottom: 1px solid var(--border);
-  font-size: 12px;
-}
-.emdata-toggle {
-  background: none;
-  border: none;
-  color: var(--text);
-  font-weight: 600;
-  cursor: pointer;
-  padding: 2px 4px;
-}
-#emdata-dock.collapsed #emdata-head {
-  border-bottom: none;
-}
-#emdata-sheet {
-  font-size: 12px;
-  padding: 2px 6px;
-  background: var(--bg-panel);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-}
-#emdata-actions {
+/* ---------- EM-Data table (DP-81) ---------- */
+/* WIN6-RESIDUAL · the dock's own chrome (#emdata-dock / -head / -resizer /
+   -toggle / -sheet / -body) is gone with the dock. What is left is what belongs
+   to the TABLE itself — the row/cell rules below, plus the two bits its head
+   contributed, now worn by the Tabular window's head. */
+#table-view-actions {
   display: flex;
   gap: 6px;
   align-items: center;
 }
-#emdata-actions button {
+#table-view-actions button {
   font-size: 12px;
   padding: 2px 8px;
   background: var(--bg-panel);
@@ -429,17 +373,12 @@ main {
   border-radius: 4px;
   cursor: pointer;
 }
-#emdata-actions button:hover {
+#table-view-actions button:hover {
   background: var(--bg-hover);
 }
 .emdata-count {
   margin-left: auto;
   color: var(--text-faint);
-}
-#emdata-body {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
 }
 table.emdata-table {
   border-collapse: collapse;
@@ -1216,6 +1155,12 @@ body.sync-active #mode-indicator::before {
   border-bottom-color: var(--accent);
   color: var(--text);
   font-weight: 600;
+}
+/* WIN7 · this tab's panel has moved into a window: say so instead of offering a
+   tab that un-hides an element which is somewhere else. */
+#side-tabs button.tab-elsewhere {
+  opacity: 0.4;
+  font-style: italic;
 }
 
 #inspector {
@@ -4462,6 +4407,30 @@ body.sync-active #footer-brand #em-version {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* WIN7 · the magnify verb, on every area's bar */
+.tile-area > .tile-bar .tile-mag {
+  flex: 0 0 auto;
+  margin-left: 6px;
+  padding: 0 5px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--text);
+  font-size: 11px;
+  line-height: 17px;
+  opacity: 0.6;
+  cursor: pointer;
+}
+.tile-area > .tile-bar .tile-mag:hover {
+  opacity: 1;
+  background: var(--bg-elevated);
+}
+/* the magnify chip of the focused window's bar, while it IS magnified */
+#win-instances .wi-chip.wi-on {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
 .tile-area > canvas {
   flex: 1;
   min-height: 0;
@@ -4600,6 +4569,86 @@ body.sync-active #footer-brand #em-version {
   font-size: 12.5px;
   opacity: 0.85;
 }
+/* ── WIN7 · the live surfaces of a SECONDARY area ───────────────────────────
+   Same content as the focused window's, at the size the area happens to be.
+   They are views, not editors: the pointer entering the area promotes it and
+   the real surface takes over, so nothing here has to be reachable. */
+.tile-tablehead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  flex: 0 0 auto;
+  background: var(--bg-subtle);
+  border-bottom: 1px solid var(--border);
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+.tile-tablehead .tile-sheet {
+  font-weight: 600;
+  color: var(--text);
+}
+.tile-tablebody {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--bg-subtle);
+}
+.tile-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  overflow: hidden;
+}
+.tile-panel-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 4px 8px;
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--border);
+  font-size: 11.5px;
+}
+.tile-panel-tab {
+  opacity: 0.5;
+}
+.tile-panel-tab.active {
+  opacity: 1;
+  font-weight: 600;
+}
+.tile-panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+}
+.tile-panel-body > * {
+  display: block;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.tile-panel-body > .hidden {
+  display: none;
+}
+/* Doc, as two boxes in whatever space the area has */
+.tile-doclist {
+  flex: 0 0 34%;
+  overflow: auto;
+  padding: 6px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-subtle);
+}
+.tile-docdetail {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 12px;
+  background: var(--bg-subtle);
+  font-size: 12px;
+}
 /* a secondary area that is not a canvas: say what it is, do not draw a wrong one */
 .tile-note {
   flex: 1;
@@ -4650,6 +4699,88 @@ body.sync-active #footer-brand #em-version {
   background: var(--accent);
   color: #fff;
   border-color: var(--accent);
+}
+
+/* WIN7 · "here is the block you came for" — a brief outline after a panel has
+   been opened ON something (Settings ▸ AI, the Inspector's site position). */
+.settings-sect-flash {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 6px;
+  transition: outline-color 0.6s ease;
+}
+
+/* ── WIN7 · the floating one-shot tool (Tools ▸) ────────────────────────────
+   Over the arrangement, not in it: a tool that is going to close should never
+   cost an area. Draggable by its bar, and the app behind it stays usable —
+   this is a floating panel, not a modal. */
+#tool-float {
+  position: fixed;
+  top: 72px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 90;
+  width: 560px;
+  max-width: 92vw;
+  max-height: 74vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+}
+#tool-float.hidden {
+  display: none;
+}
+#tool-float-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  flex: 0 0 auto;
+  background: var(--bg-subtle);
+  border-bottom: 1px solid var(--border);
+  cursor: move;
+  user-select: none;
+}
+#tool-float-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text);
+}
+#tool-float-close {
+  margin-left: auto;
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  font-size: 17px;
+  line-height: 1;
+  padding: 0 4px;
+  cursor: pointer;
+}
+#tool-float-close:hover {
+  color: var(--text);
+}
+#tool-float-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+#tool-float-body > * {
+  display: block;
+  height: auto;
+}
+#tool-float-body > .hidden {
+  display: none;
+}
+
+/* WIN7 · the aside with every one of its panels re-homed into windows: a strip
+   of tabs over an empty box is the shape of a broken panel, so it steps aside
+   until a panel comes back. */
+#side.side-empty {
+  display: none;
 }
 
 /* WIN6 · a side panel hosted INSIDE a window area */

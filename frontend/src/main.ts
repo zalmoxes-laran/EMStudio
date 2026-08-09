@@ -72,9 +72,8 @@ import {
   nodeTypeForClass,
   resourceTypeOfLocator,
   typeDescription,
-  NODE_DATAMODEL_VERSION,
-  CONNECTIONS_VERSION,
-  VISUAL_RULES_VERSION,
+  // (the datamodel version exports are read by `versions.ts` for the footer's
+  // breakdown popover — MENU-AUDIT removed this module's second, hardcoded copy)
 } from "./rules";
 import { sceneToSvg } from "./svg-export";
 import {
@@ -182,7 +181,9 @@ import {
   joinWindow,
   siblingIdsOf,
   layoutOf,
+  maximizedWin,
   paneIds,
+  toggleMaximize,
   setActiveWin,
   setActiveWorkspace,
   setWinCurrent,
@@ -287,6 +288,21 @@ const winViewports = new Map<string, Viewport>();
 /** (window, mode) pairs already framed for the CURRENT document — reset whenever
  *  the document changes, so every window re-frames on the new graph. */
 const framedViews = new Set<string>();
+/**
+ * WIN7 · (window, mode) pairs whose camera the USER has moved — a pan, a zoom, a
+ * fit they asked for. The app may re-frame a view it framed itself (see
+ * `drawTile`: an area that changes size was framed for a rectangle it no longer
+ * has, and a graph left as a speck in the corner is an area showing nothing);
+ * it must never re-frame one somebody aimed by hand.
+ */
+const touchedViews = new Set<string>();
+/** The size each secondary area's camera was last framed for. */
+const framedSizes = new Map<string, string>();
+
+/** Record that this window's camera is now the user's, not the app's. */
+function markCameraTouched(winId: string, v: ViewKind): void {
+  touchedViews.add(viewportKey(winId, v));
+}
 function viewportKey(winId: string, v: ViewKind): string {
   return `${winId}::${v}`;
 }
@@ -304,6 +320,8 @@ function viewportFor(winId: string, v: ViewKind): Viewport {
 function resetWindowCameras(): void {
   winViewports.clear();
   framedViews.clear();
+  touchedViews.clear();
+  framedSizes.clear();
 }
 let hoverId: string | null = null;
 let selectedId: string | null = null;
@@ -1782,7 +1800,8 @@ function wireStore(s: DocumentStore): void {
     refreshNarrativeView();   // embeds are references: a graph edit shows here
     nodeList.refresh();
     refreshEMTree();          // node/edge counts and the dirty dot live there
-    renderEmData();           // EM-Data dock is a live view on the same graph
+    renderEmData();           // every mounted EM-Data table is a live view of it
+    refreshTileSurfaces();    // WIN7 · and so is every secondary area
     draw();
   });
   // forward local graph mutations to a connected peer (op-log, ADR-002 §2).
@@ -3528,15 +3547,10 @@ document.getElementById("btn-help-updates")?.addEventListener("click", () => {
   toast("Nessun updater in-app: apri le release su GitHub.");
   window.open(RELEASES_URL, "_blank", "noopener,noreferrer");
 });
-document.getElementById("btn-help-onto")?.addEventListener("click", () => {
-  helpPopover("Ontology models (under the hood)", [
-    ["Node datamodel", NODE_DATAMODEL_VERSION],
-    ["Connections", CONNECTIONS_VERSION],
-    ["Visual rules", VISUAL_RULES_VERSION],
-    ["EM ontology", "em.ttl · w3id.org/em"],
-    ["HDT-O", "hdto_extension.ttl (ECCCH)"],
-  ]);
-});
+// MENU-AUDIT · the Help ▸ "Ontology models…" item is gone: the version button in
+// the footer opens the same breakdown, built from the datamodel's own
+// `referenced_ontology_versions` (with source links) instead of five rows two of
+// which were hardcoded here. One view, one place, and the data-driven one.
 
 // ---------- Settings modal (sync target, …) ----------
 const settingsModal = document.getElementById("settings-modal")!;
@@ -3781,7 +3795,13 @@ function refreshAtonUrlPreview(): void {
     : "— nessun server: i blocchi 3D lo diranno";
 }
 
-function openSettings(): void {
+/**
+ * @param section id of a `.settings-sect` to open ON — scrolled into view and
+ *   briefly outlined. Settings is a long dialog; a caller who knows which part
+ *   of it the user came for should not make them look for it. (WIN7: the
+ *   narrative window's ⌁ button comes here for the AI provider and key.)
+ */
+function openSettings(section?: string): void {
   const s = getSettings();
   setToolSel.value = s.sync.tool;
   setProtoSel.value = s.sync.protocol;
@@ -3799,6 +3819,24 @@ function openSettings(): void {
   refreshSyncUrlPreview();
   refreshAtonUrlPreview();
   settingsModal.classList.remove("hidden");
+  if (section) revealBlock(document.getElementById(section));
+}
+
+/**
+ * Bring a block into view and say so — the last step of every "open the panel ON
+ * this" action (WIN7).
+ *
+ * The reflow read is not decoration: the caller has just un-hidden or rebuilt
+ * the panel, and scrolling before the browser has laid it out scrolls against a
+ * zero height. Doing it synchronously (rather than in a rAF) also means it works
+ * in a window that is not being painted.
+ */
+function revealBlock(target: HTMLElement | null): void {
+  if (!target) return;
+  void target.offsetHeight; // flush layout before asking where it is
+  target.scrollIntoView({ block: "start", behavior: "auto" });
+  target.classList.add("settings-sect-flash");
+  setTimeout(() => target.classList.remove("settings-sect-flash"), 1400);
 }
 function closeSettings(): void {
   settingsModal.classList.add("hidden");
@@ -3809,7 +3847,7 @@ for (const el of [setAtonBase, setHeriverseApp])
   el.addEventListener("input", refreshAtonUrlPreview);
 (document.getElementById("btn-settings") as HTMLButtonElement).addEventListener(
   "click",
-  openSettings,
+  () => openSettings(),
 );
 (document.getElementById("settings-close") as HTMLButtonElement).addEventListener(
   "click",
@@ -4391,6 +4429,15 @@ btnViewProps.addEventListener("click", () => {
 // side panel tabs
 type SideTab = "inspector" | "nodes" | "emtree" | "stratiminer" | "log";
 let activeTab: SideTab = "inspector";
+/** The aside tab → the panel element it shows. */
+const SIDE_TAB_PANEL: Record<SideTab, string> = {
+  inspector: "inspector",
+  nodes: "nodelist",
+  emtree: "emtree",
+  stratiminer: "stratiminer",
+  log: "logpanel",
+};
+
 function showTab(which: SideTab): void {
   activeTab = which;
   tabInspector.classList.toggle("active", which === "inspector");
@@ -4406,6 +4453,33 @@ function showTab(which: SideTab): void {
   if (which === "log") refreshLogPanel();
   if (which === "stratiminer") refreshStratiMiner();
   if (which === "emtree") refreshEMTree();
+  reflectSideTabs();
+}
+
+/**
+ * WIN7 · the aside tells the truth about what it still holds.
+ *
+ * A panel that has moved into a window is not in the aside any more, and the
+ * tab for it used to un-hide an element that was somewhere else entirely — a
+ * tab that visibly did nothing. It is now greyed out, saying where its panel is,
+ * and clicking through to the window is the way to it. No tug-of-war: the
+ * WINDOW wins, always, because that is the arrangement someone built on purpose.
+ */
+function reflectSideTabs(): void {
+  const tabs: [HTMLButtonElement, SideTab][] = [
+    [tabInspector, "inspector"],
+    [tabNodes, "nodes"],
+    [tabEmtree, "emtree"],
+    [tabStratiminer, "stratiminer"],
+    [tabLog, "log"],
+  ];
+  for (const [btn, key] of tabs) {
+    const el = document.getElementById(SIDE_TAB_PANEL[key]);
+    const away = !!el && el.parentElement !== sidePanel;
+    btn.classList.toggle("tab-elsewhere", away);
+    if (away) btn.title = t("tab.elsewhere");
+    else btn.removeAttribute("title");
+  }
 }
 tabInspector.addEventListener("click", () => showTab("inspector"));
 tabNodes.addEventListener("click", () => showTab("nodes"));
@@ -4416,10 +4490,10 @@ tabLog.addEventListener("click", () => showTab("log"));
 // ── EMTree ────────────────────────────────────────────────────────────────────
 
 function refreshEMTree(): void {
-  // WIN6 · the panel may live in the aside (shown by its tab) OR inside an
-  // EMtree WINDOW, where the aside's tab state says nothing about it. Skip the
-  // work only when it is nowhere visible.
-  if (activeTab !== "emtree" && emtreeEl.parentElement?.id !== "panel-view-body")
+  // WIN6/WIN7 · the panel may live in the aside (shown by its tab), inside the
+  // FOCUSED EMtree window, or inside a secondary area — where the aside's tab
+  // state says nothing about it. Skip the work only when it is nowhere visible.
+  if (!panelIsMounted(emtreeEl, activeTab === "emtree"))
     return; // rebuilt on show; no work while hidden
   // The panel asks for its text by key and `t` resolves it in the active
   // language: ET1 already went through a key lookup, so I18N1 was this one line.
@@ -4694,16 +4768,94 @@ function refreshStratiMiner(): void {
   renderStratiMiner(stratiminerEl, smState, smHandlers, { native: isTauri() });
 }
 
-/** Open the side panel on StratiMiner, document or no document.
- *
- * The panel is normally revealed by `loadDocument`, because every other tab
- * describes something in the open graph. StratiMiner is the exception: it exists
- * to MAKE the graph, so gating it behind having one would put the tool behind
- * the problem it solves. Reached from the empty-state hint. */
-function openStratiMiner(): void {
-  sidePanel.classList.remove("hidden");
-  showTab("stratiminer");
+// ── WIN7 · the floating one-shot tool ───────────────────────────────────────
+//
+// StratiMiner was a tab of the Inspector, and it never belonged there: every
+// other tab DESCRIBES the graph you have open, and StratiMiner exists to MAKE
+// one. It is a tool, not a view — you reach for it, it does its job, and it goes
+// away. So it lives under Tools ▸ and opens as a panel floating over whatever
+// arrangement you had, which is exactly the relationship: it does not want an
+// area, because it is not going to stay.
+//
+// The panel itself is the SAME element, moved in from `#side` and moved back on
+// close — the re-parenting the window surfaces use (WIN6), for the same reason:
+// one StratiMiner, wherever it happens to be showing.
+
+const toolFloat = document.getElementById("tool-float")!;
+const toolFloatBody = document.getElementById("tool-float-body")!;
+const toolFloatTitle = document.getElementById("tool-float-title")!;
+
+/** The panel element the float is currently showing, if any. */
+let floatingToolId: string | null = null;
+
+function openFloatingTool(panelId: string, title: string): void {
+  if (floatingToolId && floatingToolId !== panelId) closeFloatingTool();
+  const el = document.getElementById(panelId);
+  if (!el) return;
+  el.classList.remove("hidden");
+  toolFloatBody.appendChild(el);
+  toolFloatTitle.textContent = title;
+  toolFloat.classList.remove("hidden");
+  floatingToolId = panelId;
+  refreshPanelById(panelId);
+  reflectEmptyAside();
 }
+
+function closeFloatingTool(): void {
+  if (!floatingToolId) return;
+  const el = document.getElementById(floatingToolId);
+  if (el) {
+    el.classList.add("hidden");
+    sidePanel.appendChild(el); // its parking spot, as before
+  }
+  toolFloat.classList.add("hidden");
+  floatingToolId = null;
+  reflectEmptyAside();
+}
+
+/** True while StratiMiner is the tool on screen — the only condition under which
+ *  its state changes are worth re-rendering. */
+function stratiMinerOpen(): boolean {
+  return floatingToolId === "stratiminer";
+}
+
+document
+  .getElementById("tool-float-close")
+  ?.addEventListener("click", closeFloatingTool);
+
+// Drag it by its bar. A floating tool that cannot be moved is a tool that covers
+// the thing you opened it to work on.
+document.getElementById("tool-float-bar")?.addEventListener("mousedown", (e) => {
+  if ((e.target as HTMLElement).id === "tool-float-close") return;
+  e.preventDefault();
+  const r = toolFloat.getBoundingClientRect();
+  const dx = e.clientX - r.left;
+  const dy = e.clientY - r.top;
+  const move = (ev: MouseEvent): void => {
+    toolFloat.style.left = `${Math.max(0, Math.min(window.innerWidth - 80, ev.clientX - dx))}px`;
+    toolFloat.style.top = `${Math.max(0, Math.min(window.innerHeight - 40, ev.clientY - dy))}px`;
+    toolFloat.style.right = "auto";
+    toolFloat.style.transform = "none";
+  };
+  const up = (): void => {
+    window.removeEventListener("mousemove", move);
+    window.removeEventListener("mouseup", up);
+  };
+  window.addEventListener("mousemove", move);
+  window.addEventListener("mouseup", up);
+});
+
+/** Open StratiMiner, document or no document.
+ *
+ * It exists to MAKE the graph, so gating it behind having one would put the tool
+ * behind the problem it solves. Reached from Tools ▸ and from the empty-state
+ * hint — the two moments you would want it. */
+function openStratiMiner(): void {
+  openFloatingTool("stratiminer", t("tab.stratiminer"));
+}
+document
+  .getElementById("btn-tool-stratiminer")
+  ?.addEventListener("click", openStratiMiner);
 document
   .getElementById("drop-hint-stratiminer")
   ?.addEventListener("click", (e) => {
@@ -4776,7 +4928,8 @@ collapseRightBtn.addEventListener("click", () => toggleColumn("right"));
 
 function smSet(patch: Partial<typeof smState>): void {
   smState = { ...smState, ...patch };
-  if (activeTab === "stratiminer") refreshStratiMiner();
+  // WIN7 · the panel is in the floating tool now, not in an aside tab
+  if (stratiMinerOpen()) refreshStratiMiner();
 }
 
 /** Read a bridge error body the way the narrative path does: the endpoint's own
@@ -4909,6 +5062,10 @@ const smHandlers: StratiMinerHandlers = {
       // into: passing it as `path` would point Save at the workbook.
       loadDocument(r.doc, smState.xlsxPath.trim().split("/").pop() ?? "em_data");
       smSet({ busy: "", report: describeImport(r), warnings: r.warnings });
+      // WIN7 · ONE-SHOT: the tool has done the thing it was opened for, and the
+      // graph it just made is behind it. Anything it still had to say (the
+      // import report, the warnings) is in the Log, which is a panel that stays.
+      closeFloatingTool();
       toast("Grafo creato da em_data.xlsx");
     } catch {
       smSet({ busy: "", report: BRIDGE_UNREACHABLE });
@@ -4965,8 +5122,9 @@ function revealFromWarning(nodeId: string): void {
 /** Redraw the Log tab — only when it is the visible one; there is no point
  *  rebuilding a hidden DOM on every sync message. */
 function refreshLogPanel(): void {
-  // WIN6 · same as the EMTree: the log panel can live in an Inspector WINDOW
-  if (activeTab !== "log" && logpanelEl.parentElement?.id !== "panel-view-body") return;
+  // WIN6/WIN7 · same as the EMTree: the log panel can live in an Inspector
+  // WINDOW, focused or not
+  if (!panelIsMounted(logpanelEl, activeTab === "log")) return;
   renderLogPanel(logpanelEl, store?.doc ?? null, EM_VERSION, revealFromWarning);
 }
 onLogChange(refreshLogPanel);
@@ -5220,10 +5378,7 @@ function refreshNarrativeView(): void {
     },
     // an embed that resolves is a way into the graph: same gesture as the Log
     // tab, so "go and look at it" means one thing everywhere in the app
-    (nodeId) => {
-      setNarrativeOpen(false);
-      revealFromWarning(nodeId);
-    },
+    revealFromNarrative,
     narrativeEditing && current && store
       ? narrativeEditor(current.id)
       : undefined,
@@ -5288,14 +5443,12 @@ function renderNarrativePalette(): void {
     nedit.addChapter(store!, nid);
     refreshNarrativeView();
   });
-  item("🗺 Mappa del sito", "Inserisce una mappa del sito (posizione GEO1) nell'ultimo capitolo", () => {
-    const chapters = narr.chapters;
-    if (!chapters.length) nedit.addChapter(store!, nid);
-    const cs = narrativesIn(store!.doc).find((n) => n.id === nid)?.chapters ?? [];
-    const ci = Math.max(0, cs.length - 1);
-    nedit.addEmbed(store!, nid, ci, store!.ensureGraphRootId(), "map");
-    refreshNarrativeView();
-  });
+  // MENU-AUDIT · "🗺 Mappa del sito" was here too, and it inserted into the LAST
+  // chapter while the header's Inserisci ▸ Mappa del sito inserts into the
+  // CURRENT one. Not two ways to the same place: the same action with two
+  // different targets, which is worse than a duplicate. The header item stays
+  // (it acts on the current element, like everything else in that menu, and says
+  // so when there isn't one).
 
   // embeds — the datamodel's narrative view-types, as a guide (insert with a
   // reference from the chapter's + button, which knows chapter and node).
@@ -5305,11 +5458,46 @@ function renderNarrativePalette(): void {
   }
 }
 
-/** Back-compat wrapper: opening the narrative = entering `narrative` mode,
- *  closing it = returning to the canvas sub-view (`view`). All the state lives in
- *  `setMode` now; internal callers (embed-click, boot) keep working through this. */
-function setNarrativeOpen(open: boolean): void {
-  setMode(open ? "narrative" : view);
+// NARR-BUTTONS · `setNarrativeOpen()` is GONE. It was the WIN1 back-compat
+// wrapper around the old central-mode flag, and its last caller was the reveal
+// below — the one place where flipping a global instead of telling the window
+// produced a window that lied about its own type. Entering and leaving the
+// narrative is now what it says it is: the window's type (`transformWindow`) or
+// the workspace chip.
+
+/**
+ * NARR-BUTTONS · "go and look at it", from inside a story.
+ *
+ * Every reveal in the narrative — an embed that resolves, "vai al nodo ↗", the
+ * `prompt` behind a generated paragraph — promises the same thing: leave the
+ * prose, show me that node on the canvas. It used to do it with
+ * `setNarrativeOpen(false)`, which flips the OLD central-mode flag and says
+ * nothing to the window. The result was a window whose type still read
+ * **Narrativa** while its surface was a canvas, with the Mode selector hidden
+ * (windows of type narrative have none) — so the projection could not be
+ * changed and there was no way back except the leader chip. That is the shape
+ * of the "i pulsanti non funzionano" bug: the button worked, and left the shell
+ * describing something it was not.
+ *
+ * Now it goes through the WINDOW, which is where "what am I showing" has lived
+ * since WIN2. If the workspace already has a graph window, the node is revealed
+ * THERE and the story stays open — which is the arrangement you would have
+ * built for exactly this. Otherwise this window becomes a Graph window: the
+ * same transform the Doc window's "Mostra sul canvas" performs, so leaving an
+ * editor for the canvas means one thing everywhere.
+ */
+function revealFromNarrative(nodeId: string): void {
+  const graphWin = windowsOf().find((w) => w.type === "graph");
+  if (graphWin) {
+    if (activeWin().id !== graphWin.id) selectWindow(graphWin.id);
+  } else {
+    const win = activeWin();
+    setWinType(win, "graph");
+    mountWindow(win);
+    renderTiles();
+    updateWindowHeader();
+  }
+  revealFromWarning(nodeId);
 }
 
 btnNarrative.addEventListener("click", () =>
@@ -5327,12 +5515,11 @@ btnRedo.addEventListener("click", () => store?.redo());
 btnMatrix.addEventListener("click", () => setView("matrix"));
 btnGraph.addEventListener("click", () => setView("graph"));
 
-// ---------- WIN1 · workspace leader (Canvas/Narrative/Table/DTC) ----------
+// ---------- WIN1 · workspace leader (Canvas / Narrative / Tabular) ----------
 // The higher-level switcher that ABSORBS MODE1: each preset mounts an existing
-// editor. No shell rewrite here — Canvas/Narrative reuse setMode; Table expands
-// the EM-Data dock (the tabular window surface); DTC opens the graph (its full
-// DTC mode is WIN2). Per-window transform + true multi-window arrangements land
-// next (the workspace.ts `Win` shape is already per-instance).
+// editor — Canvas/Narrative through setMode, Tabular through the table surface
+// of the window (WIN6-RESIDUAL: there is no dock behind it any more). Windows
+// carry their own state, so a preset only seeds the first one.
 const workspaceBar = document.getElementById("workspace-bar")!;
 
 /** Light the leader's active chip; keep workspace.ts's persisted id in step.
@@ -5388,12 +5575,21 @@ function drawTile(winId: string, mode: ViewKind, cv: HTMLCanvasElement): void {
     c.clearRect(0, 0, w, h);
     return;
   }
-  // frame it the first time this area shows this document (same rule as the
-  // main canvas, so a new area never opens on a blank patch of coordinates)
+  // Frame it the first time this area shows this document (same rule as the
+  // main canvas, so a new area never opens on a blank patch of coordinates) —
+  // and RE-frame it when the area changes size under a camera the user never
+  // touched. A camera aimed at a full-width window and then squeezed into a
+  // quarter of it leaves the graph as a speck in the corner: technically live,
+  // in practice an empty area, which is the thing WIN7 exists to end.
   const key = viewportKey(winId, mode);
+  const size = `${Math.round(w)}x${Math.round(h)}`;
   if (!framedViews.has(key)) {
     framedViews.add(key);
     vp.fit(sceneBounds(s), w, h);
+    framedSizes.set(key, size);
+  } else if (framedSizes.get(key) !== size && !touchedViews.has(key)) {
+    vp.fit(sceneBounds(s), w, h);
+    framedSizes.set(key, size);
   }
   render(
     c,
@@ -5558,24 +5754,30 @@ function buildPane(pane: Pane, activeId: string): HTMLElement {
         ? `<span class="tile-mode">· ${t(`mode.${winMode(win)}`)}</span>`
         : "") +
       `<span class="tile-hint">${t("tile.activate")}</span>`;
+    // WIN7 · every window's bar carries the magnify verb, this one included: a
+    // gesture that only the focused area offers would mean focusing first, and
+    // the whole point is to go straight to the thing you want to look at.
+    const mag = document.createElement("button");
+    mag.className = "tile-mag";
+    mag.textContent = "⛶";
+    mag.title = t("win.maximize");
+    mag.addEventListener("mousedown", (e) => e.stopPropagation());
+    mag.addEventListener("click", (e) => {
+      e.stopPropagation();
+      magnifyWindow(pane.winId); // magnifying focuses it too (workspace.ts)
+    });
+    bar.appendChild(mag);
     area.appendChild(bar);
     if (win && win.type === "graph") {
       const cv = document.createElement("canvas");
       area.appendChild(cv);
       tileCanvases.set(pane.winId, cv);
-    } else {
-      // WIN5 · a secondary Table/Doc area says WHAT it holds rather than
-      // drawing a canvas that would show the wrong thing entirely. One click
-      // promotes it and the real surface mounts there.
-      const note = document.createElement("div");
-      note.className = "tile-note";
-      note.textContent =
-        win?.type === "table"
-          ? t("tile.tableNote")
-          : win?.type === "doc"
-            ? t("tile.docNote")
-            : "";
-      area.appendChild(note);
+    } else if (win) {
+      // WIN7 · a secondary area is a LIVE view of the document, whatever its
+      // type. It used to be a note ("click to work here"), which meant three
+      // quarters of an IDE arrangement showed nothing at all until you clicked
+      // in it — the arrangement was a promise rather than a workspace.
+      buildSecondarySurface(area, win);
     }
     // ── a secondary area is a WORKING area, not a picture ──────────────────
     //
@@ -5603,6 +5805,7 @@ function buildPane(pane: Pane, activeId: string): HTMLElement {
         if (!cv) return;
         e.preventDefault();
         const r = cv.getBoundingClientRect();
+        markCameraTouched(winIdOf, modeOf()); // aimed by hand: never re-frame it
         viewportFor(winIdOf, modeOf()).zoomAt(
           e.clientX - r.left,
           e.clientY - r.top,
@@ -5687,6 +5890,7 @@ function buildPane(pane: Pane, activeId: string): HTMLElement {
       // working in the other one.
       if (e.button === 1 || spaceHeld) {
         e.preventDefault();
+        markCameraTouched(winIdOf, modeOf());
         const vp = viewportFor(winIdOf, modeOf());
         let lx = e.clientX;
         let ly = e.clientY;
@@ -5762,10 +5966,21 @@ function renderTiles(): void {
   closeAllDropdowns();
   closeAllSubmenus();
   tileCanvases.clear();
+  tileSurfaces.length = 0;
+  // WIN7 · a panel living in a secondary area would be DESTROYED by the reset
+  // below (with every handler wired to it at boot) — send it home first. The
+  // same reason `#canvas-wrap` is detached rather than left to be cleared.
+  releaseTilePanels();
   // detach the live area before rebuilding, so it survives the innerHTML reset
   canvasWrapEl.remove();
   tileRoot.innerHTML = "";
   tileRoot.appendChild(buildPane(layoutOf(), activeWin().id));
+  syncSecondaryPanels();
+  // The table hosts registered while their areas were still detached, so the
+  // render that `addEmDataHost` fires found them disabled (`isConnected` false).
+  // Now the tree is attached: paint them.
+  renderEmData();
+  refreshTileSurfaces();
   resizeCanvas(); // the live area changed size
   drawTiles();
 }
@@ -5842,7 +6057,10 @@ function applyWindowSurface(type: WindowType): void {
   const hosted = type === "emtree" || type === "inspector";
   show("panel-view", hosted);
   if (hosted) renderPanelWindow(type);
-  else releasePanels();
+  else {
+    releasePanels();
+    syncSecondaryPanels(); // the panels it gave back may be wanted by an area
+  }
   // The overview map answers "where am I on the canvas", and the funnel filters
   // NODES AND CONNECTORS — both are questions only a canvas window has. On a
   // table or a document they would act on something that is not on screen.
@@ -5872,10 +6090,23 @@ function documentsInGraph(): EmNode[] {
   return (store?.doc.graph.nodes ?? []).filter((n) => n.node_type === "document");
 }
 
+/** The focused Doc window's surface. WIN7 split the rendering out (below) so a
+ *  SECONDARY Doc area can paint the same thing into its own two boxes. */
 function renderDocView(): void {
   const list = document.getElementById("doc-view-list");
   const detail = document.getElementById("doc-view-detail");
   if (!list || !detail) return;
+  renderDocViewInto(activeWin(), list, detail);
+}
+
+/** Draw the sources of the graph for ONE window into ONE pair of boxes. The
+ *  window is a parameter because "which document is current" lives on it: two
+ *  Doc areas can sit on different sources. */
+function renderDocViewInto(
+  win: Win,
+  list: HTMLElement,
+  detail: HTMLElement,
+): void {
   list.innerHTML = "";
   detail.innerHTML = "";
   const docs = documentsInGraph();
@@ -5884,8 +6115,9 @@ function renderDocView(): void {
       `<div class="doc-empty">${t("doc.empty")}</div>`;
     return;
   }
-  const currentId = currentDocId();
+  const currentId = winCurrent(win, "doc");
   const current = docs.find((d) => d.id === currentId) ?? docs[0];
+  const repaint = (): void => renderDocViewInto(win, list, detail);
   for (const d of docs) {
     const b = document.createElement("button");
     b.className = "doc-item" + (d.id === current.id ? " current" : "");
@@ -5895,8 +6127,8 @@ function renderDocView(): void {
       `${escapeHtml(d.name || d.id)}` +
       (sub ? `<span class="doc-sub">${escapeHtml(sub)}</span>` : "");
     b.addEventListener("click", () => {
-      setWinCurrent(activeWin(), "doc", d.id);
-      renderDocView();
+      setWinCurrent(win, "doc", d.id);
+      repaint();
     });
     list.appendChild(b);
   }
@@ -5922,7 +6154,7 @@ function renderDocView(): void {
     store.updateNode(current.id, {
       data: { ...(current.data ?? {}), [key]: v },
     } as Partial<EmNode>);
-    renderDocView();
+    repaint();
   };
   field(t("doc.name"), current.name ?? "", (v) =>
     store?.updateNode(current.id, { name: v }),
@@ -5948,8 +6180,11 @@ function renderDocView(): void {
   jump.className = "insp-btn";
   jump.textContent = t("doc.reveal");
   jump.addEventListener("click", () => {
-    setWinType(activeWin(), "graph");
-    mountWindow(activeWin());
+    // "show it on the canvas" turns THIS window into a graph — including when the
+    // click came from a secondary area, which the focus has just moved to anyway.
+    setActiveWin(win.id);
+    setWinType(win, "graph");
+    mountWindow(win);
     updateWindowHeader();
     renderTiles();
     select(current.id);
@@ -5976,22 +6211,19 @@ const PANEL_TABS: Partial<Record<WindowType, { id: string; labelKey: string }[]>
     { id: "emtree", labelKey: "panel.multigraph" },
     { id: "nodelist", labelKey: "panel.outliner" },
   ],
+  // WIN7 · StratiMiner is NOT here any more: it is a Tools ▸ instrument that
+  // floats, does its job and closes. The Log stays — a running record of what
+  // the document and the session have been doing is a view, not a tool.
   inspector: [
     { id: "inspector", labelKey: "panel.inspector" },
     { id: "logpanel", labelKey: "panel.log" },
-    { id: "stratiminer", labelKey: "panel.stratiminer" },
   ],
 };
 
-/** Every panel element that can be re-homed. Named once: the release pass and
- *  the "is this thing mounted anywhere?" guards both read it. */
-const PANEL_ELEMENT_IDS = [
-  "emtree",
-  "nodelist",
-  "inspector",
-  "logpanel",
-  "stratiminer",
-];
+/** Every panel element a WINDOW can hold. Named once: the release pass and the
+ *  "is this thing mounted anywhere?" guards both read it. StratiMiner is not
+ *  here — it is a floating tool (WIN7), never an area's content. */
+const PANEL_ELEMENT_IDS = ["emtree", "nodelist", "inspector", "logpanel"];
 
 /** The panel a hosted window is currently showing. Per WINDOW (not per type):
  *  two Inspector windows can sit on different tabs, and that is what makes the
@@ -6056,6 +6288,187 @@ function releasePanels(): void {
   }
 }
 
+// ── WIN7 · the secondary areas are LIVE VIEWS ───────────────────────────────
+//
+// Every area of the arrangement shows the document, and shows it NOW: edit a
+// node in the graph and the outliner beside it, the table below it and the
+// inspector in the corner all move. Before this only graph areas drew anything;
+// the rest carried a note saying "click to work here", so an IDE arrangement was
+// four areas of which three were empty until visited.
+//
+// Two different mechanisms, because the surfaces are two different kinds of
+// thing, and pretending otherwise is what would have made this a rewrite:
+//
+//  · the TABLE renders through a host registry (WIN5): one renderer, as many
+//    mounts as there are areas. A secondary Tabular area registers a host and is
+//    live for free — `renderEmData` already runs on every store change.
+//  · the PANELS (outliner, multigraph, inspector, log) are SINGLETON elements
+//    with their handlers wired at boot. They are re-homed, not copied: an area
+//    that wants one takes it, and the panel's own refresh function — which also
+//    already runs on every store change — then paints it where it now lives.
+//
+// The declared consequence of re-homing: two areas asking for the SAME panel is
+// one area too many. The first claimant gets it (the focused window first, then
+// tree order) and the second says so. Two Inspector windows on DIFFERENT tabs
+// are both live, which is the case that actually comes up.
+//
+// A secondary surface is a view and not a second editor: the moment the pointer
+// enters the area it becomes the focused one (focus-follows-mouse, WIN5) and the
+// real surface mounts there. So nothing in here needs to be interactive — its
+// tabs are labels, and it is never the thing being clicked.
+
+/** What each live secondary surface must do when the document changes. Rebuilt
+ *  with the tree; a surface whose area is gone is simply not in the list. */
+const tileSurfaces: Array<() => void> = [];
+
+function refreshTileSurfaces(): void {
+  for (const fn of tileSurfaces) fn();
+}
+
+/** A secondary area that cannot show its content, saying which and why. */
+function tileNote(area: HTMLElement, text: string): void {
+  const note = document.createElement("div");
+  note.className = "tile-note";
+  note.textContent = text;
+  area.appendChild(note);
+}
+
+/** Build the live surface of one secondary area. */
+function buildSecondarySurface(area: HTMLElement, win: Win): void {
+  if (win.type === "table") {
+    // the same renderer as the focused Tabular window, one more mount
+    const head = document.createElement("div");
+    head.className = "tile-tablehead";
+    const sheet = document.createElement("span");
+    sheet.className = "tile-sheet";
+    sheet.textContent =
+      EM_DATA_SHEETS.find((s) => s.key === currentSheetKey())?.label ??
+      currentSheetKey();
+    const count = document.createElement("span");
+    count.className = "emdata-count";
+    head.appendChild(sheet);
+    head.appendChild(count);
+    const body = document.createElement("div");
+    body.className = "tile-tablebody";
+    area.appendChild(head);
+    area.appendChild(body);
+    // `isConnected` and not a visibility flag: this host lives exactly as long
+    // as its area does, and the area is discarded whole on the next re-tile.
+    addEmDataHost({ body, count, enabled: () => body.isConnected });
+    return;
+  }
+  if (PANEL_TABS[win.type]) {
+    const host = document.createElement("div");
+    host.className = "tile-panel";
+    host.dataset.win = win.id;
+    const tabs = document.createElement("div");
+    tabs.className = "tile-panel-tabs";
+    const body = document.createElement("div");
+    body.className = "tile-panel-body";
+    host.appendChild(tabs);
+    host.appendChild(body);
+    area.appendChild(host);
+    // which panel actually lands here is decided in one pass over every area
+    // (`syncSecondaryPanels`), because it depends on what the others took
+    return;
+  }
+  if (win.type === "doc") {
+    const list = document.createElement("div");
+    list.className = "tile-doclist";
+    const detail = document.createElement("div");
+    detail.className = "tile-docdetail";
+    area.appendChild(list);
+    area.appendChild(detail);
+    const paint = (): void => {
+      if (!list.isConnected) return;
+      renderDocViewInto(win, list, detail);
+    };
+    tileSurfaces.push(paint);
+    paint();
+    return;
+  }
+  // The only type left is NARRATIVE, and it is the one that stays a note. The
+  // story is an OVERLAY over the canvas (`#narrative-view`): one element with the
+  // authoring editors bound to it. Re-homing that would move the EDITOR, not a
+  // view of it — so this area says what it holds, and a step into it brings the
+  // real thing. (A read-only rendering of the prose beside the editor is a
+  // second renderer for the same document, which is the thing WIN5-7 have been
+  // avoiding throughout.)
+  tileNote(area, t("tile.narrativeNote"));
+}
+
+/**
+ * Decide which area holds each singleton panel, and mount it there.
+ *
+ * Runs after the tree is built AND after the focused window changes its panel,
+ * because the answer depends on both. The DOM is the register of who holds what
+ * — reading it back rather than keeping a second map means a claim can never
+ * survive the element having been moved somewhere else.
+ */
+function syncSecondaryPanels(): void {
+  const hosts = [...document.querySelectorAll<HTMLElement>(".tile-panel")];
+  if (!hosts.length) return;
+  releaseTilePanels(); // start from a clean board: the focused window keeps its own
+  const claimed = new Set<string>();
+  const panelView = document.getElementById("panel-view");
+  const panelBody = document.getElementById("panel-view-body");
+  if (panelBody && !panelView?.classList.contains("hidden"))
+    for (const child of panelBody.children) claimed.add(child.id);
+  for (const host of hosts) {
+    const win = windowsOf().find((w) => w.id === host.dataset.win);
+    const tabs = host.querySelector<HTMLElement>(".tile-panel-tabs");
+    const body = host.querySelector<HTMLElement>(".tile-panel-body");
+    if (!win || !tabs || !body) continue;
+    const showing = panelIdOf(win);
+    const taken = claimed.has(showing);
+    tabs.innerHTML = "";
+    for (const tab of PANEL_TABS[win.type] ?? []) {
+      const chip = document.createElement("span");
+      chip.className = "tile-panel-tab" + (tab.id === showing ? " active" : "");
+      chip.textContent = t(tab.labelKey);
+      tabs.appendChild(chip);
+    }
+    body.innerHTML = "";
+    if (taken) {
+      // honest rather than blank: the panel is a single element and another area
+      // has it. Say where to look instead of showing an empty box.
+      const note = document.createElement("div");
+      note.className = "tile-note";
+      note.textContent = t("tile.panelTaken");
+      body.appendChild(note);
+      continue;
+    }
+    claimed.add(showing);
+    const el = document.getElementById(showing);
+    if (!el) continue;
+    el.classList.remove("hidden");
+    body.appendChild(el);
+    refreshPanelById(showing);
+  }
+  reflectEmptyAside();
+}
+
+/**
+ * The aside is only worth its width while it still holds something.
+ *
+ * With the panels living in windows, an arrangement like the IDE preset takes
+ * ALL of them — and the aside was left as a strip of tabs over an empty box,
+ * the exact shape of a broken panel. It steps aside when it has nothing (its
+ * collapse handle with it) and comes back the moment a panel does.
+ */
+function reflectEmptyAside(): void {
+  const side = document.getElementById("side");
+  if (!side || side.classList.contains("hidden")) return;
+  const homeless = PANEL_ELEMENT_IDS.every(
+    (id) => document.getElementById(id)?.parentElement !== side,
+  );
+  side.classList.toggle("side-empty", homeless);
+  document
+    .getElementById("collapse-right")
+    ?.classList.toggle("hidden", homeless || side.classList.contains("hidden"));
+  reflectSideTabs();
+}
+
 /** Mount the panels of a hosted window type into the window's surface. */
 function renderPanelWindow(type: WindowType): void {
   const tabsHost = document.getElementById("panel-view-tabs");
@@ -6081,10 +6494,11 @@ function renderPanelWindow(type: WindowType): void {
     body.appendChild(el);
   }
   // the panels are built on demand by their own renderers
-  if (showing === "emtree") refreshEMTree();
-  if (showing === "nodelist") nodeList.refresh();
-  if (showing === "inspector") refreshInspector();
-  if (showing === "logpanel") refreshLogPanel();
+  refreshPanelById(showing);
+  // the focused window just took a panel (or gave one back): the secondary areas
+  // have to re-resolve their claims, or one of them would be left holding a body
+  // whose element has moved.
+  syncSecondaryPanels();
 }
 
 /** Mount a window's editor in the central area. The ONE place that knows how a
@@ -6137,6 +6551,25 @@ function selectWindow(winId: string): void {
   updateWindowHeader();
 }
 
+/**
+ * WIN7 · magnify an area to fill the workspace, or come back from it.
+ *
+ * The one gesture that is worth a keyboard shortcut of its own: an arrangement
+ * built to keep four things in view is rarely the one you want while working on
+ * one of them, and the way out of that in every tiling editor is to take the
+ * whole screen for a moment and give it back. Reversible by construction — the
+ * tree is kept whole in `workspace.ts` and restored untouched (ratios, nesting
+ * and all), so this is never something to undo by hand afterwards.
+ */
+function magnifyWindow(winId: string): void {
+  toggleMaximize(winId);
+  renderTiles();
+  const win = activeWin();
+  if (win.type === "graph") setMode(winMode(win));
+  else mountWindow(win);
+  updateWindowHeader();
+}
+
 function closeActiveWindow(): void {
   if (!closeWindow(activeWin().id)) return; // never the last one
   const win = activeWin();
@@ -6173,6 +6606,9 @@ function updateWindowHeader(): void {
   // toggle you can see the state of, not as a menu item you have to go and read.
   const isNarrative = type === "narrative";
   show("win-act-edit", isNarrative);
+  // WIN7 · the two data panels a narrative window sends you to
+  show("win-act-ai", isNarrative);
+  show("win-act-geo", isNarrative);
   document
     .getElementById("win-act-edit")
     ?.classList.toggle("win-act-on", isNarrative && narrativeEditing);
@@ -6227,6 +6663,18 @@ function renderInstanceStrip(): void {
   };
   mkSplit("row", "⇥", "win.splitRight");
   mkSplit("col", "⇤", "win.splitDown");
+  // WIN7 · magnify. Beside the split verbs because it is the same family of
+  // gesture — how much of the screen this area gets — and because that is the
+  // one place in the bar that is about the ARRANGEMENT rather than the content.
+  const magnified = maximizedWin() === current.id;
+  const mag = document.createElement("button");
+  // same glyph in both states, lit when it is on — the ✎ toggle's rule: a
+  // toggle you can see the state of, not two buttons that swap places
+  mag.className = "wi-chip wi-add" + (magnified ? " wi-on" : "");
+  mag.textContent = "⛶";
+  mag.title = t(magnified ? "win.unmaximize" : "win.maximize");
+  mag.addEventListener("click", () => magnifyWindow(current.id));
+  strip.appendChild(mag);
   // WIN6 · the IDE preset: editor + Tabular band + EMtree/Inspector column.
   // A button rather than a boot-time default, so it never overwrites an
   // arrangement someone has shaped.
@@ -6338,6 +6786,11 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
   ],
   narrative: [
     {
+      // MENU-AUDIT · "Aggiungi capitolo" left this menu, and the menu is better
+      // for it: every item here now acts on the CURRENT chapter, which is what
+      // "Capitolo" means. Adding one is not an operation on the current chapter,
+      // and it has two homes that suit it — the narrative palette (always) and
+      // the "+ capitolo" at the end of the story (while writing).
       label: "Capitolo",
       items: () => {
         const narr = activeNarrative();
@@ -6349,15 +6802,6 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
               ? "Clicca un capitolo per renderlo corrente."
               : null;
         return [
-          {
-            label: "Aggiungi capitolo",
-            run: () => {
-              if (!store || !narr) return;
-              nedit.addChapter(store, narr.id);
-              refreshNarrativeView();
-            },
-            disabledReason: () => (narr ? null : "Nessuna narrativa in questo grafo."),
-          },
           {
             label: "Elimina capitolo corrente",
             run: () => {
@@ -6455,27 +6899,21 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
       },
     },
   ],
+  // MENU-AUDIT · the "Tabella" menu (one item per sheet, with a ✓) is GONE. The
+  // sheet selector sits in the window's own head, two centimetres away, showing
+  // which sheet is open — and a state offered twice reads as two states. Exactly
+  // the reason WIN4 dissolved the "Vista" menu next to the Mode selector.
   table: [
-    {
-      label: "Tabella",
-      items: () =>
-        EM_DATA_SHEETS.map((sheet) => ({
-          label: sheet.label,
-          run: () => {
-            setSheet(sheet.key);
-            const sel = document.getElementById("table-view-sheet") as HTMLSelectElement | null;
-            if (sel) sel.value = sheet.key;
-          },
-          checked: () => currentSheetKey() === sheet.key,
-        })),
-    },
     {
       label: "Righe",
       items: () => [
         {
           label: "Aggiungi riga",
           run: () => {
-            const btn = [...document.querySelectorAll<HTMLButtonElement>("#emdata-actions button")]
+            // WIN6-RESIDUAL · the head of the Tabular WINDOW, not the retired
+            // dock's: the "+ row" button the table renderer puts there is still
+            // the single owner of adding a row.
+            const btn = [...document.querySelectorAll<HTMLButtonElement>("#table-view-actions button")]
               .find((b) => /row/i.test(b.textContent ?? ""));
             if (btn) btn.click();
             else toast("Questo foglio non accetta righe nuove.");
@@ -6652,6 +7090,54 @@ document.getElementById("win-act-fit")?.addEventListener("click", () => fit());
 document.getElementById("win-act-edit")?.addEventListener("click", () => {
   click("btn-narrative-edit"); // the toggle's owner stays the existing button
   updateWindowHeader(); // …the bar only shows what it is now
+});
+
+// ── WIN7 · narrativa a un click ─────────────────────────────────────────────
+//
+// Two things a narrative needs that are not IN the narrative: who writes the
+// draft (and with which key), and where the site is on the map. Both had a
+// panel already — Settings ▸ AI, and the graph card of the Inspector — and
+// neither was reachable from the story you were writing. These two buttons are
+// that reach. They open the EXISTING panels, scrolled to the exact block: no
+// second place to enter an API key, no second site position.
+
+document.getElementById("win-act-ai")?.addEventListener("click", () => {
+  openSettings("settings-sect-ai");
+});
+
+/**
+ * Bring the Inspector's graph card up with the SITE POSITION in view.
+ *
+ * The site position is a graph-scope fact (GEO1), so the panel that holds it is
+ * the Inspector's no-selection state — which means clearing the selection first.
+ * Where the Inspector *is* depends on the arrangement: an area of its own if the
+ * workspace has one, the aside otherwise. Both are handled, because "open the
+ * panel" has to mean the same thing in either.
+ */
+document.getElementById("win-act-geo")?.addEventListener("click", () => {
+  if (!store) {
+    toast("Apri prima un grafo: la posizione è un dato del grafo.");
+    return;
+  }
+  select(null); // the graph card is the Inspector's no-selection state
+  const insp = document.getElementById("inspector");
+  const inWindow = windowsOf().find(
+    (w) => PANEL_TABS[w.type] && panelIdOf(w) === "inspector",
+  );
+  if (inWindow && insp?.parentElement?.id !== "panel-view-body") {
+    // an Inspector area already holds it (or is about to): work there
+    if (activeWin().id !== inWindow.id) selectWindow(inWindow.id);
+  } else if (!inWindow) {
+    sidePanel.classList.remove("hidden");
+    showTab("inspector");
+  }
+  refreshInspector();
+  const anchor = document.getElementById("insp-site-position");
+  if (!anchor) {
+    toast("Pannello posizione non disponibile: apri l'Ispettore su questo grafo.");
+    return;
+  }
+  revealBlock(anchor);
 });
 document.getElementById("win-act-zoom1")?.addEventListener("click", () => {
   const vp = viewport();
@@ -7002,6 +7488,7 @@ canvas.addEventListener("pointerdown", (e) => {
   // this pans regardless of what is under the cursor.
   if (e.button === 1 || spaceHeld) {
     dragMode = "pan";
+    markCameraTouched(activeWin().id, view);
     canvas.classList.add("panning");
     canvas.setPointerCapture(e.pointerId);
     e.preventDefault();
@@ -7640,6 +8127,7 @@ canvas.addEventListener(
   (e) => {
     e.preventDefault();
     const rect = canvas.getBoundingClientRect();
+    markCameraTouched(activeWin().id, view);
     viewport().zoomAt(
       e.clientX - rect.left,
       e.clientY - rect.top,
@@ -7789,6 +8277,14 @@ window.addEventListener("keydown", (e) => {
     return;
   }
   if (inField) return;
+  // WIN7 · Ctrl+Space magnifies the focused area and brings it back — Blender's
+  // shortcut, and it must be read BEFORE the plain-Space pan below, which would
+  // otherwise swallow it and leave the canvas in a grab it never got out of.
+  if (e.code === "Space" && (e.ctrlKey || e.metaKey)) {
+    e.preventDefault();
+    magnifyWindow(activeWin().id);
+    return;
+  }
   if (e.code === "Space" && !spaceHeld) {
     // hold Space → pan-always (grab) gesture; prevent page scroll.
     spaceHeld = true;
@@ -7909,12 +8405,12 @@ updateToolbar();
 renderTiles(); // WIN5 · lay out the arrangement this session was left in
 applyWorkspace(activeWorkspace());
 
-// EM-Data dock (DP-81): a live tabular view on the active store. Reads `store`
+// EM-Data (DP-81): a live tabular view on the active store. Reads `store`
 // through a getter so it always sees the current slot; re-renders from the
 // store's onChange (wired in wireStore).
-// WIN5 · the Table WINDOW is a second host of the same table (the dock is the
-// first). Its sheet selector drives the shared choice, so dock and window never
-// show two different sheets.
+// WIN6-RESIDUAL · the Tabular WINDOW is the table's only home now (the dock is
+// retired). Its sheet selector drives the shared choice, which every other mount
+// — a secondary Tabular area — reads, so two tables never show two sheets.
 {
   const sheetSel = document.getElementById("table-view-sheet") as HTMLSelectElement | null;
   if (sheetSel) {
