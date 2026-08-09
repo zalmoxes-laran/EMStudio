@@ -5775,6 +5775,10 @@ function applyWindowSurface(type: WindowType): void {
   };
   show("table-view", type === "table");
   show("doc-view", type === "doc");
+  // The overview map answers "where am I on the canvas" — a question only a
+  // canvas window has. On a table or a document it would be a picture of
+  // something that is not on screen.
+  show("overview", type === "graph");
   if (type === "table") renderEmData();
   if (type === "doc") renderDocView();
 }
@@ -6929,6 +6933,41 @@ canvas.addEventListener("pointermove", (e) => {
   }
 
   if (dragMode === "connect") {
+    // CROSS-AREA CONNECTOR · a connector may end on a node that is not in this
+    // area at all — two units in the same graph rarely fit one framing. The
+    // pointer capture keeps sending these moves HERE even when the cursor has
+    // left this rectangle, so this is the one place that can notice, hand the
+    // editor over to the area under the cursor, and carry the connector across.
+    //
+    // `connect` itself is untouched by the hand-over: `fromId` is a node of the
+    // DOCUMENT, not of a window, so the connector stays the same connector. What
+    // changes is which camera and which scene resolve the target — which is
+    // exactly what has to change when the cursor is somewhere else.
+    const over =
+      e.clientX < rect.left ||
+      e.clientX > rect.right ||
+      e.clientY < rect.top ||
+      e.clientY > rect.bottom
+        ? areaAt(e.clientX, e.clientY)
+        : null;
+    if (over && over.winId !== activeWin().id) {
+      selectWindow(over.winId);
+      // resolve the pointer in the NEW area's camera before asking what is under it
+      const r2 = canvas.getBoundingClientRect();
+      const w2 = viewport().toWorld(e.clientX - r2.left, e.clientY - r2.top);
+      // Where the connector CAME IN: the pointer clamped to this area's frame.
+      // The source node may be nowhere near this view — the band then starts at
+      // that edge point instead of vanishing (renderer: `connect.fromAnchor`).
+      if (connect) {
+        const edge = viewport().toWorld(
+          Math.min(Math.max(e.clientX - r2.left, 0), r2.width),
+          Math.min(Math.max(e.clientY - r2.top, 0), r2.height),
+        );
+        connect.fromAnchor = { x: edge.x, y: edge.y };
+      }
+      updateConnect(w2.x, w2.y);
+      return;
+    }
     updateConnect(w.x, w.y);
     return;
   }

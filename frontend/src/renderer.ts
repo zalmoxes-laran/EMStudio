@@ -24,6 +24,17 @@ export interface ConnectDrag {
   y: number;
   targetId: string | null;
   validity: "valid" | "generic" | "invalid" | null;
+  /**
+   * Where the rubber band starts when the SOURCE NODE is not in this scene —
+   * the point on the area's edge the connector came in through, world space.
+   *
+   * A connector that crossed from another tiled area is still one gesture, but
+   * its origin can be off-screen (another projection, another framing). Without
+   * this the line simply vanished and the only feedback left was the target
+   * lighting up. Set by `main.ts` at the moment of the crossing; ignored as soon
+   * as the source node is visible again.
+   */
+  fromAnchor?: { x: number; y: number };
 }
 
 export interface RenderState {
@@ -932,7 +943,10 @@ export function render(
 
   if (state.connect) {
     const from = scene.byId.get(state.connect.fromId);
-    if (from) {
+    // The band starts at the source node's handle when that node is here, and
+    // at the AREA EDGE the connector crossed when it is not (see `fromAnchor`).
+    const start = from ? handleAnchor(from) : state.connect.fromAnchor;
+    if (start) {
       const colors = {
         valid: "#1a7f37",
         generic: canvasTheme().labelMuted,
@@ -945,15 +959,18 @@ export function render(
       ctx.lineWidth = 2 / vp.scale;
       ctx.setLineDash([6 / vp.scale, 4 / vp.scale]);
       ctx.beginPath();
-      // the THIRD place that used to spell the anchor out by hand: the live
-      // rubber-band starts at the handle you grabbed, so it reads it from the
-      // same `handleAnchor` (EM2). Before, a change to the handle's position
-      // would have moved the bullet and left the line starting somewhere else.
-      const fa = handleAnchor(from);
-      ctx.moveTo(fa.x, fa.y);
+      ctx.moveTo(start.x, start.y);
       ctx.lineTo(state.connect.x, state.connect.y);
       ctx.stroke();
       ctx.setLineDash([]);
+      // a small tick where the connector entered, so the line reads as coming
+      // FROM somewhere rather than starting nowhere
+      if (!from) {
+        ctx.beginPath();
+        ctx.arc(start.x, start.y, 4 / vp.scale, 0, Math.PI * 2);
+        ctx.fillStyle = c;
+        ctx.fill();
+      }
       const t = state.connect.targetId
         ? scene.byId.get(state.connect.targetId)
         : null;
