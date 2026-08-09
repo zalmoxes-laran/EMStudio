@@ -328,6 +328,58 @@ export function splitWindow(
   return clone;
 }
 
+/** True when this area sits inside a split — i.e. there is something to join. */
+export function canJoin(winId: string, ws: WorkspaceId = active): boolean {
+  const find = (p: Pane): boolean => {
+    if (p.kind === "leaf") return false;
+    if (paneIds(p.a).includes(winId) || paneIds(p.b).includes(winId)) {
+      // only the split that DIRECTLY holds it as one of its two sides counts
+      const direct =
+        (p.a.kind === "leaf" && p.a.winId === winId) ||
+        (p.b.kind === "leaf" && p.b.winId === winId);
+      return direct || find(p.a) || find(p.b);
+    }
+    return false;
+  };
+  return find(layoutOf(ws));
+}
+
+/**
+ * JOIN · this area absorbs its sibling — the split collapses and the space comes
+ * back, the way dragging an area over its neighbour does in Blender.
+ *
+ * The sibling may be a whole sub-tree (an area that was itself split): every
+ * window in it is closed, because after the join there is nowhere for them to
+ * be. The area doing the joining always survives, so a workspace can never end
+ * up with no window.
+ */
+export function joinWindow(winId: string, ws: WorkspaceId = active): boolean {
+  const entry = registry[ws];
+  if (!canJoin(winId, ws)) return false;
+  let absorbed: string[] = [];
+  const walk = (p: Pane): Pane => {
+    if (p.kind === "leaf") return p;
+    if (p.a.kind === "leaf" && p.a.winId === winId) {
+      absorbed = paneIds(p.b);
+      return p.a;
+    }
+    if (p.b.kind === "leaf" && p.b.winId === winId) {
+      absorbed = paneIds(p.a);
+      return p.b;
+    }
+    return { ...p, a: walk(p.a), b: walk(p.b) };
+  };
+  entry.layout = walk(layoutOf(ws));
+  if (absorbed.length) {
+    const gone = new Set(absorbed);
+    entry.wins = entry.wins.filter((w) => !gone.has(w.id));
+  }
+  entry.activeId = winId; // you are working in the area that stayed
+  entry.layout = repairLayout(entry.layout, entry.wins);
+  persistWindows();
+  return true;
+}
+
 /** Move the divider of the split that contains `winId` as its FIRST child. */
 export function setSplitRatio(
   winId: string,

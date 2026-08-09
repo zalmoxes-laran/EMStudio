@@ -177,6 +177,8 @@ import {
   activeWindowType,
   closeWindow,
   GRAPH_MODES,
+  canJoin,
+  joinWindow,
   layoutOf,
   paneIds,
   setActiveWin,
@@ -5791,6 +5793,23 @@ function renderInstanceStrip(): void {
   };
   mkSplit("row", "⇥", "win.splitRight");
   mkSplit("col", "⇤", "win.splitDown");
+  // JOIN · this area absorbs its neighbour and the split collapses. Shown only
+  // when there IS a neighbour to absorb, so the bar never offers a dead verb.
+  if (canJoin(activeWin().id)) {
+    const j = document.createElement("button");
+    j.className = "wi-chip wi-add";
+    j.textContent = "⊟";
+    j.title = t("win.join");
+    j.addEventListener("click", () => {
+      joinWindow(activeWin().id);
+      renderTiles();
+      const win = activeWin();
+      if (win.type === "graph") setMode(winMode(win));
+      else mountWindow(win);
+      updateWindowHeader();
+    });
+    strip.appendChild(j);
+  }
   if (wins.length > 1) {
     const close = document.createElement("button");
     close.className = "wi-chip wi-close";

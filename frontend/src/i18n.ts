@@ -83,6 +83,7 @@ const EN: Dict = {
   "win.add": "Add a graph window to this workspace",
   "win.splitRight": "Split: a new area to the right",
   "win.splitDown": "Split: a new area below",
+  "win.join": "Join: absorb the neighbouring area",
   "tile.activate": "click to edit here",
   "tile.tableNote": "Table — click to work here",
   "tile.docNote": "Documents — click to work here",
@@ -98,6 +99,11 @@ const EN: Dict = {
   "doc.reveal": "Show on the canvas",
   "dtc.empty":
     "DTC — no digital-twin chain in this graph yet (no dtc_ relation, no linked resource).",
+  // the four provenance lanes of the DTC projection
+  "dtc.laneInput": "Inputs",
+  "dtc.laneProcess": "Processes",
+  "dtc.laneOutput": "Products",
+  "dtc.laneUse": "Used in the record",
   "toolbar.edit": "Edit",
   "toolbar.undoItem": "Undo",
   "toolbar.redoItem": "Redo",
@@ -224,6 +230,7 @@ const IT: Dict = {
   "win.add": "Aggiungi una finestra grafo a questo workspace",
   "win.splitRight": "Dividi: nuova area a destra",
   "win.splitDown": "Dividi: nuova area sotto",
+  "win.join": "Unisci: assorbi l'area vicina",
   "tile.activate": "clicca per lavorare qui",
   "tile.tableNote": "Tabella — clicca per lavorare qui",
   "tile.docNote": "Documenti — clicca per lavorare qui",
@@ -239,6 +246,10 @@ const IT: Dict = {
   "doc.reveal": "Mostra sul canvas",
   "dtc.empty":
     "DTC — questo grafo non ha ancora una catena di gemello digitale (nessuna relazione dtc_, nessuna risorsa collegata).",
+  "dtc.laneInput": "Ingressi",
+  "dtc.laneProcess": "Processi",
+  "dtc.laneOutput": "Prodotti",
+  "dtc.laneUse": "Uso nel record",
   "toolbar.edit": "Modifica",
   "toolbar.undoItem": "Annulla",
   "toolbar.redoItem": "Ripristina",

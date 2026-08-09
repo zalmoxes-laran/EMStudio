@@ -132,4 +132,55 @@ const eq = (got, want, what) => {
   ok(parsed.canvas?.layout, "including the layout tree, not just the window list");
 }
 
+// ── free tiling: nested splits ──────────────────────────────────────────────
+{
+  const a = W.activeWin("canvas");
+  const b = W.splitWindow(a.id, "row", "canvas");   // two areas
+  const c = W.splitWindow(b.id, "col", "canvas");   // split the SECOND one again
+  eq(W.paneIds(W.layoutOf("canvas")).length, 3, "an area can be split again — nesting works");
+  ok(
+    W.paneIds(W.layoutOf("canvas")).every(
+      (id, i, all) => all.indexOf(id) === i,
+    ),
+    "and every area is still placed exactly once",
+  );
+  // the nested split really is nested: one child of the root is a split itself
+  const root = W.layoutOf("canvas");
+  ok(root.kind === "split", "the root is a split");
+  ok(
+    root.a.kind === "split" || root.b.kind === "split",
+    "with a split as one of its sides — a tree, not a flat row",
+  );
+  eq(W.activeWin("canvas").id, c.id, "the newest area has focus");
+}
+
+// ── join: an area absorbs its sibling ───────────────────────────────────────
+{
+  const before = W.paneIds(W.layoutOf("canvas")).length;
+  const me = W.activeWin("canvas").id;
+  ok(W.canJoin(me, "canvas"), "an area inside a split can join");
+  ok(W.joinWindow(me, "canvas"), "the join succeeds");
+  const after = W.paneIds(W.layoutOf("canvas"));
+  eq(after.length, before - 1, "one area fewer");
+  ok(after.includes(me), "the area that joined is the one that stayed");
+  eq(W.activeWin("canvas").id, me, "and it keeps the focus");
+  eq(
+    after.sort(),
+    W.windowsOf("canvas").map((w) => w.id).sort(),
+    "the absorbed window is gone from the list too — no orphans",
+  );
+}
+
+// ── a single area has nothing to join ───────────────────────────────────────
+{
+  while (W.windowsOf("canvas").length > 1)
+    W.joinWindow(W.activeWin("canvas").id, "canvas");
+  eq(W.layoutOf("canvas").kind, "leaf", "joining down to one area leaves a leaf");
+  ok(
+    !W.canJoin(W.activeWin("canvas").id, "canvas"),
+    "and a lone area reports that there is nothing to join",
+  );
+  ok(!W.joinWindow(W.activeWin("canvas").id, "canvas"), "so the join refuses");
+}
+
 console.log(`tiling: ${checks} checks passed`);
