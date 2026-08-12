@@ -44,6 +44,10 @@ export function setVolatileProvider(fn: VolatileProvider): void {
 // clicks, exactly like the narrative does for its chapter.
 let currentRowOf: () => string | null = () => null;
 let setCurrentRow: (id: string | null) => void = () => {};
+//: ROWSELECT · what picking a row means BEYOND marking it current. The table
+//: knows rows; it does not know that a row id is also a node id, or that there
+//: are graph windows to reveal it in. `main.ts` supplies that.
+let onRowPicked: (id: string) => void = () => {};
 
 /**
  * WIN5 · where a table is drawn. EM-Data used to be one dock with hardcoded
@@ -139,10 +143,12 @@ export function initEmData(opts: {
   getStore: () => DocumentStore | null;
   currentRow?: () => string | null;
   setCurrentRow?: (id: string | null) => void;
+  onRowPicked?: (id: string) => void;
 }): void {
   getStore = opts.getStore;
   if (opts.currentRow) currentRowOf = opts.currentRow;
   if (opts.setCurrentRow) setCurrentRow = opts.setCurrentRow;
+  if (opts.onRowPicked) onRowPicked = opts.onRowPicked;
   // The sheet the session was left on. The only piece of the retired dock's
   // state that was ever about the TABLE rather than about the strip.
   currentSheet = (localStorage.getItem(LS_SHEET) as SheetKey) || "US";
@@ -198,7 +204,14 @@ function renderEmDataInto(host: EmDataHost): void {
   const claimForm =
     currentSheet === "Claims" ? '<div id="emdata-claimform-slot"></div>' : "";
 
-  const head = `<tr>${table.columns
+  // ROWSELECT · a narrow SELECTION GUTTER opens every row. Until now the only
+  // way to make a row current was to click INSIDE a cell, which also opened that
+  // cell's editor — so "which row am I working on" could not be said without
+  // starting to change something. The gutter is a handle: it selects, and it
+  // touches no editor.
+  const head = `<tr><th class="emdata-gutter-head" title="${escapeAttr(
+    "Select a row (no editing)",
+  )}"></th>${table.columns
     .map((c) => `<th>${c.label}</th>`)
     .join("")}<th></th></tr>`;
 
@@ -211,9 +224,12 @@ function renderEmDataInto(host: EmDataHost): void {
         row.id,
       )}" title="Delete this node">✕</button></td>`;
       const cur = row.id === currentRowOf() ? " emdata-current" : "";
+      const gutter = `<td class="emdata-gutter"><button class="emdata-pick" data-pick="${escapeAttr(
+        row.id,
+      )}" title="${escapeAttr("Select this row")}" tabindex="-1">▸</button></td>`;
       return `<tr class="${row.volatile ? "emdata-vol" : ""}${cur}" data-row="${escapeAttr(
         row.id,
-      )}">${cells}${del}</tr>`;
+      )}">${gutter}${cells}${del}</tr>`;
     })
     .join("");
 
@@ -241,18 +257,46 @@ function renderEmDataInto(host: EmDataHost): void {
     }
   });
 
-  // wire delete buttons
-  // clicking a row makes it current (the ✕ and the cell editors stop the event
-  // themselves, so editing a cell does not fight with selecting the row)
+  // ROWSELECT · marking a row current, in ONE place.
+  //
+  // Two ways in, one behaviour: pressing anywhere in the row (as before), and
+  // pressing the gutter handle. The difference is what happens NEXT — a press
+  // inside a data cell goes on to focus that cell's editor, because that is what
+  // clicking a value means; a press on the gutter does not, because the gutter
+  // is not a value. `preventDefault` on the handle is what keeps the focus off
+  // the editors: without it the browser moves focus to the pressed element and
+  // a subsequent click can land in a neighbouring input.
+  const markCurrent = (rowId: string | null): void => {
+    setCurrentRow(rowId);
+    body.querySelectorAll("tr.emdata-current").forEach((r) =>
+      r.classList.remove("emdata-current"),
+    );
+    if (rowId)
+      body
+        .querySelector(`tr[data-row="${CSS.escape(rowId)}"]`)
+        ?.classList.add("emdata-current");
+  };
+
   body.querySelectorAll<HTMLTableRowElement>("tr[data-row]").forEach((tr) => {
     tr.addEventListener("mousedown", () => {
-      setCurrentRow(tr.getAttribute("data-row"));
-      body.querySelectorAll("tr.emdata-current").forEach((r) =>
-        r.classList.remove("emdata-current"),
-      );
-      tr.classList.add("emdata-current");
+      markCurrent(tr.getAttribute("data-row"));
     });
   });
+
+  body.querySelectorAll<HTMLButtonElement>("[data-pick]").forEach((btn) => {
+    const rowId = btn.getAttribute("data-pick")!;
+    // `mousedown` + preventDefault: the row's own handler has already run (it
+    // bubbles first from the same press), so the row is current; this only stops
+    // the focus from moving. The row STAYS selected and no field opens.
+    btn.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      markCurrent(rowId);
+      onRowPicked(rowId);
+    });
+    btn.addEventListener("click", (e) => e.preventDefault());
+  });
+
+  // wire delete buttons
   body.querySelectorAll<HTMLButtonElement>("[data-del]").forEach((btn) => {
     btn.onclick = () => {
       deleteRow(store, btn.getAttribute("data-del")!);

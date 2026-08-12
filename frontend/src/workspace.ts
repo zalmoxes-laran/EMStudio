@@ -30,7 +30,15 @@ export type WindowType =
   // WIN6 · the side panels became window types of their own: everything in the
   // shell is a window now, so anything can be tiled, resized and focused.
   | "emtree"
-  | "inspector";
+  | "inspector"
+  // VIEWER · a preview surface: the resource the current element points at,
+  // shown as itself. It PLACES nothing (no provider in RESOURCE_PROVIDERS), so
+  // it carries no palette and no chevron.
+  | "viewer"
+  // W1 · STORAGE · where the bytes live. Its Modes are the BACKENDS (filesystem
+  // now, MinIO in phase 2, Samba/WebDAV conceivable) — the same shape as the
+  // graph window's projections: one window, several ways of looking.
+  | "storage";
 
 /** A single window instance — its own id + type + type-specific state. */
 export interface Win {
@@ -49,6 +57,31 @@ export type GraphMode = ViewKind;
  *  one entry here rather than two lists that can disagree (which is exactly how
  *  `multigraph` first shipped invisible to `winMode`). */
 export const GRAPH_MODES: GraphMode[] = ["matrix", "graph", "dtc", "multigraph"];
+
+/** The backends a Storage window can show. `minio` is present and NOT connected
+ *  (phase 2) — it is listed because the window's shape is "one window, several
+ *  backends", and a Mode that is coming is better declared than discovered. */
+export const STORAGE_MODES = ["filesystem", "minio"] as const;
+
+/** How a Viewer window shows its collection: one item at a time, or all of it.
+ *  Same collection either way — the Mode is the reading, not the content. */
+export const VIEWER_MODES = ["single", "gallery"] as const;
+
+/**
+ * U1 · THE mode registry: window type → the modes that type offers, in header
+ * order. `main.ts` builds the Mode dropdown from this and `winModeOf` validates
+ * against it, so adding a mode is ONE entry here — not a list plus a validator
+ * plus a menu, three places free to disagree (which is exactly how `multigraph`
+ * once shipped invisible to `winMode`).
+ *
+ * A type absent from this map simply has no Mode selector; nothing branches on
+ * the type name to decide that.
+ */
+export const WINDOW_MODES: Partial<Record<WindowType, readonly string[]>> = {
+  graph: GRAPH_MODES,
+  storage: STORAGE_MODES,
+  viewer: VIEWER_MODES,
+};
 
 /**
  * HDR1 · a workspace id is now just a string, because workspaces are no longer a
@@ -199,6 +232,8 @@ export const WINDOW_TYPE_META: Record<WindowType, { icon: string; labelKey: stri
   doc: { icon: "▧", labelKey: "win.doc" },
   emtree: { icon: "⌸", labelKey: "win.emtree" },
   inspector: { icon: "◉", labelKey: "win.inspector" },
+  viewer: { icon: "▣", labelKey: "win.viewer" },
+  storage: { icon: "🗄", labelKey: "win.storage" },
 };
 
 /** The window type the active workspace currently shows — the ACTIVE window's
@@ -756,17 +791,50 @@ export function setWinCurrent(win: Win, key: string, value: unknown): void {
   persistWindows();
 }
 
-/** The mode of a graph window (its canvas projection). */
+/** The modes a window type offers (empty = no Mode selector for that type). */
+export function winModes(type: WindowType): readonly string[] {
+  return WINDOW_MODES[type] ?? [];
+}
+
+/** Where a window keeps its mode. The graph window's slot stays the bare
+ *  `"mode"` it has always been — renaming it would silently reset every saved
+ *  arrangement — and every other type gets its own, so transforming a window
+ *  away and back finds the mode it was left in instead of the other type's. */
+function modeKey(type: WindowType): string {
+  return type === "graph" ? "mode" : `mode.${type}`;
+}
+
+/** A window's current mode, validated against its own type's list. An unknown
+ *  or stale value falls back to the first mode rather than throwing: a window
+ *  must always be showing something. */
+export function winModeOf(win: Win): string {
+  const modes = winModes(win.type);
+  if (!modes.length) return "";
+  const m = win.state[modeKey(win.type)];
+  return modes.includes(m as string) ? (m as string) : modes[0];
+}
+
+/** Record a window's mode. Pure state — `main.ts` owns the mounting. Refuses a
+ *  mode the type does not offer, so a caller cannot put a window in a mode its
+ *  header could never show. */
+export function setWinModeOf(win: Win, mode: string): boolean {
+  if (!winModes(win.type).includes(mode) || winModeOf(win) === mode) return false;
+  win.state[modeKey(win.type)] = mode;
+  persistWindows();
+  return true;
+}
+
+/** The mode of a graph window (its canvas projection) — the typed view of
+ *  `winModeOf` the canvas code reads. */
 export function winMode(win: Win): GraphMode {
   const m = win.state["mode"];
   return GRAPH_MODES.includes(m as GraphMode) ? (m as GraphMode) : "matrix";
 }
 
-/** Record a graph window's mode. Pure state — `main.ts` owns the mounting. */
+/** Record a graph window's mode. */
 export function setWinMode(win: Win, mode: GraphMode): void {
-  if (win.type !== "graph" || winMode(win) === mode) return;
-  win.state["mode"] = mode;
-  persistWindows();
+  if (win.type !== "graph") return;
+  setWinModeOf(win, mode);
 }
 
 /** The window type the active workspace centres on — now the ACTIVE window's

@@ -444,6 +444,38 @@ main {
 #table-view-actions button:hover {
   background: var(--bg-hover);
 }
+/* ROWSELECT · the selection gutter. A narrow handle at the head of every row
+   that makes the row current WITHOUT opening any editor — until now the only way
+   to say "this row" was to click a value, which also started changing it. */
+.emdata-gutter,
+.emdata-gutter-head {
+  width: 22px;
+  padding: 0 !important;
+  text-align: center;
+}
+.emdata-pick {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-faint);
+  font-size: 10px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.55;
+}
+.emdata-pick:hover {
+  opacity: 1;
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+.emdata-table tr.emdata-current .emdata-pick {
+  opacity: 1;
+  color: var(--accent-ink);
+}
+
 .emdata-count {
   margin-left: auto;
   color: var(--text-faint);
@@ -4925,6 +4957,286 @@ body.sync-active #footer-brand #em-version {
    floating tool is showing them — but nothing ever puts it on screen. */
 #side.side-parking {
   display: none !important;
+}
+
+/* VIEWER · one resource, shown as itself. A neutral stage so the thing on it is
+   the only thing you look at, and the SAME box whether it holds an image or a
+   PDF — "what does this source look like" is one question, not two. */
+#viewer-view {
+  position: absolute;
+  inset: var(--winbar-h, 0px) 0 0 var(--palette-w, 0px);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-sunken);
+}
+#viewer-view.hidden {
+  display: none;
+}
+#viewer-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  overflow: auto;
+}
+/* fit to the window: never cropped, and never blown up past its own size */
+.viewer-media {
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  background: var(--bg-app);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+/* a PDF has no intrinsic size to fit to, so it takes the stage */
+object.viewer-media {
+  width: 100%;
+  height: 100%;
+}
+#viewer-caption {
+  flex: 0 0 auto;
+  padding: 6px 12px;
+  min-height: 27px;
+  box-sizing: border-box;
+  border-top: 1px solid var(--border);
+  background: var(--bg-panel);
+  font-size: 12px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.viewer-empty {
+  max-width: 44ch;
+  text-align: center;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-faint);
+}
+.viewer-path {
+  display: block;
+  margin-top: 10px;
+  padding: 6px 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 11.5px;
+  color: var(--text);
+  word-break: break-all;
+}
+.viewer-link {
+  display: inline-block;
+  margin-top: 12px;
+  color: var(--accent-ink);
+}
+
+/* W1 · the collection strip. Same height as the caption below it, so a Viewer
+   holding one item and a Viewer holding forty have the same stage: a strip that
+   appears and disappears must not make the picture resize under you. */
+#viewer-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  min-height: 30px;
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+#viewer-bar.hidden {
+  display: none;
+}
+.viewer-nav {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  cursor: pointer;
+  line-height: 1;
+}
+.viewer-nav:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+#viewer-pos {
+  min-width: 5ch;
+  text-align: center;
+  font-variant-numeric: tabular-nums; /* the number must not jog the arrows */
+}
+#viewer-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Gallery Mode — the whole collection at once. `align-content: start` so a
+   short collection stays at the top instead of floating in the middle of the
+   stage, which reads as "still loading". */
+.viewer-gallery {
+  align-self: stretch;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 10px;
+  align-content: start;
+  width: 100%;
+}
+.viewer-thumb {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-panel);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+}
+.viewer-thumb:hover {
+  border-color: var(--accent);
+}
+.viewer-thumb img {
+  width: 100%;
+  height: 92px;
+  object-fit: contain;
+  background: var(--bg-app);
+  border-radius: 4px;
+}
+.viewer-thumb-glyph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 92px;
+  font-size: 30px;
+  background: var(--bg-app);
+  border-radius: 4px;
+}
+.viewer-thumb-label {
+  font-size: 11px;
+  color: var(--text-muted);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* the drop of a folder from Storage — a RESOURCE drop, not a node-type one */
+#viewer-view.drop-target {
+  outline: 2px dashed var(--accent);
+  outline-offset: -4px;
+}
+
+/* W1 · STORAGE · a file browser, in the same box every other surface uses. */
+#storage-view {
+  position: absolute;
+  inset: var(--winbar-h, 0px) 0 0 var(--palette-w, 0px);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-sunken);
+}
+#storage-view.hidden {
+  display: none;
+}
+#storage-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px;
+  min-height: 30px;
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
+}
+.storage-nav {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  cursor: pointer;
+  line-height: 1;
+}
+.storage-nav:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.storage-nav.hidden {
+  display: none;
+}
+.storage-crumb {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl; /* a long path truncates at the FRONT: the leaf is the news */
+  text-align: left;
+}
+#storage-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 10px;
+}
+.storage-list {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+}
+.storage-row {
+  display: grid;
+  grid-template-columns: 22px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 5px;
+  font-size: 12.5px;
+  color: var(--text);
+  cursor: default;
+  user-select: none;
+}
+.storage-row:hover {
+  background: var(--bg-elevated);
+}
+.storage-row[draggable="true"] {
+  cursor: grab;
+}
+.storage-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.storage-meta {
+  font-size: 11px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+/* listed, because it IS in the folder — but it will be refused, and it says so
+   before you click rather than after */
+.storage-row.storage-outside {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 /* WIN6 · a side panel hosted INSIDE a window area */

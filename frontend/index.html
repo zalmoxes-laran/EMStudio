@@ -307,6 +307,35 @@
           <div id="panel-view-tabs" class="panel-tabs"></div>
           <div id="panel-view-body" class="panel-body"></div>
         </div>
+        <!-- VIEWER · a single-preview surface: the resource the current element
+             points at, shown as itself. Images and PDFs are treated the SAME —
+             both are "the document, rendered" — so the difference is one element
+             (<img> vs <object>) and nothing else. Filled by `renderViewer`. -->
+        <div id="viewer-view" class="hidden">
+          <!-- W1 · the collection strip: which item of how many, and the way
+               through them. Hidden when the collection holds a single item —
+               "1 / 1" with two dead arrows is furniture, not information. -->
+          <div id="viewer-bar" class="hidden">
+            <button id="viewer-prev" class="viewer-nav" title="">‹</button>
+            <span id="viewer-pos"></span>
+            <button id="viewer-next" class="viewer-nav" title="">›</button>
+            <span id="viewer-title"></span>
+          </div>
+          <div id="viewer-stage"></div>
+          <div id="viewer-caption"></div>
+        </div>
+        <!-- W1 · STORAGE · where the bytes live. Its Modes are the BACKENDS:
+             Filesystem (live, through the em-bridge's /fs routes) and MinIO
+             (phase 2 — present as a Mode, honestly empty). The browser cannot
+             read a disk path, so every listing and every byte comes from the
+             bridge. Filled by `renderStorage`. -->
+        <div id="storage-view" class="hidden">
+          <div id="storage-bar">
+            <button id="storage-up" class="storage-nav" title="">↑</button>
+            <div id="storage-crumb" class="storage-crumb"></div>
+          </div>
+          <div id="storage-body"></div>
+        </div>
         <div id="doc-view" class="hidden">
           <div id="doc-view-list" class="doc-list"></div>
           <div id="doc-view-detail" class="doc-detail"></div>

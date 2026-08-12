@@ -249,4 +249,46 @@ const eq = (got, want, what) => {
     W.joinWindow(W.activeWin("canvas").id, "canvas");
 }
 
+// ── U1 · the mode registry: one window type, several modes ──────────────────
+// The point of the registry is that a mode exists in ONE place. These checks
+// are what stops a mode from being offered by a menu and rejected by the
+// validator (the `multigraph` bug), and what pins the per-type slot so a
+// transform does not hand one type's mode to another.
+{
+  eq(W.winModes("graph"), W.GRAPH_MODES, "the graph window's modes ARE GRAPH_MODES");
+  eq([...W.winModes("storage")], ["filesystem", "minio"], "storage offers its two backends");
+  eq([...W.winModes("viewer")], ["single", "gallery"], "viewer offers single + gallery");
+  eq([...W.winModes("table")], [], "a type with no modes has no mode list");
+
+  // every mode any type offers must be settable ON that type — the exact
+  // agreement between menu and validator that the registry exists to keep
+  for (const [type, modes] of Object.entries(W.WINDOW_MODES)) {
+    const w = { id: `probe-${type}`, type, state: {} };
+    for (const mode of modes) {
+      W.setWinModeOf(w, mode);
+      eq(W.winModeOf(w), mode, `${type} accepts its own mode ${mode}`);
+    }
+  }
+
+  const s = { id: "probe", type: "storage", state: {} };
+  eq(W.winModeOf(s), "filesystem", "a fresh window opens in its first mode");
+  ok(!W.setWinModeOf(s, "matrix"), "a storage window refuses a graph mode");
+  eq(W.winModeOf(s), "filesystem", "and stays where it was");
+  ok(!W.setWinModeOf(s, "filesystem"), "setting the mode it already has is not a change");
+
+  // stale state must not strand a window with nothing to show
+  const stale = { id: "stale", type: "viewer", state: { "mode.viewer": "gone" } };
+  eq(W.winModeOf(stale), "single", "an unknown saved mode falls back to the first");
+
+  // per-type slots: a transformed window finds its own mode again
+  const t = { id: "t", type: "graph", state: {} };
+  W.setWinModeOf(t, "dtc");
+  t.type = "storage";
+  W.setWinModeOf(t, "minio");
+  eq(W.winModeOf(t), "minio", "as storage it is in the storage mode");
+  t.type = "graph";
+  eq(W.winModeOf(t), "dtc", "and transformed back it is still in dtc");
+  eq(W.winMode(t), "dtc", "the typed graph reader agrees with the generic one");
+}
+
 console.log(`tiling: ${checks} checks passed`);

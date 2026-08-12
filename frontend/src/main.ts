@@ -201,6 +201,9 @@ import {
   setWinCurrent,
   winCurrent,
   setWinMode,
+  setWinModeOf,
+  winModeOf,
+  winModes,
   setWinType,
   syncActiveWorkspace,
   setSplitRatio,
@@ -213,6 +216,22 @@ import {
   type WindowType,
 } from "./workspace";
 import type { CentralMode, EmDocument, EmEdge, EmNode, ViewKind } from "./types";
+import {
+  BridgeDownError,
+  FileRefusedError,
+  collectionFromFile,
+  collectionFromFolder,
+  collectionFromUrl,
+  fsList,
+  isDecodable,
+  kindOfExt,
+  pdfPageCount,
+  setStorageBridgeResolver,
+  type Collection,
+  type CollectionItem,
+  type FsEntry,
+  type FsListing,
+} from "./storage";
 import { buildDtcGenesisScene, buildGroupScene } from "./views/context";
 import { buildDtcScene } from "./views/dtc";
 import { buildGraphScene, type GraphAlgorithm } from "./views/graph";
@@ -877,6 +896,9 @@ function selectMany(ids: string[]): void {
 }
 
 function refreshInspector(): void {
+  // VIEWER · the preview answers the same question the Inspector does ("what am
+  // I looking at?"), so it is repainted wherever the Inspector is.
+  renderViewer();
   if (!store) return;
   renderInspector(
     inspector,
@@ -1807,6 +1829,7 @@ function wireStore(s: DocumentStore): void {
     updateLegend();
     updateToolbar();
     refreshInspector();
+    renderViewer();           // VIEWER · it follows the selection, like the Inspector
     refreshNarrativeView();   // embeds are references: a graph edit shows here
     nodeList.refresh();
     refreshEMTree();          // node/edge counts and the dirty dot live there
@@ -3455,6 +3478,8 @@ const BRIDGE_UNREACHABLE =
 // Endpoint precedence stays owned here, in one place; the geo module is handed
 // the resolver rather than reconstructing it.
 setBridgeResolver(bridgeUrl);
+// W1 · the Storage/Viewer file routes need the same endpoint, by the same rule.
+setStorageBridgeResolver(bridgeUrl);
 document.getElementById("btn-graphml")!.addEventListener("click", async () => {
   if (!store) {
     toast("Open a document first");
@@ -5952,7 +5977,18 @@ function buildPane(pane: Pane, activeId: string): HTMLElement {
     // creating the node in the wrong window. So a secondary area accepts the
     // drop itself: it takes the focus and places the node at the point of the
     // GRAPH that was pointed at, in this area's own camera.
+    //
+    // W1 · the SAME reasoning covers a resource dragged out of a Storage
+    // window. The Viewer's own surface is a singleton inside the focused area,
+    // so a drop meant for a Viewer that does NOT have the focus would land
+    // nowhere at all — which is exactly the bug this per-area handler was
+    // written for, arriving a second time with a different payload.
     area.addEventListener("dragover", (e) => {
+      if (storageDragPayload(e) && windowsOf().find((w) => w.id === winIdOf)?.type === "viewer") {
+        e.preventDefault();
+        area.classList.add("drop-target");
+        return;
+      }
       if (!paletteDragPayload(e)) return;
       e.preventDefault();
       area.classList.add("drop-target");
@@ -5960,6 +5996,14 @@ function buildPane(pane: Pane, activeId: string): HTMLElement {
     area.addEventListener("dragleave", () => area.classList.remove("drop-target"));
     area.addEventListener("drop", (e) => {
       area.classList.remove("drop-target");
+      const resource = storageDragPayload(e);
+      const target = windowsOf().find((w) => w.id === winIdOf);
+      if (resource && target?.type === "viewer") {
+        e.preventDefault();
+        selectWindow(winIdOf); // the window you dropped on is the one you meant
+        pinViewerCollection(target, resource);
+        return;
+      }
       const p = paletteDragPayload(e);
       if (!p) return;
       e.preventDefault();
@@ -6105,6 +6149,37 @@ function setCurrentRowId(id: string | null): void {
   setWinCurrent(activeWin(), "row", id);
 }
 
+/**
+ * ROWSELECT · a row was picked in a Tabular window: select that node, and show
+ * it in a Graph window if one is open.
+ *
+ * Deliberately NOT the same gesture as `revealFromNarrative`. Leaving a story to
+ * look at a node means leaving the story — the narrative window transforms if it
+ * has to. A table is different: you pick rows to walk a list, and turning the
+ * table into a canvas under you would take away the thing you were reading. So
+ * this reveals in a graph window that ALREADY exists, and does nothing to the
+ * arrangement when there is none.
+ *
+ * A row whose node is not in the graph (or not in the current scene — folded,
+ * filtered out) is a no-op with a word about it, never an error: the table can
+ * legitimately show rows the canvas does not draw.
+ */
+function revealFromTable(nodeId: string): void {
+  if (!store || !store.node(nodeId)) return;   // a row without a node: nothing to show
+  select(nodeId);                              // selection is a fact about the document
+  const graphWin = windowsOf().find((w) => w.type === "graph");
+  if (!graphWin) return;                       // no canvas open: the selection is enough
+  const previous = activeWin().id;
+  setActiveWin(graphWin.id);
+  if (scene()?.byId.has(nodeId)) centerOn(nodeId);
+  else toast("selezionato — non visibile in questa proiezione (ripiegato o filtrato)");
+  // the focus goes back to the table: you were reading a list, and the pick was
+  // a question about one row, not a decision to leave
+  setActiveWin(previous);
+  draw();
+  drawTiles();
+}
+
 /** The narrative this window is showing (the selected one, else the first). */
 function activeNarrative(): { id: string; chapters: unknown[] } | null {
   if (!store) return null;
@@ -6136,6 +6211,8 @@ const TRANSFORM_TYPES: WindowType[] = [
   "emtree",
   "inspector",
   "doc",
+  "viewer",
+  "storage",
 ];
 
 /**
@@ -6150,6 +6227,10 @@ function applyWindowSurface(type: WindowType): void {
   };
   show("table-view", type === "table");
   show("doc-view", type === "doc");
+  show("viewer-view", type === "viewer");
+  if (type === "viewer") renderViewer();
+  show("storage-view", type === "storage");
+  if (type === "storage") renderStorage();
   const hosted = type === "emtree" || type === "inspector";
   show("panel-view", hosted);
   if (hosted) renderPanelWindow(type);
@@ -6296,6 +6377,562 @@ function renderDocViewInto(
     centerOn(current.id);
   });
   detail.appendChild(jump);
+}
+
+// ── W1 · STORAGE · the window onto where the bytes live ─────────────────────
+//
+// Its MODES are the backends — Filesystem now, MinIO in phase 2 — because "one
+// window, several ways of looking" is the shape the Graph window already has.
+// Adding Samba or WebDAV later is an entry in `WINDOW_MODES` plus a branch in
+// `renderStorage`, not a new window type.
+//
+// Everything it shows comes from the bridge. That is not an implementation
+// detail to hide: a page served over http CANNOT read a disk path, so the
+// alternative to the bridge is not "a simpler way", it is nothing at all.
+
+/** The drag payload a Storage entry puts on the wire. Deliberately NOT
+ *  `PALETTE_MIME`: dropping a FOLDER on a window means "show me this", while
+ *  dropping a node type means "create one of these". Two intentions, two mime
+ *  types — a single one would make a Graph window try to place a directory. */
+const STORAGE_MIME = "application/x-em-storage-entry";
+
+interface StorageDragPayload {
+  path: string;
+  type: "dir" | "file";
+  name: string;
+  ext: string;
+}
+
+/** The folder a Storage window is showing (per instance — two Storage windows
+ *  browse independently). `null` = the roots. */
+function storagePath(win: Win): string | null {
+  const v = winCurrent(win, "fsPath");
+  return typeof v === "string" ? v : null;
+}
+
+function setStoragePath(win: Win, path: string | null): void {
+  setWinCurrent(win, "fsPath", path);
+  renderStorage();
+}
+
+function renderStorage(): void {
+  const body = document.getElementById("storage-body");
+  const crumb = document.getElementById("storage-crumb");
+  const up = document.getElementById("storage-up") as HTMLButtonElement | null;
+  if (!body || !crumb || !up) return;
+  const win = activeWin();
+  if (win.type !== "storage") return;
+
+  if (winModeOf(win) === "minio") {
+    // Phase 2, said plainly. The Mode exists because the decision ("resources
+    // travel as a treefolder + JSON-LD; the object store comes after") is made
+    // — hiding the Mode until then would make the plan invisible.
+    crumb.textContent = "";
+    up.classList.add("hidden");
+    body.textContent = "";
+    body.appendChild(storageEmpty(t("storage.minioPhase2")));
+    return;
+  }
+
+  up.classList.remove("hidden");
+  const path = storagePath(win);
+  body.textContent = "";
+  body.appendChild(storageEmpty(t("storage.loading")));
+
+  void (async () => {
+    let listing: FsListing;
+    try {
+      listing = await fsList(path ?? undefined);
+    } catch (err) {
+      body.textContent = "";
+      const down = err instanceof BridgeDownError;
+      const box = storageEmpty(
+        down ? t("storage.bridgeDown") : t("storage.refused"),
+      );
+      if (!down) {
+        const why = document.createElement("code");
+        why.className = "viewer-path";
+        why.textContent = String((err as Error).message);
+        box.appendChild(why);
+      }
+      body.appendChild(box);
+      crumb.textContent = down ? "" : (path ?? "");
+      return;
+    }
+    // The window may have moved on (another folder clicked, another type
+    // mounted) while the request was in flight — an answer to a question
+    // nobody is asking any more must not overwrite the current screen.
+    if (activeWin().id !== win.id || storagePath(win) !== path) return;
+
+    crumb.textContent = listing.roots ? t("storage.roots") : listing.path;
+    // Up from a ROOT is the list of roots — not "nothing". The bridge says
+    // `parent: null` there because there is no parent INSIDE the fence, and
+    // reading that as "the button is dead" is what stranded the first version:
+    // enter a root and the other roots became unreachable.
+    up.disabled = listing.roots;
+    up.title = listing.parent ? t("storage.up") : t("storage.upToRoots");
+    up.onclick = () => {
+      if (listing.roots) return;
+      setStoragePath(win, listing.parent); // null at a root → the roots list
+    };
+
+    body.textContent = "";
+    if (!listing.entries.length) {
+      body.appendChild(storageEmpty(t("storage.emptyFolder")));
+      return;
+    }
+    const list = document.createElement("div");
+    list.className = "storage-list";
+    for (const entry of listing.entries) {
+      list.appendChild(storageRow(win, entry));
+    }
+    body.appendChild(list);
+  })();
+}
+
+function storageRow(win: Win, entry: FsEntry): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "storage-row" + (entry.outside ? " storage-outside" : "");
+  row.dataset.path = entry.path;
+
+  const icon = document.createElement("span");
+  icon.className = "storage-icon";
+  icon.textContent =
+    entry.type === "dir" ? "📁" : kindOfExt(entry.ext) === "pdf" ? "📄" : kindOfExt(entry.ext) === "image" ? "🖼" : "•";
+  const name = document.createElement("span");
+  name.className = "storage-name";
+  name.textContent = entry.name;
+  const meta = document.createElement("span");
+  meta.className = "storage-meta";
+  meta.textContent = entry.type === "dir"
+    ? ""
+    : `${formatBytes(entry.size)} · ${new Date(entry.mtime * 1000).toLocaleDateString()}`;
+  row.append(icon, name, meta);
+
+  if (entry.outside) {
+    // The bridge already told us this one will be refused (a symlink out of the
+    // roots). Saying so here beats letting the user find out by clicking.
+    row.title = t("storage.outside");
+    return row;
+  }
+
+  row.addEventListener("dblclick", () => {
+    if (entry.type === "dir") setStoragePath(win, entry.path);
+  });
+  row.draggable = true;
+  row.addEventListener("dragstart", (e) => {
+    const payload: StorageDragPayload = {
+      path: entry.path,
+      type: entry.type,
+      name: entry.name,
+      ext: entry.ext,
+    };
+    e.dataTransfer?.setData(STORAGE_MIME, JSON.stringify(payload));
+    // A plain-text flavour too, so dropping on anything else at least yields
+    // the path rather than nothing.
+    e.dataTransfer?.setData("text/plain", entry.path);
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = "copy";
+  });
+  return row;
+}
+
+/** The dropped Storage entry, or null when this drag is not one of ours. */
+function storageDragPayload(e: DragEvent): StorageDragPayload | null {
+  const raw = e.dataTransfer?.getData(STORAGE_MIME);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as StorageDragPayload;
+  } catch {
+    return null; // a foreign drag claiming our mime is not worth a crash
+  }
+}
+
+/**
+ * PIN a Viewer window to a dropped folder or file.
+ *
+ * "Pinned" is the honest word: from here the window shows what you dropped and
+ * stops following the selection, until `Collezione ▸ Segui la selezione` in its
+ * own menu. A window that silently went back to the selection on the next click
+ * would lose the folder you just went and found.
+ */
+function pinViewerCollection(win: Win, payload: StorageDragPayload): void {
+  setWinCurrent(win, "collection", {
+    kind: payload.type === "dir" ? "folder" : "file",
+    ref: payload.path,
+  });
+  setWinCurrent(win, "item", null);
+  viewerCollection = null;
+  // A folder IS a collection, and Gallery is the reading that shows it as one.
+  // A single file stays in Single: there is nothing to lay out.
+  setWinModeOf(win, payload.type === "dir" ? "gallery" : "single");
+  renderViewer();
+  renderAreaHeaders();
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} kB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function storageEmpty(message: string): HTMLElement {
+  const box = document.createElement("div");
+  box.className = "viewer-empty";
+  const p = document.createElement("p");
+  p.textContent = message;
+  box.appendChild(p);
+  return box;
+}
+
+// ── VIEWER · the preview window ─────────────────────────────────────────────
+//
+// One resource at a time, shown as itself. It follows the SELECTION the way the
+// Inspector does — you look at a node, and if that node points at something
+// showable, here it is.
+//
+// Images and PDFs get the same treatment on purpose. Both are "the source,
+// rendered"; splitting them into a picture viewer and a document viewer would be
+// two surfaces for one question ("what does D.1 actually look like?"). The
+// difference is one element, and nothing else about the window changes.
+
+// What kind a file is (image / PDF / other) is `kindOfExt` in `storage.ts` now —
+// the same answer a Storage listing, a collection and this window all need, and
+// it was two regexes here before there was anywhere better to keep it.
+
+/** The resource a node points at, if any: a ResourceNode's url, a Document's
+ *  filename. Returns the raw string — deciding whether it is loadable is the
+ *  caller's job, and it is a different question. */
+function viewerSourceOf(node: EmNode | null): string | null {
+  if (!node) return null;
+  const data = (node.data ?? {}) as Record<string, unknown>;
+  for (const key of ["url", "filename", "path"] as const) {
+    const value = data[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+/** True when this string is something the browser can actually fetch. */
+function viewerIsFetchable(src: string): boolean {
+  return /^(https?:|data:|blob:)/i.test(src);
+}
+
+/**
+ * W1 · What a Viewer window is showing, as a KEY.
+ *
+ * Two sources, and the more explicit one wins: a folder or file DROPPED from a
+ * Storage window (the user pointed at it, that is as deliberate as it gets), or
+ * failing that the current selection, which is how the window behaved before and
+ * still does when nothing was dropped. Dropping is per instance, so one Viewer
+ * can stay pinned to a folder while another follows the selection.
+ */
+function viewerKeyOf(win: Win): { kind: "folder" | "file" | "node"; ref: string } | null {
+  const dropped = winCurrent(win, "collection");
+  if (dropped && typeof dropped === "object") {
+    const d = dropped as { kind?: string; ref?: string };
+    if ((d.kind === "folder" || d.kind === "file") && d.ref) {
+      return { kind: d.kind, ref: d.ref };
+    }
+  }
+  return selectedId ? { kind: "node", ref: selectedId } : null;
+}
+
+/** The built collection for the window on screen, keyed so a stale async build
+ *  cannot overwrite a newer one. */
+let viewerCollection: { key: string; winId: string; value: Collection } | null = null;
+let viewerBuilding: string | null = null;
+
+function viewerIndex(win: Win): number {
+  const v = winCurrent(win, "item");
+  return typeof v === "number" ? v : 0;
+}
+
+function setViewerIndex(win: Win, index: number): void {
+  setWinCurrent(win, "item", index <= 0 ? null : index);
+  renderViewer();
+}
+
+/**
+ * Draw the Viewer: the current item of its collection (Single), or all of them
+ * (Gallery).
+ *
+ * The honest part is still the empty state, but the limit MOVED. A page cannot
+ * read `/Users/…/D1.tif` — measured: the dev server answers 200 text/html — so
+ * before W1 that was the end of the story. Now there is a bridge that can read
+ * the disk, and a local path is previewable *if it is inside the roots the
+ * bridge was started with*. Outside them it is still refused, and the window
+ * says which fence it hit rather than showing a broken image.
+ */
+function renderViewer(): void {
+  const stage = document.getElementById("viewer-stage");
+  const caption = document.getElementById("viewer-caption");
+  const bar = document.getElementById("viewer-bar");
+  if (!stage || !caption || !bar) return;
+  const win = activeWin();
+  if (win.type !== "viewer") return;
+  stage.textContent = "";
+  caption.textContent = "";
+  bar.classList.add("hidden");
+
+  const key = viewerKeyOf(win);
+  if (!key) {
+    stage.appendChild(viewerEmpty(t("viewer.noSelection")));
+    return;
+  }
+  const keyStr = `${key.kind}:${key.ref}`;
+
+  // A collection from disk takes a round trip to build; one already built for
+  // this exact source is drawn straight away, which is what makes prev/next and
+  // the Mode switch instant rather than a re-fetch each time.
+  if (viewerCollection?.key === keyStr && viewerCollection.winId === win.id) {
+    drawViewerCollection(win, viewerCollection.value, stage, caption, bar);
+    return;
+  }
+
+  if (key.kind === "node") {
+    const node = store?.node(key.ref) ?? null;
+    const label = String(node?.name || key.ref);
+    const src = viewerSourceOf(node);
+    if (!src) {
+      stage.appendChild(viewerEmpty(t("viewer.notPreviewable", { name: label })));
+      return;
+    }
+    if (viewerIsFetchable(src)) {
+      const built = collectionFromUrl(key.ref, label, src);
+      viewerCollection = { key: keyStr, winId: win.id, value: built };
+      drawViewerCollection(win, built, stage, caption, bar);
+      return;
+    }
+    // A path on disk — the case the bridge now answers. Ask it.
+    buildViewerCollection(win, keyStr, stage, caption, bar, () =>
+      collectionFromFile(src),
+    );
+    return;
+  }
+
+  buildViewerCollection(win, keyStr, stage, caption, bar, () =>
+    key.kind === "folder"
+      ? collectionFromFolder(key.ref)
+      : collectionFromFile(key.ref),
+  );
+}
+
+function buildViewerCollection(
+  win: Win,
+  keyStr: string,
+  stage: HTMLElement,
+  caption: HTMLElement,
+  bar: HTMLElement,
+  build: () => Promise<Collection>,
+): void {
+  stage.appendChild(viewerEmpty(t("storage.loading")));
+  if (viewerBuilding === keyStr) return; // one build per source, not one per redraw
+  viewerBuilding = keyStr;
+  void (async () => {
+    let built: Collection;
+    try {
+      built = await build();
+    } catch (err) {
+      viewerBuilding = null;
+      if (activeWin().id !== win.id) return;
+      stage.textContent = "";
+      // Three different facts, three different sentences. Flattening them into
+      // "could not load" would tell the reader nothing they can act on: start
+      // the bridge, name another root, or find the file that moved.
+      const box = viewerEmpty(
+        err instanceof BridgeDownError
+          ? t("storage.bridgeDown")
+          : err instanceof FileRefusedError && err.status === 403
+            ? t("viewer.outsideRoots")
+            : err instanceof FileRefusedError
+              ? t("viewer.missingFile")
+              : t("viewer.unreachable"),
+      );
+      const ref = viewerKeyOf(win);
+      const source = ref?.kind === "node" ? viewerSourceOf(store?.node(ref.ref) ?? null) : ref?.ref;
+      if (source) {
+        const path = document.createElement("code");
+        path.className = "viewer-path";
+        path.textContent = source;
+        box.appendChild(path);
+      }
+      stage.appendChild(box);
+      return;
+    }
+    viewerBuilding = null;
+    if (activeWin().id !== win.id) return;
+    viewerCollection = { key: keyStr, winId: win.id, value: built };
+    stage.textContent = "";
+    drawViewerCollection(win, built, stage, caption, bar);
+  })();
+}
+
+function drawViewerCollection(
+  win: Win,
+  collection: Collection,
+  stage: HTMLElement,
+  caption: HTMLElement,
+  bar: HTMLElement,
+): void {
+  stage.textContent = "";
+  if (!collection.items.length) {
+    const box = viewerEmpty(t("viewer.emptyCollection", { name: collection.title }));
+    if (collection.note) {
+      const note = document.createElement("code");
+      note.className = "viewer-path";
+      note.textContent = collection.note;
+      box.appendChild(note);
+    }
+    stage.appendChild(box);
+    return;
+  }
+
+  if (winModeOf(win) === "gallery") {
+    stage.appendChild(viewerGallery(win, collection));
+    caption.textContent = collection.note
+      ? `${collection.title} — ${collection.items.length} · ${collection.note}`
+      : `${collection.title} — ${collection.items.length}`;
+    return;
+  }
+
+  const index = Math.min(viewerIndex(win), collection.items.length - 1);
+  const item = collection.items[index];
+  stage.appendChild(viewerItemElement(item, stage));
+  const label = (): string =>
+    item.pages
+      ? `${item.title} — ${t("viewer.pages", { n: String(item.pages) })}`
+      : item.title;
+  caption.textContent = label();
+  // The page count costs a fetch, so it is read for the PDF you are LOOKING at,
+  // not for every PDF in the folder: a collection is built from a listing, and a
+  // listing does not open files. Cached on the item, so paging back is free.
+  if (item.kind === "pdf" && item.pages === undefined) {
+    item.pages = null as unknown as undefined; // asked once, even if it answers null
+    void pdfPageCount(item.url).then((n) => {
+      if (n == null) return;
+      item.pages = n;
+      // only if that item is still the one on screen
+      if (viewerCollection?.value === collection && collection.items[
+        Math.min(viewerIndex(win), collection.items.length - 1)
+      ] === item) {
+        caption.textContent = label();
+      }
+    });
+  }
+
+  // The strip earns its space only when there is more than one item to move
+  // between; on a collection of one it would be two dead arrows and "1 / 1".
+  if (collection.items.length > 1) {
+    bar.classList.remove("hidden");
+    const pos = document.getElementById("viewer-pos");
+    const title = document.getElementById("viewer-title");
+    const prev = document.getElementById("viewer-prev") as HTMLButtonElement;
+    const next = document.getElementById("viewer-next") as HTMLButtonElement;
+    if (pos) pos.textContent = `${index + 1} / ${collection.items.length}`;
+    if (title) title.textContent = collection.title;
+    prev.disabled = index === 0;
+    next.disabled = index === collection.items.length - 1;
+    prev.onclick = () => setViewerIndex(win, index - 1);
+    next.onclick = () => setViewerIndex(win, index + 1);
+  }
+}
+
+/** One item, drawn as itself. The image/PDF split is one element and nothing
+ *  else, which is the whole point of treating them the same. */
+function viewerItemElement(item: CollectionItem, stage: HTMLElement): HTMLElement {
+  if (!isDecodable(item)) {
+    // A .tif IS an image and belongs in the collection; no browser draws one.
+    // Saying that, with the way out, beats a broken-image icon that reads as
+    // "the file is missing" when the file is perfectly fine.
+    const box = viewerEmpty(t("viewer.notDecodable", { name: item.title }));
+    box.appendChild(viewerOpenLink(item.url));
+    return box;
+  }
+  if (item.kind === "pdf") {
+    // <object> and not <iframe>: it degrades to its own children when the
+    // browser has no PDF plugin, which is where the fallback link goes.
+    const obj = document.createElement("object");
+    obj.className = "viewer-media";
+    obj.type = "application/pdf";
+    obj.data = item.url;
+    obj.appendChild(viewerOpenLink(item.url));
+    return obj;
+  }
+  if (item.kind === "image") {
+    const img = document.createElement("img");
+    img.className = "viewer-media";
+    img.src = item.url;
+    img.alt = item.title;
+    img.addEventListener("error", () => {
+      stage.textContent = "";
+      const box = viewerEmpty(t("viewer.unreachable"));
+      const path = document.createElement("code");
+      path.className = "viewer-path";
+      path.textContent = item.path ?? item.url;
+      box.appendChild(path);
+      stage.appendChild(box);
+    });
+    return img;
+  }
+  const box = viewerEmpty(t("viewer.notPreviewable", { name: item.title }));
+  box.appendChild(viewerOpenLink(item.url));
+  return box;
+}
+
+function viewerOpenLink(url: string): HTMLAnchorElement {
+  const link = document.createElement("a");
+  link.className = "viewer-link";
+  link.href = url;
+  link.target = "_blank";
+  link.rel = "noopener noreferrer";
+  link.textContent = t("viewer.openExternally");
+  return link;
+}
+
+/** Gallery Mode: the whole collection at once. Clicking a thumbnail is not a
+ *  second way of viewing — it takes you to Single ON that item, so the two
+ *  modes stay two readings of one collection rather than two viewers. */
+function viewerGallery(win: Win, collection: Collection): HTMLElement {
+  const grid = document.createElement("div");
+  grid.className = "viewer-gallery";
+  collection.items.forEach((item, i) => {
+    const cell = document.createElement("button");
+    cell.className = "viewer-thumb";
+    cell.title = item.title;
+    if (item.kind === "image" && isDecodable(item)) {
+      const img = document.createElement("img");
+      img.src = item.url;
+      img.alt = item.title;
+      img.loading = "lazy"; // a folder of 300 photographs must not fetch 300 at once
+      cell.appendChild(img);
+    } else {
+      const glyph = document.createElement("span");
+      glyph.className = "viewer-thumb-glyph";
+      glyph.textContent = item.kind === "pdf" ? "📄" : "🖼";
+      cell.appendChild(glyph);
+    }
+    const label = document.createElement("span");
+    label.className = "viewer-thumb-label";
+    label.textContent = item.title;
+    cell.appendChild(label);
+    cell.addEventListener("click", () => {
+      setWinCurrent(win, "item", i === 0 ? null : i);
+      setWinModeOf(win, "single");
+      renderViewer();
+      renderAreaHeaders();
+    });
+    grid.appendChild(cell);
+  });
+  return grid;
+}
+
+function viewerEmpty(message: string): HTMLElement {
+  const box = document.createElement("div");
+  box.className = "viewer-empty";
+  const p = document.createElement("p");
+  p.textContent = message;
+  box.appendChild(p);
+  return box;
 }
 
 // ── WIN6 · side panels as WINDOWS ───────────────────────────────────────────
@@ -6512,14 +7149,22 @@ function buildSecondarySurface(area: HTMLElement, win: Win): void {
     paint();
     return;
   }
-  // The only type left is NARRATIVE, and it is the one that stays a note. The
-  // story is an OVERLAY over the canvas (`#narrative-view`): one element with the
-  // authoring editors bound to it. Re-homing that would move the EDITOR, not a
-  // view of it — so this area says what it holds, and a step into it brings the
-  // real thing. (A read-only rendering of the prose beside the editor is a
-  // second renderer for the same document, which is the thing WIN5-7 have been
-  // avoiding throughout.)
-  tileNote(area, t("tile.narrativeNote"));
+  if (win.type === "narrative") {
+    // NARRATIVE stays a note on purpose. The story is an OVERLAY over the canvas
+    // (`#narrative-view`): one element with the authoring editors bound to it.
+    // Re-homing that would move the EDITOR, not a view of it — so this area says
+    // what it holds, and a step into it brings the real thing. (A read-only
+    // rendering of the prose beside the editor is a second renderer for the same
+    // document, which is the thing WIN5-7 have been avoiding throughout.)
+    tileNote(area, t("tile.narrativeNote"));
+    return;
+  }
+  // W1 · every OTHER type without a secondary surface says its own name. This
+  // fall-through used to be narrative-only, so `storage` and `viewer` landed on
+  // it and a file browser announced itself as "Narrative — step in to read and
+  // write here". A note that names the wrong window is worse than no note: the
+  // limit (this area is not live yet) is honest, the label was not.
+  tileNote(area, t("tile.enterNote", { name: t(WINDOW_TYPE_META[win.type].labelKey) }));
 }
 
 /**
@@ -6637,11 +7282,16 @@ function mountWindow(win: Win): void {
     applyWindowSurface("narrative");
     return;
   }
+  // Every type whose window IS a surface rather than the canvas. `viewer` joined
+  // them: without it the fall-through below mounted the canvas and hid the
+  // preview, which looked like "the viewer shows nothing".
   if (
     win.type === "table" ||
     win.type === "doc" ||
     win.type === "emtree" ||
-    win.type === "inspector"
+    win.type === "inspector" ||
+    win.type === "viewer" ||
+    win.type === "storage"
   ) {
     // WIN5 · a real window, not the dock: the surface fills the area. Leave the
     // canvas mode alone underneath (never the narrative overlay) so switching
@@ -6951,6 +7601,26 @@ function headerModesOf(win: Win): {
         label: t("mode.label", { mode: t(`mode.${m}`) }),
         current: m === cur,
         run: () => focusThen(win, () => setWindowMode(m)),
+      })),
+    };
+  }
+  // U1 · every other type with modes reads them from THE registry, so a new mode
+  // is one entry in `WINDOW_MODES` and appears here without a branch of its own.
+  // (Graph keeps its own arm above because changing its mode also re-mounts a
+  // canvas projection; Tabular's "mode" is a sheet, which is not window state.)
+  if (winModes(win.type).length) {
+    const cur = winModeOf(win);
+    return {
+      currentLabel: t("mode.label", { mode: t(`mode.${cur}`) }),
+      items: winModes(win.type).map((m) => ({
+        label: t("mode.label", { mode: t(`mode.${m}`) }),
+        current: m === cur,
+        run: () =>
+          focusThen(win, () => {
+            setWinModeOf(win, m);
+            mountWindow(win);
+            renderAreaHeaders();
+          }),
       })),
     };
   }
@@ -7343,6 +8013,34 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
   // sheet uses (one way to make a document, whichever window you are in).
   emtree: [],
   inspector: [],
+  // VIEWER · nothing to command: it follows the selection and shows what is
+  // there. A menu offering "open" or "zoom" would be a viewer pretending to be
+  // an editor. Its ONE state — pinned to a dropped folder, or following the
+  // selection again — is here because there is no other way back.
+  viewer: [
+    {
+      label: "Collezione",
+      items: () => {
+        const win = activeWin();
+        const pinned = !!winCurrent(win, "collection");
+        return [
+          {
+            label: "Segui la selezione",
+            disabled: pinned ? undefined : "questa finestra segue già la selezione",
+            run: () => {
+              setWinCurrent(win, "collection", null);
+              setWinCurrent(win, "item", null);
+              viewerCollection = null;
+              renderViewer();
+            },
+          },
+        ];
+      },
+    },
+  ],
+  // STORAGE · navigation is the double-click and the ↑; a menu repeating them
+  // would be a second way to do the one thing the surface already does.
+  storage: [],
   doc: [
     {
       label: "Documento",
@@ -7691,6 +8389,36 @@ canvas.addEventListener("drop", (e) => {
   const w = worldPos(e);
   placeNode(w.x, w.y);
 });
+
+// W1 · STORAGE → VIEWER. A resource drop, NOT a node-type drop: the Viewer is
+// still absent from `RESOURCE_PROVIDERS` (it places nothing, so no palette and
+// no chevron) and it still refuses `PALETTE_MIME`. What it accepts is a folder
+// or a file dragged out of a Storage window — "show me this" — which is a
+// different sentence from "create one of these", carried on a different mime so
+// the two can never be confused for one another.
+{
+  const viewerView = document.getElementById("viewer-view");
+  const carriesStorage = (e: DragEvent): boolean =>
+    !!e.dataTransfer?.types?.includes(STORAGE_MIME);
+  viewerView?.addEventListener("dragover", (e) => {
+    if (!carriesStorage(e)) return;
+    e.preventDefault();
+    e.dataTransfer!.dropEffect = "copy";
+    viewerView.classList.add("drop-target");
+  });
+  viewerView?.addEventListener("dragleave", () =>
+    viewerView.classList.remove("drop-target"),
+  );
+  viewerView?.addEventListener("drop", (e) => {
+    viewerView.classList.remove("drop-target");
+    const payload = storageDragPayload(e);
+    if (!payload) return;
+    e.preventDefault();
+    const win = activeWin();
+    if (win.type !== "viewer") return;
+    pinViewerCollection(win, payload);
+  });
+}
 
 // ---------- canvas interactions ----------
 type DragMode =
@@ -8785,6 +9513,10 @@ initEmData({
   getStore: () => store,
   // CURRENT-ELEMENT · the row lives on the window, not in the table module
   currentRow: () => currentRowId(),
+  // ROWSELECT · picking a row selects its NODE, and shows it if a graph window
+  // is open on the same document. A row id IS a node id in EM, which is what
+  // makes this a two-line hook rather than a lookup table.
+  onRowPicked: (id) => revealFromTable(id),
   setCurrentRow: (id) => setCurrentRowId(id),
 });
 // AUX2: the EM-Data table paints a row blue iff its node is volatile — the SAME

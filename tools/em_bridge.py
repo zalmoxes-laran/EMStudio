@@ -23,6 +23,19 @@ Endpoints:
     POST /export-ttl       ← em.json body   → Turtle (text/turtle), downloadable
                              (RDF/CIDOC projection via s3Dgraphy rdf_exporter;
                              needs rdflib bundled — 501 if unavailable)
+    GET  /fs/list?path=<dir>  → {roots|path, parent, entries: [{name, type,
+                                 size, mtime, ext}]}  (dirs first, then files)
+    GET  /fs/file?path=<file> → the BYTES, with the right Content-Type
+                             (W1 — a browser cannot read a disk path: served over
+                             http, `/Users/…/x.jpg` resolves against the origin and
+                             Vite answers 200 text/html, so an <img> gets no honest
+                             error at all. These two routes are how a window sees a
+                             file: the bridge reads the disk, the page reads the
+                             bridge. Confined to the ALLOWED ROOTS (`--fs-root` /
+                             `EM_BRIDGE_FS_ROOTS`, default: the EMStudio checkout);
+                             anything resolving outside them is 403, symlinks
+                             included. With no `path`, /fs/list answers with the
+                             roots themselves, so the UI never has to guess one.)
     GET  /resolve-authority?term=&facet=     → ranked authority candidates (JSON)
     POST /resolve-authority ← {term, facet}  → ranked authority candidates (JSON)
                              (offline resolver — s3Dgraphy authorities; P1-D)
@@ -123,6 +136,46 @@ _ALLOWED_EXTRA_ORIGINS = {
     o.strip() for o in os.environ.get("EM_BRIDGE_ALLOW_ORIGIN", "").split(",")
     if o.strip()
 }
+
+
+#: Directories `/fs/list` and `/fs/file` may reach (W1), from `--fs-root`
+#: (repeatable) or `EM_BRIDGE_FS_ROOTS` (os.pathsep- or comma-separated).
+#:
+#: The default is the EMStudio checkout — one project folder, not the disk. This
+#: is the whole security story of the two routes and it is deliberately dull:
+#: there is no "browse anywhere" mode to turn on by accident, so the way to see
+#: another folder is to NAME it at launch. A path that resolves (realpath, so
+#: symlinks are followed BEFORE the check) outside every root is 403 — the same
+#: confinement `_manifest_rel_path` already applies to a scanned folder, hoisted
+#: to a place two public routes can share.
+_FS_ROOTS: list[str] = []
+
+
+def _fs_roots_from_env() -> list[str]:
+    raw = os.environ.get("EM_BRIDGE_FS_ROOTS", "")
+    parts = [p for chunk in raw.split(os.pathsep) for p in chunk.split(",")]
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _set_fs_roots(paths) -> None:
+    """Normalise, de-duplicate and keep only roots that exist.
+
+    A root that is not there is dropped with a warning rather than kept as a
+    string that will 403 every request: the operator asked for a folder, and
+    "your root does not exist" said once at startup is worth more than a
+    refusal per click with no explanation.
+    """
+    seen, roots = set(), []
+    for p in paths:
+        full = os.path.realpath(os.path.expanduser(p))
+        if full in seen:
+            continue
+        seen.add(full)
+        if not os.path.isdir(full):
+            sys.stderr.write(f"  [bridge] fs root does not exist, ignored: {full}\n")
+            continue
+        roots.append(full)
+    _FS_ROOTS[:] = roots
 
 
 def _exit_when_orphaned(poll: float = 1.0) -> None:
@@ -279,7 +332,7 @@ def make_handler(api):
             self._cors()
             self.end_headers()
 
-        def do_GET(self):
+        def do_GET(self, body=True):
             if not self._gate():
                 return
             parsed = urllib.parse.urlparse(self.path)
@@ -298,8 +351,30 @@ def make_handler(api):
                 q = urllib.parse.parse_qs(parsed.query)
                 self._resolve_authority(
                     (q.get("term") or [""])[0], (q.get("facet") or [""])[0])
+            elif route == "/fs/list":
+                q = urllib.parse.parse_qs(parsed.query)
+                self._fs_list((q.get("path") or [""])[0])
+            elif route == "/fs/file":
+                q = urllib.parse.parse_qs(parsed.query)
+                self._fs_file((q.get("path") or [""])[0], body=body)
             else:
                 self.send_error(404, "unknown endpoint")
+
+        def do_HEAD(self):
+            # `curl -I` is how anyone checks a byte route, and a handler that
+            # answers GET but 501s HEAD makes the route look broken when it is
+            # not. Only the byte route is served headers-only: replying to HEAD
+            # from the JSON routes would leave a body in the socket that the
+            # client is entitled to ignore, and a keep-alive connection would
+            # then read it as the NEXT response.
+            if not self._gate():
+                return
+            parsed = urllib.parse.urlparse(self.path)
+            if parsed.path.rstrip("/") == "/fs/file":
+                q = urllib.parse.parse_qs(parsed.query)
+                self._fs_file((q.get("path") or [""])[0], body=False)
+            else:
+                self.send_error(405, "HEAD is served only for /fs/file")
 
         def do_POST(self):
             if not self._gate():
@@ -461,6 +536,171 @@ def make_handler(api):
             set_session_key(key)
             del key, body, raw
             self._json({"ok": True, "set": True, "source": api_key_source()})
+
+        # ── W1 · the filesystem as two routes ──────────────────────────────
+        #
+        # A window cannot read a disk path. Served over http, `/Users/…/x.jpg`
+        # is not even a path — the browser resolves it against the origin, and
+        # the dev server answers 200 text/html (its SPA fallback), so an <img>
+        # fails in DECODE with no honest network error to catch. Measured, and
+        # the reason these two routes exist: the bridge reads the disk because
+        # it is the only side that can, and the page addresses a URL.
+        #
+        # Two rules keep it dull. Everything resolves through `_fs_resolve`
+        # (realpath first, so a symlink cannot walk out of a root), and nothing
+        # here interprets a file: `/fs/list` names, `/fs/file` streams.
+
+        def _fs_resolve(self, raw, *, want="any"):
+            """A caller-supplied path → an absolute path inside a root, or None.
+
+            Returns `(full, None)` when allowed and `(None, (status, message))`
+            when not, so the caller answers with one branch. The refusal never
+            echoes the requested path: it is caller-controlled text and this
+            message is read by a human.
+            """
+            if not raw:
+                return None, (400, "this route needs a 'path' query parameter")
+            full = os.path.realpath(os.path.expanduser(raw))
+            inside = any(full == root or full.startswith(root + os.sep)
+                         for root in _FS_ROOTS)
+            if not inside:
+                return None, (403, "path outside the allowed roots. em-bridge "
+                                   "serves only the folders named at launch "
+                                   "(--fs-root / EM_BRIDGE_FS_ROOTS); it is not "
+                                   "a file server for the whole disk.")
+            if want == "dir" and not os.path.isdir(full):
+                return None, (404, "not a directory")
+            if want == "file" and not os.path.isfile(full):
+                return None, (404, "not a file")
+            if not os.path.exists(full):
+                return None, (404, "no such path")
+            return full, None
+
+        @staticmethod
+        def _fs_entry(full, name):
+            """One directory entry, or None if it cannot be stat'ed.
+
+            A broken symlink or a file whose permissions changed between
+            `listdir` and `stat` drops out of the listing instead of failing
+            it: one unreadable entry must not cost the other ninety-nine.
+            """
+            try:
+                st = os.stat(full)
+            except OSError:
+                return None
+            is_dir = os.path.isdir(full)
+            entry = {
+                "name": name,
+                "type": "dir" if is_dir else "file",
+                "size": 0 if is_dir else st.st_size,
+                "mtime": int(st.st_mtime),
+                "ext": "" if is_dir
+                       else os.path.splitext(name)[1].lower().lstrip("."),
+            }
+            # A symlink pointing out of the roots is REAL content of this
+            # folder, so it is listed — but it will 403 when opened, and a UI
+            # that only learns this from the refusal offers a dead end. Say so
+            # here instead, the same way `parent: null` says "no '..' from a
+            # root": the listing knows where the fence is, the caller shouldn't
+            # have to discover it by walking into it.
+            real = os.path.realpath(full)
+            if not any(real == root or real.startswith(root + os.sep)
+                       for root in _FS_ROOTS):
+                entry["outside"] = True
+            return entry
+
+        def _fs_list(self, raw):
+            # No path → the roots themselves, so a UI opening for the first time
+            # has somewhere to start without inventing a path and getting a 403
+            # for its trouble.
+            if not raw:
+                entries = [e for e in (self._fs_entry(r, os.path.basename(r) or r)
+                                       for r in _FS_ROOTS) if e]
+                for entry, root in zip(entries, _FS_ROOTS):
+                    entry["path"] = root
+                self._json({"ok": True, "roots": True, "path": "",
+                            "parent": None, "entries": entries})
+                return
+            full, err = self._fs_resolve(raw, want="dir")
+            if err:
+                self._fail(*err)
+                return
+            try:
+                names = os.listdir(full)
+            except OSError as exc:
+                self._fail(403, f"cannot read that directory: {exc.strerror}")
+                return
+            entries = []
+            for name in names:
+                if name.startswith("."):        # dotfiles are noise, not content
+                    continue
+                entry = self._fs_entry(os.path.join(full, name), name)
+                if entry:
+                    entry["path"] = os.path.join(full, name)
+                    entries.append(entry)
+            # Dirs first, then files, each by name folded to lower case — the
+            # order a file manager gives, and stable across platforms because it
+            # does not depend on the order the filesystem hands back.
+            entries.sort(key=lambda e: (e["type"] != "dir", e["name"].lower()))
+            # `parent` is null AT a root: the UI must not offer a ".." that
+            # would 403. The listing knows where the fence is; the caller
+            # should not have to work it out.
+            parent = os.path.dirname(full)
+            at_root = any(full == root for root in _FS_ROOTS)
+            self._json({"ok": True, "roots": False, "path": full,
+                        "name": os.path.basename(full) or full,
+                        "parent": None if at_root else parent,
+                        "entries": entries})
+
+        def _fs_file(self, raw, *, body=True):
+            import mimetypes
+
+            full, err = self._fs_resolve(raw, want="file")
+            if err:
+                if not body:
+                    # A HEAD is a QUESTION ("can you serve this?"), and the
+                    # status is the whole answer. Writing an explanatory body
+                    # to a HEAD would leave bytes in the socket for the next
+                    # response to be read as.
+                    self.send_response(err[0])
+                    self._cors()
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
+                self._fail(*err)
+                return
+            media, _ = mimetypes.guess_type(full)
+            try:
+                size = os.path.getsize(full)
+                fh = open(full, "rb") if body else None
+            except OSError as exc:
+                self._fail(403, f"cannot read that file: {exc.strerror}")
+                return
+            try:
+                self.send_response(200)
+                self._cors()
+                self.send_header("Content-Type",
+                                 media or "application/octet-stream")
+                self.send_header("Content-Length", str(size))
+                # Mild, and REVALIDATED: a folder being worked on changes under
+                # the window, so a long cache would show yesterday's photo with
+                # no way to tell. Long enough to survive a gallery scrolling
+                # back and forth.
+                self.send_header("Cache-Control", "max-age=60, must-revalidate")
+                self.end_headers()
+                if fh is not None:
+                    # Streamed in chunks: a 200 MB orthophoto must not be read
+                    # into memory to be handed to the socket.
+                    while True:
+                        chunk = fh.read(256 * 1024)
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # the window navigated away mid-image; not an error
+            finally:
+                if fh is not None:
+                    fh.close()
 
         def _json(self, payload, status=200):
             out = json.dumps(payload).encode()
@@ -1542,10 +1782,19 @@ def main() -> int:
     ap.add_argument("--exit-with-parent", action="store_true",
                     help="terminate when the spawning process exits "
                          "(used by the EMStudio desktop shell)")
+    ap.add_argument("--fs-root", action="append", default=None, metavar="DIR",
+                    help="a folder /fs/list and /fs/file may reach; repeatable. "
+                         "Default: the EMStudio checkout. Also EM_BRIDGE_FS_ROOTS.")
     args = ap.parse_args()
 
     if args.exit_with_parent:
         _exit_when_orphaned()
+
+    # Roots: the flag wins over the environment, and the fallback is the
+    # checkout this file lives in — a project folder, not the disk. Named at
+    # startup so the operator sees what the two file routes can reach.
+    _set_fs_roots(list(args.fs_root or []) + _fs_roots_from_env()
+                  or [pathlib.Path(__file__).resolve().parent.parent])
 
     _ensure_proj_data()
 
@@ -1587,7 +1836,9 @@ def main() -> int:
           f"/scan-resources, /list-resources, /resolve-resource, "
           f"/resource-preview, /reproject, /georeference-scene, /ingest-minio, "
           f"/presign, /detach-dtc, /inject-dtc, /bake-dtc; "
-          f"GET /health, /resolve-authority) — Ctrl-C to stop")
+          f"GET /health, /resolve-authority, /fs/list, /fs/file) — Ctrl-C to stop")
+    print("  fs roots (all /fs/* is confined to these): "
+          + (", ".join(_FS_ROOTS) or "NONE — /fs/* will refuse every path"))
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
