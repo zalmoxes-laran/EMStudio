@@ -38,7 +38,11 @@ export type WindowType =
   // W1 · STORAGE · where the bytes live. Its Modes are the BACKENDS (filesystem
   // now, MinIO in phase 2, Samba/WebDAV conceivable) — the same shape as the
   // graph window's projections: one window, several ways of looking.
-  | "storage";
+  | "storage"
+  // A2 · ANNOTATOR · an image, and the regions traced on it. Its Modes are what
+  // the pointer DOES (look / trace / mask), the way Blender's Image Editor has
+  // View / Paint / Mask — not what it shows, which is always the same picture.
+  | "annotator";
 
 /** A single window instance — its own id + type + type-specific state. */
 export interface Win {
@@ -67,6 +71,19 @@ export const STORAGE_MODES = ["filesystem", "minio"] as const;
  *  Same collection either way — the Mode is the reading, not the content. */
 export const VIEWER_MODES = ["single", "gallery"] as const;
 
+/** What the pointer does in an Annotator window. `mask` is DECLARED and not
+ *  implemented (phase 2, like the datamodel's `shape_kind: "mask"`): it is
+ *  listed because the plan is decided, and it is disabled in the header rather
+ *  than silently absent — a mode that will exist is better announced than
+ *  discovered. */
+export const ANNOTATOR_MODES = ["view", "annotate", "mask"] as const;
+
+/** The modes that are listed but cannot be entered yet, with the reason shown
+ *  to whoever tries. Data, not an `if` in the header code. */
+export const DISABLED_MODES: Record<string, string> = {
+  mask: "win.maskPhase2",
+};
+
 /**
  * U1 · THE mode registry: window type → the modes that type offers, in header
  * order. `main.ts` builds the Mode dropdown from this and `winModeOf` validates
@@ -81,6 +98,7 @@ export const WINDOW_MODES: Partial<Record<WindowType, readonly string[]>> = {
   graph: GRAPH_MODES,
   storage: STORAGE_MODES,
   viewer: VIEWER_MODES,
+  annotator: ANNOTATOR_MODES,
 };
 
 /**
@@ -234,6 +252,7 @@ export const WINDOW_TYPE_META: Record<WindowType, { icon: string; labelKey: stri
   inspector: { icon: "◉", labelKey: "win.inspector" },
   viewer: { icon: "▣", labelKey: "win.viewer" },
   storage: { icon: "🗄", labelKey: "win.storage" },
+  annotator: { icon: "✎", labelKey: "win.annotator" },
 };
 
 /** The window type the active workspace currently shows — the ACTIVE window's

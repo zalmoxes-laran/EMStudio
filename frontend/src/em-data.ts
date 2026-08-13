@@ -423,9 +423,17 @@ export function buildTable(
       cells: {
         TARGET_ID: tgt ? str(tgt.name) || tgt.id : "—",
         PROPERTY_TYPE: str(
-          (p as Record<string, unknown>).property_type ?? p.name ?? "",
+          (p as Record<string, unknown>).property_type ?? d.property_type ?? p.name ?? "",
         ),
-        VALUE: str((p as Record<string, unknown>).value ?? p.description ?? ""),
+        // `data.value` is where s3Dgraphy's em.json exporter puts a property's
+        // value; the top-level `value` is what THIS app writes when the cell is
+        // edited here, and `description` is where the GraphML import has always
+        // left it. All three are the same fact, so all three are read — a
+        // property that arrived from the library was showing an empty Value
+        // column while the reading sat in the document all along.
+        VALUE: str(
+          (p as Record<string, unknown>).value ?? d.value ?? p.description ?? "",
+        ),
         UNITS: str(d.units ?? ""),
         COMBINER_REASONING: c.comb,
         PROVENANCE: c.prov,

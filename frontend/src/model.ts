@@ -2173,6 +2173,44 @@ export class DocumentStore {
     return added;
   }
 
+  /**
+   * A2 · insert a subgraph computed ELSEWHERE, verbatim, in one undo step.
+   *
+   * The annotation chain is built by s3Dgraphy (through the bridge), which mints
+   * its own deterministic ids — so the nodes and edges arrive already named and
+   * must go in AS THEY ARE. `addNode`/`addEdge` would be wrong twice: `addEdge`
+   * mints an id of its own, and each call would be its own undo step, so undoing
+   * one annotation would take five presses.
+   *
+   * Ids already present are SKIPPED rather than replaced: the upstream ids are
+   * deterministic, so a re-sent annotation is the same annotation, and skipping
+   * is what makes the round trip idempotent on this side too.
+   *
+   * Returns how many nodes and edges were actually new.
+   */
+  addSubgraph(nodes: EmNode[], edges: EmEdge[]): { nodes: number; edges: number } {
+    this.checkpoint();
+    const haveNodes = new Set(this.doc.graph.nodes.map((n) => n.id));
+    const haveEdges = new Set(this.doc.graph.edges.map((e) => e.id));
+    let addedNodes = 0;
+    let addedEdges = 0;
+    for (const n of nodes) {
+      if (!n?.id || haveNodes.has(n.id)) continue;
+      this.doc.graph.nodes.push(n);
+      haveNodes.add(n.id);
+      addedNodes++;
+    }
+    for (const e of edges) {
+      const id = e.id ?? `${e.source}__${e.edge_type}__${e.target}`;
+      if (haveEdges.has(id)) continue;
+      this.doc.graph.edges.push({ ...e, id });
+      haveEdges.add(id);
+      addedEdges++;
+    }
+    if (addedNodes || addedEdges) this.emit();
+    return { nodes: addedNodes, edges: addedEdges };
+  }
+
   /** Bake an auxiliary's volatile nodes into the document: clear the marker so
    *  they become persistent (and travel with `toJSON`). Returns how many. */
   bakeVolatile(auxId: string): number {

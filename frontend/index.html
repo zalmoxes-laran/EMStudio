@@ -336,6 +336,25 @@
           </div>
           <div id="storage-body"></div>
         </div>
+        <!-- A2 · ANNOTATOR · the image, the regions traced on it, and the panel
+             that asks what is being extracted. The picture comes through the
+             bridge like every other byte (W1); the regions are an SVG overlay in
+             NORMALISED coordinates, so they are the same numbers the datamodel
+             stores and no pixel size is ever written down. Filled by
+             `renderAnnotator`. -->
+        <div id="annotator-view" class="hidden">
+          <div id="annotator-bar">
+            <span id="annotator-title"></span>
+            <span id="annotator-hint"></span>
+          </div>
+          <div id="annotator-stage">
+            <div id="annotator-frame">
+              <img id="annotator-image" alt="" />
+              <svg id="annotator-overlay" viewBox="0 0 1 1" preserveAspectRatio="none"></svg>
+            </div>
+          </div>
+          <div id="annotator-panel" class="hidden"></div>
+        </div>
         <div id="doc-view" class="hidden">
           <div id="doc-view-list" class="doc-list"></div>
           <div id="doc-view-detail" class="doc-detail"></div>

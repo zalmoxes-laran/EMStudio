@@ -63,6 +63,19 @@ Endpoints:
                              graph's own spatial proxies (SemanticShapeNode) and
                              returns the four corners plus the centroid; with no
                              proxies it returns extent=null and invents nothing.)
+    POST /annotate         ← {doc, image_id, region, interpretation,
+                              property_type, target_unit_id?, author?}
+                           → {region_id, property_id, extractor_id,
+                              source_document_id, created, warnings,
+                              nodes: [...], edges: [...]}
+                             (2D annotator: THE bridge to
+                              s3dgraphy.annotation.create_annotation_paradata —
+                              no model logic here. Answers with the DELTA (the
+                              nodes and edges that appeared), not the whole
+                              document: the canvas inserts them in one undo step
+                              instead of replacing its store and losing the
+                              layout. Ids are deterministic upstream, so
+                              re-sending the same annotation adds nothing.)
     POST /resource-preview ← {resource_id, folder?, doc?, max_bytes?}
                            → {resource_type, media_type, data_url|url|...}
                              (N10 — bytes for a THUMBNAIL, by stable ID only. A
@@ -402,6 +415,13 @@ def make_handler(api):
                     self._fail(400, f"invalid JSON body: {exc}")
                     return
                 self._resources(route, body)
+            elif route == "/annotate":
+                try:
+                    body = json.loads(raw.decode("utf-8")) if raw else {}
+                except Exception as exc:
+                    self._fail(400, f"invalid JSON body: {exc}")
+                    return
+                self._annotate(body)
             elif route == "/resource-preview":
                 try:
                     body = json.loads(raw.decode("utf-8")) if raw else {}
@@ -1181,6 +1201,76 @@ def make_handler(api):
         # resource ops. All three take/return JSON; the FS-index scan needs a
         # server-visible folder path. 501 if the active s3dgraphy predates the
         # resource layer (op missing).
+        # ── 2D annotation → the paradata chain (the canvas's one call) ──────
+        #
+        # A bridge to the s3Dgraphy API and NOTHING more: the semantics of an
+        # annotation — which nodes, which edges, the deterministic ids, the
+        # promotion of a resource to a source — all live in
+        # `s3dgraphy.annotation` and are tested there. This endpoint loads the
+        # document, calls that one function, and answers with what appeared.
+        #
+        # It returns a DELTA (the new nodes and edges), not the whole document.
+        # Sending the graph back would make the canvas replace its own store
+        # wholesale, losing the layout and the undo history for a gesture that
+        # added four nodes; with a delta the frontend inserts them the way it
+        # inserts anything else, in one undo step.
+        def _annotate(self, body):
+            if not hasattr(api, "create_annotation_paradata"):
+                self._fail(501, "annotation layer unavailable — s3dgraphy is out "
+                                "of date (needs the 2D annotator semantics)")
+                return
+            doc = body.get("doc")
+            if doc is None:
+                self._fail(400, "annotate needs the current 'doc' (em.json)")
+                return
+            image_id = body.get("image_id") or ""
+            region = body.get("region")
+            if not image_id or not isinstance(region, dict):
+                self._fail(400, "annotate needs an 'image_id' and a 'region' "
+                                "{shape_kind, rect|points, page}")
+                return
+            interpretation = body.get("interpretation") or ""
+            property_type = body.get("property_type") or ""
+            if not property_type:
+                self._fail(400, "annotate needs a 'property_type' — what is being "
+                                "extracted is part of the annotation, not a default")
+                return
+
+            try:
+                graph, warnings = api.load_emjson(doc)
+            except Exception as exc:
+                self._fail(400, f"em.json not readable: {exc}")
+                return
+            for w in warnings:
+                sys.stderr.write(f"  [bridge] warning: {w}\n")
+
+            before_nodes = {n.node_id for n in graph.nodes}
+            before_edges = {getattr(e, "edge_id", None) for e in graph.edges}
+
+            try:
+                result = api.create_annotation_paradata(
+                    graph, image_id, region,
+                    interpretation=interpretation,
+                    property_type=property_type,
+                    target_unit_id=body.get("target_unit_id") or None,
+                    author=body.get("author") or None,
+                )
+            except Exception as exc:
+                # A region whose geometry cannot be read is a 400, not a 500: the
+                # caller sent something the model refuses, and it should be told
+                # WHAT rather than shown a traceback.
+                self._fail(400, f"annotation refused: {exc}")
+                return
+
+            projected = api.graph_to_emjson(graph)
+            nodes = [n for n in projected["graph"]["nodes"]
+                     if n.get("id") not in before_nodes]
+            edges = [e for e in projected["graph"]["edges"]
+                     if e.get("id") not in before_edges]
+            payload = result.as_dict() if hasattr(result, "as_dict") else dict(result)
+            payload.update({"ok": True, "nodes": nodes, "edges": edges})
+            self._json(payload)
+
         def _resources(self, route, body):
             op = {"/scan-resources": "shelf_resources",
                   "/list-resources": "list_resources",
@@ -1835,7 +1925,7 @@ def main() -> int:
           f"(POST /graphml, /import-graphml, /export-ttl, /resolve-authority, "
           f"/scan-resources, /list-resources, /resolve-resource, "
           f"/resource-preview, /reproject, /georeference-scene, /ingest-minio, "
-          f"/presign, /detach-dtc, /inject-dtc, /bake-dtc; "
+          f"/presign, /detach-dtc, /inject-dtc, /bake-dtc, /annotate; "
           f"GET /health, /resolve-authority, /fs/list, /fs/file) — Ctrl-C to stop")
     print("  fs roots (all /fs/* is confined to these): "
           + (", ".join(_FS_ROOTS) or "NONE — /fs/* will refuse every path"))

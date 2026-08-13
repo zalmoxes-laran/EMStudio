@@ -5310,3 +5310,231 @@ object.viewer-media {
   outline: 2px dashed var(--accent);
   outline-offset: -2px;
 }
+
+/* ── A2 · ANNOTATOR ─────────────────────────────────────────────────────────
+   The picture, and the claims traced on it. Same box every other surface uses,
+   so switching to it moves nothing on screen. */
+#annotator-view {
+  position: absolute;
+  inset: var(--winbar-h, 0px) 0 0 var(--palette-w, 0px);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-sunken);
+}
+#annotator-view.hidden {
+  display: none;
+}
+#annotator-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 4px 10px;
+  min-height: 30px;
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
+  font-size: 12px;
+}
+#annotator-title {
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#annotator-hint {
+  color: var(--text-faint);
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#annotator-stage {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+  overflow: auto;
+}
+/* The frame shrink-wraps the image so the overlay covers the PICTURE and not
+   the padding around it — the whole coordinate story depends on those two
+   rectangles being the same one. */
+#annotator-frame {
+  position: relative;
+  display: inline-block;
+  max-width: 100%;
+  max-height: 100%;
+  line-height: 0;
+}
+#annotator-image {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  background: var(--bg-app);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+#annotator-image.hidden {
+  display: none;
+}
+#annotator-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+/* View Mode must not swallow the pointer: the difference between looking and
+   tracing lives in BEHAVIOUR, never in geometry (SHELL-FIX). */
+#annotator-overlay {
+  pointer-events: none;
+}
+#annotator-view[data-mode="annotate"] #annotator-overlay {
+  pointer-events: auto;
+  cursor: crosshair;
+}
+.annot-region {
+  fill: rgba(155, 51, 51, 0.16);
+  stroke: #9b3333;
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+.annot-draft {
+  fill: rgba(36, 143, 231, 0.18);
+  stroke: #248fe7;
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+  vector-effect: non-scaling-stroke;
+}
+.annot-vertex {
+  fill: #248fe7;
+  stroke: #fff;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+/* the tools, in the window's own left panel (the provider registry) */
+.annot-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+}
+.annot-tool {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-panel);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+}
+.annot-tool:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+.annot-tool.current {
+  border-color: var(--accent);
+  background: var(--bg-elevated);
+}
+.annot-tool:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.annot-tool-glyph {
+  font-size: 15px;
+  line-height: 1;
+}
+.annot-tools-note {
+  margin: 6px 2px 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-faint);
+}
+
+/* "What are you extracting?" — the panel that turns a shape into a claim */
+/* An OVERLAY, not a flex child. As a child it took its space from the stage, so
+   opening it shrank the picture — and a picture that resizes right after you
+   traced on it makes the region appear to move. Floating it keeps the image box
+   (and therefore the coordinates) untouched from the first gesture onward. */
+#annotator-panel {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 2;
+  width: min(360px, calc(100% - 24px));
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-panel);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  max-height: calc(100% - 24px);
+  overflow: auto;
+}
+#annotator-panel.hidden {
+  display: none;
+}
+.annot-panel-title {
+  font-size: 12.5px;
+  color: var(--text);
+}
+.annot-field {
+  display: grid;
+  grid-template-columns: 15ch 1fr;
+  align-items: center;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--text-muted);
+}
+.annot-input {
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-app);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  box-sizing: border-box;
+}
+.annot-geometry {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+.annot-actions {
+  display: flex;
+  gap: 8px;
+}
+.annot-commit,
+.annot-cancel {
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+.annot-commit {
+  border-color: var(--accent);
+}
+.annot-commit:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

@@ -145,7 +145,7 @@ import {
 } from "./filters";
 import { adornmentBadges, type AdornmentBadge } from "./adornments";
 import { BADGE_RULES, resolveEffective, sourceLabel } from "./funnel";
-import { type Qualia, vocabularyFor } from "./vocab";
+import { type Qualia, qualiaList, vocabularyFor } from "./vocab";
 import { versionBreakdown } from "./versions";
 import {
   hitGroupToggle,
@@ -201,6 +201,7 @@ import {
   setWinCurrent,
   winCurrent,
   setWinMode,
+  DISABLED_MODES,
   setWinModeOf,
   winModeOf,
   winModes,
@@ -897,8 +898,12 @@ function selectMany(ids: string[]): void {
 
 function refreshInspector(): void {
   // VIEWER · the preview answers the same question the Inspector does ("what am
-  // I looking at?"), so it is repainted wherever the Inspector is.
+  // I looking at?"), so it is repainted wherever the Inspector is. A2 · the
+  // annotator asks it too ("which picture am I annotating?"), and a window that
+  // followed the selection only on a DOCUMENT change would sit on the wrong
+  // image for the whole of the next gesture.
   renderViewer();
+  renderAnnotator();
   if (!store) return;
   renderInspector(
     inspector,
@@ -1830,6 +1835,7 @@ function wireStore(s: DocumentStore): void {
     updateToolbar();
     refreshInspector();
     renderViewer();           // VIEWER · it follows the selection, like the Inspector
+    renderAnnotator();        // A2 · and so does the annotator: same picture rule
     refreshNarrativeView();   // embeds are references: a graph edit shows here
     nodeList.refresh();
     refreshEMTree();          // node/edge counts and the dirty dot live there
@@ -2372,6 +2378,9 @@ const RESOURCE_PROVIDERS: Partial<Record<WindowType, ResourceProvider>> = {
   // while reading or writing a story — and NOT the connector legend, which
   // explains EDGES and belongs where edges are drawn.
   narrative: { render: (host) => renderNarrativePalette(host) },
+  // A2 · the annotator offers the ways of TRACING. Same registry, same panel,
+  // same chevron — what a window offers was never "the node types".
+  annotator: { render: (host) => renderAnnotatorTools(host) },
 };
 
 /** True when this window has something to offer — the ONE place that answers it. */
@@ -6213,6 +6222,7 @@ const TRANSFORM_TYPES: WindowType[] = [
   "doc",
   "viewer",
   "storage",
+  "annotator",
 ];
 
 /**
@@ -6231,6 +6241,8 @@ function applyWindowSurface(type: WindowType): void {
   if (type === "viewer") renderViewer();
   show("storage-view", type === "storage");
   if (type === "storage") renderStorage();
+  show("annotator-view", type === "annotator");
+  if (type === "annotator") renderAnnotator();
   const hosted = type === "emtree" || type === "inspector";
   show("panel-view", hosted);
   if (hosted) renderPanelWindow(type);
@@ -6377,6 +6389,587 @@ function renderDocViewInto(
     centerOn(current.id);
   });
   detail.appendChild(jump);
+}
+
+// ── A2 · THE ANNOTATOR · an image, and the claims traced on it ──────────────
+//
+// The gesture is small and the meaning is not: tracing "this and not that" on a
+// photograph is already an interpretation, so an annotation is never a coloured
+// box — it is a CLAIM, and the claim needs the chain that makes it readable by
+// somebody else (extractor → property → unit, plus the region as its evidence).
+//
+// None of that semantics lives here. s3Dgraphy builds the chain, the bridge
+// carries the call, and this window does the two things a canvas is for: show
+// the picture, and take the gesture. What it must get right is the COORDINATES —
+// normalised [0,1], the same numbers the datamodel stores — so nothing on this
+// side ever writes down a pixel size that a re-export would invalidate.
+
+/** The tools the annotator offers. `lasso`/`mask` are declared and disabled:
+ *  phase 2, and a tool that is coming is better announced than discovered. */
+const ANNOTATOR_TOOLS = [
+  { id: "rect", glyph: "▭", labelKey: "tool.rect" },
+  { id: "polygon", glyph: "⬟", labelKey: "tool.polygon" },
+  { id: "lasso", glyph: "✎", labelKey: "tool.lasso", disabled: "tool.phase2" },
+] as const;
+
+type AnnotatorTool = (typeof ANNOTATOR_TOOLS)[number]["id"];
+
+/** The region being traced, before it is committed. Normalised, always. */
+interface AnnotatorDraft {
+  shape_kind: "rect" | "polygon";
+  rect?: [number, number, number, number];
+  points?: Array<[number, number]>;
+}
+
+let annotatorTool: AnnotatorTool = "rect";
+let annotatorDraft: AnnotatorDraft | null = null;
+/** The image the window is on: resolved once per source, like the viewer's. */
+let annotatorImage: { key: string; nodeId: string; title: string; url: string;
+                      path?: string; page: number } | null = null;
+let annotatorLoading: string | null = null;
+
+/** The node the annotator is showing — the current element, as everywhere else. */
+function annotatorNodeId(): string | null {
+  return selectedId ?? null;
+}
+
+function annotatorMode(): string {
+  return winModeOf(activeWin());
+}
+
+/**
+ * Resolve the picture, then draw. The image is fetched THROUGH THE BRIDGE for a
+ * disk path (W1: a page served over http cannot read one — measured), and
+ * straight from the URL when the node already carries one.
+ */
+function renderAnnotator(): void {
+  const win = activeWin();
+  if (win.type !== "annotator") return;
+  const img = document.getElementById("annotator-image") as HTMLImageElement | null;
+  const title = document.getElementById("annotator-title");
+  const hint = document.getElementById("annotator-hint");
+  if (!img || !title || !hint) return;
+
+  // The Mode reaches the CSS as an attribute, so the difference between looking
+  // and tracing is `pointer-events` and nothing else: the overlay keeps exactly
+  // the same geometry in every mode, which is the SHELL-FIX rule (a surface that
+  // changes size when you change mode makes a mode switch a layout change).
+  document.getElementById("annotator-view")?.setAttribute("data-mode", annotatorMode());
+
+  const nodeId = annotatorNodeId();
+  const node = nodeId ? (store?.node(nodeId) ?? null) : null;
+  const src = viewerSourceOf(node);
+  hint.textContent = "";
+
+  if (!node || !src) {
+    annotatorImage = null;
+    img.removeAttribute("src");
+    img.classList.add("hidden");
+    title.textContent = t("annotator.noImage");
+    drawAnnotatorOverlay();
+    renderAnnotatorPanel();
+    return;
+  }
+
+  const key = `${nodeId}|${src}`;
+  if (annotatorImage?.key === key) {
+    drawAnnotatorOverlay();
+    renderAnnotatorPanel();
+    return;
+  }
+
+  const show = (url: string, path?: string): void => {
+    annotatorImage = { key, nodeId: nodeId!, title: String(node.name || nodeId),
+                       url, path, page: 0 };
+    img.src = url;
+    img.classList.remove("hidden");
+    title.textContent = annotatorImage.title;
+    hint.textContent = annotatorMode() === "annotate"
+      ? t("annotator.hintDraw") : t("annotator.hintView");
+    drawAnnotatorOverlay();
+    renderAnnotatorPanel();
+  };
+
+  if (viewerIsFetchable(src)) {
+    show(src);
+    return;
+  }
+  // a disk path: the bridge is the only thing that can read it
+  if (annotatorLoading === key) return;
+  annotatorLoading = key;
+  title.textContent = t("storage.loading");
+  void (async () => {
+    try {
+      const collection = await collectionFromFile(src);
+      annotatorLoading = null;
+      if (activeWin().id !== win.id || annotatorNodeId() !== nodeId) return;
+      const item = collection.items[0];
+      if (item) show(item.url, item.path);
+    } catch (err) {
+      annotatorLoading = null;
+      if (activeWin().id !== win.id) return;
+      annotatorImage = null;
+      img.classList.add("hidden");
+      title.textContent = err instanceof BridgeDownError
+        ? t("storage.bridgeDown")
+        : t("viewer.outsideRoots");
+      drawAnnotatorOverlay();
+    }
+  })();
+}
+
+/** Every region already in the graph for the image on screen. Read from the
+ *  DOCUMENT, not from a list this window keeps: after a commit the region is a
+ *  node like any other, and drawing it from the graph is what makes "the
+ *  annotation is in the graph" visible instead of merely asserted. */
+function annotatorRegions(): EmNode[] {
+  const image = annotatorImage;
+  if (!image || !store) return [];
+  return store.doc.graph.nodes.filter((n) => {
+    if (n.node_type !== "annotation_region") return false;
+    const data = (n.data ?? {}) as Record<string, unknown>;
+    const page = Number(data.page ?? 0);
+    return data.resource_id === image.nodeId && page === image.page;
+  });
+}
+
+/** Geometry of a region node, in normalised coordinates. */
+function regionGeometry(node: EmNode): AnnotatorDraft | null {
+  const data = (node.data ?? {}) as Record<string, unknown>;
+  const kind = data.shape_kind;
+  if (kind === "rect" && Array.isArray(data.rect) && data.rect.length === 4) {
+    return { shape_kind: "rect", rect: (data.rect as number[]).slice(0, 4) as
+             [number, number, number, number] };
+  }
+  if (kind === "polygon" && Array.isArray(data.points)) {
+    return { shape_kind: "polygon",
+             points: (data.points as number[][]).map((p) => [p[0], p[1]] as [number, number]) };
+  }
+  return null;
+}
+
+/**
+ * Draw the overlay in NORMALISED coordinates.
+ *
+ * The SVG has `viewBox="0 0 1 1"` and stretches over the picture, so a region is
+ * written with the same numbers the datamodel stores — no conversion, and
+ * nothing to get wrong when the image is displayed at another size. The cost is
+ * that strokes stretch with it, which is why the shapes carry
+ * `vector-effect: non-scaling-stroke`.
+ */
+function drawAnnotatorOverlay(): void {
+  const svg = document.getElementById("annotator-overlay");
+  if (!svg) return;
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+  const NS = "http://www.w3.org/2000/svg";
+
+  const shape = (geom: AnnotatorDraft, className: string): SVGElement | null => {
+    if (geom.shape_kind === "rect" && geom.rect) {
+      const [x, y, w, h] = geom.rect;
+      const el = document.createElementNS(NS, "rect");
+      el.setAttribute("x", String(x));
+      el.setAttribute("y", String(y));
+      el.setAttribute("width", String(Math.max(w, 0)));
+      el.setAttribute("height", String(Math.max(h, 0)));
+      el.setAttribute("class", className);
+      return el;
+    }
+    if (geom.shape_kind === "polygon" && geom.points?.length) {
+      const el = document.createElementNS(NS, "polygon");
+      el.setAttribute("points", geom.points.map(([x, y]) => `${x},${y}`).join(" "));
+      el.setAttribute("class", className);
+      return el;
+    }
+    return null;
+  };
+
+  for (const region of annotatorRegions()) {
+    const geom = regionGeometry(region);
+    if (!geom) continue;
+    const el = shape(geom, "annot-region");
+    if (el) {
+      el.setAttribute("data-region", region.id);
+      svg.appendChild(el);
+    }
+  }
+  if (annotatorDraft) {
+    const el = shape(annotatorDraft, "annot-draft");
+    if (el) svg.appendChild(el);
+    // a polygon in progress shows its vertices, or you cannot tell where the
+    // next click will attach
+    if (annotatorDraft.shape_kind === "polygon") {
+      for (const [x, y] of annotatorDraft.points ?? []) {
+        const dot = document.createElementNS(NS, "circle");
+        dot.setAttribute("cx", String(x));
+        dot.setAttribute("cy", String(y));
+        dot.setAttribute("r", "0.006");
+        dot.setAttribute("class", "annot-vertex");
+        svg.appendChild(dot);
+      }
+    }
+  }
+}
+
+/** Pointer position → normalised coordinates of the IMAGE, clamped to it. */
+function annotatorPoint(e: PointerEvent | MouseEvent): [number, number] | null {
+  const svg = document.getElementById("annotator-overlay");
+  if (!svg) return null;
+  const box = svg.getBoundingClientRect();
+  if (!box.width || !box.height) return null;
+  const clamp = (v: number): number => Math.min(1, Math.max(0, v));
+  return [clamp((e.clientX - box.left) / box.width),
+          clamp((e.clientY - box.top) / box.height)];
+}
+
+/**
+ * The tracing gestures, wired ONCE on the overlay (it is a singleton in the
+ * area, like every other surface). Only Mode `annotate` draws: in `view` the
+ * same picture is there to be looked at, and a window that drew whenever you
+ * dragged would make looking dangerous.
+ */
+function initAnnotatorGestures(): void {
+  const svg = document.getElementById("annotator-overlay");
+  if (!svg) return;
+  let dragging = false;
+  let origin: [number, number] | null = null;
+
+  svg.addEventListener("pointerdown", (e) => {
+    if (annotatorMode() !== "annotate" || !annotatorImage) return;
+    const p = annotatorPoint(e as PointerEvent);
+    if (!p) return;
+    e.preventDefault();
+    if (annotatorTool === "rect") {
+      dragging = true;
+      origin = p;
+      annotatorDraft = { shape_kind: "rect", rect: [p[0], p[1], 0, 0] };
+      (svg as unknown as Element).setPointerCapture?.((e as PointerEvent).pointerId);
+    } else if (annotatorTool === "polygon") {
+      // click to add a vertex; the polygon closes from the panel or with Enter,
+      // because "double-click to close" and "click to add" fight each other on
+      // the last vertex.
+      const points = annotatorDraft?.points ?? [];
+      annotatorDraft = { shape_kind: "polygon", points: [...points, p] };
+    }
+    drawAnnotatorOverlay();
+    // The panel is NOT opened here. It used to be, and the bug was instructive:
+    // it opened on pointerDOWN, took its space, and the picture shrank UNDER THE
+    // POINTER — so the rest of the drag was measured against a box that had
+    // changed size, and a 35%-tall gesture recorded as 70%. A surface must not
+    // resize while a gesture is being measured against it. (It is also an
+    // overlay now, so even opening it late moves nothing.)
+    if (annotatorTool === "polygon") renderAnnotatorPanel();
+  });
+
+  svg.addEventListener("pointermove", (e) => {
+    if (!dragging || !origin) return;
+    const p = annotatorPoint(e as PointerEvent);
+    if (!p) return;
+    // dragged in any direction: the rect is normalised so w/h stay positive,
+    // which the datamodel requires and a drag up-left would otherwise break
+    annotatorDraft = {
+      shape_kind: "rect",
+      rect: [Math.min(origin[0], p[0]), Math.min(origin[1], p[1]),
+             Math.abs(p[0] - origin[0]), Math.abs(p[1] - origin[1])],
+    };
+    drawAnnotatorOverlay();
+  });
+
+  const endDrag = (): void => {
+    if (!dragging) return;
+    dragging = false;
+    origin = null;
+    const rect = annotatorDraft?.rect;
+    // a click, not a drag: no region. Without this every stray click on the
+    // picture would open the panel for a zero-sized region.
+    if (rect && (rect[2] < 0.005 || rect[3] < 0.005)) annotatorDraft = null;
+    drawAnnotatorOverlay();
+    renderAnnotatorPanel();
+  };
+  svg.addEventListener("pointerup", endDrag);
+  svg.addEventListener("pointercancel", endDrag);
+
+  window.addEventListener("keydown", (e) => {
+    if (activeWin().type !== "annotator") return;
+    if (e.key === "Escape" && annotatorDraft) {
+      annotatorDraft = null;
+      drawAnnotatorOverlay();
+      renderAnnotatorPanel();
+    }
+  });
+}
+
+/** The left panel of an Annotator window: its TOOLS.
+ *
+ * U2 · this is the generalisation of `RESOURCE_PROVIDERS`. The registry never
+ * said "the node types" — it says "what this window OFFERS", which for a Graph
+ * is the palette, for a Narrative the story blocks, and here the ways of
+ * tracing. Nothing about the panel had to change to hold a different offer.
+ */
+function renderAnnotatorTools(host: HTMLElement): void {
+  const box = document.createElement("div");
+  box.className = "annot-tools";
+  const heading = document.createElement("div");
+  heading.className = "palette-heading";
+  heading.textContent = t("annotator.tools");
+  box.appendChild(heading);
+  for (const tool of ANNOTATOR_TOOLS) {
+    const btn = document.createElement("button");
+    btn.className = "annot-tool" + (annotatorTool === tool.id ? " current" : "");
+    btn.dataset.tool = tool.id;
+    btn.innerHTML = `<span class="annot-tool-glyph">${tool.glyph}</span>` +
+                    `<span class="annot-tool-label">${escapeHtml(t(tool.labelKey))}</span>`;
+    if ("disabled" in tool && tool.disabled) {
+      btn.disabled = true;
+      btn.title = t(tool.disabled);
+    } else {
+      btn.addEventListener("click", () => {
+        annotatorTool = tool.id as AnnotatorTool;
+        annotatorDraft = null;
+        drawAnnotatorOverlay();
+        renderTiles();          // the panel redraws with the new current tool
+        renderAnnotatorPanel();
+      });
+    }
+    box.appendChild(btn);
+  }
+  const note = document.createElement("p");
+  note.className = "annot-tools-note";
+  note.textContent = t("annotator.toolsNote");
+  box.appendChild(note);
+  host.appendChild(box);
+}
+
+// ── A2 · "what am I extracting?" — the panel that turns a shape into a claim ──
+//
+// The question is not decoration: the same traced rectangle means a different
+// thing depending on what is being read out of it (the extent of a unit, a
+// measurement, a state of conservation). So the property TYPE is asked for
+// every time and never defaulted — the bridge refuses a call without one.
+
+function renderAnnotatorPanel(): void {
+  const panel = document.getElementById("annotator-panel");
+  if (!panel) return;
+  const win = activeWin();
+  if (win.type !== "annotator" || !annotatorDraft || !annotatorImage) {
+    panel.classList.add("hidden");
+    panel.textContent = "";
+    return;
+  }
+  if (panel.dataset.open === "1") {
+    // Built already — keep whatever was typed, but the GEOMETRY is not typed: it
+    // is the gesture, and it must read as the gesture actually is.
+    const line = panel.querySelector(".annot-geometry");
+    if (line) line.textContent = describeDraft(annotatorDraft);
+    return;
+  }
+  panel.dataset.open = "1";
+  panel.classList.remove("hidden");
+  panel.textContent = "";
+
+  const title = document.createElement("div");
+  title.className = "annot-panel-title";
+  title.textContent = t("annotator.whatAreYouExtracting");
+  panel.appendChild(title);
+
+  const field = (labelKey: string, control: HTMLElement): void => {
+    const wrap = document.createElement("label");
+    wrap.className = "annot-field";
+    const span = document.createElement("span");
+    span.textContent = t(labelKey);
+    wrap.append(span, control);
+    panel.appendChild(wrap);
+  };
+
+  // TARGET — the stratigraphic nodes of this graph, from the graph itself
+  const target = document.createElement("select");
+  target.className = "annot-input";
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = t("annotator.noTarget");
+  target.appendChild(none);
+  const units = (store?.doc.graph.nodes ?? [])
+    .filter((n) => isStratigraphicType(n.node_type))
+    .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  for (const unit of units) {
+    const option = document.createElement("option");
+    option.value = unit.id;
+    option.textContent = `${unit.name} · ${unit.node_type}`;
+    target.appendChild(option);
+  }
+  if (selectedIds.size === 1) {
+    const only = [...selectedIds][0];
+    if (units.some((u) => u.id === only)) target.value = only;
+  }
+  field("annotator.target", target);
+
+  // PROPERTY TYPE — the qualia vocabulary, never a hand-written list.
+  //
+  // NO DEFAULT, on purpose, and the first version taught me why twice over: it
+  // pre-selected `"material"`, which is not a term in the vocabulary at all (the
+  // id is `material_type`), so the select silently held "" and the commit was
+  // refused by the bridge. Hardcoding an EM term is what ADR-001 forbids — and
+  // even a VALID default would be wrong here, because "what am I extracting" is
+  // the question this panel exists to ask. Answering it on the reader's behalf
+  // would put a word in their mouth that travels into the graph as a claim.
+  const ptype = document.createElement("select");
+  ptype.className = "annot-input";
+  const choose = document.createElement("option");
+  choose.value = "";
+  choose.textContent = t("annotator.choosePropertyType");
+  ptype.appendChild(choose);
+  for (const q of qualiaList()) {
+    const option = document.createElement("option");
+    option.value = q.id;
+    option.textContent = `${q.name} · ${q.categoryLabel}`;
+    option.title = q.description ?? q.rationale ?? "";
+    ptype.appendChild(option);
+  }
+  field("annotator.propertyType", ptype);
+
+  // VALUE — the reading itself
+  const value = document.createElement("input");
+  value.type = "text";
+  value.className = "annot-input";
+  value.placeholder = t("annotator.valuePlaceholder");
+  field("annotator.value", value);
+
+  // AUTHOR — defaults to the graph's own author, which is nearly always right
+  const author = document.createElement("input");
+  author.type = "text";
+  author.className = "annot-input";
+  author.value = defaultAnnotationAuthor();
+  field("annotator.author", author);
+
+  const geometry = document.createElement("p");
+  geometry.className = "annot-geometry";
+  geometry.textContent = describeDraft(annotatorDraft);
+  panel.appendChild(geometry);
+
+  const actions = document.createElement("div");
+  actions.className = "annot-actions";
+  const commit = document.createElement("button");
+  commit.className = "annot-commit";
+  commit.textContent = t("annotator.commit");
+  commit.addEventListener("click", () => {
+    void commitAnnotation({
+      targetUnitId: target.value || null,
+      propertyType: ptype.value,
+      value: value.value.trim(),
+      author: author.value.trim() || null,
+      button: commit,
+    });
+  });
+  const cancel = document.createElement("button");
+  cancel.className = "annot-cancel";
+  cancel.textContent = t("annotator.cancel");
+  cancel.addEventListener("click", () => {
+    annotatorDraft = null;
+    panel.dataset.open = "";
+    drawAnnotatorOverlay();
+    renderAnnotatorPanel();
+  });
+  actions.append(commit, cancel);
+  panel.appendChild(actions);
+}
+
+/** The graph's own author, when it has one — the annotation is nearly always by
+ *  whoever is holding the document. */
+function defaultAnnotationAuthor(): string {
+  try {
+    const scope = store?.readGraphScope?.();
+    return String((scope as { author?: string } | undefined)?.author ?? "");
+  } catch {
+    return "";
+  }
+}
+
+function describeDraft(draft: AnnotatorDraft): string {
+  if (draft.shape_kind === "rect" && draft.rect) {
+    const [x, y, w, h] = draft.rect.map((v) => Math.round(v * 1000) / 10);
+    return `rect ${x}% ${y}% · ${w}×${h}%`;
+  }
+  return `polygon · ${draft.points?.length ?? 0} ${t("annotator.points")}`;
+}
+
+/**
+ * Commit: the bridge builds the chain, and the graph receives it.
+ *
+ * The response is a DELTA, so it lands through `store.addSubgraph` as ONE undo
+ * step and the layout survives — the alternative (replacing the document with
+ * the returned graph) would throw away the arrangement for a gesture that added
+ * four nodes.
+ */
+async function commitAnnotation(input: {
+  targetUnitId: string | null;
+  propertyType: string;
+  value: string;
+  author: string | null;
+  button: HTMLButtonElement;
+}): Promise<void> {
+  if (!store || !annotatorDraft || !annotatorImage) return;
+  if (annotatorDraft.shape_kind === "polygon" &&
+      (annotatorDraft.points?.length ?? 0) < 3) {
+    toast(t("annotator.polygonNeedsThree"));
+    return;
+  }
+  if (!input.propertyType) {
+    toast(t("annotator.propertyTypeRequired"));
+    return;
+  }
+  if (!input.value) {
+    toast(t("annotator.valueRequired"));
+    return;
+  }
+  const region: Record<string, unknown> = {
+    shape_kind: annotatorDraft.shape_kind,
+    page: annotatorImage.page,
+  };
+  if (annotatorDraft.rect) region.rect = annotatorDraft.rect;
+  if (annotatorDraft.points) region.points = annotatorDraft.points;
+
+  input.button.disabled = true;
+  try {
+    const res = await fetch(`${await bridgeUrl()}/annotate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        doc: store.doc,
+        image_id: annotatorImage.nodeId,
+        region,
+        interpretation: input.value,
+        property_type: input.propertyType,
+        target_unit_id: input.targetUnitId,
+        author: input.author,
+      }),
+    });
+    const payload = (await res.json().catch(() => null)) as
+      | { ok?: boolean; error?: string; nodes?: EmNode[]; edges?: EmEdge[];
+          warnings?: string[]; region_id?: string; created?: boolean }
+      | null;
+    if (!res.ok || !payload?.ok) {
+      // the bridge's own words: it knows WHY better than a generic failure does
+      toast(payload?.error ?? `bridge ${res.status}`);
+      return;
+    }
+    const added = store.addSubgraph(payload.nodes ?? [], payload.edges ?? []);
+    annotatorDraft = null;
+    const panel = document.getElementById("annotator-panel");
+    if (panel) panel.dataset.open = "";
+    drawAnnotatorOverlay();
+    renderAnnotatorPanel();
+    draw();
+    drawTiles();
+    renderEmData();
+    refreshInspector();
+    for (const w of payload.warnings ?? []) toast(w);
+    toast(added.nodes || added.edges
+      ? t("annotator.committed", { n: String(added.nodes), e: String(added.edges) })
+      : t("annotator.alreadyThere"));
+  } catch (err) {
+    toast(`${t("storage.bridgeDown")} (${err instanceof Error ? err.message : err})`);
+  } finally {
+    input.button.disabled = false;
+  }
 }
 
 // ── W1 · STORAGE · the window onto where the bytes live ─────────────────────
@@ -7291,7 +7884,8 @@ function mountWindow(win: Win): void {
     win.type === "emtree" ||
     win.type === "inspector" ||
     win.type === "viewer" ||
-    win.type === "storage"
+    win.type === "storage" ||
+    win.type === "annotator"
   ) {
     // WIN5 · a real window, not the dock: the surface fills the area. Leave the
     // canvas mode alone underneath (never the narrative overlay) so switching
@@ -7417,7 +8011,12 @@ function buildAreaHeader(win: Win, active: boolean): DocumentFragment {
       const b = document.createElement("button");
       b.textContent = m.label;
       b.classList.toggle("active", m.current);
-      b.addEventListener("click", m.run);
+      if (m.disabled) {
+        b.disabled = true;
+        b.title = m.disabled;   // the REASON, where the pointer already is
+      } else {
+        b.addEventListener("click", m.run);
+      }
       modeMenu.appendChild(b);
     }
     wireBarDropdown(modeTog, modeMenu);
@@ -7591,7 +8190,8 @@ function transformWindowOf(win: Win, type: WindowType): void {
  */
 function headerModesOf(win: Win): {
   currentLabel: string;
-  items: { label: string; current: boolean; run: () => void }[];
+  items: { label: string; current: boolean; run: () => void;
+           disabled?: string }[];
 } | null {
   if (win.type === "graph") {
     const cur = winMode(win);
@@ -7615,6 +8215,11 @@ function headerModesOf(win: Win): {
       items: winModes(win.type).map((m) => ({
         label: t("mode.label", { mode: t(`mode.${m}`) }),
         current: m === cur,
+        // A mode that is planned but not built is LISTED and disabled, with the
+        // reason — the same treatment the menus give an action that cannot run.
+        // Hiding it would make the plan invisible; letting it through would put
+        // the window in a mode that draws nothing.
+        disabled: DISABLED_MODES[m] ? t(DISABLED_MODES[m]) : undefined,
         run: () =>
           focusThen(win, () => {
             setWinModeOf(win, m);
@@ -8041,6 +8646,35 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
   // STORAGE · navigation is the double-click and the ↑; a menu repeating them
   // would be a second way to do the one thing the surface already does.
   storage: [],
+  // ANNOTATOR · the tools are in the panel and the Mode is in the header; the
+  // only thing left to command is the region being traced.
+  annotator: [
+    {
+      label: "Regione",
+      items: () => [
+        {
+          label: "Annulla la regione",
+          disabled: annotatorDraft ? undefined : "nessuna regione in corso",
+          run: () => {
+            annotatorDraft = null;
+            const panel = document.getElementById("annotator-panel");
+            if (panel) panel.dataset.open = "";
+            drawAnnotatorOverlay();
+            renderAnnotatorPanel();
+          },
+        },
+        {
+          label: "Chiudi il poligono",
+          disabled:
+            annotatorDraft?.shape_kind === "polygon" &&
+            (annotatorDraft.points?.length ?? 0) >= 3
+              ? undefined
+              : "serve un poligono con almeno 3 punti",
+          run: () => renderAnnotatorPanel(),
+        },
+      ],
+    },
+  ],
   doc: [
     {
       label: "Documento",
@@ -9509,6 +10143,7 @@ applyWorkspace(activeWorkspace());
     });
 }
 
+initAnnotatorGestures();   // A2 · the overlay is a singleton: wire it once
 initEmData({
   getStore: () => store,
   // CURRENT-ELEMENT · the row lives on the window, not in the table module
