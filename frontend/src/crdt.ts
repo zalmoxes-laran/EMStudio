@@ -145,6 +145,52 @@ export function fieldClock(payload: Payload, name: string): Clock {
   return nodeStamp(payload);
 }
 
+/** The removal mark of ONE field, or null (P4.1b). Same shape as the node's
+ *  tombstone, one level down: the clock entry carries `removed: true`, and the
+ *  KEY stays — an emptied field that simply vanished would be indistinguishable
+ *  from one that was never there, and the merge would hand it back. */
+export function fieldTombstone(payload: Payload, name: string): Clock | null {
+  const clocks = dataOf(payload)[FIELD_CLOCKS_KEY];
+  if (!clocks || typeof clocks !== "object") return null;
+  const raw = (clocks as Record<string, Record<string, unknown>>)[name];
+  if (raw && typeof raw === "object" && raw[REMOVED_KEY])
+    return clockOf(raw.ts as string, raw.by as string);
+  return null;
+}
+
+/** Every field this side KNOWS ABOUT: with a value, or deliberately emptied.
+ *  A removed field is invisible to a view and must stay visible to the merge. */
+export function knownFields(payload: Payload): string[] {
+  const out = contentFields(payload);
+  const clocks = dataOf(payload)[FIELD_CLOCKS_KEY];
+  if (clocks && typeof clocks === "object") {
+    for (const [name, raw] of Object.entries(clocks as Record<string, Record<string, unknown>>)) {
+      if (raw && typeof raw === "object" && raw[REMOVED_KEY] && !out.includes(name))
+        out.push(name);
+    }
+  }
+  return out;
+}
+
+/** Keys the exporter lifts from the CLASS, not from an author. Never a conflict,
+ *  and never a "somebody wrote this without stamping it". */
+export const DERIVED_KEYS = new Set(["data.symbol", "data.label"]);
+
+/**
+ * Fields that carry a value and no clock, on a node that stamps its fields.
+ *
+ * The diagnostic behind the P4.1b contract. Honest about its limits: it reads a
+ * STATE, so it cannot tell a constructor-set value from an edit that bypassed
+ * `setField`. The exact guard belongs where the write happens — the store knows
+ * which field it just changed, and warns in dev.
+ */
+export function unstampedFields(payload: Payload): string[] {
+  const clocks = dataOf(payload)[FIELD_CLOCKS_KEY];
+  if (!clocks || typeof clocks !== "object" || !Object.keys(clocks).length) return [];
+  const map = clocks as Record<string, unknown>;
+  return contentFields(payload).filter((n) => !(n in map) && !DERIVED_KEYS.has(n));
+}
+
 /** Does this side hold the field only because it copied it? (See the .py twin.) */
 export function isStaleCopy(payload: Payload, name: string): boolean {
   const clocks = dataOf(payload)[FIELD_CLOCKS_KEY];
@@ -181,7 +227,8 @@ export function tombstoneOf(payload: Payload): Clock | null {
 export function isRemoved(payload: Payload): boolean {
   const mark = tombstoneOf(payload);
   if (!mark) return false;
-  for (const name of contentFields(payload)) {
+  // a field REMOVAL is an edit like any other: somebody acted on this node
+  for (const name of knownFields(payload)) {
     if (clockOrder(fieldClock(payload, name), mark) > 0) return false;
   }
   return true;
@@ -215,12 +262,44 @@ export function setField(payload: Payload, name: string, value: unknown): void {
   else payload[name] = value;
 }
 
-/** Record a field's clock — lazily, and only when it says something. */
-export function setFieldClock(payload: Payload, name: string, clock: Clock): void {
+/** Record a field's clock — lazily, and only when it says something.
+ *  `removed` writes the FIELD TOMBSTONE (P4.1b): one place for "when was this
+ *  field last touched", whether the touch was a value or an emptying. */
+export function setFieldClock(payload: Payload, name: string, clock: Clock,
+                              removed = false): void {
   if (!isStamped(clock)) return;
   const data = (payload.data ??= {}) as Record<string, unknown>;
-  const clocks = (data[FIELD_CLOCKS_KEY] ??= {}) as Record<string, Clock>;
-  clocks[name] = clockOf(clock.ts, clock.by);
+  const clocks = (data[FIELD_CLOCKS_KEY] ??= {}) as Record<string, unknown>;
+  const entry: Record<string, unknown> = { ...clockOf(clock.ts, clock.by) };
+  if (removed) entry[REMOVED_KEY] = true;
+  clocks[name] = entry;
+}
+
+/**
+ * Write a field AND its clock, in ONE act (P4.1b).
+ *
+ * The cure for "remember to stamp what you write" is not discipline, it is
+ * making the mistake impossible: one function, both things. A value written
+ * without its clock is back-dated to the node's last save, and the next merge
+ * quietly loses whoever's edit that was.
+ */
+export function writeField(payload: Payload, name: string, value: unknown,
+                           clock: Clock): void {
+  setField(payload, name, value);
+  setFieldClock(payload, name, clock);
+}
+
+/**
+ * Empty a field: drop the value, keep the KEY as a tombstone (P4.1b).
+ *
+ * Emptying is an act and must travel as one. Without the mark the other side
+ * sees a field it has and I do not, keeps its own (P4.1: absence is not
+ * deletion) and hands the value back — right for a field I never had, wrong for
+ * one I deliberately emptied.
+ */
+export function clearField(payload: Payload, name: string, clock: Clock): void {
+  setField(payload, name, null);
+  setFieldClock(payload, name, clock, true);
 }
 
 /** The CONTENT of a payload, without clocks or stamps — for asking "did this
@@ -249,8 +328,10 @@ export interface FieldOutcome {
   nodeId: string;
   field: string;
   reason: FieldReason;
-  winner: { by: string | null; at: string | null; stamp: string; side: string };
-  loser: { by: string | null; at: string | null; stamp: string; side: string };
+  winner: { by: string | null; at: string | null; stamp: string; side: string;
+            removed?: boolean };
+  loser: { by: string | null; at: string | null; stamp: string; side: string;
+           removed?: boolean };
   loserValue: unknown;
 }
 
@@ -275,51 +356,73 @@ export function mergePayloads(mine: Payload, theirs: Payload): MergeOutcome {
   const outcome: MergeOutcome = { payload: merged, fields: [], removed: false,
                                   resurrected: false };
 
-  const mineFields = new Set(contentFields(mine));
-  const theirFields = new Set(contentFields(theirs));
+  // `knownFields`, not `contentFields`: a field somebody EMPTIED has no value and
+  // must still take part, or the emptying is forgotten when the two sides meet.
+  const mineFields = new Set(knownFields(mine));
+  const theirFields = new Set(knownFields(theirs));
   const names = [...new Set([...mineFields, ...theirFields])];
   const winning: Record<string, Clock> = {};
+
+  const land = (name: string, value: unknown, clock: Clock, gone: boolean): void => {
+    if (gone) clearField(merged, name, clock);
+    else setField(merged, name, value);
+    winning[name] = clock;
+  };
 
   for (const name of names) {
     const hasMine = mineFields.has(name);
     const hasTheirs = theirFields.has(name);
+    const mineGone = fieldTombstone(mine, name) !== null;
+    const theirsGone = fieldTombstone(theirs, name) !== null;
     const vMine = getField(mine, name);
     const vTheirs = getField(theirs, name);
     const cMine = hasMine ? fieldClock(mine, name) : {};
     const cTheirs = hasTheirs ? fieldClock(theirs, name) : {};
 
-    if (!hasMine) { setField(merged, name, vTheirs); winning[name] = cTheirs; continue; }
-    if (!hasTheirs) { setField(merged, name, vMine); winning[name] = cMine; continue; }
-    if (canonicalValue(vMine) === canonicalValue(vTheirs)) {
+    // ONE side knows the field: its state lands, whatever that state is. A
+    // removal is a state — it does not lose to an absence.
+    if (!hasMine) { land(name, vTheirs, cTheirs, theirsGone); continue; }
+    if (!hasTheirs) { land(name, vMine, cMine, mineGone); continue; }
+    if (mineGone && theirsGone) {
+      const c = newerClock(cMine, cTheirs);
+      clearField(merged, name, c);
+      winning[name] = c;
+      continue;
+    }
+    if (!mineGone && !theirsGone
+        && canonicalValue(vMine) === canonicalValue(vTheirs)) {
       setField(merged, name, vMine);
       winning[name] = newerClock(cMine, cTheirs);
       continue;
     }
 
-    const [order, reason] = compareClocks(cMine, cTheirs);
+    const [order, rawReason] = compareClocks(cMine, cTheirs);
+    let reason: FieldReason = rawReason;
     let winSide: "mine" | "theirs";
-    if (order === 0 && reason === "unstamped") winSide = "theirs";
+    if (order === 0 && rawReason === "unstamped") winSide = "theirs";
     else winSide = order >= 0 ? "mine" : "theirs";
     const winClock = winSide === "mine" ? cMine : cTheirs;
     const loseClock = winSide === "mine" ? cTheirs : cMine;
     const winValue = winSide === "mine" ? vMine : vTheirs;
     const loseValue = winSide === "mine" ? vTheirs : vMine;
+    const winGone = winSide === "mine" ? mineGone : theirsGone;
+    const loseGone = winSide === "mine" ? theirsGone : mineGone;
     const winPayload = winSide === "mine" ? mine : theirs;
     const losePayload = winSide === "mine" ? theirs : mine;
 
-    setField(merged, name, winValue);
-    winning[name] = winClock;
-    setFieldClock(merged, name, winClock);
-    // the loser never wrote this field: nothing of theirs was lost, and a feed
-    // that reports "your stale copy was replaced" is a feed nobody reads
+    land(name, winValue, winClock, winGone);
+    // a field emptied and then written again (or the reverse) is a RESURRECTION
+    // at field level — the node's event, one level down, and it is reported
+    if (loseGone && !winGone) reason = "resurrected";
     if (isStaleCopy(losePayload, name) && !isStaleCopy(winPayload, name)) continue;
     outcome.fields.push({
       nodeId, field: name, reason,
       winner: { by: winClock.by ?? null, at: winClock.ts ?? null,
-                stamp: clockSource(winPayload, name), side: winSide },
+                stamp: clockSource(winPayload, name), side: winSide,
+                removed: winGone },
       loser: { by: loseClock.by ?? null, at: loseClock.ts ?? null,
                stamp: clockSource(losePayload, name),
-               side: winSide === "mine" ? "theirs" : "mine" },
+               side: winSide === "mine" ? "theirs" : "mine", removed: loseGone },
       loserValue: loseValue,
     });
   }
@@ -331,7 +434,10 @@ export function mergePayloads(mine: Payload, theirs: Payload): MergeOutcome {
     if (!clocks || typeof clocks !== "object") continue;
     for (const [name, raw] of Object.entries(clocks as Record<string, Clock>)) {
       if (name in winning && clockOrder(raw ?? {}, winning[name]) === 0)
-        setFieldClock(merged, name, winning[name]);
+        // …WITHOUT losing the removal mark: a plain clock written over a field
+        // tombstone would quietly bring the field back
+        setFieldClock(merged, name, winning[name],
+                      fieldTombstone(merged, name) !== null);
     }
   }
 
@@ -467,13 +573,18 @@ export function applyOp(section: Section, op: CrdtOp): OpResult {
                nodeId, fields: [] };
     const current = fieldClock(existing, name);
     const [order, reason] = compareClocks(clock, current);
-    const sameValue = canonicalValue(getField(existing, name)) === canonicalValue(op.value);
+    const gone = fieldTombstone(existing, name) !== null;
+    const wantsGone = op.remove === true;
+    const sameValue = gone === wantsGone
+      && canonicalValue(getField(existing, name)) === canonicalValue(op.value);
     if (order < 0 || (order === 0 && sameValue))
       return { applied: false, reason: order < 0 ? "stale" : "idempotent", nodeId,
                fields: [] };
     const loserValue = getField(existing, name);
-    setField(existing, name, op.value);
-    setFieldClock(existing, name, clock);
+    // ONE act, the same one an editor performs: a value with its clock, or an
+    // emptying with its tombstone (`remove: true`).
+    if (wantsGone) clearField(existing, name, clock);
+    else writeField(existing, name, op.value, clock);
     stampPayload(existing, clock, false);
     return {
       applied: true, reason: "set", nodeId,

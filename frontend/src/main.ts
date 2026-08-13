@@ -1109,6 +1109,12 @@ function refreshInspector(): void {
       resolveAuthority: resolveAuthority,
       onCommand: (verb, target) => sendHostCommand(verb, target),
       commandsBlocked: commandsBlockedReason,
+      onClearField: (nodeId, field) => {
+        store!.clearField(nodeId, field);
+        refreshInspector();
+        buildScenes();
+        draw();
+      },
     },
     selectedEdge,
   );

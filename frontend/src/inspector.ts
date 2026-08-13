@@ -43,6 +43,8 @@ export interface InspectorCallbacks {
    *  reason they cannot be, shown in the tooltip of the disabled button. An
    *  action that is offered and then refused is worse than one greyed out. */
   commandsBlocked?: () => string | null;
+  /** P4.1b · empty ONE field, through the act that leaves its tombstone. */
+  onClearField?: (nodeId: string, field: string) => void;
 }
 
 function el(tag: string, cls?: string, text?: string): HTMLElement {
@@ -1104,14 +1106,27 @@ export function renderInspector(
       // AUDIT1 · the editorial stamps have their own block below — four raw
       // keys in the technical dump is not "shown", it is buried.
       if (EDITORIAL_FIELDS.includes(k)) continue;
+      // P4.1b · the field clocks and the tombstones are machinery, not content:
+      // they belong to the merge, and showing them here would bury the data
+      if (k === "field_clocks" || k === "removed") continue;
       dl.appendChild(el("dt", undefined, k));
-      dl.appendChild(
-        el(
-          "dd",
-          undefined,
-          typeof v === "object" ? JSON.stringify(v) : String(v),
-        ),
-      );
+      const dd = el("dd");
+      dd.appendChild(document.createTextNode(
+        typeof v === "object" ? JSON.stringify(v) : String(v)));
+      // P4.1b · emptying a field is an ACT and needs a gesture that performs it.
+      // It goes through `clearField`, which leaves the field's TOMBSTONE — a key
+      // simply deleted would look, on the other side, like a field they have and
+      // you never did, and their value would come back.
+      if (cb.onClearField) {
+        const x = document.createElement("button");
+        x.className = "insp-field-clear";
+        x.textContent = "×";
+        x.title = "Empty this field. The removal travels as a removal — it does "
+          + "not come back from somebody else's copy.";
+        x.addEventListener("click", () => cb.onClearField!(nodeId!, `data.${k}`));
+        dd.appendChild(x);
+      }
+      dl.appendChild(dd);
     }
     if (dl.childElementCount) {
       root.appendChild(el("h3", "insp-sect", "Data"));

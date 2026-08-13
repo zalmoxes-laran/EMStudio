@@ -5965,3 +5965,24 @@ object.viewer-media {
   border-color: var(--accent);
   color: var(--accent);
 }
+
+/* P4.1b · the gesture that empties a field — quiet until you look for it. */
+.insp-field-clear {
+  background: none;
+  border: none;
+  color: var(--text-faint);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  padding: 0 4px;
+  margin-left: 4px;
+  border-radius: 3px;
+  opacity: 0;
+}
+.insp-data dd:hover .insp-field-clear {
+  opacity: 1;
+}
+.insp-field-clear:hover {
+  background: var(--bg-accent-soft);
+  color: var(--accent);
+}

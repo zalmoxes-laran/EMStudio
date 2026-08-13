@@ -18,6 +18,11 @@ import { VOLATILE_KEY } from "./volatile";
 import { currentIdentity } from "./identity";
 import { resolveNodePair } from "./container";
 import type { Conflict } from "./container";
+import {
+  canonicalValue, clearField, contentFields, getField, setFieldClock,
+  unstampedFields, writeField,
+} from "./crdt";
+import type { Payload } from "./crdt";
 
 /** A structured graph mutation for the live op-log bridge (ADR-002 phase 2).
  * Kept small and additive; more variants (add/delete node/edge) land next. */
@@ -423,6 +428,85 @@ export class DocumentStore {
     const who = this.editorOrcid();
     if (who) data.modified_by = who;
     data.modified_at = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+  }
+
+  /**
+   * P4.1b · stamp the FIELDS an edit actually changed.
+   *
+   * The contract field-level merging rests on — *if you write a field, stamp
+   * it* — cannot be a promise the caller remembers to keep, or one day somebody
+   * writes a field without its clock and it is silently back-dated to the node's
+   * last save. So the stamping happens HERE, in the one function every edit goes
+   * through, and it stamps exactly what CHANGED: a patch that carries the whole
+   * `data` (most of them do) must not re-date fields nobody touched.
+   */
+  private stampFields(node: EmNode, before: Record<string, unknown>): void {
+    if (this.suppressOp) return;
+    const now = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+    const who = this.editorOrcid();
+    const after = node as unknown as Record<string, unknown>;
+    const payload = after as Payload;
+    const changed: string[] = [];
+    for (const name of new Set([...contentFields(before), ...contentFields(payload)])) {
+      if (canonicalValue(getField(before, name)) !== canonicalValue(getField(payload, name)))
+        changed.push(name);
+    }
+    for (const name of changed) {
+      // a field emptied by an edit is EMPTIED, not absent: it gets the tombstone
+      // that tells the other side this was an act (P4.1b)
+      const value = getField(payload, name);
+      if (value === undefined || value === null || value === "")
+        setFieldClock(payload, name, { ts: now, by: who }, true);
+      else setFieldClock(payload, name, { ts: now, by: who });
+    }
+    if (import.meta.env?.DEV) {
+      // the exact guard: HERE we know what changed, so an unstamped change is a
+      // bug we can name rather than a state we can only suspect
+      const missed = unstampedFields(payload).filter((f) => changed.includes(f));
+      if (missed.length)
+        console.warn(`[P4.1b] fields written without a clock on ${node.id}:`,
+                     missed.join(", "));
+    }
+  }
+
+  /**
+   * P4.1b · write ONE field and stamp it — the single act, exposed.
+   *
+   * `updateNode` already stamps what changes; this is for callers that want to
+   * say plainly *which* field they are writing (an operation arriving from a
+   * peer, a gesture that edits one thing).
+   */
+  setField(nodeId: string, field: string, value: unknown): void {
+    const node = this.node(nodeId);
+    if (!node) return;
+    this.checkpoint();
+    writeField(node as unknown as Payload, field, value, {
+      ts: new Date().toISOString().replace(/\.\d+Z$/, "Z"),
+      by: this.editorOrcid(),
+    });
+    this.stampEdit(node);
+    this.emit();
+    this.emitOp({ op: "update_node", node_id: nodeId, patch: { data: node.data } });
+  }
+
+  /**
+   * P4.1b · empty a field, leaving its tombstone. The only way to remove one.
+   *
+   * Dropping the key would leave the other side unable to tell "she emptied it"
+   * from "I have something she never had" — and the rule that protects your work
+   * (absence is not deletion) would hand the value back.
+   */
+  clearField(nodeId: string, field: string): void {
+    const node = this.node(nodeId);
+    if (!node) return;
+    this.checkpoint();
+    clearField(node as unknown as Payload, field, {
+      ts: new Date().toISOString().replace(/\.\d+Z$/, "Z"),
+      by: this.editorOrcid(),
+    });
+    this.stampEdit(node);
+    this.emit();
+    this.emitOp({ op: "update_node", node_id: nodeId, patch: { data: node.data } });
   }
 
   // ---------- mutations ----------
@@ -1678,7 +1762,10 @@ export class DocumentStore {
     const n = this.node(id);
     if (!n) return;
     this.checkpoint();
+    // snapshot BEFORE, so the field stamps land on what actually changed
+    const before = JSON.parse(JSON.stringify(n)) as Record<string, unknown>;
     Object.assign(n, patch);
+    this.stampFields(n, before);
     this.stampEdit(n);
     this.emit();
     this.emitOp({ op: "update_node", node_id: id, patch });

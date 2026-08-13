@@ -153,4 +153,72 @@ const digest = (s) => K.contentDigest({ graphs: { [s.graph_id]: s },
      "…and so does the reverse order (convergence, measured across languages)");
 }
 
+// ── P4.1b · la timbratura è l'atto, e svuotare ha il suo tombstone ──────────
+{
+  // D1 · writing a field always stamps it — both doors into the algebra
+  const s = section(node("US1", { created_at: T1, created_by: ANNA }));
+  C.applyOp(s, { op: "update_field", node_id: "US1", field: "description",
+                 value: "muro", ts: T2, author: ANNA });
+  eq(s.nodes[0].data.field_clocks.description, { ts: T2, by: ANNA },
+     "an update_field op writes the value AND its clock, in one act");
+  ok(!C.unstampedFields(s.nodes[0]).includes("description"),
+     "…so the guard has nothing to say about it");
+
+  const sneaky = structuredClone(s.nodes[0]);
+  sneaky.data.dating = "scritto di nascosto";       // the bug: no clock
+  ok(C.unstampedFields(sneaky).includes("data.dating"),
+     "a field written outside the act IS seen by the guard");
+}
+
+{
+  // D2 · field tombstone, symmetric to the node's
+  const a = node("US1", { created_at: T1 });
+  C.writeField(a, "description", "muro", { ts: T1, by: ANNA });
+  const b = structuredClone(a);
+  C.clearField(b, "description", { ts: T2, by: BRUNO });
+
+  const out = C.mergePayloads(a, b);
+  eq(out.payload.description, undefined, "a removal later than the edit wins");
+  ok(C.fieldTombstone(out.payload, "description") !== null,
+     "…and the mark travels, so a third merge still knows");
+  eq(out.fields[0].winner.removed, true, "…the report says what won was an emptying");
+
+  const c = structuredClone(b);
+  C.writeField(c, "description", "ci ripenso", { ts: T3, by: ANNA });
+  const back = C.mergePayloads(b, c);
+  eq(back.payload.description, "ci ripenso", "an edit later than the removal resurrects it");
+  eq(back.fields[0].reason, "resurrected", "…deliberately, and it is reported");
+}
+
+{
+  // D3 · emptying ≠ never having had — the two P4.1/P4.1b rules coexist
+  const emptied = node("US1", { created_at: T1 });
+  C.writeField(emptied, "description", "c'era", { ts: T1, by: ANNA });
+  C.clearField(emptied, "description", { ts: T2, by: ANNA });
+  const neverHad = node("US1", { created_at: T1 });
+  const out = C.mergePayloads(emptied, neverHad);
+  eq(out.payload.description, undefined, "a deliberate emptying stays empty");
+  ok(C.fieldTombstone(out.payload, "description") !== null, "…because it left a mark");
+
+  const hasIt = node("US1", { created_at: T1 });
+  C.writeField(hasIt, "data.nota", "una nota", { ts: T1, by: ANNA });
+  const plain = node("US1", { created_at: T2 });
+  eq(C.mergePayloads(hasIt, plain).payload.data.nota, "una nota",
+     "…while a field the other never had is still KEPT (absence is not deletion)");
+}
+
+{
+  // D5 · parity on the NEW fixture: field clocks + field tombstones
+  const fixture = JSON.parse(readFileSync(
+    new URL("../testdata/crdt-parity-fields.json", import.meta.url), "utf8"));
+  const s = structuredClone(fixture.section);
+  C.applyOps(s, fixture.ops);
+  eq(digest(s), fixture.expected_digest,
+     "field clocks and field tombstones land on the digest s3Dgraphy computes");
+  const reversed = structuredClone(fixture.section);
+  C.applyOps(reversed, [...fixture.ops].reverse());
+  eq(digest(reversed), fixture.expected_digest,
+     "…and the reverse order lands there too");
+}
+
 console.log(`crdt: ${checks} checks passed`);
