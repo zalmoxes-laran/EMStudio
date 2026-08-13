@@ -1,6 +1,17 @@
 import "./style.css";
 import { applyFolding, buildMembership, MEMBERSHIP_EDGES } from "./folding";
 import { setBridgeResolver } from "./geo";
+import {
+  currentIdentity,
+  declareIdentity,
+  forgetIdentity,
+  knownIdentities,
+  MockIdentityProvider,
+  publishGate,
+  useIdentity,
+  verifyCurrentIdentity,
+  type IdentityProvider,
+} from "./identity";
 import { renderInspector } from "./inspector";
 import { narrativesIn, renderNarrativeView } from "./narrative";
 import {
@@ -4001,6 +4012,213 @@ function refreshAtonUrlPreview(): void {
  *   of it the user came for should not make them look for it. (WIN7: the
  *   narrative window's ⌁ button comes here for the AI provider and key.)
  */
+
+// ── IDENTITY · who is working, and who has been checked ─────────────────────
+//
+// The model in one line: the ORCID iD IS the identity; `verified` says whether
+// anyone has confirmed it. Declaring works offline and unlocks everything about
+// preparing data; verifying is what unlocks publishing AS that person.
+//
+// The seam lives in `identity.ts` (pure, checked by scripts/check-identity.mjs).
+// This file only wires it to the dialog, the footer and the gate.
+
+/** The provider used by the Verify button.
+ *
+ * TODAY it is the MOCK: it verifies the iD the user has declared, so the whole
+ * flow — compare, promote, unlock, or report a mismatch — is exercisable with
+ * no infrastructure at all. The real one (Keycloak brokering ORCID: PKCE in the
+ * browser, Device flow on the desktop) drops in HERE, behind the same
+ * interface, and nothing else in this file changes. That is the point of having
+ * an interface rather than a fetch call in a button handler.
+ *
+ * It is deliberately NOT silent about being a mock — see `verifyIdentityFlow`,
+ * which says so in the toast. A verification that pretends to have talked to
+ * ORCID would be worse than no verification.
+ */
+function identityProvider(): IdentityProvider {
+  const declared = currentIdentity();
+  // A declared TEST BENCH, not a hidden feature: `?verifies=<orcid>` (or
+  // `window.EM_VERIFIES`) makes the mock answer with a DIFFERENT iD, which is
+  // the only way to see the mismatch path in the real UI before Keycloak
+  // exists. Same shape as the `?bridge=` override — an override you have to
+  // type, that changes nothing when you do not.
+  const forced =
+    new URLSearchParams(location.search).get("verifies") ??
+    (window as unknown as { EM_VERIFIES?: string }).EM_VERIFIES ??
+    null;
+  if (forced) return new MockIdentityProvider({ orcid: forced });
+  return new MockIdentityProvider(
+    declared ? { orcid: declared.orcid } : new Error("nessuna identità dichiarata"),
+  );
+}
+
+/** The footer chip: who is authoring, and whether they are verified. */
+function refreshIdentityChip(): void {
+  const chip = document.getElementById("footer-identity");
+  if (!chip) return;
+  const identity = currentIdentity();
+  if (!identity) {
+    chip.textContent = t("identity.none");
+    chip.title = t("identity.noneTitle");
+    chip.classList.remove("verified");
+    return;
+  }
+  const who = identity.name || identity.surname
+    ? `${identity.name ?? ""} ${identity.surname ?? ""}`.trim()
+    : identity.orcid;
+  chip.textContent = identity.verified ? `✔ ${who}` : `◌ ${who}`;
+  chip.title = identity.verified
+    ? t("identity.chipVerified", { orcid: identity.orcid })
+    : t("identity.chipClaimed", { orcid: identity.orcid });
+  chip.classList.toggle("verified", identity.verified);
+}
+
+/** The Settings section: declare, switch, verify. */
+function refreshIdentityPanel(): void {
+  const state = document.getElementById("set-orcid-state");
+  const known = document.getElementById("set-orcid-known");
+  const verifyBtn = document.getElementById("set-orcid-verify") as HTMLButtonElement | null;
+  if (!state || !known || !verifyBtn) return;
+  const identity = currentIdentity();
+  state.textContent = identity
+    ? identity.verified
+      ? t("identity.stateVerified", { orcid: identity.orcid })
+      : t("identity.stateClaimed", { orcid: identity.orcid })
+    : t("identity.stateNone");
+  verifyBtn.disabled = !identity || identity.verified;
+
+  known.textContent = "";
+  const others = knownIdentities();
+  if (others.length <= 1) return;
+  const title = document.createElement("p");
+  title.className = "settings-hint";
+  title.textContent = t("identity.knownOnThisMachine");
+  known.appendChild(title);
+  for (const other of others) {
+    const row = document.createElement("p");
+    row.className = "settings-url";
+    const label = document.createElement("span");
+    label.textContent = `${other.verified ? "✔" : "◌"} ${other.name ?? ""} ${other.orcid}`.trim();
+    const use = document.createElement("button");
+    use.type = "button";
+    use.textContent = t("identity.use");
+    use.disabled = other.orcid === identity?.orcid;
+    use.addEventListener("click", () => {
+      useIdentity(other.orcid);
+      refreshIdentityPanel();
+      refreshIdentityChip();
+      toast(t("identity.switched", { orcid: other.orcid }));
+    });
+    const drop = document.createElement("button");
+    drop.type = "button";
+    drop.textContent = t("identity.forget");
+    drop.addEventListener("click", () => {
+      forgetIdentity(other.orcid);
+      refreshIdentityPanel();
+      refreshIdentityChip();
+    });
+    row.append(label, use, drop);
+    known.appendChild(row);
+  }
+}
+
+function declareIdentityFromPanel(): void {
+  const input = document.getElementById("set-orcid") as HTMLInputElement;
+  const name = (document.getElementById("set-orcid-name") as HTMLInputElement).value.trim();
+  const surname = (document.getElementById("set-orcid-surname") as HTMLInputElement).value.trim();
+  const res = declareIdentity(input.value, { name, surname });
+  if (!res.ok) {
+    // The REASON, not "invalid": a transposed pair and a half-typed iD are
+    // different mistakes and the person fixing them needs to know which.
+    toast(t(`identity.problem.${res.problem}`));
+    return;
+  }
+  input.value = res.identity.orcid;   // show it back in canonical form
+  applyIdentityToDocument();
+  refreshIdentityPanel();
+  refreshIdentityChip();
+  toast(t("identity.declared", { orcid: res.identity.orcid }));
+}
+
+/**
+ * Write the current identity onto the open document as its graph-scope author.
+ *
+ * The identity is a fact about the PERSON and lives in localStorage; the author
+ * is a fact about the DOCUMENT and lives in the graph. Copying one into the
+ * other is what makes "what I make carries my name" true — and it is a copy,
+ * deliberately: a document authored today keeps saying who made it even after
+ * this laptop is handed to somebody else.
+ *
+ * Only when a document is open, and never overwriting a DIFFERENT author who is
+ * already there: a graph someone else authored is not re-attributed by opening
+ * it. That is the same refusal as the mismatch case — a name is not ours to
+ * change on somebody else's behalf.
+ */
+function applyIdentityToDocument(): void {
+  if (!store) return;
+  const identity = currentIdentity();
+  if (!identity) return;
+  const scope = store.readGraphScope();
+  const who = `${identity.name ?? ""} ${identity.surname ?? ""}`.trim() || identity.orcid;
+  if (scope.author && scope.orcid && scope.orcid !== identity.orcid) {
+    toast(t("identity.documentHasAnotherAuthor", { orcid: scope.orcid }));
+    return;
+  }
+  store.setGraphScope({
+    author: who,
+    orcid: identity.orcid,
+    verified: identity.verified,
+  });
+  refreshInspector();
+}
+
+async function verifyIdentityFlow(): Promise<void> {
+  const outcome = await verifyCurrentIdentity(identityProvider());
+  switch (outcome.status) {
+    case "verified":
+      applyIdentityToDocument();   // the document learns it too
+      refreshIdentityPanel();
+      refreshIdentityChip();
+      // Named as a mock, every time. The day this says nothing about being
+      // simulated is the day someone believes a verification that never
+      // happened.
+      toast(t("identity.verifiedMock", { orcid: outcome.identity.orcid }));
+      break;
+    case "mismatch":
+      // NOT promoted, NOT replaced: only the person in front of the screen
+      // knows which of the two is the mistake, and adopting the verified one
+      // silently would re-attribute everything they have authored so far.
+      toast(t("identity.mismatch", {
+        declared: outcome.declared, verified: outcome.verified,
+      }));
+      break;
+    case "no-identity":
+      toast(t("identity.stateNone"));
+      break;
+    default:
+      toast(t("identity.verifyFailed", { detail: outcome.detail }));
+  }
+}
+
+/**
+ * THE GATE. Data preparation never asks this question; publishing always does.
+ *
+ * Returns true when the action may proceed. When it may not, it does NOT throw
+ * an error at the user: it explains what is missing and opens the place where
+ * it is fixed. Refusing an action is a moment to help, not to scold.
+ */
+function requireVerifiedIdentity(): boolean {
+  const gate = publishGate();
+  if (gate.allowed) return true;
+  if (gate.reason === "no-identity") {
+    toast(t("identity.gateNoIdentity"));
+  } else {
+    toast(t("identity.gateNotVerified", { orcid: gate.orcid }));
+  }
+  openSettings("settings-sect-identity");
+  return false;
+}
+
 function openSettings(section?: string): void {
   const s = getSettings();
   setToolSel.value = s.sync.tool;
@@ -4016,6 +4234,7 @@ function openSettings(section?: string): void {
   setAtonBase.value = s.viewer.atonBase;
   setHeriverseApp.value = s.viewer.heriverseApp;
   void refreshAiKeyState();
+  refreshIdentityPanel();
   refreshSyncUrlPreview();
   refreshAtonUrlPreview();
   settingsModal.classList.remove("hidden");
@@ -4049,6 +4268,32 @@ for (const el of [setAtonBase, setHeriverseApp])
   "click",
   () => openSettings(),
 );
+
+// ── IDENTITY · the wiring ───────────────────────────────────────────────────
+document.getElementById("set-orcid-declare")?.addEventListener(
+  "click", () => declareIdentityFromPanel());
+document.getElementById("set-orcid-verify")?.addEventListener(
+  "click", () => void verifyIdentityFlow());
+// Enter in the iD field declares: typing an identifier and pressing return is
+// the gesture, and making people reach for a button afterwards is friction with
+// no purpose.
+document.getElementById("set-orcid")?.addEventListener("keydown", (e) => {
+  if ((e as KeyboardEvent).key === "Enter") declareIdentityFromPanel();
+});
+document.getElementById("footer-identity")?.addEventListener(
+  "click", () => openSettings("settings-sect-identity"));
+
+// THE GATE, on the one publication-shaped action there is. Note what is NOT
+// here: Save, Save As, Export SVG/GraphML/TTL. Those put a file on your own
+// disk — preparation, not publication — and gating them would make the tool
+// useless exactly where it is most needed, in a trench with no network.
+document.getElementById("btn-publish")?.addEventListener("click", () => {
+  if (!requireVerifiedIdentity()) return;
+  // Verified, and still nothing to publish TO: the StratiGraph delivery
+  // endpoint is phase 2. Saying so is the honest end of this path — the gate is
+  // real and measurable today, the destination is not there yet.
+  toast(t("identity.publishNotConnected"));
+});
 (document.getElementById("settings-close") as HTMLButtonElement).addEventListener(
   "click",
   closeSettings,
@@ -10144,6 +10389,7 @@ applyWorkspace(activeWorkspace());
 }
 
 initAnnotatorGestures();   // A2 · the overlay is a singleton: wire it once
+refreshIdentityChip();     // IDENTITY · who is authoring, from the first frame
 initEmData({
   getStore: () => store,
   // CURRENT-ELEMENT · the row lives on the window, not in the table module

@@ -5538,3 +5538,31 @@ object.viewer-media {
   opacity: 0.5;
   cursor: default;
 }
+
+/* IDENTITY · the footer chip. Claimed and verified must be tellable apart at a
+   glance: that difference decides whether this person may publish. */
+.footer-chip {
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  max-width: 26ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.footer-chip:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.footer-chip.verified {
+  border-color: var(--accent);
+  color: var(--text);
+}
+#set-orcid-known .settings-url {
+  gap: 6px;
+}

@@ -1723,6 +1723,14 @@ export class DocumentStore {
     license?: string;
     embargo?: string;
     em_id?: string;
+    /** IDENTITY · the author's ORCID iD and whether it has been verified.
+     *  Written on the AuthorNode's data, which is where s3Dgraphy reads them
+     *  (`AuthorNode.data.orcid` / `.verified`) — the same two fields, so the
+     *  graph says the same thing on both sides of the bridge. Only applied
+     *  together with a non-empty `author`: an orcid with no author node has
+     *  nowhere to live. */
+    orcid?: string;
+    verified?: boolean;
   }): void {
     this.batch(() => {
       if (patch.em_id !== undefined) {
@@ -1746,8 +1754,22 @@ export class DocumentStore {
         if (val) {
           const pdgId = this.ensureGraphParadata();
           const existing = this.graphScopeMember(pdgId, nt);
-          if (existing) this.updateNode(existing.id, { name: val });
-          else {
+          // The identity fields ride with the AUTHOR member only.
+          const identity: Record<string, unknown> = {};
+          if (key === "author") {
+            if (patch.orcid !== undefined) identity.orcid = patch.orcid;
+            // `=== true`, so a truthy non-boolean can never verify an author:
+            // this value decides whether a publication may bear their name.
+            if (patch.verified !== undefined) identity.verified = patch.verified === true;
+          }
+          if (existing) {
+            this.updateNode(existing.id, { name: val });
+            if (Object.keys(identity).length) {
+              const d = (existing.data ??= {}) as Record<string, unknown>;
+              Object.assign(d, identity);
+              this.emit();
+            }
+          } else {
             const gid = String(
               (this.doc.graph as Record<string, unknown>).graph_id ?? "graph",
             );
@@ -1756,6 +1778,7 @@ export class DocumentStore {
               name: val,
               node_type: nt,
               description: "",
+              ...(Object.keys(identity).length ? { data: identity } : {}),
             });
             this.addEdge(m.id, pdgId, "is_in_paradata_nodegroup");
           }

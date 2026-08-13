@@ -70,6 +70,13 @@
             </div>
           </div>
           <div class="dd-sep"></div>
+          <!-- IDENTITY · the one action of PUBLICATION shape that exists today.
+               Exporting a file to your own disk is data preparation and is never
+               gated; this one says "make it public, as me", which is why it asks
+               for a verified identity. The destination itself is phase 2 — the
+               button says so rather than pretending. -->
+          <button id="btn-publish" title="Pubblica su StratiGraph (Catalog/HDT) — richiede un'identità ORCID verificata">Pubblica su StratiGraph…</button>
+          <div class="dd-sep"></div>
           <button id="btn-save" title="Save .em.json (⌘S)" data-i18n="toolbar.save">Save</button>
           <button id="btn-save-as" title="Save .em.json to a new file (⇧⌘S)" data-i18n="toolbar.saveAs">Save As…</button>
         </div>
@@ -412,6 +419,11 @@
       <span id="mode-indicator" title="Standalone: editing a local .em.json. Sidecar: live-synced to a host (EMtools/Blender).">Standalone mode</span>
       <span id="sidecar-detail" class="hidden"></span>
       <div id="breadcrumb" class="hidden"></div>
+      <!-- IDENTITY · who is authoring, where the mode already is. A claimed iD
+           and a verified one look different on purpose: the difference decides
+           whether this person may publish, so it must be readable without
+           opening a dialog. -->
+      <button id="footer-identity" class="footer-chip" title="">—</button>
       <span id="info">open or drop an .em.json file</span>
     </footer>
     <!-- WIN7 · the floating one-shot tool. A tool is not an editor: it is opened
@@ -539,6 +551,48 @@
               libero — resta unico e non vuoto, ma smette di leggersi come un
               riferimento: <b>sconsigliato</b>.
             </p>
+          </section>
+          <!-- IDENTITY · who is working. The ORCID iD is the identity itself;
+               everything else here is for humans to read. Note the contrast with
+               the AI key below: an iD is a PUBLIC identifier (it is printed on
+               papers) and lives in localStorage in clear text, while the tokens
+               that verify it are secrets and never touch this window. -->
+          <section class="settings-sect" id="settings-sect-identity">
+            <h4>Identità (ORCID)</h4>
+            <p class="settings-hint">
+              L'<b>ORCID iD è l'identità</b>: quello che crei e modifichi porta
+              la firma dell'autore corrente. Puoi dichiararlo <b>senza rete</b>,
+              sullo scavo, e lavorare subito — la preparazione dei dati non
+              aspetta nessun login. Alla prima connessione lo
+              <b>verifichi</b>, e solo allora si sblocca la
+              <b>pubblicazione come quella persona</b>: dentro il tuo documento
+              un'attribuzione sbagliata si corregge, pubblicata diventa la
+              bibliografia di qualcun altro.
+            </p>
+            <label
+              >ORCID iD
+              <input
+                id="set-orcid"
+                type="text"
+                autocomplete="off"
+                spellcheck="false"
+                placeholder="0000-0000-0000-0000"
+              />
+            </label>
+            <label
+              >Nome (facoltativo)
+              <input id="set-orcid-name" type="text" autocomplete="off" />
+            </label>
+            <label
+              >Cognome (facoltativo)
+              <input id="set-orcid-surname" type="text" autocomplete="off" />
+            </label>
+            <p class="settings-url">
+              <button id="set-orcid-declare" type="button">Dichiara</button>
+              <button id="set-orcid-verify" type="button">Verifica con ORCID</button>
+            </p>
+            <p class="settings-hint" id="set-orcid-state"></p>
+            <div id="set-orcid-known"></div>
           </section>
           <!-- WIN7 · the narrative window's ⌁ button opens Settings straight
                here: "who writes the draft, and with which key" is the data the
