@@ -207,6 +207,16 @@ export class DocumentStore {
     this.opFn = fn;
   }
 
+  /** MULTIGRAPH · tell the world the document changed under us.
+   *
+   * Needed by the container merge: the incoming nodes were folded straight into
+   * the very object this store owns, so nothing called a mutator and no listener
+   * ran. The alternative — re-creating the store — would throw away the undo
+   * stack of a graph the user only ADDED to. */
+  touch(): void {
+    this.emit();
+  }
+
   private emit(): void {
     this.dirty = true;
     for (const fn of this.listeners) fn();

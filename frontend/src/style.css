@@ -1497,6 +1497,38 @@ body.sync-active #mode-indicator::before {
   letter-spacing: 0.06em;
   color: var(--text-faint);
   margin: 8px 2px 4px;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.nl-sect > span {
+  flex: 1;
+}
+
+.nl-sect:hover {
+  color: var(--text-muted);
+}
+
+/* OUT1 · section disclosure — a LIST affordance (shows/hides the rows of this
+   section), not the nodegroup fold/explode of the rows themselves. */
+.nl-disc {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: inherit;
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 3px;
+  border-radius: 3px;
+  flex: none;
+}
+
+.nl-disc:hover {
+  background: var(--bg-accent-soft);
+  color: var(--accent);
 }
 
 .nl-sect-groups {
@@ -5565,4 +5597,178 @@ object.viewer-media {
 }
 #set-orcid-known .settings-url {
   gap: 6px;
+}
+
+/* ── SHELF1 · the wide list ─────────────────────────────────────────────────
+   Same box every surface uses, so switching to it moves nothing. */
+#shelf-view {
+  position: absolute;
+  inset: var(--winbar-h, 0px) 0 0 var(--palette-w, 0px);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: var(--bg-sunken);
+}
+#shelf-view.hidden {
+  display: none;
+}
+#shelf-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  min-height: 30px;
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-panel);
+  font-size: 12px;
+}
+.shelf-bar-spacer {
+  flex: 1;
+}
+#shelf-name {
+  width: 18ch;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-app);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+#shelf-url {
+  width: 28ch;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-app);
+  color: var(--text);
+  font: inherit;
+  font-size: 11.5px;
+}
+#shelf-count {
+  color: var(--text-faint);
+  font-size: 11px;
+  white-space: nowrap;
+}
+#shelf-bar button,
+#shelf-url-scope {
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+#shelf-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.shelf-list {
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.shelf-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-panel);
+  font-size: 12.5px;
+}
+.shelf-row:hover {
+  border-color: var(--accent);
+}
+.shelf-icon {
+  font-size: 15px;
+  line-height: 1;
+}
+.shelf-main {
+  min-width: 0;
+}
+.shelf-name {
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.shelf-locator {
+  display: block;
+  font-size: 10.5px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+.shelf-badges {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+/* Recorded vs inferred must be tellable apart: a solid badge is what somebody
+   said, a dotted one is what we read into the silence. */
+.shelf-badge {
+  padding: 1px 7px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  font-size: 10px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.shelf-badge.inferred {
+  border-style: dotted;
+  opacity: 0.7;
+}
+.shelf-badge.scope-other-HDT {
+  border-color: #b8893a;
+  color: #d8bd30;
+}
+.shelf-badge.checksum {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.shelf-actions {
+  display: flex;
+  gap: 4px;
+}
+.shelf-actions button {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+#shelf-view.drop-target {
+  outline: 2px dashed var(--accent);
+  outline-offset: -4px;
+}
+.storage-nav-wide {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
 }

@@ -42,6 +42,77 @@ export function buildNodeList(
   let selected: string | null = null;
   const rows = new Map<string, HTMLElement>();
 
+  // ---- section disclosure (OUT1) -------------------------------------------
+  // A LIST affordance, and nothing more: it shows/hides the rows of one section
+  // of the outliner. It is NOT the fold/explode of a nodegroup (`onFoldGroups`,
+  // `onToggleFold`, `onExplode`), which act on the GRAPH — those keep their own
+  // glyphs inside the rows, and a click on them must not travel up to the header
+  // (each stops its propagation below).
+  const COLLAPSE_KEY = "emstudio.outliner.collapsed";
+  const collapsed = new Set<string>(
+    (() => {
+      try {
+        const raw = localStorage.getItem(COLLAPSE_KEY);
+        return Array.isArray(JSON.parse(raw ?? "[]")) ? JSON.parse(raw!) : [];
+      } catch {
+        return [];
+      }
+    })() as string[],
+  );
+  const persist = (): void => {
+    try {
+      localStorage.setItem(COLLAPSE_KEY, JSON.stringify([...collapsed]));
+    } catch {
+      /* private mode / quota — the state simply does not survive the session */
+    }
+  };
+
+  /**
+   * Build a section header and return the container its rows go into.
+   *
+   * Toggling hides the BODY in place — it does not rebuild the list. That keeps
+   * two promises: the filter above is untouched (a collapsed section stays
+   * collapsed while you type, and expanding it shows the filtered rows), and
+   * nothing under the pointer reflows during the gesture, since the click acts
+   * on a body BELOW the header it was aimed at.
+   */
+  const section = (
+    key: string,
+    label: string,
+    cls: string,
+  ): { head: HTMLElement; body: HTMLElement; label: HTMLElement } => {
+    const head = document.createElement("div");
+    head.className = cls;
+    const disc = document.createElement("button");
+    disc.className = "nl-disc";
+    const lbl = document.createElement("span");
+    lbl.textContent = label;
+    const body = document.createElement("div");
+    body.className = "nl-sect-body";
+    const apply = (): void => {
+      const off = collapsed.has(key);
+      disc.textContent = off ? "▸" : "▾";
+      disc.title = off ? "Expand this section" : "Collapse this section";
+      disc.setAttribute("aria-expanded", off ? "false" : "true");
+      body.classList.toggle("hidden", off);
+    };
+    const toggle = (ev: Event): void => {
+      ev.stopPropagation();
+      if (collapsed.has(key)) collapsed.delete(key);
+      else collapsed.add(key);
+      persist();
+      apply();
+    };
+    disc.addEventListener("click", toggle);
+    // the whole heading is the target (a 10px triangle is a poor one), but only
+    // where it is not one of the group controls sitting in the same row
+    head.addEventListener("click", toggle);
+    head.appendChild(disc);
+    head.appendChild(lbl);
+    apply();
+    return { head, body, label: lbl };
+  };
+
   const rebuild = (): void => {
     listEl.innerHTML = "";
     rows.clear();
@@ -78,30 +149,43 @@ export function buildNodeList(
         arr.push(g);
         buckets.set(g.node_type, arr);
       }
-      const top = document.createElement("div");
-      top.className = "nl-sect nl-sect-groups";
-      top.textContent = `Groups (${groups.length})`;
-      listEl.appendChild(top);
+      const top = section(
+        "groups",
+        `Groups (${groups.length})`,
+        "nl-sect nl-sect-groups",
+      );
+      listEl.appendChild(top.head);
+      listEl.appendChild(top.body);
       for (const [type, gs] of [...buckets.entries()].sort()) {
         const ids = gs.map((g) => g.id);
-        const th = document.createElement("div");
-        th.className = "nl-sect nl-gtype";
-        const lbl = document.createElement("span");
-        lbl.textContent = `${label(type)} (${gs.length})`;
-        th.appendChild(lbl);
+        const sec = section(
+          `type:${type}`,
+          `${label(type)} (${gs.length})`,
+          "nl-sect nl-gtype",
+        );
+        const th = sec.head;
         const foldAll = document.createElement("button");
         foldAll.className = "nl-icon";
         foldAll.textContent = "⊟";
         foldAll.title = `Fold all ${label(type)} groups`;
-        foldAll.addEventListener("click", () => groupCb.onFoldGroups(ids, true));
+        // GRAPH verb inside a LIST heading: stop it here, or folding the groups
+        // in the scene would also collapse the section you were looking at.
+        foldAll.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          groupCb.onFoldGroups(ids, true);
+        });
         th.appendChild(foldAll);
         const unfoldAll = document.createElement("button");
         unfoldAll.className = "nl-icon";
         unfoldAll.textContent = "⊞";
         unfoldAll.title = `Unfold all ${label(type)} groups`;
-        unfoldAll.addEventListener("click", () => groupCb.onFoldGroups(ids, false));
+        unfoldAll.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          groupCb.onFoldGroups(ids, false);
+        });
         th.appendChild(unfoldAll);
-        listEl.appendChild(th);
+        top.body.appendChild(th);
+        top.body.appendChild(sec.body);
         for (const g of gs) {
           const row = document.createElement("div");
           row.className = "nl-grow";
@@ -130,14 +214,10 @@ export function buildNodeList(
             groupCb.onExplode(g.id);
           });
           row.appendChild(explode);
-          listEl.appendChild(row);
+          sec.body.appendChild(row);
           rows.set(g.id, row);
         }
       }
-      const h2 = document.createElement("div");
-      h2.className = "nl-sect";
-      h2.textContent = "Nodes";
-      listEl.appendChild(h2);
     }
 
     const nodes = doc.graph.nodes
@@ -146,6 +226,12 @@ export function buildNodeList(
         String(a.name || a.id).localeCompare(String(b.name || b.id)),
       );
     count.textContent = `${nodes.length + groups.length} / ${doc.graph.nodes.length} nodes`;
+    // The Nodes heading is now ALWAYS there, where before it only appeared when
+    // there were groups above it: a collapsed section whose heading disappears
+    // takes its rows out of reach, and the way back would be gone with it.
+    const nodesSec = section("nodes", `Nodes (${nodes.length})`, "nl-sect");
+    listEl.appendChild(nodesSec.head);
+    listEl.appendChild(nodesSec.body);
     for (const n of nodes) {
       const row = document.createElement("button");
       row.className = "nl-row" + (n.id === selected ? " selected" : "");
@@ -180,7 +266,7 @@ export function buildNodeList(
         e.dataTransfer?.setData("text/plain", String(n.name || n.id));
         if (e.dataTransfer) e.dataTransfer.effectAllowed = "copy";
       });
-      listEl.appendChild(row);
+      nodesSec.body.appendChild(row);
       rows.set(n.id, row);
     }
   };
@@ -195,6 +281,15 @@ export function buildNodeList(
       const row = id ? rows.get(id) : null;
       if (row) {
         row.classList.add("selected");
+        // OUT1 · a selection arriving from the canvas must be VISIBLE: if its
+        // section is collapsed, open it through the header's own button so the
+        // triangle and the stored state stay in step (scrolling to a hidden row
+        // would silently do nothing).
+        const hiddenBody = row.closest(".nl-sect-body.hidden");
+        if (hiddenBody)
+          (hiddenBody.previousElementSibling?.querySelector(
+            ".nl-disc",
+          ) as HTMLButtonElement | null)?.click();
         row.scrollIntoView({ block: "nearest" });
       }
     },

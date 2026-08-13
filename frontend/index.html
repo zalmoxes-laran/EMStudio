@@ -47,6 +47,10 @@
         <div class="dd-menu hidden">
           <button id="btn-new" title="New empty .em.json" data-i18n="toolbar.new">New</button>
           <button id="btn-open" title="Open an .em.json file" data-i18n="toolbar.open">Open…</button>
+          <!-- MULTIGRAPH · the offline "integrate later": another emj's graphs are
+               TAKEN INTO this project (shared nodes merge by UUID). No server, no
+               session — the whole collaboration story for async work by sector. -->
+          <button id="btn-add-project" data-i18n="container.addToProject" data-i18n-title="container.addToProjectTitle">Add to the project…</button>
           <button
             id="btn-import-graphml"
             title="Import a yEd GraphML file (needs the local dev bridge — see dev.sh)"
@@ -175,6 +179,10 @@
         <option value="radial">Radial</option>
         <option value="force">Force</option>
       </select>
+      <!-- HDR1 · ALWAYS hidden, like #btn-fit / #btn-layout above: writing is a
+           mode of a narrative WINDOW (its ✎ toggle) and the master header belongs
+           to no window. Kept in the DOM because it is still the owner of the
+           narrativeEditing handler the window header dispatches to. -->
       <button
         id="btn-narrative-edit"
         class="hidden"
@@ -340,8 +348,30 @@
           <div id="storage-bar">
             <button id="storage-up" class="storage-nav" title="">↑</button>
             <div id="storage-crumb" class="storage-crumb"></div>
+            <!-- DS4 · adding a served folder has a UI, not just an environment
+                 variable. The browser sees the folders you name — a library, a
+                 DOSCO, the excavation photos — and never the whole disk. -->
+            <button id="storage-add-root" class="storage-nav-wide" title="">+ 📁</button>
           </div>
           <div id="storage-body"></div>
+        </div>
+        <!-- SHELF1 · THE WIDE LIST. Not a view of a folder: a curated list you
+             save and reopen (a ShelfGraph). The file browser shows everything on
+             the disk — including what must never enter the documentation — while
+             this holds what you CHOSE, with its digest and its two axes (which
+             fence it comes from, where the bytes live). Filled by `renderShelf`. -->
+        <div id="shelf-view" class="hidden">
+          <div id="shelf-bar">
+            <input id="shelf-name" type="text" spellcheck="false" />
+            <span id="shelf-count"></span>
+            <span class="shelf-bar-spacer"></span>
+            <input id="shelf-url" type="text" spellcheck="false" placeholder="https://… (URI/LOD)" />
+            <select id="shelf-url-scope"></select>
+            <button id="shelf-add-url" type="button">+ URI</button>
+            <button id="shelf-open" type="button">Apri…</button>
+            <button id="shelf-save" type="button">Salva</button>
+          </div>
+          <div id="shelf-body"></div>
         </div>
         <!-- A2 · ANNOTATOR · the image, the regions traced on it, and the panel
              that asks what is being extracted. The picture comes through the

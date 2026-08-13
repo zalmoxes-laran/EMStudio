@@ -42,7 +42,11 @@ export type WindowType =
   // A2 · ANNOTATOR · an image, and the regions traced on it. Its Modes are what
   // the pointer DOES (look / trace / mask), the way Blender's Image Editor has
   // View / Paint / Mask — not what it shows, which is always the same picture.
-  | "annotator";
+  | "annotator"
+  // SHELF1 · THE WIDE LIST. The curated, savable list of resources a study
+  // works from — a ShelfGraph, not a computed view of a folder's orphans.
+  // (video editor: browser → SHELF → timeline.)
+  | "shelf";
 
 /** A single window instance — its own id + type + type-specific state. */
 export interface Win {
@@ -253,6 +257,7 @@ export const WINDOW_TYPE_META: Record<WindowType, { icon: string; labelKey: stri
   viewer: { icon: "▣", labelKey: "win.viewer" },
   storage: { icon: "🗄", labelKey: "win.storage" },
   annotator: { icon: "✎", labelKey: "win.annotator" },
+  shelf: { icon: "▤▤", labelKey: "win.shelf" },
 };
 
 /** The window type the active workspace currently shows — the ACTIVE window's

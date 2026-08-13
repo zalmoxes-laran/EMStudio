@@ -25,6 +25,22 @@ Endpoints:
                              needs rdflib bundled — 501 if unavailable)
     GET  /fs/list?path=<dir>  → {roots|path, parent, entries: [{name, type,
                                  size, mtime, ext}]}  (dirs first, then files)
+    GET  /fs/checksum?path=<file> → {checksum: "sha256:<hex>", bytes}
+                             (SHELF1 — the digest a browser cannot compute. It
+                             is what makes the shelf a curated LIST: the same
+                             photograph dragged twice from two folders is ONE
+                             resource, and only the content knows it.)
+    GET  /fs/roots            → {roots, persisted}
+    POST /fs/roots            ← {action: "add"|"remove", path}
+                             (DS4 — adding a served folder from the UI, saved to
+                             ~/.config/emstudio/fs_roots.json. Granting access to
+                             a folder is explicit and narrow by design: one
+                             folder at a time, named by a person. Startup roots
+                             (--fs-root / env) are a SEPARATE channel and cannot
+                             be removed from the interface.)
+                             ⚠ ALL `/fs/*` need an allowed `Origin` or
+                             `Sec-Fetch-Site: same-origin` — stricter than the
+                             other routes, because these read the disk.
     GET  /fs/file?path=<file> → the BYTES, with the right Content-Type
                              (W1 — a browser cannot read a disk path: served over
                              http, `/Users/…/x.jpg` resolves against the origin and
@@ -163,11 +179,46 @@ _ALLOWED_EXTRA_ORIGINS = {
 #: to a place two public routes can share.
 _FS_ROOTS: list[str] = []
 
+#: The roots given at startup (flag + environment). Kept apart from the ones the
+#: UI persists so that removing a folder from the interface can never delete what
+#: the operator asked for on the command line — two channels, two owners.
+_FS_ROOTS_STARTUP: list[str] = []
+
 
 def _fs_roots_from_env() -> list[str]:
     raw = os.environ.get("EM_BRIDGE_FS_ROOTS", "")
     parts = [p for chunk in raw.split(os.pathsep) for p in chunk.split(",")]
     return [p.strip() for p in parts if p.strip()]
+
+
+#: Where the roots the user adds from the UI are remembered. The env var and
+#: `--fs-root` stay the operator's channel; this file is the PERSON's — a folder
+#: added from the interface must still be there tomorrow, and asking somebody to
+#: edit an environment variable to keep their own photo library is not an answer.
+_FS_ROOTS_FILE = pathlib.Path(
+    os.environ.get("EM_BRIDGE_STATE_DIR")
+    or (pathlib.Path.home() / ".config" / "emstudio")
+) / "fs_roots.json"
+
+
+def _fs_roots_persisted() -> list:
+    """The roots saved from the UI (as written, before existence filtering)."""
+    try:
+        with open(_FS_ROOTS_FILE, encoding="utf-8") as fh:
+            data = json.load(fh)
+        roots = data.get("roots") if isinstance(data, dict) else data
+        return [str(r) for r in roots if isinstance(r, str)] if isinstance(roots, list) else []
+    except FileNotFoundError:
+        return []
+    except Exception as exc:  # pragma: no cover — a corrupt file must not kill the bridge
+        sys.stderr.write(f"  [bridge] fs roots file unreadable, ignored: {exc}\n")
+        return []
+
+
+def _write_fs_roots_persisted(roots) -> None:
+    _FS_ROOTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(_FS_ROOTS_FILE, "w", encoding="utf-8") as fh:
+        json.dump({"roots": list(roots)}, fh, indent=1)
 
 
 def _set_fs_roots(paths) -> None:
@@ -327,6 +378,48 @@ def make_handler(api):
                             "EM_BRIDGE_ALLOW_ORIGIN.")
             return False
 
+        def _fs_gate(self):
+            """The STRICTER gate for `/fs/*`: these routes read the disk.
+
+            The ordinary `_gate` lets a request with NO `Origin` through, because
+            curl and the CLI send none and they are local processes that could
+            read the file anyway. That reasoning does not hold here, and the hole
+            it leaves is concrete: `<img src="http://127.0.0.1:8765/fs/file?…">`
+            on any page in the same browser is a no-cors request — it carries NO
+            Origin at all — and before this it was served. The page could not
+            READ the pixels back, but a folder of real excavation data is not
+            something to hand out on the strength of that.
+
+            So: an Origin in the allowlist, or `Sec-Fetch-Site: same-origin`.
+            The second header is the one that actually catches the attack: every
+            modern browser sends it on every request, `no-cors` included, and it
+            says `cross-site` precisely in the case that matters. A caller with
+            neither header (curl, the CLI) is refused too — the prompt asks for
+            it, and a rule that is easy to state ("/fs needs an origin") is
+            easier to keep than one with an exception for the tools we happen to
+            use.
+
+            Only `/fs/*` is tightened. The other routes keep the old rule on
+            purpose: the desktop sidecar and the CLI call them without an Origin,
+            and breaking that to close a hole that is not there would be a
+            regression paid for nothing.
+            """
+            origin = self.headers.get("Origin")
+            if origin is not None:
+                if self._origin_allowed(origin):
+                    return True
+                self._fail(403, "origin not allowed for /fs")
+                return False
+            site = (self.headers.get("Sec-Fetch-Site") or "").lower()
+            if site == "same-origin":
+                return True
+            self._fail(403, "the /fs routes need an allowed Origin (or a "
+                            "same-origin request): they read the disk, and a "
+                            "cross-origin fetch with no Origin is exactly what "
+                            "this refuses. Call them from the local EMStudio, "
+                            "or send Origin: http://localhost:<port>.")
+            return False
+
         def _cors(self):
             # Reflect the caller's origin instead of `*`, so the browser only
             # ever hands a response to the origin we vetted. `Vary: Origin`
@@ -365,11 +458,25 @@ def make_handler(api):
                 self._resolve_authority(
                     (q.get("term") or [""])[0], (q.get("facet") or [""])[0])
             elif route == "/fs/list":
+                if not self._fs_gate():
+                    return
                 q = urllib.parse.parse_qs(parsed.query)
                 self._fs_list((q.get("path") or [""])[0])
             elif route == "/fs/file":
+                if not self._fs_gate():
+                    return
                 q = urllib.parse.parse_qs(parsed.query)
                 self._fs_file((q.get("path") or [""])[0], body=body)
+            elif route == "/fs/checksum":
+                if not self._fs_gate():
+                    return
+                q = urllib.parse.parse_qs(parsed.query)
+                self._fs_checksum((q.get("path") or [""])[0])
+            elif route == "/fs/roots":
+                if not self._fs_gate():
+                    return
+                self._json({"ok": True, "roots": _FS_ROOTS,
+                            "persisted": _fs_roots_persisted()})
             else:
                 self.send_error(404, "unknown endpoint")
 
@@ -384,6 +491,8 @@ def make_handler(api):
                 return
             parsed = urllib.parse.urlparse(self.path)
             if parsed.path.rstrip("/") == "/fs/file":
+                if not self._fs_gate():
+                    return
                 q = urllib.parse.parse_qs(parsed.query)
                 self._fs_file((q.get("path") or [""])[0], body=False)
             else:
@@ -415,6 +524,15 @@ def make_handler(api):
                     self._fail(400, f"invalid JSON body: {exc}")
                     return
                 self._resources(route, body)
+            elif route == "/fs/roots":
+                if not self._fs_gate():
+                    return
+                try:
+                    body = json.loads(raw.decode("utf-8")) if raw else {}
+                except Exception as exc:
+                    self._fail(400, f"invalid JSON body: {exc}")
+                    return
+                self._fs_roots_edit(body)
             elif route == "/annotate":
                 try:
                     body = json.loads(raw.decode("utf-8")) if raw else {}
@@ -556,6 +674,73 @@ def make_handler(api):
             set_session_key(key)
             del key, body, raw
             self._json({"ok": True, "set": True, "source": api_key_source()})
+
+        def _fs_checksum(self, raw):
+            """sha256 of a file, as ``sha256:<hex>`` — the計算 a browser cannot do.
+
+            The digest is what makes the shelf a curated LIST rather than a pile:
+            the same photograph dragged twice from two folders is one resource,
+            and only the content can say so. Streamed in blocks, because a
+            resource can be an orthophoto and reading it whole to hash it would
+            cost the memory of the file for no reason.
+
+            The algorithm travels WITH the value (`sha256:`), so the string stays
+            readable when something else replaces sha256.
+            """
+            import hashlib
+
+            full, err = self._fs_resolve(raw, want="file")
+            if err:
+                self._fail(*err)
+                return
+            digest = hashlib.sha256()
+            try:
+                with open(full, "rb") as fh:
+                    for block in iter(lambda: fh.read(1024 * 1024), b""):
+                        digest.update(block)
+            except OSError as exc:
+                self._fail(403, f"cannot read that file: {exc.strerror}")
+                return
+            self._json({"ok": True, "checksum": f"sha256:{digest.hexdigest()}",
+                        "bytes": os.path.getsize(full)})
+
+        def _fs_roots_edit(self, body):
+            """Add or remove a served folder — the UI's channel (DS4).
+
+            Adding a root is granting access to a folder, so it is deliberately
+            explicit and deliberately narrow: one folder at a time, named by the
+            person, remembered on disk. There is no "serve everything" here and
+            there will not be one — the whole point of the sandbox is that the
+            browser sees a library or a DOSCO folder and nothing else.
+            """
+            action = (body.get("action") or "add").strip().lower()
+            raw = str(body.get("path") or "").strip()
+            if not raw:
+                self._fail(400, "roots needs a 'path'")
+                return
+            full = os.path.realpath(os.path.expanduser(raw))
+            persisted = _fs_roots_persisted()
+            if action == "add":
+                if not os.path.isdir(full):
+                    self._fail(400, "that path is not a directory")
+                    return
+                if full not in persisted:
+                    persisted.append(full)
+            elif action == "remove":
+                persisted = [p for p in persisted
+                             if os.path.realpath(os.path.expanduser(p)) != full]
+            else:
+                self._fail(400, "action must be 'add' or 'remove'")
+                return
+            try:
+                _write_fs_roots_persisted(persisted)
+            except OSError as exc:
+                self._fail(500, f"cannot save the roots: {exc.strerror}")
+                return
+            # Re-resolve the live set from the same three sources as at startup,
+            # so what /fs serves and what was saved can never drift apart.
+            _set_fs_roots(list(_FS_ROOTS_STARTUP) + persisted)
+            self._json({"ok": True, "roots": _FS_ROOTS, "persisted": persisted})
 
         # ── W1 · the filesystem as two routes ──────────────────────────────
         #
@@ -1883,8 +2068,12 @@ def main() -> int:
     # Roots: the flag wins over the environment, and the fallback is the
     # checkout this file lives in — a project folder, not the disk. Named at
     # startup so the operator sees what the two file routes can reach.
-    _set_fs_roots(list(args.fs_root or []) + _fs_roots_from_env()
-                  or [pathlib.Path(__file__).resolve().parent.parent])
+    _FS_ROOTS_STARTUP[:] = [
+        str(p) for p in (list(args.fs_root or []) + _fs_roots_from_env()
+                         or [pathlib.Path(__file__).resolve().parent.parent])
+    ]
+    # The live set is the startup roots PLUS whatever the UI has saved (DS4).
+    _set_fs_roots(_FS_ROOTS_STARTUP + _fs_roots_persisted())
 
     _ensure_proj_data()
 
@@ -1926,7 +2115,7 @@ def main() -> int:
           f"/scan-resources, /list-resources, /resolve-resource, "
           f"/resource-preview, /reproject, /georeference-scene, /ingest-minio, "
           f"/presign, /detach-dtc, /inject-dtc, /bake-dtc, /annotate; "
-          f"GET /health, /resolve-authority, /fs/list, /fs/file) — Ctrl-C to stop")
+          f"GET /health, /resolve-authority, /fs/list, /fs/file, /fs/checksum, /fs/roots) — Ctrl-C to stop")
     print("  fs roots (all /fs/* is confined to these): "
           + (", ".join(_FS_ROOTS) or "NONE — /fs/* will refuse every path"))
     try:

@@ -2,6 +2,29 @@ import "./style.css";
 import { applyFolding, buildMembership, MEMBERSHIP_EDGES } from "./folding";
 import { setBridgeResolver } from "./geo";
 import {
+  buildContainer,
+  mergeContainers,
+  parseContainer,
+} from "./container";
+import {
+  addToShelf,
+  clearShelf,
+  effectiveResidency,
+  effectiveScope,
+  isAnnotatable,
+  loadShelfDocument,
+  onShelfChange,
+  removeFromShelf,
+  restoreShelf,
+  shelfEntries,
+  shelfMeta,
+  shelfToDocument,
+  renameShelf,
+  SHELF_SCOPES,
+  type ShelfEntry,
+  type ShelfScope,
+} from "./shelf";
+import {
   currentIdentity,
   declareIdentity,
   forgetIdentity,
@@ -1723,7 +1746,12 @@ function setMode(m: CentralMode): void {
   // WIN5 · entering a CANVAS mode also puts the canvas back in front: the table
   // and doc surfaces belong to their window types, not to a mode.
   if (!narrative && win.type === "graph") applyWindowSurface("graph");
-  btnNarrativeEdit.classList.toggle("hidden", !narrative);
+  // HDR1 · the "Edit" affordance does NOT come back to the master header here.
+  // Writing is a mode of a NARRATIVE WINDOW (the ✎ toggle in that window's
+  // header, `buildAreaHeader`), and the master header belongs to no window — an
+  // Edit button there could not say which narrative it edited. The element below
+  // stays in the DOM, permanently hidden, as the handler owner: same arrangement
+  // as #btn-fit / #btn-layout / #graph-layout, which the window header mirrors.
   // NARRWS1/PALETTE1 · the left palette is PER-MODE and PER-WINDOW, and it is
   // only there at all when you have opened it (Tools ▸ Palette).
   if (narrative) {
@@ -1962,6 +1990,114 @@ function activateSlot(id: string, opts: { rebuildOnly?: boolean } = {}): void {
   }
 }
 
+/**
+ * MULTIGRAPH · open a PROJECT — a container with 1..N graphs plus its shelf.
+ *
+ * An em.json is always a container now, and a legacy single-graph file is a
+ * container-of-one, so this is the one door every open goes through. Each member
+ * becomes a SLOT (which `loadDocument` was already doing per document — ET1), and
+ * the shelf becomes the project shelf shared by all of them.
+ *
+ * `additive` is the offline "integrate later": with `false` this replaces the
+ * workspace (opening a project), with `true` it folds the incoming project into
+ * the open one, merging shared nodes by UUID.
+ */
+function loadContainerDocument(
+  doc: unknown,
+  sourceName: string,
+  path: string | null = null,
+  opts: { additive?: boolean } = {},
+): void {
+  const parsed = parseContainer(doc);
+  if (!parsed.members.length && !parsed.shelf) {
+    info.textContent = `${sourceName}: ${parsed.warnings[0] ?? "not an .em.json document"}`;
+    logError(`${sourceName}: ${parsed.warnings[0] ?? "not an .em.json document"}`);
+    return;
+  }
+  for (const w of parsed.warnings) toast(w);
+
+  if (opts.additive) {
+    // Integrate later: the graphs already open stay, the incoming ones are added
+    // (or merged into their namesake by UUID).
+    const mine = {
+      members: emtree.slots.map((s) => ({
+        id: String((s.store.doc.graph as Record<string, unknown>).graph_id ?? s.id),
+        doc: s.store.doc,
+      })),
+      shelf: projectShelfSection(),
+    };
+    const before = new Set(mine.members.map((m) => m.id));
+    const report = mergeContainers(mine, parsed);
+    // Members that were merged in place: their store already holds the new
+    // nodes (we mutated the very document the store owns), so it only has to be
+    // told to redraw.
+    for (const slot of emtree.slots) slot.store.touch();
+    for (const member of mine.members) {
+      if (before.has(member.id)) continue;
+      adoptMemberAsSlot(member, sourceName, null);
+    }
+    if (mine.shelf) adoptProjectShelf(mine.shelf);
+    toast(t("container.merged", {
+      added: String(report.addedGraphs.length),
+      merged: String(report.mergedGraphs.length),
+      nodes: String(report.mergedNodes),
+    }));
+    refreshEMTree();
+    draw();
+    return;
+  }
+
+  // Opening a project: the members become the workspace.
+  let activeSlotId: string | null = null;
+  for (const member of parsed.members) {
+    const slot = adoptMemberAsSlot(member, sourceName, path);
+    if (member.id === parsed.activeGraphId) activeSlotId = slot.id;
+  }
+  if (parsed.shelf) adoptProjectShelf(parsed.shelf);
+  if (activeSlotId) activateSlot(activeSlotId, { rebuildOnly: false });
+  if (parsed.members.length > 1) {
+    toast(t("container.opened", { n: String(parsed.members.length) }));
+  }
+  refreshEMTree();
+}
+
+/**
+ * MULTIGRAPH · the project shelf as a container member.
+ *
+ * SHELF1 keeps the shelf in `shelf.ts` (and in localStorage between reloads).
+ * The container is where it BELONGS: one shelf per project, travelling in the
+ * project's own file, shared by every graph in it — which is the answer to "many
+ * shelves" that the design note asks for. localStorage stays as the convenience
+ * that survives a reload; the file is the save.
+ */
+function projectShelfSection(): Record<string, unknown> | null {
+  if (!shelfEntries().length) return null;
+  return shelfToDocument().graph as Record<string, unknown>;
+}
+
+function adoptProjectShelf(section: Record<string, unknown>): void {
+  const res = loadShelfDocument({
+    header: { format: "em.json", version: "1.0" },
+    graph: section,
+  });
+  if (!res.ok) {
+    toast(t("shelf.notAShelf"));
+    return;
+  }
+  renderShelf();
+}
+
+/** One container member → one workspace slot, through the door every document
+ *  already uses (so epoch paradata, wiring and layout behave identically). */
+function adoptMemberAsSlot(
+  member: { id: string; doc: EmDocument },
+  sourceName: string,
+  path: string | null,
+) {
+  loadDocument(member.doc, member.id || sourceName, path);
+  return emtree.active()!;
+}
+
 function loadDocument(
   d: EmDocument,
   sourceName: string,
@@ -2127,7 +2263,9 @@ async function loadFile(file: File): Promise<void> {
   if (!(await confirmLeaveSidecar("Opening a file"))) return;
   try {
     const t = await file.text();
-    loadDocument(JSON.parse(t) as EmDocument, file.name);
+    // Every open goes through the container door: a project opens as its graphs,
+    // and a legacy single-graph file as a container-of-one.
+    loadContainerDocument(JSON.parse(t), file.name);
   } catch (e) {
     info.textContent = `parse error: ${e}`;
   }
@@ -2192,12 +2330,44 @@ function defaultFileName(): string {
 
 // Save: on desktop overwrite the open file in place (Save As if none yet);
 // in a browser, download a fresh .em.json (no filesystem access).
+/**
+ * MULTIGRAPH · the document to SAVE is the whole project.
+ *
+ * Until today Save wrote `store.toJSON()` — the ACTIVE slot. A workspace with
+ * three graphs saved one of them, and the other two existed until the tab
+ * closed: the kind of loss you discover a week later. Now every slot goes into
+ * one container, with the project shelf as a member.
+ *
+ * A single graph still produces a container-of-one, which is the shape Heriverse
+ * already reads — so nothing downstream had to change to gain this.
+ */
+function projectDocumentText(): string {
+  // Each member goes through its own `store.toJSON()` and is parsed back.
+  // That round trip is NOT waste: toJSON is where the save rules live — it
+  // stamps `last_editor` and, crucially, DROPS the volatile (mapped-but-not-baked)
+  // nodes (AUX2). Reading `store.doc` directly would have written them into the
+  // project file, which is exactly what that rule exists to prevent.
+  const graphs = emtree.slots.map((slot) => ({
+    id: String((slot.store.doc.graph as Record<string, unknown>).graph_id ?? slot.id),
+    doc: JSON.parse(slot.store.toJSON()) as EmDocument,
+  }));
+  const activeSlot = emtree.active();
+  const container = buildContainer({
+    graphs,
+    shelf: projectShelfSection(),
+    activeGraphId: activeSlot
+      ? String((activeSlot.store.doc.graph as Record<string, unknown>).graph_id ?? activeSlot.id)
+      : null,
+  });
+  return JSON.stringify(container, null, 1);
+}
+
 async function saveDocument(): Promise<void> {
   if (!store) return;
   if (isTauri()) {
     if (!currentFilePath) return saveAsDocument();
     try {
-      await writeEmJson(currentFilePath, store.toJSON());
+      await writeEmJson(currentFilePath, projectDocumentText());
       store.dirty = false;
       info.textContent = `saved ${baseName(currentFilePath)}`;
       updateToolbar();
@@ -2206,7 +2376,7 @@ async function saveDocument(): Promise<void> {
     }
     return;
   }
-  browserDownload(store.toJSON(), defaultFileName());
+  browserDownload(projectDocumentText(), defaultFileName());
   store.dirty = false;
   updateToolbar();
 }
@@ -2217,7 +2387,7 @@ async function saveAsDocument(): Promise<void> {
   if (!store) return;
   if (isTauri()) {
     try {
-      const path = await saveAsEmJson(store.toJSON(), defaultFileName());
+      const path = await saveAsEmJson(projectDocumentText(), defaultFileName());
       if (!path) return; // user cancelled
       currentFilePath = path;
       store.dirty = false;
@@ -3481,6 +3651,10 @@ document.getElementById("btn-svg")!.addEventListener("click", () => {
 //   3. desktop: the Rust `transformer_url` command — a remote StratiGraph
 //      server if EM_TRANSFORMER_URL is set, else the local em-bridge sidecar
 //   4. browser dev default        (./dev.sh bridge on :8765)
+/** Which scope a URI added by hand gets — remembered between additions, because
+ *  somebody adding comparanda adds several in a row. */
+let shelfUrlScope: ShelfScope = "own-study";
+
 let _bridgeUrl: string | null = null;
 async function bridgeUrl(): Promise<string> {
   if (_bridgeUrl) return _bridgeUrl;
@@ -4283,6 +4457,59 @@ document.getElementById("set-orcid")?.addEventListener("keydown", (e) => {
 document.getElementById("footer-identity")?.addEventListener(
   "click", () => openSettings("settings-sect-identity"));
 
+// ── SHELF1 · the wide list's own verbs ──────────────────────────────────────
+restoreShelf();                       // a saved list that vanishes on reload is not saved
+onShelfChange(() => {
+  if (activeWin().type === "shelf") renderShelf();
+});
+// MULTIGRAPH · take another project into this one (additive, merge-by-UUID).
+document.getElementById("btn-add-project")?.addEventListener("click", () => {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".json,.em.json,.emj";
+  input.addEventListener("change", async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    try {
+      loadContainerDocument(JSON.parse(await file.text()), file.name, null,
+                            { additive: true });
+    } catch (e) {
+      toast(`${file.name}: ${e instanceof Error ? e.message : e}`);
+    }
+  });
+  input.click();
+});
+
+document.getElementById("storage-add-root")?.addEventListener(
+  "click", () => void addStorageRoot());
+document.getElementById("shelf-add-url")?.addEventListener("click", () => addUrlToShelf());
+document.getElementById("shelf-url")?.addEventListener("keydown", (e) => {
+  if ((e as KeyboardEvent).key === "Enter") addUrlToShelf();
+});
+document.getElementById("shelf-save")?.addEventListener("click", () => saveShelf());
+document.getElementById("shelf-open")?.addEventListener("click", () => openShelfFile());
+document.getElementById("shelf-name")?.addEventListener("change", (e) => {
+  renameShelf((e.target as HTMLInputElement).value);
+});
+{
+  // The scope of a hand-added URI, from the datamodel's own list — a comparandum
+  // is `other-HDT`, and the person adding one says so here rather than editing
+  // the entry afterwards.
+  const sel = document.getElementById("shelf-url-scope") as HTMLSelectElement | null;
+  if (sel) {
+    for (const scope of SHELF_SCOPES) {
+      const option = document.createElement("option");
+      option.value = scope;
+      option.textContent = t(`shelf.scope.${scope}`);
+      sel.appendChild(option);
+    }
+    sel.value = shelfUrlScope;
+    sel.addEventListener("change", () => {
+      shelfUrlScope = sel.value as ShelfScope;
+    });
+  }
+}
+
 // THE GATE, on the one publication-shaped action there is. Note what is NOT
 // here: Save, Save As, Export SVG/GraphML/TTL. Those put a file on your own
 // disk — preparation, not publication — and gating them would make the tool
@@ -4357,7 +4584,14 @@ document.addEventListener("keydown", (e) => {
 // Shelf = the orphans from /scan-resources on a chosen library/DosCo folder;
 // hatting one creates a Document whose node_id ADOPTS the FS stable ID (mirror
 // R4). Per-graph view; canvas/palette untouched (additive).
-interface ShelfEntry {
+/** SHELF1 · a candidate from the ORPHAN SCAN of a folder — Model B.
+ *
+ * Renamed from `ShelfEntry`, because it is not the shelf: the design note is
+ * explicit that the orphan scan is an ENTRANCE to the shelf, not the shelf
+ * itself. Keeping the old name meant two different things called the same word
+ * in one file, and the one that was NOT the shelf held the name.
+ */
+interface OrphanEntry {
   resource_id: string;
   key_id: string;
   filename: string;
@@ -4382,7 +4616,7 @@ const resDocs = document.getElementById("res-docs")!;
 const resDocsCount = document.getElementById("res-docs-count")!;
 const resLinks = document.getElementById("res-links")!;
 const resLinksCount = document.getElementById("res-links-count")!;
-let resLastShelf: ShelfEntry[] = [];
+let resLastShelf: OrphanEntry[] = [];
 
 function openResources(): void {
   if (!store) {
@@ -4522,7 +4756,7 @@ async function scanResources(): Promise<void> {
       return;
     }
     const j = await res.json();
-    resLastShelf = (j.shelf ?? []) as ShelfEntry[];
+    resLastShelf = (j.shelf ?? []) as OrphanEntry[];
     renderResShelf();
     resStatus.textContent = `Indexed folder — ${resLastShelf.length} on the Shelf.`;
   } catch {
@@ -4533,7 +4767,7 @@ async function scanResources(): Promise<void> {
 // Hat: promote a Shelf orphan → a Document ADOPTING the FS stable ID as node_id.
 // em.json is the source of truth (the mutation is a plain addNode in the store);
 // the resource then leaves the Shelf because its stable ID is now a graph node.
-function hatShelfEntry(entry: ShelfEntry): void {
+function hatShelfEntry(entry: OrphanEntry): void {
   if (!store) return;
   if (store.node(entry.resource_id)) {
     toast("A node with this stable ID already exists");
@@ -5879,10 +6113,12 @@ function revealFromNarrative(nodeId: string): void {
 btnNarrative.addEventListener("click", () =>
   setMode(centralMode === "narrative" ? view : "narrative"),
 );
+// HDR1 · the writing toggle. Invoked by the ✎ action of a narrative window's
+// header, never by a visible master-header button — so it no longer dresses
+// itself (no active class, no Done/Edit label): the STATE is what it owns, and
+// the window header renders that state (`win-act-on`).
 btnNarrativeEdit.addEventListener("click", () => {
   narrativeEditing = !narrativeEditing;
-  btnNarrativeEdit.classList.toggle("active", narrativeEditing);
-  btnNarrativeEdit.textContent = narrativeEditing ? "Done" : "Edit";
   refreshNarrativeView();
 });
 
@@ -6238,7 +6474,9 @@ function buildPane(pane: Pane, activeId: string): HTMLElement {
     // nowhere at all — which is exactly the bug this per-area handler was
     // written for, arriving a second time with a different payload.
     area.addEventListener("dragover", (e) => {
-      if (storageDragPayload(e) && windowsOf().find((w) => w.id === winIdOf)?.type === "viewer") {
+      if (storageDragPayload(e) &&
+          ["viewer", "shelf"].includes(
+            windowsOf().find((w) => w.id === winIdOf)?.type ?? "")) {
         e.preventDefault();
         area.classList.add("drop-target");
         return;
@@ -6256,6 +6494,15 @@ function buildPane(pane: Pane, activeId: string): HTMLElement {
         e.preventDefault();
         selectWindow(winIdOf); // the window you dropped on is the one you meant
         pinViewerCollection(target, resource);
+        return;
+      }
+      // SHELF1 · the same gesture, the other meaning: dropping a file on the
+      // shelf is "keep this", and it is where the digest is taken.
+      if (resource && target?.type === "shelf") {
+        e.preventDefault();
+        selectWindow(winIdOf);
+        if (resource.type === "dir") toast(t("shelf.folderIsASource"));
+        else void addFileToShelf(resource);
         return;
       }
       const p = paletteDragPayload(e);
@@ -6468,6 +6715,7 @@ const TRANSFORM_TYPES: WindowType[] = [
   "viewer",
   "storage",
   "annotator",
+  "shelf",
 ];
 
 /**
@@ -6488,6 +6736,8 @@ function applyWindowSurface(type: WindowType): void {
   if (type === "storage") renderStorage();
   show("annotator-view", type === "annotator");
   if (type === "annotator") renderAnnotator();
+  show("shelf-view", type === "shelf");
+  if (type === "shelf") renderShelf();
   const hosted = type === "emtree" || type === "inspector";
   show("panel-view", hosted);
   if (hosted) renderPanelWindow(type);
@@ -6636,6 +6886,226 @@ function renderDocViewInto(
   detail.appendChild(jump);
 }
 
+
+// ── SHELF1 · THE WIDE LIST ──────────────────────────────────────────────────
+//
+// The file browser shows every file on the disk, including everything that must
+// never enter the documentation. The shelf holds what you CHOSE — with a digest,
+// the fence it comes from, and where its bytes live. That difference is the
+// whole reason the two are different windows.
+//
+// It is a ShelfGraph, so it saves and reopens like any other graph. The orphan
+// scan of a folder is not a rival shelf: it is an ENTRANCE to this one.
+
+function renderShelf(): void {
+  const body = document.getElementById("shelf-body");
+  const count = document.getElementById("shelf-count");
+  const nameInput = document.getElementById("shelf-name") as HTMLInputElement | null;
+  if (!body || !count || !nameInput) return;
+  // Ask the SURFACE, not who has the focus. The bar's buttons live in the DOM
+  // whether or not this area is the focused one, so a click on "+ URI" from a
+  // neighbouring window used to add the entry and then skip the redraw — the
+  // list said two while the shelf held three. Same rule the EM-Data hosts use
+  // (`body.isConnected`): a renderer should ask the screen whether it is on it.
+  if (document.getElementById("shelf-view")?.classList.contains("hidden")) return;
+
+  const entries = shelfEntries();
+  count.textContent = t("shelf.count", { n: String(entries.length) });
+  if (document.activeElement !== nameInput) nameInput.value = shelfMeta().name;
+
+  body.textContent = "";
+  if (!entries.length) {
+    const empty = document.createElement("div");
+    empty.className = "viewer-empty";
+    const p = document.createElement("p");
+    p.textContent = t("shelf.empty");
+    empty.appendChild(p);
+    body.appendChild(empty);
+    return;
+  }
+
+  const list = document.createElement("div");
+  list.className = "shelf-list";
+  for (const entry of entries) list.appendChild(shelfRow(entry));
+  body.appendChild(list);
+}
+
+function shelfRow(entry: ShelfEntry): HTMLElement {
+  const row = document.createElement("div");
+  row.className = "shelf-row";
+  row.dataset.entry = entry.id;
+
+  const icon = document.createElement("span");
+  icon.className = "shelf-icon";
+  icon.textContent = entry.kind === "image" ? "🖼"
+    : entry.kind === "document" ? "📄"
+    : entry.kind === "web_page" ? "🔗" : "•";
+
+  const main = document.createElement("div");
+  main.className = "shelf-main";
+  const name = document.createElement("div");
+  name.className = "shelf-name";
+  name.textContent = entry.name;
+  const locator = document.createElement("code");
+  locator.className = "shelf-locator";
+  locator.textContent = entry.locator;
+  main.append(name, locator);
+
+  // The two axes, SHOWN — the three-fence model has to be visible or it is not
+  // a model, it is a field in a file. A badge that was never recorded is marked
+  // as inferred (the dotted one), so "curated" and "assumed" stay tellable
+  // apart at a glance.
+  const badges = document.createElement("div");
+  badges.className = "shelf-badges";
+  const scope = effectiveScope(entry);
+  const residency = effectiveResidency(entry);
+  const scopeBadge = document.createElement("span");
+  scopeBadge.className = `shelf-badge scope-${scope}` + (entry.scope ? "" : " inferred");
+  scopeBadge.textContent = t(`shelf.scope.${scope}`);
+  scopeBadge.title = entry.scope ? t("shelf.recorded") : t("shelf.inferred");
+  const resBadge = document.createElement("span");
+  resBadge.className = "shelf-badge" + (entry.residency ? "" : " inferred");
+  resBadge.textContent = t(`shelf.residency.${residency}`);
+  resBadge.title = entry.residency ? t("shelf.recorded") : t("shelf.inferred");
+  badges.append(scopeBadge, resBadge);
+  if (entry.checksum) {
+    const sum = document.createElement("span");
+    sum.className = "shelf-badge checksum";
+    sum.textContent = "⌗ " + entry.checksum.slice(7, 15);
+    sum.title = entry.checksum;
+    badges.appendChild(sum);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "shelf-actions";
+  if (isAnnotatable(entry)) {
+    const annotate = document.createElement("button");
+    annotate.textContent = t("shelf.annotate");
+    annotate.title = t("shelf.annotateTitle");
+    annotate.addEventListener("click", () => annotateShelfEntry(entry));
+    actions.appendChild(annotate);
+  }
+  const drop = document.createElement("button");
+  drop.textContent = "✕";
+  drop.title = t("shelf.remove");
+  drop.addEventListener("click", () => {
+    removeFromShelf(entry.id);
+    renderShelf();
+  });
+  actions.appendChild(drop);
+
+  row.append(icon, main, badges, actions);
+  return row;
+}
+
+/**
+ * A file dragged from the Storage window lands here — with its DIGEST.
+ *
+ * The checksum is what makes this a curated list rather than a pile: the same
+ * photograph dragged twice from two folders is one resource, and only the
+ * content can say so. The browser cannot compute it (it is not allowed to read
+ * the file), so the bridge does — one call, and the entry is deduplicated on the
+ * way in.
+ */
+async function addFileToShelf(payload: StorageDragPayload): Promise<void> {
+  let checksum: string | undefined;
+  try {
+    const res = await fetch(
+      `${await bridgeUrl()}/fs/checksum?path=${encodeURIComponent(payload.path)}`,
+    );
+    if (res.ok) {
+      const data = (await res.json()) as { checksum?: string };
+      checksum = data.checksum;
+    }
+  } catch {
+    /* no bridge: the resource still goes on the shelf, just without a digest —
+       losing the drop because the hash failed would be the wrong trade */
+  }
+  const entry = addToShelf({
+    locator: payload.path,
+    name: payload.name,
+    checksum,
+    scope: "own-study",
+    residency: "resident",
+  });
+  renderShelf();
+  toast(checksum
+    ? t("shelf.added", { name: entry.name })
+    : t("shelf.addedNoChecksum", { name: entry.name }));
+}
+
+function addUrlToShelf(): void {
+  const input = document.getElementById("shelf-url") as HTMLInputElement;
+  const uri = input.value.trim();
+  if (!uri) return;
+  if (!/^(https?:|s3:)/i.test(uri)) {
+    toast(t("shelf.notAUri"));
+    return;
+  }
+  const entry = addToShelf({
+    locator: uri,
+    name: uri.split("/").filter(Boolean).pop() || uri,
+    scope: shelfUrlScope,
+    // a published URI is somebody else's: it stays at home until asked otherwise
+    residency: "reference",
+  });
+  input.value = "";
+  renderShelf();
+  toast(t("shelf.added", { name: entry.name }));
+}
+
+function saveShelf(): void {
+  const doc = shelfToDocument();
+  const blob = new Blob([JSON.stringify(doc, null, 1)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `${shelfMeta().name.replace(/\s+/g, "_") || "shelf"}.shelf.em.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast(t("shelf.saved"));
+}
+
+function openShelfFile(): void {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = ".json,.em.json";
+  input.addEventListener("change", async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    let doc: unknown;
+    try {
+      doc = JSON.parse(await file.text());
+    } catch {
+      toast(t("shelf.unreadable"));
+      return;
+    }
+    const res = loadShelfDocument(doc);
+    if (!res.ok) {
+      // A study graph is refused rather than read for whatever resources it
+      // happens to hold: opening one "as a shelf" would silently turn its
+      // documents into shelf entries, and nobody could tell what they held.
+      toast(t("shelf.notAShelf"));
+      return;
+    }
+    renderShelf();
+    toast(t("shelf.opened", { n: String(res.count) }));
+  });
+  input.click();
+}
+
+/** Send a shelf resource to the Annotator — the gesture that makes the
+ *  annotator usable: "select a resource" now has somewhere to select FROM. */
+function annotateShelfEntry(entry: ShelfEntry): void {
+  const win = windowsOf().find((w) => w.type === "annotator");
+  if (!win) {
+    toast(t("shelf.noAnnotator"));
+    return;
+  }
+  setAnnotatorShelfSource(entry);
+  selectWindow(win.id);
+  toast(t("shelf.sentToAnnotator", { name: entry.name }));
+}
+
 // ── A2 · THE ANNOTATOR · an image, and the claims traced on it ──────────────
 //
 // The gesture is small and the meaning is not: tracing "this and not that" on a
@@ -6648,6 +7118,38 @@ function renderDocViewInto(
 // the picture, and take the gesture. What it must get right is the COORDINATES —
 // normalised [0,1], the same numbers the datamodel stores — so nothing on this
 // side ever writes down a pixel size that a re-export would invalidate.
+
+/**
+ * SHELF1/W1 · load a bridge-served file through CORS, as a `blob:` URL.
+ *
+ * The security fix has a consequence, and it is not a small one: `<img src>` and
+ * `<object data>` are **no-cors** requests — they carry NO `Origin` — and the
+ * bridge is on another port, so the browser calls them `cross-site`. Which is
+ * exactly the shape the new `/fs` gate refuses… including when the request comes
+ * from EMStudio itself. Measured: 403 for the `<img>`, 200 for a `fetch`.
+ *
+ * So the bytes are fetched with `fetch` (which DOES send Origin, and gets the
+ * reflected CORS header back) and handed to the element as a `blob:` URL. One
+ * path for images and PDFs alike, and no exception carved into the gate — the
+ * alternative was allowing `Sec-Fetch-Site: cross-site` again, which is the hole
+ * itself.
+ *
+ * Cost, declared: the file passes through memory. Fine for a preview, wrong for
+ * a 200 MB orthophoto — the day that matters, this is where a range-request or a
+ * server-side thumbnail goes.
+ */
+const bridgeBlobCache = new Map<string, string>();
+
+async function bridgeBlobUrl(url: string): Promise<string> {
+  if (!url.includes("/fs/file?path=")) return url;   // not ours: leave it alone
+  const cached = bridgeBlobCache.get(url);
+  if (cached) return cached;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const objectUrl = URL.createObjectURL(await res.blob());
+  bridgeBlobCache.set(url, objectUrl);
+  return objectUrl;
+}
 
 /** The tools the annotator offers. `lasso`/`mask` are declared and disabled:
  *  phase 2, and a tool that is coming is better announced than discovered. */
@@ -6672,6 +7174,23 @@ let annotatorDraft: AnnotatorDraft | null = null;
 let annotatorImage: { key: string; nodeId: string; title: string; url: string;
                       path?: string; page: number } | null = null;
 let annotatorLoading: string | null = null;
+
+/** SHELF1 · a resource PICKED FROM THE SHELF, when there is one.
+ *
+ * Before this the annotator followed the selection and nothing else, so
+ * "select a document or a resource with an image" had nowhere to select FROM —
+ * the empty state was a dead end. The shelf is that somewhere. An explicit pick
+ * wins over the selection until it is cleared: you chose this picture, and a
+ * click on the canvas should not take it away from under you.
+ */
+let annotatorShelfSource: ShelfEntry | null = null;
+
+function setAnnotatorShelfSource(entry: ShelfEntry | null): void {
+  annotatorShelfSource = entry;
+  annotatorImage = null;        // force the picture to be resolved again
+  annotatorDraft = null;
+  renderAnnotator();
+}
 
 /** The node the annotator is showing — the current element, as everywhere else. */
 function annotatorNodeId(): string | null {
@@ -6701,33 +7220,51 @@ function renderAnnotator(): void {
   // changes size when you change mode makes a mode switch a layout change).
   document.getElementById("annotator-view")?.setAttribute("data-mode", annotatorMode());
 
-  const nodeId = annotatorNodeId();
+  // SHELF1 · the shelf pick wins over the selection. The annotator used to have
+  // only the selection, so its empty state was a dead end ("select a resource"
+  // — from where?). Now the shelf is the wide list you pick from, and the pick
+  // stays put until it is cleared.
+  const picked = annotatorShelfSource;
+  const nodeId = picked ? null : annotatorNodeId();
   const node = nodeId ? (store?.node(nodeId) ?? null) : null;
-  const src = viewerSourceOf(node);
+  const src = picked ? picked.locator : viewerSourceOf(node);
   hint.textContent = "";
 
-  if (!node || !src) {
+  if (!src) {
     annotatorImage = null;
     img.removeAttribute("src");
     img.classList.add("hidden");
-    title.textContent = t("annotator.noImage");
+    title.textContent = shelfEntries().length
+      ? t("annotator.pickFromShelf")
+      : t("annotator.noImage");
     drawAnnotatorOverlay();
     renderAnnotatorPanel();
     return;
   }
 
-  const key = `${nodeId}|${src}`;
+  const key = `${picked ? picked.id : nodeId}|${src}`;
   if (annotatorImage?.key === key) {
     drawAnnotatorOverlay();
     renderAnnotatorPanel();
     return;
   }
 
-  const show = (url: string, path?: string): void => {
-    annotatorImage = { key, nodeId: nodeId!, title: String(node.name || nodeId),
-                       url, path, page: 0 };
-    img.src = url;
+  const show = (rawUrl: string, path?: string): void => {
+    annotatorImage = {
+      key,
+      // A shelf pick has no node in the graph yet — the region will be attached
+      // to the resource by id when it is committed (the bridge promotes it to a
+      // Document, W1/A2). Using the shelf entry's id keeps that one identity.
+      nodeId: picked ? picked.id : nodeId!,
+      title: picked ? picked.name : String(node?.name || nodeId),
+      url: rawUrl, path, page: 0,
+    };
     img.classList.remove("hidden");
+    // through CORS (see `bridgeBlobUrl`): a bare <img src> to the bridge is a
+    // no-cors cross-site request and the /fs gate refuses it — rightly.
+    void bridgeBlobUrl(rawUrl)
+      .then((src) => { img.src = src; })
+      .catch(() => { img.removeAttribute("src"); title.textContent = t("viewer.unreachable"); });
     title.textContent = annotatorImage.title;
     hint.textContent = annotatorMode() === "annotate"
       ? t("annotator.hintDraw") : t("annotator.hintView");
@@ -7413,6 +7950,39 @@ function formatBytes(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+/**
+ * DS4 · add a folder the bridge will serve.
+ *
+ * Granting access to a folder is a decision, so it is explicit, narrow and
+ * remembered: one folder, named by the person, saved by the bridge. There is no
+ * "serve the whole disk" here and there will not be — the sandbox exists so the
+ * browser can see a library or a DOSCO folder and nothing else.
+ */
+async function addStorageRoot(): Promise<void> {
+  // `prompt` because a folder PICKER in the browser cannot hand back a path (it
+  // gives file handles, not locations) — the honest options are typing the path
+  // or the desktop dialog, and the desktop dialog belongs to the Tauri shell.
+  const path = window.prompt(t("storage.rootPrompt"), "");
+  if (!path?.trim()) return;
+  try {
+    const res = await fetch(`${await bridgeUrl()}/fs/roots`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "add", path: path.trim() }),
+    });
+    const payload = (await res.json().catch(() => null)) as
+      | { ok?: boolean; error?: string; roots?: string[] } | null;
+    if (!res.ok || !payload?.ok) {
+      toast(t("storage.rootFailed", { detail: payload?.error ?? `HTTP ${res.status}` }));
+      return;
+    }
+    toast(t("storage.rootAdded", { name: path.trim().split("/").filter(Boolean).pop() ?? path }));
+    setStoragePath(activeWin(), null);   // back to the roots, where it now shows
+  } catch (err) {
+    toast(t("storage.rootFailed", { detail: err instanceof Error ? err.message : String(err) }));
+  }
+}
+
 function storageEmpty(message: string): HTMLElement {
   const box = document.createElement("div");
   box.className = "viewer-empty";
@@ -7692,14 +8262,22 @@ function viewerItemElement(item: CollectionItem, stage: HTMLElement): HTMLElemen
     const obj = document.createElement("object");
     obj.className = "viewer-media";
     obj.type = "application/pdf";
-    obj.data = item.url;
+    // Same reason as the images: `<object data>` is a no-cors request and the
+    // /fs gate refuses it. The blob keeps the PDF viewer working without
+    // reopening the hole.
+    void bridgeBlobUrl(item.url).then((src) => { obj.data = src; }).catch(() => {
+      obj.appendChild(document.createTextNode(t("viewer.unreachable")));
+    });
     obj.appendChild(viewerOpenLink(item.url));
     return obj;
   }
   if (item.kind === "image") {
     const img = document.createElement("img");
     img.className = "viewer-media";
-    img.src = item.url;
+    // via CORS when it comes from the bridge (see `bridgeBlobUrl`)
+    void bridgeBlobUrl(item.url).then((src) => { img.src = src; }).catch(() => {
+      img.dispatchEvent(new Event("error"));
+    });
     img.alt = item.title;
     img.addEventListener("error", () => {
       stage.textContent = "";
@@ -7739,9 +8317,13 @@ function viewerGallery(win: Win, collection: Collection): HTMLElement {
     cell.title = item.title;
     if (item.kind === "image" && isDecodable(item)) {
       const img = document.createElement("img");
-      img.src = item.url;
       img.alt = item.title;
       img.loading = "lazy"; // a folder of 300 photographs must not fetch 300 at once
+      void bridgeBlobUrl(item.url).then((src) => { img.src = src; }).catch(() => {
+        img.replaceWith(Object.assign(document.createElement("span"), {
+          className: "viewer-thumb-glyph", textContent: "⚠",
+        }));
+      });
       cell.appendChild(img);
     } else {
       const glyph = document.createElement("span");
@@ -8130,7 +8712,8 @@ function mountWindow(win: Win): void {
     win.type === "inspector" ||
     win.type === "viewer" ||
     win.type === "storage" ||
-    win.type === "annotator"
+    win.type === "annotator" ||
+    win.type === "shelf"
   ) {
     // WIN5 · a real window, not the dock: the surface fills the area. Leave the
     // canvas mode alone underneath (never the narrative overlay) so switching
@@ -8891,6 +9474,23 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
   // STORAGE · navigation is the double-click and the ↑; a menu repeating them
   // would be a second way to do the one thing the surface already does.
   storage: [],
+  // SHELF · save/open are in the bar, where a list's own verbs belong; the menu
+  // holds the one thing that is not a verb of this window — emptying it.
+  shelf: [
+    {
+      label: "Shelf",
+      items: () => [
+        {
+          label: "Svuota lo shelf",
+          disabled: shelfEntries().length ? undefined : "lo shelf è già vuoto",
+          run: () => {
+            clearShelf();
+            renderShelf();
+          },
+        },
+      ],
+    },
+  ],
   // ANNOTATOR · the tools are in the panel and the Mode is in the header; the
   // only thing left to command is the region being traced.
   annotator: [
