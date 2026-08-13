@@ -43,6 +43,9 @@ export interface RenderState {
   selectedId: string | null;
   /** multi-selection set (D3); the primary is still `selectedId` */
   selectedIds?: Set<string> | null;
+  /** P4.3 · node id → who else has it selected, in a live room. Awareness, never
+   *  a lock: nothing consults this before allowing an edit. */
+  peerSelections?: Map<string, string[]> | null;
   /** edge_type predicate; edges failing it are skipped */
   edgeVisible: (edgeType: string | undefined) => boolean;
   /** index (into scene.edges) of the hovered connector, if any */
@@ -902,6 +905,30 @@ export function render(
       ctx.textBaseline = "middle";
       ctx.fillText(String(n.badge), bx, by + r * 0.05);
     }
+  }
+
+  // P4.3 · AWARENESS: a dashed ring on the nodes somebody ELSE has selected.
+  //
+  // One pass, after the nodes, instead of a branch inside each of the four
+  // shapes — the mark is the same for all of them, and threading it through the
+  // per-shape code would be four places to keep in step.
+  //
+  // Dashed, and never the selection colour: this is not YOUR selection, and a
+  // ring that looked like one would make you think you had clicked something.
+  // It is awareness, so it says "somebody is here" and nothing more — there is
+  // no code path from this to refusing an edit, which is what "soft" has to mean
+  // to be true (design P4 §6).
+  if (state.peerSelections?.size) {
+    ctx.save();
+    ctx.setLineDash([6 / vp.scale, 4 / vp.scale]);
+    ctx.strokeStyle = canvasTheme().peerAware;
+    ctx.lineWidth = 2.2 / vp.scale;
+    for (const n of scene.nodes) {
+      if (n.collapsed) continue;
+      if (!state.peerSelections.has(n.id)) continue;
+      ctx.strokeRect(n.x - 4, n.y - 4, n.w + 8, n.h + 8);
+    }
+    ctx.restore();
   }
 
   // connect handles: a bullet on the right edge of EVERY node (drag it to

@@ -47,6 +47,10 @@ export interface CanvasTheme {
   /** selection / hover accents */
   accent: string;
   selectSoft: string;
+  /** P4.3 · the awareness ring: somebody ELSE's selection in a live room.
+   *  Deliberately not the selection colour — a ring that looked like yours would
+   *  make you think you had clicked something. */
+  peerAware: string;
   hoverSoft: string;
   /** group container: body wash, dashed border, header tint fallback.
    *  The header TITLE ink is not a theme value: the title-tab carries a
@@ -87,6 +91,7 @@ const LIGHT: CanvasTheme = {
   labelMuted: "#46505c",
   accent: "#1F6FEB",
   selectSoft: "#5b9bf0",
+  peerAware: "#b8860b",
   hoverSoft: "#a9c9f5",
   groupBody: "rgba(190,196,204,0.25)",
   groupBorder: "#000000",
@@ -121,6 +126,7 @@ const DARK: CanvasTheme = {
   labelMuted: "#b3bcc8",
   accent: "#4C8DFF",
   selectSoft: "#6ea6ff",
+  peerAware: "#d9bd7a",
   hoverSoft: "#3f5f8a",
   groupBody: "rgba(120,132,148,0.20)",
   groupBorder: "#8b95a3",

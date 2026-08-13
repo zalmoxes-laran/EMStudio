@@ -13,6 +13,13 @@
 
 import type { GraphOp } from "./model";
 import type { EmDocument } from "./types";
+import { roomUrl } from "./hub";
+
+function hubUrl(options: { url: string; room: string; token?: string | null;
+                           since?: string | null }): string {
+  return roomUrl(options.url, options.room,
+                 { token: options.token, since: options.since });
+}
 
 /** What the connected HOST is editing — surfaced in the footer sidecar badge.
  *  All fields optional so an older host that never sends `host_info` simply
@@ -77,7 +84,34 @@ export type SyncMessage =
       info?: Record<string, unknown>;
       source?: string;
     }
+  | {
+      v: number;
+      type: "presence";
+      room?: string;
+      members?: Array<Record<string, unknown>>;
+      source?: string;
+    }
+  | {
+      v: number;
+      type: "op_result";
+      applied: boolean;
+      reason?: string;
+      op?: Record<string, unknown>;
+      source?: string;
+    }
   | ({ v: number; type: "op"; source?: string } & GraphOp);
+
+/** P4.3 · what a HUB connection needs that a sidecar one does not. */
+export interface HubOptions {
+  /** the em-server base URL (http/https or ws/wss — both are accepted) */
+  url: string;
+  room: string;
+  /** the access token, held in MEMORY for this session only — never stored, the
+   *  same rule the AI key follows: a token on disk is a token that leaks */
+  token?: string | null;
+  /** how far this client is already synced; drives resume-vs-resync (see `hub.ts`) */
+  since?: string | null;
+}
 
 export interface SyncCallbacks {
   onSelect: (nodeId: string, nodeIds?: string[]) => void;
@@ -88,6 +122,15 @@ export interface SyncCallbacks {
   onSnapshot: (doc: EmDocument) => void;
   /** the host reported what it is editing (tool / file / database) */
   onHostInfo?: (info: HostInfo) => void;
+  /** P4.3 · the room roster / awareness changed (relay only) */
+  onPresence?: (message: Record<string, unknown>) => void;
+  /** P4.3 · SOMEBODY ELSE selected something. Awareness, never my selection. */
+  onPeerSelect?: (message: Record<string, unknown>) => void;
+  /** P4.3 · the hub answered one of MY operations (applied, or stale) */
+  onOpResult?: (message: Record<string, unknown>) => void;
+  /** P4.3 · the socket dropped and a reconnect is scheduled / has happened.
+   *  Reported so the UI can say "reconnecting" instead of going quiet. */
+  onReconnect?: (attempt: number, delayMs: number) => void;
   /** CMD1 · the host answered a command: a delta to merge, or an error */
   onCommandResult?: (result: {
     cmd_id: string; ok: boolean;
@@ -130,6 +173,13 @@ export class SyncClient {
   /** MODES1 · default `both`: it is exactly today's behaviour, so turning the
    *  control on changes nothing until somebody chooses otherwise. */
   private direction: SyncDirection = "both";
+  //: P4.3 · reconnect state. Phase 1 deliberately had none ("no auto-reconnect")
+  //: because a sidecar is a laptop pairing you re-establish by hand. A ROOM is
+  //: not: a dropped Wi-Fi must not end a session, and coming back is where the
+  //: rebase check belongs.
+  private hub: HubOptions | null = null;
+  private attempt = 0;
+  private retryTimer: number | null = null;
 
   get syncDirection(): SyncDirection {
     return this.direction;
@@ -158,8 +208,38 @@ export class SyncClient {
     this.disconnect();
     this.url = url;
     this.cb = cb;
+    this.hub = null;              // a sidecar pairing: no room, no reconnect
     this.manualClose = false;
+    this.attempt = 0;
     this.open();
+  }
+
+  /**
+   * P4.3 · join a ROOM on an em-server (the hub mode).
+   *
+   * Same client, same wire, a different endpoint — which is the whole point of
+   * P4.2 having spoken the protocol EMStudio already knew. What is new here is
+   * that the connection is expected to LAST: it reconnects with a backoff, and
+   * every (re)join carries `since`, so the hub can send only what was missed.
+   */
+  connectHub(options: HubOptions, cb: SyncCallbacks): void {
+    this.disconnect();
+    this.hub = { ...options };
+    this.cb = cb;
+    this.manualClose = false;
+    this.attempt = 0;
+    this.url = hubUrl(this.hub);
+    this.open();
+  }
+
+  /** Where this client is synced to — updated by the app as ops are applied, so
+   *  a reconnect resumes instead of reloading. */
+  setSince(since: string | null): void {
+    if (this.hub) this.hub.since = since;
+  }
+
+  get room(): string | null {
+    return this.hub?.room ?? null;
   }
 
   private open(): void {
@@ -185,7 +265,19 @@ export class SyncClient {
     };
     ws.onclose = () => {
       this.cb?.onStatus("closed");
-      if (!this.manualClose) return; // no auto-reconnect for now (phase 1)
+      if (this.manualClose || !this.hub) return;
+      // P4.3 · a room reconnects. Backoff so a server that is down is not
+      // hammered, capped so a session that comes back is not left waiting for
+      // minutes; every attempt re-opens with the CURRENT `since`, which is what
+      // turns a reconnect into a resume.
+      this.attempt += 1;
+      const delay = Math.min(30_000, 500 * 2 ** Math.min(this.attempt, 6));
+      this.cb?.onReconnect?.(this.attempt, delay);
+      this.retryTimer = window.setTimeout(() => {
+        if (this.manualClose || !this.hub) return;
+        this.url = hubUrl(this.hub);
+        this.open();
+      }, delay);
     };
     ws.onerror = () => {
       /* onclose follows */
@@ -199,15 +291,30 @@ export class SyncClient {
       }
       if (msg.source === SOURCE) return; // ignore our own echo
       if (msg.type === "select" && (msg.node_id || msg.node_ids?.length)) {
-        // MODES1 · gated, not disconnected: the socket stays up (the host's
-        // document and its status keep arriving), only the echo stops.
-        if (this.receives) this.cb?.onSelect(msg.node_id ?? "", msg.node_ids);
+        // P4.3 · a selection frame that says WHO made it is a ROOM frame, and it
+        // is AWARENESS: it must not move my selection. Following somebody's
+        // clicks is the two-screens mirror (a sidecar), and in a room it would
+        // drag every view around whenever anybody looked at something.
+        const from = (msg as unknown as Record<string, unknown>).connection_id;
+        if (from) {
+          this.cb?.onPeerSelect?.(msg as unknown as Record<string, unknown>);
+        } else if (this.receives) {
+          // MODES1 · gated, not disconnected: the socket stays up (the host's
+          // document and its status keep arriving), only the echo stops.
+          this.cb?.onSelect(msg.node_id ?? "", msg.node_ids);
+        }
       } else if (msg.type === "snapshot") {
         this.cb?.onSnapshot(msg.doc);
         if (msg.host) this.cb?.onHostInfo?.(msg.host);
       } else if (msg.type === "host_info") {
         const { type: _t, v: _v, source: _s, ...info } = msg;
         this.cb?.onHostInfo?.(info as HostInfo);
+      } else if (msg.type === "presence") {
+        // P4.3 · awareness, never gated by the sync direction: knowing who is in
+        // the room is not an echo of anybody's work.
+        this.cb?.onPresence?.(msg as unknown as Record<string, unknown>);
+      } else if (msg.type === "op_result") {
+        this.cb?.onOpResult?.(msg as unknown as Record<string, unknown>);
       } else if (msg.type === "command_result") {
         // CMD1 · NOT gated by the sync direction: this is the answer to
         // something this user explicitly asked for, and dropping it would leave
@@ -290,6 +397,11 @@ export class SyncClient {
 
   disconnect(): void {
     this.manualClose = true;
+    this.hub = null;
+    if (this.retryTimer !== null) {
+      window.clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
     const wasConnected = this.ws !== null;
     if (this.ws) {
       try {

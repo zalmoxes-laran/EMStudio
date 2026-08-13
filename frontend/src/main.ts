@@ -161,7 +161,14 @@ import type {
   StratiMinerHandlers,
 } from "./stratiminer";
 import { type HostInfo, SyncClient, SYNC_DIRECTIONS, type SyncDirection } from "./sync";
+import type { GraphOp } from "./model";
 import { buildCommand, type CommandVerb } from "./commands";
+import {
+  type AwarenessNote, emptyPresence, type HubOp, noteForRemoteOp, noteForStale,
+  opsForLocalChange, peerSelections, planRejoin, type PresenceState,
+  reducePresence,
+} from "./hub";
+import { clearField as crdtClearField, writeField as crdtWriteField } from "./crdt";
 import { isRemoved } from "./crdt";
 import {
   AI_PROVIDERS,
@@ -532,7 +539,15 @@ function renderSidecarDetail(): void {
   if (hostInfo.database) segs.push({ k: "db", v: hostInfo.database });
   if (!hostInfo.file && !hostInfo.database && hostInfo.label)
     segs.push({ k: "doc", v: hostInfo.label });
-  segs.push({ k: "at", v: getSyncUrl().replace(/^wss?:\/\//, "") });
+  // P4.3 · in a ROOM the endpoint is the hub, not the sidecar's host:port. Two
+  // different destinations must not be shown by one label, or the footer says
+  // where you are NOT connected.
+  segs.push({
+    k: sync.room ? "room" : "at",
+    v: sync.room
+      ? `${getSettings().sync.hubUrl.replace(/^https?:\/\//, "")}/${sync.room}`
+      : getSyncUrl().replace(/^wss?:\/\//, ""),
+  });
   sidecarDetail.innerHTML = "";
   for (const s of segs) {
     const seg = document.createElement("span");
@@ -838,6 +853,7 @@ function draw(): void {
       insertBoundary: view === "matrix" ? hoverInsertBoundary : null,
       monochrome,
       nameStatus, // NAME1: orange/red labels, one answer shared with the menu
+      peerSelections: hubPeerSelections,   // P4.3 · awareness, never a lock
     },
     w,
     h,
@@ -1990,7 +2006,11 @@ function wireStore(s: DocumentStore): void {
   // Remote-applied ops don't re-emit (DocumentStore suppresses), so no echo.
   s.onOp((op) => {
     if (s !== store) return;
-    sync.sendOp(op);
+    // P4.3 · a ROOM speaks per-field CRDT operations; a sidecar speaks the
+    // store's own op shape. One writing path, two vocabularies at the door —
+    // and the translation happens once, where the door is.
+    if (sync.room) hubSendLocal(op);
+    else sync.sendOp(op);
   });
 }
 
@@ -2502,6 +2522,200 @@ function projectDocumentText(): string {
   return JSON.stringify(projectContainer(), null, 1);
 }
 
+
+
+// ── P4.3 · the room client: EMStudio as a live participant ──────────────────
+//
+// The arc closes here. P4.1 gave the algebra, P4.1b made the stamping real,
+// P4.2 put a relay on the other end that speaks the wire this app already
+// spoke. What is left is the part only a client can do: join a room, keep its
+// own base, and know when that base is too old to be replayed.
+//
+// The rebase is the piece worth reading twice. A hub compacts what everybody has
+// passed; a client that was away can come back holding operations about things
+// the room has already settled and forgotten. Replaying those would resurrect
+// them. So the hub announces `gc_watermark`, and a client whose base is older
+// re-syncs from the snapshot — the state of record — and re-sends whatever of
+// its own work survived, as NEW operations stamped now. Nothing is dropped in
+// silence, and nothing comes back from the dead.
+
+/** The room's roster, and what everybody is looking at (P4.3). */
+let hubPresence: PresenceState = emptyPresence();
+/** node id → who else has it selected. Read by the renderer; never by a gate. */
+let hubPeerSelections: Map<string, string[]> | null = null;
+/** How far this client is synced: the instant of the last operation it applied.
+ *  It is what a reconnect resumes from and what the rebase check compares. */
+let hubBase: string | null = null;
+/** The hub's compaction point, as announced. */
+let hubWatermark: string | null = null;
+/** Local operations sent and not yet acknowledged — the ones a re-sync has to
+ *  re-send rather than lose. */
+const hubUnconfirmed = new Map<string, HubOp>();
+/** The last few awareness notes ("B updated dating after you"). */
+const hubNotes: AwarenessNote[] = [];
+
+function hubKey(op: HubOp): string {
+  return `${op.op}|${String(op.node_id ?? op.id ?? "")}|${String(op.field ?? "")}|${String(op.ts ?? "")}`;
+}
+
+function noteHub(note: AwarenessNote): void {
+  hubNotes.unshift(note);
+  hubNotes.splice(24);          // a feed, not a log
+  logInfo(note.text);
+  renderHubRoster();
+}
+
+/** Send one local change to the room, as the per-field operations the relay
+ *  understands. The fields (and their clocks) come from the store, which
+ *  stamped them — nothing is re-derived here. */
+function hubSendLocal(op: GraphOp): void {
+  const ops = opsForLocalChange(op as Parameters<typeof opsForLocalChange>[0]);
+  for (const hubOp of ops) {
+    hubUnconfirmed.set(hubKey(hubOp), hubOp);
+    sync.sendCommand({ v: 1, type: "op", source: "emstudio", ...hubOp });
+  }
+}
+
+/** Apply an operation that arrived from the room, carrying ITS clock. */
+function hubApplyRemote(message: Record<string, unknown>): void {
+  if (!store) return;
+  const op = message as unknown as HubOp;
+  if (op.op === "update_field") {
+    const nodeId = String(op.node_id ?? op.id ?? "");
+    const node = store.node(nodeId);
+    const field = String(op.field ?? "");
+    if (!node || !field) return;
+    // through the store's remote path: `applyRemoteOp` does not re-stamp, so the
+    // hand that made this edit stays the hand that made it (AUDIT1)
+    const payload = JSON.parse(JSON.stringify(node)) as Record<string, unknown>;
+    if (op.remove === true) crdtClearField(payload, field, { ts: op.ts, by: op.author });
+    else crdtWriteField(payload, field, op.value, { ts: op.ts, by: op.author });
+    store.applyRemoteOp({
+      op: "update_node", node_id: nodeId,
+      patch: { name: payload.name, description: payload.description,
+               data: payload.data } as Partial<EmNode>,
+    });
+    const who = hubPresence.members.find((m) => m.author === op.author)?.display
+      ?? (op.author as string | null);
+    noteHub(noteForRemoteOp(op, who, node.name ? String(node.name) : null));
+  }
+  hubBase = String(op.ts ?? hubBase ?? "");
+  sync.setSince(hubBase);
+  buildScenes();
+  draw();
+  refreshInspector();
+  nodeList.refresh();
+}
+
+/** The roster chip + the awareness map the canvas reads. */
+function renderHubRoster(): void {
+  hubPeerSelections = peerSelections(hubPresence);
+  const chip = document.getElementById("hub-roster");
+  if (!chip) return;
+  const others = hubPresence.members.filter((m) => m.id !== hubPresence.me);
+  const inRoom = hubPresence.members.length;
+  chip.classList.toggle("hidden", !sync.room);
+  chip.textContent = sync.room ? t("hub.roster", { n: String(inRoom) }) : "";
+  chip.title = [
+    sync.room ? `${t("hub.room")}: ${sync.room}` : "",
+    ...hubPresence.members.map((m) =>
+      `${m.id === hubPresence.me ? "▸ " : "  "}${m.display}` +
+      (m.selection.length ? ` — ${m.selection.length} ${t("hub.selected")}` : "")),
+    others.length ? "" : t("hub.alone"),
+    hubNotes.length ? `\n${hubNotes.slice(0, 5).map((n) => `· ${n.text}`).join("\n")}` : "",
+  ].filter(Boolean).join("\n");
+}
+
+/**
+ * Join a room on an em-server.
+ *
+ * The callbacks are where the client's whole behaviour lives, so they are worth
+ * reading as a list: the snapshot decides the document, `host_info` decides
+ * whether the local base is still usable, an op converges the graph, an
+ * `op_result` that says `stale` becomes awareness rather than an error, and
+ * presence is a roster nobody can turn into a lock.
+ */
+function connectToHub(url: string, room: string, token: string | null): void {
+  sync.connectHub({ url, room, token, since: hubBase }, {
+    // In a room a peer's selection is AWARENESS: it marks their node, it does
+    // not move mine. (`onSelect` stays for the sidecar mirror, where following
+    // IS the point — one person, two screens.)
+    onSelect: () => { /* a room never moves your selection */ },
+    onPeerSelect: (frame) => {
+      hubPresence = reducePresence(hubPresence, { type: "select", ...frame });
+      renderHubRoster();
+      draw();
+    },
+    onOp: (op) => hubApplyRemote(op as unknown as Record<string, unknown>),
+    onSnapshot: (doc) => {
+      // A ROOM is a project: the relay sends a CONTAINER (P4.2 decided a room =
+      // one em.json), so it is opened by the door that reads containers. Handing
+      // it to the single-graph loader was the first thing that broke here — the
+      // document arrived and nothing appeared, because it had no `.graph`.
+      loadContainerDocument(doc, `${room} (hub)`);
+      info.textContent = t("hub.joined", { room });
+    },
+    onHostInfo: (info2) => {
+      hostInfo = { ...hostInfo, ...info2 };
+      renderSidecarDetail();
+      // the same frame tells this client WHICH member it is — without that, the
+      // roster cannot mark "you" and every halo would look like somebody else's
+      hubPresence = reducePresence(hubPresence,
+                                   { type: "host_info", ...(info2 as object) });
+      const watermark = (info2 as Record<string, unknown>).gc_watermark as string | null;
+      hubWatermark = watermark ?? null;
+      const plan = planRejoin(hubBase, hubWatermark);
+      if (plan.kind === "resync") {
+        // the local history is older than what the room still remembers: it is
+        // NOT replayed. The snapshot that follows is the truth, and the work
+        // this client had not yet had acknowledged is re-sent as new operations,
+        // stamped now — visible, not silently dropped.
+        const pending = [...hubUnconfirmed.values()];
+        hubUnconfirmed.clear();
+        hubBase = null;
+        sync.setSince(null);
+        noteHub({ kind: "resync", at: new Date().toISOString(),
+                  text: t("hub.resynced", { n: String(pending.length) }) });
+        for (const op of pending) {
+          const fresh: HubOp = { ...op, ts: new Date().toISOString().replace(/\.\d+Z$/, "Z") };
+          hubUnconfirmed.set(hubKey(fresh), fresh);
+          sync.sendCommand({ v: 1, type: "op", source: "emstudio", ...fresh });
+        }
+      }
+      renderHubRoster();
+    },
+    onPresence: (message) => {
+      hubPresence = reducePresence(hubPresence, message);
+      renderHubRoster();
+      draw();
+    },
+    onOpResult: (message) => {
+      const op = (message.op ?? {}) as HubOp;
+      hubUnconfirmed.delete(hubKey(op));
+      if (message.applied) {
+        hubBase = String(op.ts ?? hubBase ?? "");
+        sync.setSince(hubBase);
+        return;
+      }
+      if (message.reason === "idempotent") return;   // nothing to say
+      const node = store?.node(String(op.node_id ?? ""));
+      noteHub(noteForStale(op, node?.name ? String(node.name) : null));
+    },
+    onReconnect: (attempt, delay) => {
+      info.textContent = t("hub.reconnecting",
+                           { n: String(attempt), s: String(Math.round(delay / 1000)) });
+    },
+    onStatus: (state) => {
+      document.body.classList.toggle("sync-active", state === "open");
+      setModeIndicator(state === "open" ? "hub" : "standalone");
+      if (state === "open") info.textContent = t("hub.connected", { room });
+      else if (state === "closed") {
+        hubPresence = emptyPresence();
+        renderHubRoster();
+      }
+    },
+  });
+}
 
 // ── CMD1 · the command channel: EMStudio conducts, Blender is the 3D arm ────
 //
@@ -4319,12 +4533,26 @@ document.getElementById("btn-mode-standalone")?.addEventListener("click", () => 
 document.getElementById("btn-mode-sidecar")?.addEventListener("click", () => {
   if (!sync.connected) btnSync.click(); // connect → live-synced to the host
 });
-// MODES1 · Hub is a real mode with no server behind it yet. It says so, and
-// connects nothing — a placeholder that pretended would be worse than a gap.
+// P4.3 · Hub is now a real mode with a real server behind it (em-server, P4.2).
+// The endpoint and the room live in Settings; the TOKEN is asked for and kept in
+// memory only — the same rule the AI key follows, because a token written to
+// disk is a token that leaks.
 document.getElementById("btn-mode-hub")?.addEventListener("click", () => {
-  toast(t("mode.hubUnavailable"));
-  logInfo(t("mode.hubUnavailable"));
+  const s = getSettings().sync;
+  if (!s.hubUrl || !s.hubRoom) {
+    toast(t("hub.needsConfig"));
+    openSettings("settings-sect-sync");
+    return;
+  }
+  if (sync.room === s.hubRoom && sync.connected) return;   // already there
+  const token = hubToken ?? window.prompt(t("hub.tokenPrompt")) ?? "";
+  hubToken = token || null;
+  connectToHub(s.hubUrl, s.hubRoom, hubToken);
 });
+
+/** The access token for this session. In MEMORY: never localStorage, never the
+ *  settings file — a token on disk outlives the reason it was issued. */
+let hubToken: string | null = null;
 
 // ---------- MENU1 · Help menu (About / Updates / Ontology models) ----------
 const RELEASES_URL = "https://github.com/EmanuelDemetrescu/EMStudio/releases";
@@ -4836,6 +5064,10 @@ function openSettings(section?: string): void {
   setProtoSel.value = s.sync.protocol;
   setHostInp.value = s.sync.host;
   setPortInp.value = String(s.sync.port);
+  const hubUrlInp = document.getElementById("set-hub-url") as HTMLInputElement | null;
+  const hubRoomInp = document.getElementById("set-hub-room") as HTMLInputElement | null;
+  if (hubUrlInp) hubUrlInp.value = s.sync.hubUrl ?? "";
+  if (hubRoomInp) hubRoomInp.value = s.sync.hubRoom ?? "";
   setDevUuid.checked = s.developer.showNodeIds;
   setEdgeTips.checked = s.interaction.edgeTooltips;
   setStrictDocNames.checked = s.interaction.strictDocumentNames;
@@ -4985,6 +5217,10 @@ settingsModal.addEventListener("click", (e) => {
       // footer, changed while working. Carried through so saving the endpoint
       // does not silently reset what the channel is doing.
       direction: getSettings().sync.direction,
+      // P4.3 · the room's address. The token is NOT here: it is asked for at
+      // connection time and never written down.
+      hubUrl: (document.getElementById("set-hub-url") as HTMLInputElement)?.value.trim() ?? "",
+      hubRoom: (document.getElementById("set-hub-room") as HTMLInputElement)?.value.trim() ?? "",
     },
     developer: { showNodeIds: setDevUuid.checked },
     interaction: {

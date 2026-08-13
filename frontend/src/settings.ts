@@ -22,6 +22,12 @@ export interface SyncSettings {
    * control did: nothing changes for anyone until they choose.
    */
   direction: SyncDirection;
+  /** P4.3 · the em-server whose rooms this client can join. Configuration, not
+   *  a secret: the URL and the room name are what you would write on a
+   *  whiteboard. The TOKEN is not here on purpose — it lives in memory for the
+   *  session, because a token on disk outlives the reason it was issued. */
+  hubUrl: string;
+  hubRoom: string;
 }
 
 export interface DeveloperSettings {
@@ -88,7 +94,7 @@ const KEY = "emstudio.settings";
 
 const DEFAULTS: Settings = {
   sync: { protocol: "ws", host: "localhost", port: 8788, tool: "blender",
-          direction: "both" },
+          direction: "both", hubUrl: "", hubRoom: "" },
   developer: { showNodeIds: false },
   interaction: { edgeTooltips: true, strictDocumentNames: true },
   ai: { provider: "claude", model: "" },

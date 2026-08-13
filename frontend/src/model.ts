@@ -26,8 +26,22 @@ import type { Payload } from "./crdt";
 
 /** A structured graph mutation for the live op-log bridge (ADR-002 phase 2).
  * Kept small and additive; more variants (add/delete node/edge) land next. */
+/** P4.3 · which fields an `update_node` actually changed, with the clock the
+ *  store stamped on each (P4.1b). Carried so a hub client can turn one local
+ *  edit into the per-field operations the relay understands WITHOUT re-deriving
+ *  the diff — re-deriving it would mean guessing at a "before" that only the
+ *  store had. The sidecar bridge ignores the field; it is additive. */
+export interface ChangedField {
+  field: string;
+  value: unknown;
+  ts: string;
+  by?: string | null;
+  removed?: boolean;
+}
+
 export type GraphOp =
-  | { op: "update_node"; node_id: string; patch: Partial<EmNode> }
+  | { op: "update_node"; node_id: string; patch: Partial<EmNode>;
+      fields?: ChangedField[] }
   | { op: "add_node"; node: EmNode }
   | { op: "delete_node"; node_id: string }
   | { op: "add_edge"; edge: EmEdge }
@@ -440,8 +454,8 @@ export class DocumentStore {
    * through, and it stamps exactly what CHANGED: a patch that carries the whole
    * `data` (most of them do) must not re-date fields nobody touched.
    */
-  private stampFields(node: EmNode, before: Record<string, unknown>): void {
-    if (this.suppressOp) return;
+  private stampFields(node: EmNode, before: Record<string, unknown>): ChangedField[] {
+    if (this.suppressOp) return [];
     const now = new Date().toISOString().replace(/\.\d+Z$/, "Z");
     const who = this.editorOrcid();
     const after = node as unknown as Record<string, unknown>;
@@ -451,13 +465,14 @@ export class DocumentStore {
       if (canonicalValue(getField(before, name)) !== canonicalValue(getField(payload, name)))
         changed.push(name);
     }
+    const stamped: ChangedField[] = [];
     for (const name of changed) {
       // a field emptied by an edit is EMPTIED, not absent: it gets the tombstone
       // that tells the other side this was an act (P4.1b)
       const value = getField(payload, name);
-      if (value === undefined || value === null || value === "")
-        setFieldClock(payload, name, { ts: now, by: who }, true);
-      else setFieldClock(payload, name, { ts: now, by: who });
+      const removed = value === undefined || value === null || value === "";
+      setFieldClock(payload, name, { ts: now, by: who }, removed);
+      stamped.push({ field: name, value, ts: now, by: who, removed });
     }
     if (import.meta.env?.DEV) {
       // the exact guard: HERE we know what changed, so an unstamped change is a
@@ -467,6 +482,7 @@ export class DocumentStore {
         console.warn(`[P4.1b] fields written without a clock on ${node.id}:`,
                      missed.join(", "));
     }
+    return stamped;
   }
 
   /**
@@ -480,13 +496,14 @@ export class DocumentStore {
     const node = this.node(nodeId);
     if (!node) return;
     this.checkpoint();
+    const now = new Date().toISOString().replace(/\.\d+Z$/, "Z");
     writeField(node as unknown as Payload, field, value, {
-      ts: new Date().toISOString().replace(/\.\d+Z$/, "Z"),
-      by: this.editorOrcid(),
+      ts: now, by: this.editorOrcid(),
     });
     this.stampEdit(node);
     this.emit();
-    this.emitOp({ op: "update_node", node_id: nodeId, patch: { data: node.data } });
+    this.emitOp({ op: "update_node", node_id: nodeId, patch: { data: node.data },
+                  fields: [{ field, value, ts: now, by: this.editorOrcid() }] });
   }
 
   /**
@@ -500,13 +517,13 @@ export class DocumentStore {
     const node = this.node(nodeId);
     if (!node) return;
     this.checkpoint();
-    clearField(node as unknown as Payload, field, {
-      ts: new Date().toISOString().replace(/\.\d+Z$/, "Z"),
-      by: this.editorOrcid(),
-    });
+    const now = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+    clearField(node as unknown as Payload, field, { ts: now, by: this.editorOrcid() });
     this.stampEdit(node);
     this.emit();
-    this.emitOp({ op: "update_node", node_id: nodeId, patch: { data: node.data } });
+    this.emitOp({ op: "update_node", node_id: nodeId, patch: { data: node.data },
+                  fields: [{ field, value: null, ts: now,
+                             by: this.editorOrcid(), removed: true }] });
   }
 
   // ---------- mutations ----------
@@ -1765,10 +1782,10 @@ export class DocumentStore {
     // snapshot BEFORE, so the field stamps land on what actually changed
     const before = JSON.parse(JSON.stringify(n)) as Record<string, unknown>;
     Object.assign(n, patch);
-    this.stampFields(n, before);
+    const fields = this.stampFields(n, before);
     this.stampEdit(n);
     this.emit();
-    this.emitOp({ op: "update_node", node_id: id, patch });
+    this.emitOp({ op: "update_node", node_id: id, patch, fields });
   }
 
   /** Edit the canvas header metadata (graph name + id). The GraphML/em.json
