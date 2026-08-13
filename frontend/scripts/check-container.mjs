@@ -168,7 +168,7 @@ const shelfSection = (resourceId = "res0") => ({
   const b = { nodes: [{ id: "U1" }, { id: "U2" }],
               edges: [{ id: "loro", source: "U1", target: "U2", edge_type: "is_before" }] };
   const report = { addedGraphs: [], mergedGraphs: [], mergedNodes: 0, addedNodes: 0,
-                   addedEdges: 0, warnings: [] };
+                   addedEdges: 0, conflicts: [], warnings: [] };
   C.mergeGraphSections(a, b, report);
   eq(a.edges.length, 1, "the same relation authored twice is one relation");
   eq(report.addedEdges, 0, "…and nothing was added");
@@ -178,6 +178,166 @@ const shelfSection = (resourceId = "res0") => ({
   C.mergeGraphSections(a, c, report);
   eq(a.edges.length, 2, "a different edge type is a different relation");
   eq(new Set(a.edges.map((e) => e.id)).size, 2, "…and the id collision was resolved");
+}
+
+// ── P3 · the merge is DATED and the conflicts are VISIBLE ───────────────────
+const ANNA = "0000-0002-1825-0097";
+const BRUNO = "0000-0001-5109-3700";
+const unit = (id, description, by, at) => ({
+  id, node_type: "US", name: id, description,
+  data: { created_by: by, created_at: at, modified_by: by, modified_at: at },
+});
+const section = (...nodes) => ({ graph_id: "scavo", nodes, edges: [] });
+const freshReport = () => ({ addedGraphs: [], mergedGraphs: [], mergedNodes: 0,
+                             addedNodes: 0, addedEdges: 0, conflicts: [], warnings: [] });
+
+{
+  // the more recent version wins
+  const mine = section(unit("US1", "muro in opus", ANNA, "2026-08-13T10:00:00Z"));
+  const theirs = section(unit("US1", "muro in opus reticulatum", BRUNO, "2026-08-13T11:30:00Z"));
+  const r = freshReport();
+  C.mergeGraphSections(mine, theirs, r);
+  eq(mine.nodes[0].description, "muro in opus reticulatum", "the more recent edit wins");
+  eq(r.conflicts.length, 1, "…and the contested node is listed");
+  eq(r.conflicts[0].reason, "newer", "…with the reason");
+  eq(r.conflicts[0].winner.by, BRUNO, "…naming who overwrote");
+  eq(r.conflicts[0].loser.by, ANNA, "…and who was overwritten");
+  eq(r.conflicts[0].fieldHint, ["description"], "…and where to look");
+  eq(r.conflicts[0].loserPayload.description, "muro in opus",
+     "the losing version travels with the conflict, so 'keep mine' needs no second file");
+}
+
+{
+  // an OLDER incoming version does not overwrite — the case that used to be lost
+  const mine = section(unit("US1", "lettura aggiornata", ANNA, "2026-08-13T12:00:00Z"));
+  const theirs = section(unit("US1", "lettura di ieri", BRUNO, "2026-08-12T09:00:00Z"));
+  const r = freshReport();
+  C.mergeGraphSections(mine, theirs, r);
+  eq(mine.nodes[0].description, "lettura aggiornata", "an older incoming edit does NOT overwrite");
+  eq(r.conflicts.length, 1, "…and 'I did not overwrite you' is listed too");
+  eq(r.conflicts[0].winner.side, "mine", "…saying which side won");
+}
+
+{
+  // the outcome does not depend on the merge order
+  const a = () => section(unit("US1", "A", ANNA, "2026-08-13T10:00:00Z"));
+  const b = () => section(unit("US1", "B", BRUNO, "2026-08-13T11:30:00Z"));
+  const aIntoB = b();
+  C.mergeGraphSections(aIntoB, a(), freshReport());
+  const bIntoA = a();
+  C.mergeGraphSections(bIntoA, b(), freshReport());
+  eq(aIntoB.nodes[0].description, bIntoA.nodes[0].description,
+     "A into B and B into A land on the same project");
+  eq(aIntoB.nodes[0].description, "B", "…the more recent one");
+}
+
+{
+  // the winner keeps ITS OWN stamps — never re-stamped by whoever merged
+  const mine = section(unit("US1", "mio", ANNA, "2026-08-13T10:00:00Z"));
+  const theirs = section(unit("US1", "suo", BRUNO, "2026-08-13T11:30:00Z"));
+  C.mergeGraphSections(mine, theirs, freshReport());
+  eq(mine.nodes[0].data.modified_by, BRUNO, "the winner keeps its own hand");
+  eq(mine.nodes[0].data.modified_at, "2026-08-13T11:30:00Z", "…and its own instant");
+}
+
+{
+  // identical content is not a conflict, whatever the stamps say
+  const mine = section(unit("US1", "uguale", ANNA, "2026-08-13T10:00:00Z"));
+  const theirs = section(unit("US1", "uguale", BRUNO, "2026-08-13T11:30:00Z"));
+  const r = freshReport();
+  C.mergeGraphSections(mine, theirs, r);
+  eq(r.mergedNodes, 1, "the node was seen twice");
+  eq(r.conflicts, [], "…but nobody's work was at stake, so nothing is reported");
+}
+
+{
+  // an exact tie is broken stably and DECLARED
+  const mine = section(unit("US1", "A", ANNA, "2026-08-13T10:00:00Z"));
+  const theirs = section(unit("US1", "B", BRUNO, "2026-08-13T10:00:00Z"));
+  const r = freshReport();
+  C.mergeGraphSections(mine, theirs, r);
+  eq(r.conflicts[0].reason, "tie", "an exact tie says so");
+  eq(r.conflicts[0].winner.by, BRUNO, "…and the tie-break is the smaller iD, stably");
+}
+
+{
+  // no stamps → the date did NOT decide, and that is said
+  const mine = section({ id: "US1", node_type: "US", name: "US1", description: "legacy" });
+  const theirs = section(unit("US1", "con timbri", BRUNO, "2026-08-13T11:30:00Z"));
+  const r = freshReport();
+  C.mergeGraphSections(mine, theirs, r);
+  eq(r.conflicts[0].reason, "unstamped", "an absent stamp is unknown, not older");
+  eq(mine.nodes[0].description, "con timbri", "…the incoming version is kept, as before");
+  eq(r.conflicts[0].loser.at, null, "…and the report does not invent a date");
+}
+
+{
+  // a field the other author DELETED does not survive
+  const mine = section({ id: "US1", node_type: "US", name: "US1", description: "vecchia",
+                         data: { created_at: "2026-08-13T10:00:00Z", note: "da togliere" } });
+  const theirs = section({ id: "US1", node_type: "US", name: "US1", description: "nuova",
+                           data: { created_at: "2026-08-13T11:00:00Z" } });
+  C.mergeGraphSections(mine, theirs, freshReport());
+  eq(mine.nodes[0].data.note, undefined,
+     "a field the winner does not carry is dropped, not quietly kept alive");
+}
+
+// ── P3 · light-weight versioning ────────────────────────────────────────────
+{
+  const doc = C.buildContainer({ graphs: [{ id: "scavo", doc: legacyDoc("scavo") }] });
+  const first = C.bumpVersion(doc, null, "2026-08-13T10:00:00Z");
+  eq(first.number, 1, "a project that was never versioned starts at v1");
+  ok(first.id.startsWith("sha256:"), "…identified by a content digest");
+  eq(first.was_revision_of, null, "…and grew out of nothing");
+
+  // saving again with no change is NOT a revision
+  const again = C.bumpVersion(doc, first, "2026-08-13T10:05:00Z");
+  eq(again.number, 1, "an unchanged save does not invent a revision");
+  eq(again.id, first.id, "…and keeps its digest");
+
+  // a change bumps and records what it came from
+  const changed = C.buildContainer({
+    graphs: [{ id: "scavo", doc: legacyDoc("scavo", "US202") }],
+  });
+  const second = C.bumpVersion(changed, first, "2026-08-13T11:00:00Z");
+  eq(second.number, 2, "changed content is a new version");
+  eq(second.was_revision_of, first.id, "…pointing at the one it grew out of");
+  eq(C.versionLabel(second), `v2 (da ${first.id})`, "…and it reads as a sentence");
+
+  // the layout is NOT content: moving a box is not a new version of a study
+  const moved = C.buildContainer({ graphs: [{ id: "scavo", doc: legacyDoc("scavo") }] });
+  moved.layout = { positions: { US101: { x: 999, y: 999, w: 10, h: 10 } } };
+  eq(C.contentDigest(moved), first.id, "the layout does not change the version");
+
+  // and the version survives the file
+  const roundTrip = C.parseContainer({ ...doc, version: second });
+  eq(roundTrip.version.number, 2, "the version comes back from the file");
+  eq(roundTrip.version.id, second.id, "…with its digest");
+}
+
+{
+  // the digest agrees with s3Dgraphy's: same canonical JSON, same sha256.
+  // Pinned against a value computed by the Python side (see
+  // tests/test_merge_conflicts.py) so a drift in either canonicaliser shows up.
+  const doc = { graphs: { a: { graph_id: "a", nodes: [], edges: [] } },
+                active_graph_id: "a" };
+  eq(C.contentDigest(doc), "sha256:1bce3bc3bbf4",
+     "the TS digest is the one s3Dgraphy computes for the same project");
+}
+
+{
+  // the arbitration is ONE function, shared with the live op-log: a conflict
+  // that arrives one operation at a time must not be judged by a second rule
+  const mine = unit("US1", "mia", ANNA, "2026-08-13T12:00:00Z");
+  const theirs = unit("US1", "loro", BRUNO, "2026-08-13T11:00:00Z");
+  const r = C.resolveNodePair("US1", mine, theirs);
+  eq(r.side, "mine", "a remote edit older than mine does not land");
+  eq(r.conflict.reason, "newer", "…and it is recorded, not swallowed");
+  eq(r.conflict.loser.by, BRUNO, "…naming whose edge was refused");
+
+  const same = C.resolveNodePair("US1", unit("US1", "x", ANNA, "2026-08-13T10:00:00Z"),
+                                 unit("US1", "x", BRUNO, "2026-08-13T11:00:00Z"));
+  eq(same.conflict, null, "the same content is never a conflict, wherever it arrives from");
 }
 
 console.log(`container: ${checks} checks passed`);

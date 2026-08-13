@@ -83,6 +83,10 @@
           <div class="dd-sep"></div>
           <button id="btn-save" title="Save .em.json (⌘S)" data-i18n="toolbar.save">Save</button>
           <button id="btn-save-as" title="Save .em.json to a new file (⇧⌘S)" data-i18n="toolbar.saveAs">Save As…</button>
+          <!-- P3 · pin: freeze the project as the thing a citation points at.
+               The DOI is the Catalog's to mint; this is the stable snapshot it
+               would mint for. -->
+          <button id="btn-pin-version" data-i18n="version.pin" data-i18n-title="version.pinTitle">Fissa versione…</button>
         </div>
       </div>
       <div class="dropdown" id="dd-edit">
@@ -99,7 +103,11 @@
         <div class="dd-menu hidden">
           <button id="btn-mode-standalone" title="Standalone: editing a local .em.json"><span data-i18n="toolbar.modeStandalone">Standalone</span></button>
           <button id="btn-mode-sidecar" title="Sidecar: live-synced to a host (Blender/EMtools) — ADR-002"><span data-i18n="toolbar.modeSidecar">Sidecar (sync)</span></button>
-          <button id="btn-mode-hub" disabled title="Hub: em-server multi-user session (coming later)"><span data-i18n="toolbar.modeHub">Hub</span></button>
+          <!-- MODES1 · reachable, not faked: the entry exists so the third mode
+               has a NAME in the interface, and clicking it says plainly that
+               there is no em-server to connect to yet. A disabled button would
+               have said "later" without saying what it is. -->
+          <button id="btn-mode-hub" data-i18n-title="mode.hubTitle" title="Hub: em-server multi-user session (coming later)"><span data-i18n="toolbar.modeHub">Hub</span></button>
         </div>
       </div>
       <!-- WIN7 · Tools: the one-shot instruments. They are not editors and never
@@ -447,6 +455,10 @@
         <button id="em-version" title="Version breakdown (config files + CIDOC-CRM)"></button>
       </span>
       <span id="mode-indicator" title="Standalone: editing a local .em.json. Sidecar: live-synced to a host (EMtools/Blender).">Standalone mode</span>
+      <!-- MODES1 · what this client does on the live channel: off / send /
+           receive / both. Beside the mode because it only means anything when
+           there IS a channel — it appears with the connection and goes with it. -->
+      <span id="sync-control" class="hidden"></span>
       <span id="sidecar-detail" class="hidden"></span>
       <div id="breadcrumb" class="hidden"></div>
       <!-- IDENTITY · who is authoring, where the mode already is. A claimed iD
@@ -454,8 +466,18 @@
            whether this person may publish, so it must be readable without
            opening a dialog. -->
       <button id="footer-identity" class="footer-chip" title="">—</button>
+      <!-- P3 · the project's revision. Discreet: it is a record, not a badge —
+           and it only appears once the project has been written, because a
+           version nobody has saved is a number about nothing. -->
+      <span id="project-version" class="hidden"></span>
+      <button id="conflict-reopen" class="footer-chip hidden" title=""></button>
       <span id="info">open or drop an .em.json file</span>
     </footer>
+    <!-- P3 · the conflict review panel. A dated merge still overwrote somebody:
+         this is where the silence becomes a list. A reviewable NOTICE, not an
+         error — nothing is blocked, it can be dismissed, and the footer chip
+         brings it back. -->
+    <div id="conflict-panel" class="hidden" role="dialog" aria-label="Conflitti"></div>
     <!-- WIN7 · the floating one-shot tool. A tool is not an editor: it is opened
          from Tools ▸, it does one job, and it goes away — so it floats over the
          arrangement instead of taking an area from it. The panel it shows is

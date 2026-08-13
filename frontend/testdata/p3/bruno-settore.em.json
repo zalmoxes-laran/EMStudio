@@ -1,0 +1,47 @@
+{
+ "header": {
+  "format": "em.json",
+  "version": "1.0"
+ },
+ "graphs": {
+  "settore_nord": {
+   "graph_id": "settore_nord",
+   "name": "Settore Nord",
+   "nodes": [
+    {
+     "id": "US-nord-1",
+     "node_type": "US",
+     "name": "US-nord-1",
+     "description": "saggio nord",
+     "data": {
+      "created_by": "0000-0001-5109-3700",
+      "created_at": "2026-08-13T09:30:00Z",
+      "modified_by": "0000-0001-5109-3700",
+      "modified_at": "2026-08-13T09:30:00Z"
+     }
+    }
+   ],
+   "edges": []
+  },
+  "settore_porta": {
+   "graph_id": "settore_porta",
+   "name": "Settore Porta",
+   "nodes": [
+    {
+     "id": "US-muro-confine",
+     "node_type": "US",
+     "name": "Muro di confine",
+     "description": "muro di fondazione, letto da Bruno",
+     "data": {
+      "created_by": "0000-0001-5109-3700",
+      "created_at": "2026-08-13T11:30:00Z",
+      "modified_by": "0000-0001-5109-3700",
+      "modified_at": "2026-08-13T11:30:00Z"
+     }
+    }
+   ],
+   "edges": []
+  }
+ },
+ "active_graph_id": "settore_nord"
+}

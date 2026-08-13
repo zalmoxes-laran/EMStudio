@@ -3321,6 +3321,71 @@ body.sync-active #footer-brand #em-version {
 .insp-geo-map:empty {
   margin-top: 0;
 }
+
+/* AUDIT1 · the editorial stamps — a record at the foot of the inspector, read
+   only, quiet on purpose. */
+.insp-stamps {
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+.insp-stamp-row {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  padding: 1px 2px;
+}
+.insp-stamp-label {
+  min-width: 62px;
+  color: var(--text-muted);
+}
+.insp-stamp-who {
+  color: var(--accent);
+  text-decoration: none;
+  font-variant-numeric: tabular-nums;
+}
+.insp-stamp-who:hover {
+  text-decoration: underline;
+}
+
+/* GEO2 · place-name search above the picker map. */
+.insp-geo-search .insp-name-input {
+  flex: 1;
+  min-width: 0;
+}
+.insp-geo-hits {
+  max-height: 150px;
+  overflow-y: auto;
+  margin-top: 4px;
+}
+.insp-geo-hits:not(:empty) {
+  border: 1px solid var(--border-faint);
+  border-radius: 5px;
+  padding: 3px;
+}
+.insp-geo-hit {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+}
+.insp-geo-hit:hover {
+  background: var(--bg-hover);
+}
+.insp-geo-hit.on {
+  background: var(--bg-accent-soft);
+}
+.insp-geo-hit small {
+  color: var(--text-faint);
+}
+.insp-geo-hit-name {
+  display: block;
+}
 .osm.dragging {
   cursor: grabbing;
 }
@@ -5771,4 +5836,132 @@ object.viewer-media {
   font-size: 11px;
   cursor: pointer;
   white-space: nowrap;
+}
+
+/* P3 · project version + conflict review. The version is a RECORD, so it reads
+   like the rest of the status bar; the panel is a NOTICE, so it is visible
+   without being a modal — nothing is blocked while it is open. */
+#project-version {
+  color: var(--text-faint);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+#conflict-reopen {
+  border-color: var(--warn, #b8860b);
+  color: var(--warn, #b8860b);
+}
+
+#conflict-panel {
+  position: fixed;
+  right: 14px;
+  bottom: 42px;
+  z-index: 60;
+  width: min(460px, calc(100vw - 28px));
+  max-height: min(52vh, 520px);
+  overflow-y: auto;
+  background: var(--bg-panel, var(--bg));
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+  padding: 10px 12px;
+}
+
+.conflict-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.conflict-head strong {
+  flex: 1;
+  font-size: 12.5px;
+}
+.conflict-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+.conflict-close:hover {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.conflict-hint {
+  font-size: 11px;
+  color: var(--text-faint);
+  margin-bottom: 8px;
+}
+
+.conflict-row {
+  border-top: 1px solid var(--border-faint);
+  padding: 7px 0;
+}
+.conflict-line {
+  font-size: 12px;
+  color: var(--text);
+}
+.conflict-meta {
+  font-size: 11px;
+  color: var(--text-faint);
+  margin-top: 2px;
+}
+.conflict-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 5px;
+}
+.conflict-btn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 8px;
+}
+.conflict-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text);
+}
+.conflict-btn:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* MODES1 · the sync control: four states, in the footer, only when connected. */
+#sync-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.sync-ctl-label {
+  color: var(--text-faint);
+  font-size: 11px;
+  margin-right: 2px;
+  cursor: help;
+}
+.sync-ctl-btn {
+  background: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  padding: 2px 6px;
+}
+.sync-ctl-btn:hover {
+  border-color: var(--border);
+  color: var(--text);
+}
+.sync-ctl-btn.on {
+  border-color: var(--accent);
+  color: var(--accent);
 }

@@ -1,12 +1,16 @@
 # EMStudio
 
-**The sovereign graph editor for the Extended Matrix** — one graph, two views:
-the EM swimlane matrix (epochs as lanes, time flowing upward) and the full
+**The sovereign graph editor for the Extended Matrix** — two views on the same
+data: the EM swimlane matrix (epochs as lanes, time flowing upward) and the full
 knowledge graph with every relation visible. Web service and desktop app from
 a single codebase.
 
-> Status: read-only GUI (roadmap phases 2–3, July 2026) — core + CLI + layout
-> engine v1 + web frontend (matrix/graph views) + Tauri shell scaffold.
+> Status: **editing GUI** (August 2026) — core + CLI + layout engine v1 + web
+> frontend with native editing, `.em.json` **multigraph container**, project
+> **shelf**, proxy-as-property + 2D annotator, **ORCID** identity + editorial
+> stamps, **live-sync** with EM-blender-tools (sidecar), and async **merge +
+> light versioning**. Real-time multi-user hub (CRDT) and the EMStudio→Blender
+> command channel are on the roadmap (phases below).
 > See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Why
@@ -20,6 +24,31 @@ EMStudio inverts the roles: **`.em.json` becomes the native format**
 (property graph + layout section), GraphML becomes a legacy one-way import,
 and the editor understands the EM node system natively — palette, sockets and
 validation driven by the same versioned JSON datamodels that drive s3Dgraphy.
+
+## What EMStudio does today
+
+- **Native editing of the EM node system** — palette, sockets and validation
+  driven by the same versioned JSON datamodels that drive s3Dgraphy; not a
+  read-only viewer.
+- **`.em.json` as a multigraph container.** A project file is a *container of
+  graphs* (`graphs: {…}`) plus a project **shelf** — the same container shape
+  Heriverse reads. A single-graph file is just a container-of-one; GraphML
+  import lands as a new graph slot.
+- **Project shelf.** A savable graph of resources (files, LOD, web sources)
+  with provenance and sha256, spanning the study's own material, its Heritage
+  Digital Twin, and comparanda from other HDTs.
+- **Proxy-as-property + 2D annotator.** Geometry is a `PropertyNode`
+  (`geometry`) carrying a semantic shape; a 2D annotator marks normalized
+  regions on documents and promotes resources to documents on annotate.
+- **ORCID identity + editorial stamps.** Claim-now / verify-later authorship;
+  every node carries `created/modified by+at`, distinct from interpretive
+  authorship and from historical epochs.
+- **Live-sync with Blender (sidecar).** Selection/focus sync with
+  EM-blender-tools over WebSocket (ADR-002), under an explicit 4-state Sync
+  control — nobody's scene changes without consent.
+- **Async merge + light versioning.** Two `.em.json` merge by UUID with a
+  dated, deterministic single arbiter; light PROV/DCTERMS versioning (no DTC
+  for ordinary edits).
 
 ## Core design decisions
 
@@ -85,8 +114,11 @@ npm run serve      # → http://<your-ip>:4173  (Vite preview, --host)
 npm run dev        # dev alternative: http://localhost:5173, live reload
 ```
 
-This is single-user-per-document for now; the multi-user `em-server`
-(axum, CRDT) is phase 6 of the roadmap and will serve the same frontend.
+Documents already merge asynchronously (offline-then-integrate) via the
+dated single arbiter; real-time multi-user co-editing over the `em-server`
+(axum, CRDT relay + presence) is the next roadmap phase and will serve the
+same frontend. The CRDT foundation (op-model, tombstones, per-field LWW)
+is what unifies the async merge and the future live hub.
 
 **D. Iterative dev stack (`./dev.sh`, macOS/Linux).** One command starts
 the Vite frontend (live reload, no Tauri rebuild) *and* the local Python

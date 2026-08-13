@@ -6,6 +6,7 @@ import type { AuthorityCandidate, AuthorityRef, EmEdge, EmNode } from "./types";
 import { qualiaList } from "./vocab";
 import { getSettings } from "./settings";
 import { createOsmMap } from "./osm-map";
+import { geocode, GeocodeOffline, zoomFor } from "./geocode";
 
 export interface InspectorCallbacks {
   onJump: (nodeId: string) => void;
@@ -35,6 +36,13 @@ export interface InspectorCallbacks {
   /** Query em-bridge /resolve-authority for ranked offline candidates. Optional:
    *  when absent or on any failure the HDT-O authority field is plain free-text. */
   resolveAuthority?: (term: string, facet: string) => Promise<AuthorityCandidate[]>;
+  /** CMD1 · send a 3D command to the connected host (Blender). Absent = the
+   *  build has no command channel at all, and the actions are not drawn. */
+  onCommand?: (verb: string, target: string) => void;
+  /** CMD1 · may commands be sent right now? `null` = yes; a string is the
+   *  reason they cannot be, shown in the tooltip of the disabled button. An
+   *  action that is offered and then refused is worse than one greyed out. */
+  commandsBlocked?: () => string | null;
 }
 
 function el(tag: string, cls?: string, text?: string): HTMLElement {
@@ -178,6 +186,174 @@ function buildAuthorityField(
   facetSel.addEventListener("change", queryNow);
 }
 
+/** AUDIT1 · the four editorial fields, in the order a reader wants them. */
+const EDITORIAL_FIELDS = ["created_by", "created_at", "modified_by", "modified_at"];
+
+/**
+ * AUDIT1 · the last hand on this node — created/modified, by whom and when.
+ *
+ * READ-ONLY, and deliberately at the bottom: it is a record, not a gate. It is
+ * also not `has_author`, which is up in the paradata where interpretive
+ * responsibility belongs; this is bookkeeping, taken automatically from the
+ * session identity and the clock.
+ *
+ * A node with no stamps renders NOTHING — no "unknown", no empty rows. Absent
+ * means nobody recorded it, and a blank field invites someone to fill it in by
+ * hand, which is the one thing an automatic stamp must not become.
+ */
+function renderEditorialStamps(root: HTMLElement, node: EmNode): void {
+  const data = (node.data ?? {}) as Record<string, unknown>;
+  const has = EDITORIAL_FIELDS.some((k) => data[k]);
+  if (!has) return;
+
+  const when = (v: unknown): string => {
+    const d = new Date(String(v));
+    return Number.isNaN(d.getTime()) ? String(v) : d.toLocaleString();
+  };
+  const line = (label: string, byKey: string, atKey: string): HTMLElement | null => {
+    const at = data[atKey];
+    const by = data[byKey];
+    if (!at && !by) return null;
+    const row = el("div", "insp-stamp-row");
+    row.appendChild(el("span", "insp-stamp-label", label));
+    row.appendChild(el("span", "insp-stamp-when", at ? when(at) : "—"));
+    if (by) {
+      const a = document.createElement("a");
+      a.className = "insp-stamp-who";
+      a.href = `https://orcid.org/${String(by)}`;
+      a.target = "_blank";
+      a.rel = "noreferrer noopener";
+      a.textContent = String(by);
+      a.title = "ORCID iD of the editor (automatic — not the interpretive author)";
+      row.appendChild(a);
+    }
+    return row;
+  };
+
+  const rows = [
+    line("Created", "created_by", "created_at"),
+    line("Modified", "modified_by", "modified_at"),
+  ].filter(Boolean) as HTMLElement[];
+  if (!rows.length) return;
+  root.appendChild(el("h3", "insp-sect", "Last hand (editorial)"));
+  const box = el("div", "insp-stamps");
+  for (const r of rows) box.appendChild(r);
+  root.appendChild(box);
+}
+
+/**
+ * GEO2 · the place-name search that sits on top of the picker map.
+ *
+ * Two acts, kept apart: SEARCHING moves the camera and drops a *candidate*
+ * marker, and only a confirmation writes `site_position`. A geocoder returns a
+ * guess about a name — good enough to fly there, never good enough to record as
+ * the site's position without someone saying so.
+ *
+ * Confirmation is either gesture: click the map where the site actually is (the
+ * pre-existing `onPick`, untouched), or accept the candidate as-is.
+ */
+function buildPlaceSearch(
+  map: { setView: (lat: number, lon: number, z?: number) => void;
+         setMarker: (lat: number, lon: number) => void },
+  store: DocumentStore,
+): HTMLElement {
+  const wrap = el("div", "insp-geo-search");
+  const row = el("div", "insp-geo-row");
+  const input = document.createElement("input");
+  input.type = "search";
+  input.className = "insp-name-input";
+  input.placeholder = "Search a place…";
+  input.title =
+    "Place-name search (Nominatim / OpenStreetMap). Online only: without a " +
+    "network the map and the manual pick still work.";
+  row.appendChild(input);
+  wrap.appendChild(row);
+  const results = el("div", "insp-geo-hits");
+  wrap.appendChild(results);
+
+  let timer = 0;
+  let inflight: AbortController | null = null;
+  let candidate: { lat: number; lon: number; label: string } | null = null;
+
+  const say = (msg: string, cls = "insp-hint"): void => {
+    results.textContent = "";
+    results.appendChild(el("div", cls, msg));
+  };
+
+  const run = async (q: string): Promise<void> => {
+    inflight?.abort();
+    const ctrl = new AbortController();
+    inflight = ctrl;
+    say("Searching…");
+    try {
+      const hits = await geocode(q, { signal: ctrl.signal });
+      if (ctrl.signal.aborted) return;
+      results.textContent = "";
+      if (!hits.length) {
+        say(`No place found for “${q}”.`);
+        return;
+      }
+      for (const h of hits) {
+        const b = el("button", "insp-geo-hit");
+        const name = el("span", "insp-geo-hit-name", h.label);
+        b.appendChild(name);
+        if (h.kind) b.appendChild(el("small", undefined, ` ${h.kind}`));
+        b.addEventListener("click", () => {
+          // fly there + show the candidate; nothing is written yet
+          map.setView(h.lat, h.lon, zoomFor(h));
+          map.setMarker(h.lat, h.lon);
+          candidate = { lat: h.lat, lon: h.lon, label: h.label };
+          for (const other of results.querySelectorAll(".insp-geo-hit"))
+            other.classList.remove("on");
+          b.classList.add("on");
+          confirm.classList.remove("hidden");
+          confirm.textContent = `Use this point (${h.lat.toFixed(5)}, ${h.lon.toFixed(5)})`;
+        });
+        results.appendChild(b);
+      }
+      results.appendChild(
+        el("div", "insp-hint", "results © OpenStreetMap contributors · Nominatim"),
+      );
+    } catch (e) {
+      if ((e as Error)?.name === "AbortError") return;
+      say(
+        e instanceof GeocodeOffline
+          ? "Place search is available online. Offline you can still pick on the map or type coordinates."
+          : `Search failed: ${(e as Error)?.message ?? "unknown error"}. The map and manual pick still work.`,
+      );
+    }
+  };
+
+  const confirm = document.createElement("button");
+  confirm.className = "insp-btn hidden";
+  confirm.type = "button";
+  confirm.addEventListener("click", () => {
+    if (candidate) store.setSitePosition(candidate.lon, candidate.lat);
+  });
+  row.appendChild(confirm);
+
+  // Debounce: a request per keystroke would be both useless and a breach of the
+  // service's usage policy. The rate gate in geocode.ts is the backstop.
+  input.addEventListener("input", () => {
+    window.clearTimeout(timer);
+    const q = input.value.trim();
+    inflight?.abort();
+    if (q.length < 2) {
+      results.textContent = "";
+      return;
+    }
+    timer = window.setTimeout(() => void run(q), 500);
+  });
+  input.addEventListener("keydown", (e) => {
+    if (e.key !== "Enter") return;
+    e.preventDefault();
+    window.clearTimeout(timer);
+    const q = input.value.trim();
+    if (q.length >= 2) void run(q);
+  });
+  return wrap;
+}
+
 /**
  * MULTIGRAPH · the site-position section, mounted in TWO places by the same
  * function: the canvas panel (no selection) and the graph-self node's own
@@ -259,6 +435,7 @@ function renderSitePosition(host: HTMLElement, store: DocumentStore): void {
         markerLabel: "site",
         onPick: (lat, lon) => store.setSitePosition(lon, lat),
       });
+      mapHost.appendChild(buildPlaceSearch(map, store));
       mapHost.appendChild(map.el);
       map.activate();
     });
@@ -850,6 +1027,36 @@ export function renderInspector(
     root.appendChild(bar);
   }
 
+  // CMD1 · the 3D arm. On a stratigraphic unit: model its proxy in Blender. On
+  // a resource: import its mesh and bind it. The action lives HERE, on the node
+  // it is about, because "model the proxy for this unit" is a sentence about a
+  // unit — a global button would have to ask which one, which the selection
+  // already answered.
+  if (nodeId && cb.onCommand) {
+    const verb = isStratigraphicType(node.node_type)
+      ? "create_proxy_for_unit"
+      : node.node_type === "resource"
+        ? "import_geometry"
+        : null;
+    if (verb) {
+      const blocked = cb.commandsBlocked?.() ?? null;
+      const bar = el("div", "insp-actions");
+      const b = document.createElement("button");
+      b.className = "insp-btn";
+      b.textContent = verb === "create_proxy_for_unit"
+        ? "Model the proxy in Blender"
+        : "Import geometry in Blender";
+      b.title = blocked
+        ? blocked
+        : "Ask the connected host to do this in its 3D scene; what it creates "
+          + "comes back into this graph.";
+      b.disabled = !!blocked;
+      b.addEventListener("click", () => cb.onCommand!(verb, nodeId));
+      bar.appendChild(b);
+      root.appendChild(bar);
+    }
+  }
+
   // FUNNEL1 · "Propagative metadata" — the value + provenance of each propagative
   // property (author/license/embargo), resolved Node → Activity → Epoch → Canvas
   // (first non-null, substitutive). Mirrors EMtools' draw_propagative_metadata:
@@ -894,6 +1101,9 @@ export function renderInspector(
     const dl = el("dl", "insp-data");
     for (const [k, v] of Object.entries(data)) {
       if (v === null || v === "" || v === undefined) continue;
+      // AUDIT1 · the editorial stamps have their own block below — four raw
+      // keys in the technical dump is not "shown", it is buried.
+      if (EDITORIAL_FIELDS.includes(k)) continue;
       dl.appendChild(el("dt", undefined, k));
       dl.appendChild(
         el(
@@ -908,6 +1118,8 @@ export function renderInspector(
       root.appendChild(dl);
     }
   }
+
+  renderEditorialStamps(root, node as EmNode);
 
   // MULTIGRAPH · the graph-self node carries the graph-scope facts, and the
   // multigraph mode puts it ON the canvas — so selecting it must offer the site

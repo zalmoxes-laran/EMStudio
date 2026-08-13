@@ -2,6 +2,8 @@
 // forward-compatible — today it holds the live-sync target (ADR-002); more
 // sections (appearance, layout defaults…) can slot in later.
 
+import type { SyncDirection } from "./sync";
+
 export interface SyncSettings {
   /** ws (local/plain) or wss (TLS). A browser can only be a WS *client*. */
   protocol: "ws" | "wss";
@@ -9,6 +11,17 @@ export interface SyncSettings {
   port: number;
   /** which tool hosts the session; only "blender" (EMtools) is wired today */
   tool: string;
+  /**
+   * MODES1 · what this client does on the live channel: `off` | `send` |
+   * `receive` | `both`. Persisted per user/browser, because it is a working
+   * arrangement ("today I am alone on two screens", "today somebody else is in
+   * Blender") and re-choosing it at every reload would make it a nuisance
+   * instead of a control.
+   *
+   * `both` is the default because it IS the behaviour that existed before this
+   * control did: nothing changes for anyone until they choose.
+   */
+  direction: SyncDirection;
 }
 
 export interface DeveloperSettings {
@@ -74,7 +87,8 @@ export interface Settings {
 const KEY = "emstudio.settings";
 
 const DEFAULTS: Settings = {
-  sync: { protocol: "ws", host: "localhost", port: 8788, tool: "blender" },
+  sync: { protocol: "ws", host: "localhost", port: 8788, tool: "blender",
+          direction: "both" },
   developer: { showNodeIds: false },
   interaction: { edgeTooltips: true, strictDocumentNames: true },
   ai: { provider: "claude", model: "" },

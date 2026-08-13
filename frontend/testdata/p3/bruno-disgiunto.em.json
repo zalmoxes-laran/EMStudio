@@ -1,0 +1,28 @@
+{
+ "header": {
+  "format": "em.json",
+  "version": "1.0"
+ },
+ "graphs": {
+  "settore_est": {
+   "graph_id": "settore_est",
+   "name": "Settore Est",
+   "nodes": [
+    {
+     "id": "US-est-1",
+     "node_type": "US",
+     "name": "US-est-1",
+     "description": "niente in comune",
+     "data": {
+      "created_by": "0000-0001-5109-3700",
+      "created_at": "2026-08-13T12:00:00Z",
+      "modified_by": "0000-0001-5109-3700",
+      "modified_at": "2026-08-13T12:00:00Z"
+     }
+    }
+   ],
+   "edges": []
+  }
+ },
+ "active_graph_id": "settore_est"
+}

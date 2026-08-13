@@ -26,6 +26,15 @@ export interface HostInfo {
   database?: string;
   /** any extra status text the host wants displayed verbatim */
   label?: string;
+  /**
+   * CMD1 · does this host EXECUTE commands (model a proxy, import a geometry)?
+   *
+   * Declared by the host, never guessed: an affordance that is offered and then
+   * refused is worse than one that is greyed out with a reason. An older host
+   * that does not say anything is treated as a no — the safe reading of silence
+   * when the question is "may I act on your scene".
+   */
+  accepts_commands?: boolean;
 }
 
 export type SyncMessage =
@@ -48,6 +57,26 @@ export type SyncMessage =
     }
   | { v: number; type: "request_save"; source?: string }
   | ({ v: number; type: "host_info"; source?: string } & HostInfo)
+  | {
+      v: number;
+      type: "command";
+      verb: string;
+      target: string;
+      params: Record<string, unknown>;
+      cmd_id: string;
+      source?: string;
+    }
+  | {
+      v: number;
+      type: "command_result";
+      cmd_id: string;
+      ok: boolean;
+      delta?: { nodes?: unknown[]; edges?: unknown[] };
+      error?: string;
+      repeated?: boolean;
+      info?: Record<string, unknown>;
+      source?: string;
+    }
   | ({ v: number; type: "op"; source?: string } & GraphOp);
 
 export interface SyncCallbacks {
@@ -59,8 +88,37 @@ export interface SyncCallbacks {
   onSnapshot: (doc: EmDocument) => void;
   /** the host reported what it is editing (tool / file / database) */
   onHostInfo?: (info: HostInfo) => void;
+  /** CMD1 · the host answered a command: a delta to merge, or an error */
+  onCommandResult?: (result: {
+    cmd_id: string; ok: boolean;
+    delta?: { nodes?: unknown[]; edges?: unknown[] };
+    error?: string; repeated?: boolean; info?: Record<string, unknown>;
+  }) => void;
   onStatus: (state: "connecting" | "open" | "closed") => void;
 }
+
+/**
+ * MODES1 · what EMStudio does on the live channel. FOUR states, because two
+ * (on/off) cannot express the situation people are actually in:
+ *
+ *   off      — no echo at all: neither sent nor applied
+ *   send     — my selection shows up over there, theirs does not come here
+ *   receive  — the host's selection shows up here, mine does not leave
+ *   both     — the two screens follow each other
+ *
+ * The principle this exists for: **nobody has somebody else's state imposed on
+ * them without having chosen it.** One person on two screens wants `both`; two
+ * people working at once want `off` or one direction, and until now that was
+ * not a choice anybody could make.
+ *
+ * It governs the EPHEMERAL channels — selection and operations. The snapshot and
+ * `host_info` are NOT gated: the snapshot is how a sidecar comes to show the
+ * host's document at all, and refusing it would make connecting in `off` look
+ * like a broken app rather than a quiet one.
+ */
+export type SyncDirection = "off" | "send" | "receive" | "both";
+
+export const SYNC_DIRECTIONS: SyncDirection[] = ["off", "send", "receive", "both"];
 
 const SOURCE = "emstudio";
 
@@ -69,6 +127,28 @@ export class SyncClient {
   private url = "";
   private cb: SyncCallbacks | null = null;
   private manualClose = false;
+  /** MODES1 · default `both`: it is exactly today's behaviour, so turning the
+   *  control on changes nothing until somebody chooses otherwise. */
+  private direction: SyncDirection = "both";
+
+  get syncDirection(): SyncDirection {
+    return this.direction;
+  }
+
+  /** Change what this client does on the channel. Takes effect immediately —
+   *  including on a connection already open, which is the point: you turn the
+   *  echo off when the other person starts working, not before. */
+  setDirection(direction: SyncDirection): void {
+    this.direction = direction;
+  }
+
+  private get sends(): boolean {
+    return this.direction === "send" || this.direction === "both";
+  }
+
+  private get receives(): boolean {
+    return this.direction === "receive" || this.direction === "both";
+  }
 
   get connected(): boolean {
     return this.ws?.readyState === WebSocket.OPEN;
@@ -118,15 +198,25 @@ export class SyncClient {
         return;
       }
       if (msg.source === SOURCE) return; // ignore our own echo
-      if (msg.type === "select" && (msg.node_id || msg.node_ids?.length))
-        this.cb?.onSelect(msg.node_id ?? "", msg.node_ids);
-      else if (msg.type === "snapshot") {
+      if (msg.type === "select" && (msg.node_id || msg.node_ids?.length)) {
+        // MODES1 · gated, not disconnected: the socket stays up (the host's
+        // document and its status keep arriving), only the echo stops.
+        if (this.receives) this.cb?.onSelect(msg.node_id ?? "", msg.node_ids);
+      } else if (msg.type === "snapshot") {
         this.cb?.onSnapshot(msg.doc);
         if (msg.host) this.cb?.onHostInfo?.(msg.host);
       } else if (msg.type === "host_info") {
         const { type: _t, v: _v, source: _s, ...info } = msg;
         this.cb?.onHostInfo?.(info as HostInfo);
+      } else if (msg.type === "command_result") {
+        // CMD1 · NOT gated by the sync direction: this is the answer to
+        // something this user explicitly asked for, and dropping it would leave
+        // the request hanging with no way to tell why.
+        const { type: _t, v: _v, source: _s, ...res } = msg;
+        this.cb?.onCommandResult?.(res as Parameters<
+          NonNullable<SyncCallbacks["onCommandResult"]>>[0]);
       } else if (msg.type === "op") {
+        if (!this.receives) return;   // MODES1 · same gate as the selection
         const { type: _t, v: _v, source: _s, ...op } = msg;
         this.cb?.onOp(op as GraphOp);
       }
@@ -136,6 +226,7 @@ export class SyncClient {
   /** Announce a local selection to the peer (no-op when disconnected).
    * `nodeId` is the active node; `nodeIds` the full multi-selection. */
   sendSelect(nodeId: string | null, nodeIds?: string[]): void {
+    if (!this.sends) return;          // MODES1 · off / receive: nothing leaves
     if (!this.connected || (!nodeId && !nodeIds?.length)) return;
     const msg: SyncMessage = {
       v: 1,
@@ -153,11 +244,34 @@ export class SyncClient {
 
   /** Send a graph mutation to the peer/host (no-op when disconnected). */
   sendOp(op: GraphOp): void {
+    if (!this.sends) return;          // MODES1 · off / receive: nothing leaves
     if (!this.connected) return;
     try {
       this.ws!.send(JSON.stringify({ v: 1, type: "op", source: SOURCE, ...op }));
     } catch {
       /* dropped */
+    }
+  }
+
+  /**
+   * CMD1 · send a command to the host — "model the proxy for this unit".
+   *
+   * Deliberately NOT gated by the sync direction. `off` means "do not mirror my
+   * selection", which is about an echo; a command is a deliberate act by the
+   * person at this end, and silently swallowing it because a mirror is off
+   * would make the button lie. What DOES gate it is the host's consent, and the
+   * host is the one who enforces that (it also declares it in `host_info` so
+   * the UI can grey the action out instead of failing).
+   *
+   * Returns false when there is no connection, so the caller can say so.
+   */
+  sendCommand(msg: object): boolean {
+    if (!this.connected) return false;
+    try {
+      this.ws!.send(JSON.stringify(msg));
+      return true;
+    } catch {
+      return false;
     }
   }
 

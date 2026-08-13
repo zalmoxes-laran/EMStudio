@@ -56,6 +56,13 @@ export interface OsmMap {
   setFootprint(ring: [number, number][] | null): void;
   /** Move the marker — the centroid arrives after the footprint is computed. */
   setMarker(lat: number, lon: number): void;
+  /**
+   * GEO2 · move the CAMERA (not the recorded position): what a place-name search
+   * does when you choose a result. Kept apart from `setMarker` on purpose —
+   * looking somewhere is not the same act as saying the site is there, and the
+   * search must never write a coordinate the user has not confirmed.
+   */
+  setView(lat: number, lon: number, z?: number): void;
   /** Drop observers and listeners. */
   destroy(): void;
 }
@@ -411,6 +418,20 @@ export function createOsmMap(opts: OsmMapOptions): OsmMap {
       markerLat = lat;
       markerLon = lon;
       render();
+    },
+    setView(lat: number, lon: number, z?: number): void {
+      if (z !== undefined) {
+        const next = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, Math.round(z)));
+        if (next !== zoom) {
+          zoom = next;
+          for (const img of imgs.values()) img.remove();
+          imgs.clear();
+        }
+      }
+      cx = lonToX(lon, zoom);
+      cy = latToY(lat, zoom);
+      render();
+      announce();
     },
     destroy(): void {
       active = false;

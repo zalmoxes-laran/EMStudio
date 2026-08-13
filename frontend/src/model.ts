@@ -15,6 +15,9 @@ import { MEMBERSHIP_EDGES } from "./folding";
 import { paradataGroupName } from "./naming";
 import { edgeTypeFor, nodeTypeForClass } from "./rules";
 import { VOLATILE_KEY } from "./volatile";
+import { currentIdentity } from "./identity";
+import { resolveNodePair } from "./container";
+import type { Conflict } from "./container";
 
 /** A structured graph mutation for the live op-log bridge (ADR-002 phase 2).
  * Kept small and additive; more variants (add/delete node/edge) land next. */
@@ -226,14 +229,36 @@ export class DocumentStore {
     if (!this.suppressOp) this.opFn?.(op);
   }
 
+  /** P3 · conflicts produced by REMOTE operations, in arrival order. The live
+   *  channel is not implemented (P4); this is where its conflicts collect so the
+   *  UI has one place to read them from when it is. */
+  readonly remoteConflicts: Conflict[] = [];
+
   /** Apply an operation that arrived from a peer, WITHOUT re-emitting it. */
   applyRemoteOp(op: GraphOp): void {
     this.suppressOp = true;
     try {
       switch (op.op) {
-        case "update_node":
+        case "update_node": {
+          // P3 · a remote edit of a node I also edited is the SAME conflict the
+          // container merge resolves, arriving one operation at a time — so it
+          // is judged by the same function (`resolveNodePair`) and not by a
+          // second rule. Only the ARBITRATION is shared: the transport, the
+          // broadcast and the CRDT are P4 and are not implemented here.
+          const mine = this.node(op.node_id);
+          if (mine) {
+            const theirs = { ...mine, ...op.patch } as Record<string, unknown>;
+            const { side, conflict } = resolveNodePair(
+              op.node_id, mine as unknown as Record<string, unknown>, theirs,
+            );
+            if (conflict) this.remoteConflicts.push(conflict);
+            // my version is the more recent one: the remote op does not land.
+            // Refusing is not silence — the conflict above is the record.
+            if (side === "mine") break;
+          }
           this.updateNode(op.node_id, op.patch);
           break;
+        }
         case "add_node":
           if (!this.node(op.node.id)) this.addNode(op.node);
           break;
@@ -354,9 +379,49 @@ export class DocumentStore {
     return `${base}_${String(i).padStart(2, "0")}`;
   }
 
+  // ---------- AUDIT1 · the editorial stamps (last hand) ----------
+  //
+  // Every node records who made it and who touched it last, taken from the
+  // session identity and the clock — like git, and for the same reason: an
+  // authorship you have to remember to type is an authorship nobody types.
+  //
+  // These are NOT `has_author`. That edge is INTERPRETIVE responsibility — who
+  // stands behind the reading — and it is chosen, published and argued over.
+  // This is bookkeeping: who typed it in. A node created by a student and
+  // interpreted by a director carries both, and they answer different
+  // questions. (Historical time is a third thing again: the epochs.)
+  //
+  // WITH NO IDENTITY DECLARED, `*_by` STAYS EMPTY. The clock is always
+  // knowable, so the times are recorded either way; the author is not invented.
+
+  /** The ORCID iD authoring right now, or null when nobody said. */
+  private editorOrcid(): string | null {
+    return currentIdentity()?.orcid ?? null;
+  }
+
+  /** Stamp a node's creation. No-op for an operation that arrived from a peer:
+   *  their edit is not our hand, and `suppressOp` is exactly that condition. */
+  private stampNew(node: EmNode): void {
+    if (this.suppressOp) return;
+    const data = ((node as Record<string, unknown>).data ??= {}) as Record<string, unknown>;
+    const who = this.editorOrcid();
+    if (who && !data.created_by) data.created_by = who;
+    if (!data.created_at) data.created_at = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+  }
+
+  /** Stamp an edit. Overwrites — this is a stamp, not a log. */
+  private stampEdit(node: EmNode): void {
+    if (this.suppressOp) return;
+    const data = ((node as Record<string, unknown>).data ??= {}) as Record<string, unknown>;
+    const who = this.editorOrcid();
+    if (who) data.modified_by = who;
+    data.modified_at = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+  }
+
   // ---------- mutations ----------
   addNode(node: EmNode, pos?: LayoutRect): EmNode {
     this.checkpoint();
+    this.stampNew(node);
     this.doc.graph.nodes.push(node);
     if (pos) {
       const layout = (this.doc.layout ??= {});
@@ -380,6 +445,7 @@ export class DocumentStore {
       node_type: "EpochNode",
       description: "",
     };
+    this.stampNew(node);
     this.doc.graph.nodes.push(node);
     const layout = (this.doc.layout ??= {});
     const lanes = (layout.swimlanes ??= []);
@@ -418,6 +484,7 @@ export class DocumentStore {
       if (end != null) d.end_time = end;
       node.data = d;
     }
+    this.stampNew(node);
     this.doc.graph.nodes.push(node);
     const layout = (this.doc.layout ??= {});
     const lanes = (layout.swimlanes ??= []);
@@ -811,6 +878,7 @@ export class DocumentStore {
       node_type: "EpochNode",
       description: "",
     };
+    this.stampNew(node);
     this.doc.graph.nodes.push(node);
     if (pos) {
       const layout = (this.doc.layout ??= {});
@@ -1370,6 +1438,7 @@ export class DocumentStore {
       node_type: groupType,
       description: "",
     };
+    this.stampNew(group);
     this.doc.graph.nodes.push(group);
     const added: EmEdge[] = [];
     for (const nid of nodeIds) {
@@ -1603,6 +1672,7 @@ export class DocumentStore {
     if (!n) return;
     this.checkpoint();
     Object.assign(n, patch);
+    this.stampEdit(n);
     this.emit();
     this.emitOp({ op: "update_node", node_id: id, patch });
   }
@@ -2218,6 +2288,11 @@ export class DocumentStore {
    * Ids already present are SKIPPED rather than replaced: the upstream ids are
    * deterministic, so a re-sent annotation is the same annotation, and skipping
    * is what makes the round trip idempotent on this side too.
+   *
+   * AUDIT1 · these nodes are NOT stamped here. They were made elsewhere and may
+   * already say who made them; stamping on the way in would put this session's
+   * hand on somebody else's work, which is precisely what an audit trail must
+   * not do. Same reasoning as the container merge.
    *
    * Returns how many nodes and edges were actually new.
    */

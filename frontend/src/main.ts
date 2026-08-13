@@ -3,9 +3,12 @@ import { applyFolding, buildMembership, MEMBERSHIP_EDGES } from "./folding";
 import { setBridgeResolver } from "./geo";
 import {
   buildContainer,
+  bumpVersion,
   mergeContainers,
   parseContainer,
+  versionLabel,
 } from "./container";
+import type { Conflict, ProjectVersion } from "./container";
 import {
   addToShelf,
   clearShelf,
@@ -157,7 +160,8 @@ import type {
   PromptResult,
   StratiMinerHandlers,
 } from "./stratiminer";
-import { type HostInfo, SyncClient } from "./sync";
+import { type HostInfo, SyncClient, SYNC_DIRECTIONS, type SyncDirection } from "./sync";
+import { buildCommand, type CommandVerb } from "./commands";
 import {
   AI_PROVIDERS,
   getSettings,
@@ -539,21 +543,101 @@ function renderSidecarDetail(): void {
     sidecarDetail.appendChild(seg);
   }
 }
-function setModeIndicator(sidecar: boolean): void {
-  modeIndicator.textContent = sidecar ? "Sidecar mode" : "Standalone mode";
-  sidecarDetail.classList.toggle("hidden", !sidecar);
-  if (sidecar) renderSidecarDetail();
+/**
+ * MODES1 · the three operating modes, made explicit.
+ *
+ *   standalone — no live connection: a local .em.json, on your own
+ *   sidecar    — connected to a HOST that owns the graph (Blender/EMtools)
+ *   hub        — connected to an em-server (multi-user). NOT WIRED: the mode
+ *                exists as a name and a menu entry, and says so. Showing it as
+ *                available while faking a connection would be worse than not
+ *                showing it.
+ *
+ * The mode is DERIVED (from the socket), never chosen directly — what is chosen
+ * is the connection. It is read, not set.
+ */
+type SessionMode = "standalone" | "sidecar" | "hub";
+let sessionMode: SessionMode = "standalone";
+
+function setModeIndicator(mode: SessionMode | boolean): void {
+  // back-compat with the boolean callers (the sync status handler)
+  const m: SessionMode =
+    typeof mode === "boolean" ? (mode ? "sidecar" : "standalone") : mode;
+  sessionMode = m;
+  const connected = m !== "standalone";
+  modeIndicator.textContent = t(`mode.${m}`);
+  modeIndicator.title = t(`mode.${m}Title`);
+  sidecarDetail.classList.toggle("hidden", !connected);
+  if (connected) renderSidecarDetail();
   else {
     hostInfo = {};
     sidecarDetail.innerHTML = "";
   }
   // MENU1 · reflect the active session mode in the Mode menu (a leading ✓).
   document.getElementById("btn-mode-standalone")
-    ?.classList.toggle("mode-active", !sidecar);
+    ?.classList.toggle("mode-active", m === "standalone");
   document.getElementById("btn-mode-sidecar")
-    ?.classList.toggle("mode-active", sidecar);
+    ?.classList.toggle("mode-active", m === "sidecar");
+  document.getElementById("btn-mode-hub")
+    ?.classList.toggle("mode-active", m === "hub");
+  renderSyncControl();
 }
-setModeIndicator(false);
+
+// ── MODES1 · the sync control ───────────────────────────────────────────────
+//
+// Four states, in the footer beside the mode, and only when there IS a channel
+// to govern: a control over a connection that does not exist is furniture.
+const syncControlEl = document.getElementById("sync-control")!;
+
+function syncDirection(): SyncDirection {
+  const raw = getSettings().sync.direction;
+  return (SYNC_DIRECTIONS as string[]).includes(raw) ? raw : "both";
+}
+
+function setSyncDirection(direction: SyncDirection): void {
+  const s = getSettings();
+  saveSettings({ ...s, sync: { ...s.sync, direction } });
+  sync.setDirection(direction);
+  renderSyncControl();
+  logInfo(t("sync.dirLogged", { dir: t(`sync.dir.${direction}`) }));
+}
+
+const SYNC_GLYPHS: Record<SyncDirection, string> = {
+  off: "⃠", send: "→", receive: "←", both: "⇄",
+};
+
+function renderSyncControl(): void {
+  if (!syncControlEl) return;
+  const connected = sessionMode !== "standalone";
+  syncControlEl.classList.toggle("hidden", !connected);
+  if (!connected) {
+    syncControlEl.innerHTML = "";
+    return;
+  }
+  const active = syncDirection();
+  syncControlEl.innerHTML = "";
+  const label = document.createElement("span");
+  label.className = "sync-ctl-label";
+  label.textContent = t("sync.label");
+  // The hint is the whole reason the control has four states and not two, so it
+  // travels with it instead of living in a manual nobody opens.
+  label.title = t("sync.hint");
+  syncControlEl.appendChild(label);
+  for (const dir of SYNC_DIRECTIONS) {
+    const b = document.createElement("button");
+    b.className = "sync-ctl-btn" + (dir === active ? " on" : "");
+    b.textContent = SYNC_GLYPHS[dir];
+    b.title = `${t(`sync.dir.${dir}`)} — ${t(`sync.dirTitle.${dir}`)}`;
+    b.dataset.dir = dir;
+    b.addEventListener("click", () => setSyncDirection(dir));
+    syncControlEl.appendChild(b);
+  }
+}
+
+// The client is told what to do BEFORE any connection exists, so a stored
+// choice is in force from the first frame rather than from the first click.
+sync.setDirection(syncDirection());
+setModeIndicator("standalone");
 
 // ---------- theme (DARK1) ----------
 // Applied BEFORE the first draw: `applyTheme` stamps `data-theme` for the CSS and
@@ -1022,6 +1106,8 @@ function refreshInspector(): void {
       },
       isPinned: (nodeId) => store!.isPinned(nodeId),
       resolveAuthority: resolveAuthority,
+      onCommand: (verb, target) => sendHostCommand(verb, target),
+      commandsBlocked: commandsBlockedReason,
     },
     selectedEdge,
   );
@@ -2042,12 +2128,35 @@ function loadContainerDocument(
       merged: String(report.mergedGraphs.length),
       nodes: String(report.mergedNodes),
     }));
+    // P3 · the silence becomes a list. A dated merge still overwrites somebody,
+    // and the person who pressed "integrate" is the one who has to know.
+    if (report.conflicts.length) {
+      for (const c of report.conflicts) {
+        logInfo(t("conflict.logged", {
+          node: c.nodeId,
+          winner: c.winner.by ?? "?", winnerAt: c.winner.at ?? "?",
+          loser: c.loser.by ?? "?", loserAt: c.loser.at ?? "?",
+          reason: c.reason,
+        }));
+      }
+      showConflictPanel(report.conflicts);
+    } else {
+      showConflictPanel([]);
+    }
+    // integrating somebody else's graphs is a new version of the project
     refreshEMTree();
     draw();
+    projectContainer();        // settles the new version and shows it
     return;
   }
 
   // Opening a project: the members become the workspace.
+  // P3 · and its version comes with it. Only on a full open: integrating
+  // somebody else's project does NOT adopt their revision number — the history
+  // being counted is this project's, not theirs.
+  projectVersion = parsed.version;
+  updateVersionIndicator();
+  showConflictPanel([]);       // a new project, not the last one's conflicts
   let activeSlotId: string | null = null;
   for (const member of parsed.members) {
     const slot = adoptMemberAsSlot(member, sourceName, path);
@@ -2340,8 +2449,12 @@ function defaultFileName(): string {
  *
  * A single graph still produces a container-of-one, which is the shape Heriverse
  * already reads — so nothing downstream had to change to gain this.
+ *
+ * P3 · building the project is also the moment its VERSION is settled, so the
+ * two can never disagree: there is no path that writes a file without deciding
+ * which revision that file is.
  */
-function projectDocumentText(): string {
+function projectContainer(): ReturnType<typeof buildContainer> {
   // Each member goes through its own `store.toJSON()` and is parsed back.
   // That round trip is NOT waste: toJSON is where the save rules live — it
   // stamps `last_editor` and, crucially, DROPS the volatile (mapped-but-not-baked)
@@ -2359,7 +2472,296 @@ function projectDocumentText(): string {
       ? String((activeSlot.store.doc.graph as Record<string, unknown>).graph_id ?? activeSlot.id)
       : null,
   });
-  return JSON.stringify(container, null, 1);
+  // P3 · a save that CHANGES THE CONTENT is a new version of the project. The
+  // digest decides, so pressing ⌘S on an unchanged project does not invent a
+  // revision — the counter measures the work, not the keystrokes.
+  projectVersion = bumpVersion(container, projectVersion);
+  updateVersionIndicator();
+  return container;
+}
+
+function projectDocumentText(): string {
+  return JSON.stringify(projectContainer(), null, 1);
+}
+
+
+// ── CMD1 · the command channel: EMStudio conducts, Blender is the 3D arm ────
+//
+// The affordance lives on the node it is about (Inspector); this is the part
+// that talks. Three rules, and the third is the one that makes the feature
+// trustworthy rather than merely working:
+//
+//  1. a command is an EXPLICIT act, so it is NOT gated by the sync direction
+//     (turning the selection mirror off must not silently disable a button);
+//  2. it IS gated by the host's CONSENT, which the host declares in `host_info`
+//     — so the button greys out with a reason instead of failing after a click;
+//  3. the result is merged as DATA (`addSubgraph`), with the stamps that came
+//     with it: what Blender made is Blender's hand, not this session's.
+
+/** Why a command cannot be sent right now, or null when it can. */
+function commandsBlockedReason(): string | null {
+  if (!sync.connected) return t("cmd.blocked.disconnected");
+  if (!hostInfo.accepts_commands) return t("cmd.blocked.noConsent");
+  return null;
+}
+
+/** Send a 3D command to the host and say, in the log, what was asked. */
+function sendHostCommand(verb: string, target: string): void {
+  const blocked = commandsBlockedReason();
+  if (blocked) {
+    toast(blocked);
+    return;
+  }
+  const msg = buildCommand(verb as CommandVerb, target, {});
+  if (!sync.sendCommand(msg)) {
+    toast(t("cmd.blocked.disconnected"));
+    return;
+  }
+  pendingCommands.set(msg.cmd_id, { verb, target });
+  logInfo(t("cmd.sent", { verb, target: nodeLabelFor(target) ?? target }));
+  info.textContent = t("cmd.sent", { verb, target: nodeLabelFor(target) ?? target });
+}
+
+/** What we asked for, so the answer can be reported in those terms. */
+const pendingCommands = new Map<string, { verb: string; target: string }>();
+
+/**
+ * The host answered. On success the DELTA is merged into the document the
+ * command was about — that is what makes this a graph-first flow rather than a
+ * remote control: the 3D was materialised over there, and what comes back is
+ * the paradata chain, in the graph, saved with the project.
+ */
+function applyCommandResult(res: {
+  cmd_id: string; ok: boolean;
+  delta?: { nodes?: unknown[]; edges?: unknown[] };
+  error?: string; repeated?: boolean; info?: Record<string, unknown>;
+}): void {
+  const asked = pendingCommands.get(res.cmd_id);
+  pendingCommands.delete(res.cmd_id);
+  const what = asked ? `${asked.verb} · ${nodeLabelFor(asked.target) ?? asked.target}` : res.cmd_id;
+  if (!res.ok) {
+    toast(t("cmd.failed", { what, error: res.error ?? "?" }));
+    logError(t("cmd.failed", { what, error: res.error ?? "?" }));
+    return;
+  }
+  const nodes = (res.delta?.nodes ?? []) as EmNode[];
+  const edges = (res.delta?.edges ?? []) as EmEdge[];
+  let added = { nodes: 0, edges: 0 };
+  // The delta belongs to the graph the command was about. With one slot that is
+  // the active store; with several, the one that HOLDS the target — otherwise a
+  // proxy would land in whichever graph happened to be in front.
+  const slot = asked
+    ? emtree.slots.find((s) => s.store.node(asked.target)) ?? emtree.active()
+    : emtree.active();
+  if (slot && (nodes.length || edges.length)) {
+    // `addSubgraph`: verbatim insert, ONE undo step, no re-stamping — the nodes
+    // were made by the host and carry its hand (AUDIT1's rule for work that
+    // arrives from elsewhere).
+    added = slot.store.addSubgraph(nodes, edges);
+  }
+  buildScenes();
+  draw();
+  refreshInspector();
+  nodeList.refresh();
+  const msg = t(res.repeated ? "cmd.doneRepeat" : "cmd.done", {
+    what, nodes: String(added.nodes), edges: String(added.edges),
+  });
+  toast(msg);
+  logInfo(msg);
+  info.textContent = msg;
+}
+
+// ── P3 · the project's revision ─────────────────────────────────────────────
+//
+// One project, one version — so it lives beside the workspace and not in a
+// store: a DocumentStore holds ONE graph, and the version is a fact about all of
+// them together.
+let projectVersion: ProjectVersion | null = null;
+/** The conflicts of the last integration, kept so the panel can be reopened. */
+let lastMergeConflicts: Conflict[] = [];
+
+/** "Progetto v3 (da sha256:…)" in the status bar, or nothing when the project
+ *  has never been written. Discreet on purpose: it is a record, not a badge. */
+function updateVersionIndicator(): void {
+  const el = document.getElementById("project-version");
+  if (!el) return;
+  if (!projectVersion) {
+    el.classList.add("hidden");
+    el.textContent = "";
+    return;
+  }
+  el.classList.remove("hidden");
+  el.textContent = `${t("version.project")} ${versionLabel(projectVersion)}`;
+  const at = projectVersion.modified_at
+    ? new Date(projectVersion.modified_at).toLocaleString()
+    : "";
+  el.title = [
+    `${t("version.digest")}: ${projectVersion.id}`,
+    projectVersion.was_revision_of
+      ? `${t("version.wasRevisionOf")}: ${projectVersion.was_revision_of}`
+      : "",
+    at ? `${t("version.modifiedAt")}: ${at}` : "",
+    t("version.hint"),
+  ].filter(Boolean).join("\n");
+}
+
+/**
+ * Pin the project: freeze it as the thing a citation can point at.
+ *
+ * The snapshot is a FILE, downloaded there and then — immutable by construction
+ * rather than by promise, because later edits cannot reach into a file that has
+ * already left. The DOI belongs to the Catalog; this is the stable thing it
+ * would mint for.
+ */
+function pinProjectVersion(): void {
+  if (!emtree.slots.length) {
+    toast(t("version.pinEmpty"));
+    return;
+  }
+  const doc = projectContainer();              // settles the version first
+  if (!projectVersion) return;
+  const snapshot = {
+    id: projectVersion.id,
+    pinned_at: new Date().toISOString().replace(/\.\d+Z$/, "Z"),
+    version: projectVersion,
+    document: doc,
+  };
+  const stem = defaultFileName().replace(/\.em\.json$/i, "").replace(/\.emj$/i, "");
+  browserDownload(JSON.stringify(snapshot, null, 1),
+                  `${stem}-v${projectVersion.number}.pinned.em.json`);
+  logInfo(t("version.pinned", { v: String(projectVersion.number), id: projectVersion.id }));
+  toast(t("version.pinned", { v: String(projectVersion.number), id: projectVersion.id }));
+}
+
+/**
+ * P3 · the conflict panel — what used to be silence.
+ *
+ * A merge that resolves by date is still a merge that overwrote somebody: the
+ * list says WHO overwrote WHOM and when, in that order, because that is the
+ * sentence a person needs ("B (11:30) ha sovrascritto A (10:00) su US1"). It is
+ * a REVIEWABLE NOTICE and not an error: nothing is blocked, and the panel can be
+ * dismissed and reopened from the log.
+ *
+ * Each row offers "tieni la versione di A" — a revert of that one node to the
+ * losing version, which the conflict carries with it (`loserPayload`). That
+ * revert is MY edit, so it stamps my hand and now: the content is A's, the act
+ * is mine, and both are true.
+ */
+function showConflictPanel(conflicts: Conflict[]): void {
+  const host = document.getElementById("conflict-panel");
+  if (!host) return;
+  lastMergeConflicts = conflicts;
+  const chip = document.getElementById("conflict-reopen");
+  if (chip) {
+    chip.classList.toggle("hidden", !conflicts.length);
+    chip.textContent = conflicts.length
+      ? t("conflict.chip", { n: String(conflicts.length) })
+      : "";
+    chip.title = t("conflict.chipTitle");
+  }
+  host.innerHTML = "";
+  if (!conflicts.length) {
+    host.classList.add("hidden");
+    return;
+  }
+  const head = document.createElement("div");
+  head.className = "conflict-head";
+  const title = document.createElement("strong");
+  title.textContent = t("conflict.title", { n: String(conflicts.length) });
+  head.appendChild(title);
+  const close = document.createElement("button");
+  close.className = "conflict-close";
+  close.textContent = "✕";
+  close.title = t("conflict.close");
+  close.addEventListener("click", () => host.classList.add("hidden"));
+  head.appendChild(close);
+  host.appendChild(head);
+
+  const hint = document.createElement("div");
+  hint.className = "conflict-hint";
+  hint.textContent = t("conflict.hint");
+  host.appendChild(hint);
+
+  const when = (v: string | null): string =>
+    v ? new Date(v).toLocaleString() : t("conflict.noStamp");
+  const who = (v: string | null): string => v ?? t("conflict.noAuthor");
+
+  const list = document.createElement("div");
+  list.className = "conflict-list";
+  for (const c of conflicts) {
+    const row = document.createElement("div");
+    row.className = "conflict-row";
+    const line = document.createElement("div");
+    line.className = "conflict-line";
+    line.textContent = t("conflict.sentence", {
+      winner: who(c.winner.by), winnerAt: when(c.winner.at),
+      loser: who(c.loser.by), loserAt: when(c.loser.at),
+      node: nodeLabelFor(c.nodeId) ?? c.nodeId,
+    });
+    row.appendChild(line);
+
+    const meta = document.createElement("div");
+    meta.className = "conflict-meta";
+    meta.textContent = [
+      t(`conflict.reason.${c.reason}`),
+      c.fieldHint.length ? `${t("conflict.fields")}: ${c.fieldHint.join(", ")}` : "",
+    ].filter(Boolean).join(" · ");
+    row.appendChild(meta);
+
+    const actions = document.createElement("div");
+    actions.className = "conflict-actions";
+    const reveal = document.createElement("button");
+    reveal.className = "conflict-btn";
+    reveal.textContent = t("conflict.reveal");
+    reveal.addEventListener("click", () => revealFromWarning(c.nodeId));
+    actions.appendChild(reveal);
+    const keep = document.createElement("button");
+    keep.className = "conflict-btn";
+    keep.textContent = t("conflict.keepLoser", { who: who(c.loser.by) });
+    keep.title = t("conflict.keepLoserTitle");
+    keep.addEventListener("click", () => {
+      if (revertToLoser(c)) {
+        keep.disabled = true;
+        keep.textContent = t("conflict.kept");
+      }
+    });
+    actions.appendChild(keep);
+    row.appendChild(actions);
+    list.appendChild(row);
+  }
+  host.appendChild(list);
+  host.classList.remove("hidden");
+}
+
+/** The name of a node, for a sentence — falls back to the id, never to nothing. */
+function nodeLabelFor(nodeId: string): string | null {
+  for (const slot of emtree.slots) {
+    const node = slot.store.node(nodeId);
+    if (node) return String(node.name || nodeId);
+  }
+  return null;
+}
+
+/** Put back the version that lost, for ONE node. Returns false if the node is
+ *  no longer there (a project can move on between the merge and the click). */
+function revertToLoser(c: Conflict): boolean {
+  const payload = c.loserPayload as Record<string, unknown>;
+  for (const slot of emtree.slots) {
+    if (!slot.store.node(c.nodeId)) continue;
+    const patch: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(payload)) {
+      if (k === "id") continue;
+      patch[k] = v;
+    }
+    // The stamps in the payload are the LOSER's; the revert is my act, so
+    // `updateNode` stamps my hand over them. Content theirs, decision mine —
+    // both true, and neither invented.
+    slot.store.updateNode(c.nodeId, patch as Partial<EmNode>);
+    logInfo(t("conflict.revertLogged", { node: c.nodeId, who: c.loser.by ?? "?" }));
+    return true;
+  }
+  toast(t("conflict.gone", { node: c.nodeId }));
+  return false;
 }
 
 async function saveDocument(): Promise<void> {
@@ -3629,6 +4031,14 @@ document
 document
   .getElementById("btn-save-as")!
   .addEventListener("click", () => void saveAsDocument());
+document
+  .getElementById("btn-pin-version")
+  ?.addEventListener("click", () => pinProjectVersion());
+// P3 · the panel can be dismissed; the chip is how it comes back. A notice you
+// cannot re-read is a notice you were only allowed to see once.
+document.getElementById("conflict-reopen")?.addEventListener("click", () => {
+  if (lastMergeConflicts.length) showConflictPanel(lastMergeConflicts);
+});
 document.getElementById("btn-svg")!.addEventListener("click", () => {
   const s = scene();
   if (!s || !store) return;
@@ -3864,7 +4274,10 @@ btnSync.addEventListener("click", () => {
       // the host told us what it is editing (tool / file / database) → show it
       hostInfo = { ...hostInfo, ...info2 };
       renderSidecarDetail();
+      // CMD1 · consent can be toggled while connected; the affordance follows it
+      refreshInspector();
     },
+    onCommandResult: (res) => applyCommandResult(res),
     onStatus: (state) => {
       btnSync.classList.toggle("active", state === "open");
       // clear, high-visibility signal that we are in live-sync mode
@@ -3887,6 +4300,12 @@ document.getElementById("btn-mode-standalone")?.addEventListener("click", () => 
 });
 document.getElementById("btn-mode-sidecar")?.addEventListener("click", () => {
   if (!sync.connected) btnSync.click(); // connect → live-synced to the host
+});
+// MODES1 · Hub is a real mode with no server behind it yet. It says so, and
+// connects nothing — a placeholder that pretended would be worse than a gap.
+document.getElementById("btn-mode-hub")?.addEventListener("click", () => {
+  toast(t("mode.hubUnavailable"));
+  logInfo(t("mode.hubUnavailable"));
 });
 
 // ---------- MENU1 · Help menu (About / Updates / Ontology models) ----------
@@ -4544,6 +4963,10 @@ settingsModal.addEventListener("click", (e) => {
       protocol: setProtoSel.value === "wss" ? "wss" : "ws",
       host: setHostInp.value.trim() || "localhost",
       port,
+      // MODES1 · the direction is not edited here: it is a live control in the
+      // footer, changed while working. Carried through so saving the endpoint
+      // does not silently reset what the channel is doing.
+      direction: getSettings().sync.direction,
     },
     developer: { showNodeIds: setDevUuid.checked },
     interaction: {
