@@ -189,7 +189,8 @@ const unit = (id, description, by, at) => ({
 });
 const section = (...nodes) => ({ graph_id: "scavo", nodes, edges: [] });
 const freshReport = () => ({ addedGraphs: [], mergedGraphs: [], mergedNodes: 0,
-                             addedNodes: 0, addedEdges: 0, conflicts: [], warnings: [] });
+                             addedNodes: 0, addedEdges: 0, conflicts: [],
+                             removedNodes: 0, resurrectedNodes: 0, warnings: [] });
 
 {
   // the more recent version wins
@@ -203,6 +204,7 @@ const freshReport = () => ({ addedGraphs: [], mergedGraphs: [], mergedNodes: 0,
   eq(r.conflicts[0].winner.by, BRUNO, "…naming who overwrote");
   eq(r.conflicts[0].loser.by, ANNA, "…and who was overwritten");
   eq(r.conflicts[0].fieldHint, ["description"], "…and where to look");
+  eq(r.conflicts[0].field, "description", "…as the FIELD that was decided (P4.1)");
   eq(r.conflicts[0].loserPayload.description, "muro in opus",
      "the losing version travels with the conflict, so 'keep mine' needs no second file");
 }
@@ -256,7 +258,8 @@ const freshReport = () => ({ addedGraphs: [], mergedGraphs: [], mergedNodes: 0,
   const theirs = section(unit("US1", "B", BRUNO, "2026-08-13T10:00:00Z"));
   const r = freshReport();
   C.mergeGraphSections(mine, theirs, r);
-  eq(r.conflicts[0].reason, "tie", "an exact tie says so");
+  eq(r.conflicts[0].reason, "tie-author",
+     "an exact tie says so — and names what broke it");
   eq(r.conflicts[0].winner.by, BRUNO, "…and the tie-break is the smaller iD, stably");
 }
 
@@ -272,14 +275,25 @@ const freshReport = () => ({ addedGraphs: [], mergedGraphs: [], mergedNodes: 0,
 }
 
 {
-  // a field the other author DELETED does not survive
+  // P4.1 · a field only ONE side has is KEPT — absence is not deletion.
+  // The same lesson as node tombstones, one level down: "they do not have it"
+  // and "they removed it" look identical, and a merge that guessed would delete
+  // work nobody asked to delete. Removing a field is an ACT (a null value with
+  // a clock), and the check below is that act.
   const mine = section({ id: "US1", node_type: "US", name: "US1", description: "vecchia",
-                         data: { created_at: "2026-08-13T10:00:00Z", note: "da togliere" } });
+                         data: { created_at: "2026-08-13T10:00:00Z", note: "una nota" } });
   const theirs = section({ id: "US1", node_type: "US", name: "US1", description: "nuova",
                            data: { created_at: "2026-08-13T11:00:00Z" } });
   C.mergeGraphSections(mine, theirs, freshReport());
+  eq(mine.nodes[0].data.note, "una nota",
+     "a field the other side never had is kept: absence is not a deletion");
+
+  // …and an explicit removal, with a clock, does remove it
+  const removal = { op: "update_field", node_id: "US1", field: "data.note",
+                    value: null, ts: "2026-08-13T12:00:00Z", author: BRUNO };
+  C.applyOp(mine, removal);
   eq(mine.nodes[0].data.note, undefined,
-     "a field the winner does not carry is dropped, not quietly kept alive");
+     "removing a field is an ACT, and then it is gone");
 }
 
 // ── P3 · light-weight versioning ────────────────────────────────────────────
@@ -334,6 +348,7 @@ const freshReport = () => ({ addedGraphs: [], mergedGraphs: [], mergedNodes: 0,
   eq(r.side, "mine", "a remote edit older than mine does not land");
   eq(r.conflict.reason, "newer", "…and it is recorded, not swallowed");
   eq(r.conflict.loser.by, BRUNO, "…naming whose edge was refused");
+  eq(r.merged.description, "mia", "…and the merged payload keeps my value");
 
   const same = C.resolveNodePair("US1", unit("US1", "x", ANNA, "2026-08-13T10:00:00Z"),
                                  unit("US1", "x", BRUNO, "2026-08-13T11:00:00Z"));

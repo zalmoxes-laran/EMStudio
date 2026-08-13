@@ -248,13 +248,20 @@ export class DocumentStore {
           const mine = this.node(op.node_id);
           if (mine) {
             const theirs = { ...mine, ...op.patch } as Record<string, unknown>;
-            const { side, conflict } = resolveNodePair(
+            const { merged, conflicts } = resolveNodePair(
               op.node_id, mine as unknown as Record<string, unknown>, theirs,
             );
-            if (conflict) this.remoteConflicts.push(conflict);
-            // my version is the more recent one: the remote op does not land.
-            // Refusing is not silence — the conflict above is the record.
-            if (side === "mine") break;
+            this.remoteConflicts.push(...conflicts);
+            // P4.1 · not accept-or-refuse any more: the MERGED node lands, so a
+            // remote edit to one field and a local edit to another both survive.
+            // What loses is a field, and the loss is in `conflicts` — never
+            // silence, and never the whole node.
+            const patch: Partial<EmNode> = {};
+            for (const key of ["name", "description", "data"]) {
+              if (key in merged) (patch as Record<string, unknown>)[key] = merged[key];
+            }
+            this.updateNode(op.node_id, patch);
+            break;
           }
           this.updateNode(op.node_id, op.patch);
           break;

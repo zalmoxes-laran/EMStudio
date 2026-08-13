@@ -26,6 +26,13 @@
 
 import type { EmDocument } from "./types";
 import { sha256Hex } from "./sha256";
+import { contentSignature, mergePayloads } from "./crdt";
+
+// P4.1 · re-exported so a caller that has the container has the algebra too:
+// the merge of two files and the application of one operation are the same
+// rules, and importing them from two places would invite two answers.
+export { applyOp, applyOps, isRemoved, liveNodes, liveEdges, makeOp } from "./crdt";
+export type { CrdtOp, OpResult, FieldOutcome } from "./crdt";
 
 export const GRAPHS_KEY = "graphs";
 export const SHELF_COLLECTION = "ShelfGraph";
@@ -276,18 +283,22 @@ export function bumpVersion(
 
 /** Why a contested node was resolved the way it was. Mirrors
  *  `s3dgraphy.container.CONFLICT_REASONS`. */
-export type ConflictReason = "newer" | "tie" | "unstamped";
+export type ConflictReason = "newer" | "tie-author" | "unstamped" | "resurrected";
 
 /** P3 · one node two people edited — who won, who lost, and why. */
 export interface Conflict {
   nodeId: string;
   reason: ConflictReason;
-  winner: { by: string | null; at: string | null; stamp: string | null; side: "mine" | "theirs" };
-  loser: { by: string | null; at: string | null; stamp: string | null; side: "mine" | "theirs" };
+  winner: { by: string | null; at: string | null; stamp: string | null; side: string };
+  loser: { by: string | null; at: string | null; stamp: string | null; side: string };
   /** which fields diverged (`name`, `data.value`, …) — a pointer, not a diff */
   fieldHint: string[];
   /** the losing version verbatim, so "keep A's version" needs no second file */
   loserPayload: Record<string, unknown>;
+  /** P4.1 · WHICH field this outcome is about (one entry per contested field) */
+  field?: string;
+  /** the value that lost, for that field */
+  loserValue?: unknown;
 }
 
 export interface MergeReport {
@@ -296,85 +307,20 @@ export interface MergeReport {
   mergedNodes: number;
   addedNodes: number;
   addedEdges: number;
-  /** P3 · the contested nodes. `mergedNodes` says how many; this says WHICH. */
+  /** P3/P4.1 · the contested FIELDS. `mergedNodes` says how many nodes were
+   *  seen twice; this says which fields had to be decided, and whose value lost. */
   conflicts: Conflict[];
+  /** P4.1 · presence outcomes: deleted, and brought back by a later edit. */
+  removedNodes: number;
+  resurrectedNodes: number;
   warnings: string[];
 }
 
-/** The four editorial fields — the stamps, kept out of the content comparison. */
-const EDITORIAL_FIELDS = ["created_by", "created_at", "modified_by", "modified_at"];
-
-/** `[instant, by, which]` — the stamp that dates a node. `modified_at` when
- *  there is one, else `created_at`: the last hand is what a merge compares, and
- *  a node nobody edited is dated by its creation. */
-function stampOf(node: Record<string, unknown>): [string | null, string | null, string | null] {
-  const data = (node.data ?? {}) as Record<string, unknown>;
-  if (data.modified_at) return [String(data.modified_at), data.modified_by ? String(data.modified_by) : null, "modified_at"];
-  if (data.created_at) return [String(data.created_at), data.created_by ? String(data.created_by) : null, "created_at"];
-  return [null, null, null];
-}
-
-function instant(text: string | null): number | null {
-  if (!text) return null;
-  const t = Date.parse(text);
-  return Number.isNaN(t) ? null : t;
-}
-
-/** The node without its editorial stamps: two versions that differ only in when
- *  they were saved are not a conflict — nobody's work is at stake, and a list
- *  that cries wolf is a list nobody reads. */
-function contentOf(node: Record<string, unknown>): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(node)) {
-    if (k === "data") continue;
-    out[k] = v;
-  }
-  const data = node.data as Record<string, unknown> | undefined;
-  if (data && typeof data === "object") {
-    const stripped: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(data)) {
-      if (!EDITORIAL_FIELDS.includes(k)) stripped[k] = v;
-    }
-    if (Object.keys(stripped).length) out.data = stripped;
-  }
-  return out;
-}
-
-function divergingFields(a: Record<string, unknown>, b: Record<string, unknown>): string[] {
-  const hints: string[] = [];
-  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
-  for (const k of [...keys].sort()) {
-    if (k === "data") continue;
-    if (canonicalJson(a[k]) !== canonicalJson(b[k])) hints.push(k);
-  }
-  const da = (a.data ?? {}) as Record<string, unknown>;
-  const db = (b.data ?? {}) as Record<string, unknown>;
-  const dkeys = new Set([...Object.keys(da), ...Object.keys(db)]);
-  for (const k of [...dkeys].sort()) {
-    if (canonicalJson(da[k]) !== canonicalJson(db[k])) hints.push(`data.${k}`);
-  }
-  return hints;
-}
-
-/**
- * Which version of a contested node survives, and why.
- *
- * By DATE, not by arrival — that is what makes the outcome the same whichever
- * file you open first. An exact tie cannot be decided by the date, so a stable
- * tie-break does (smaller editor iD, then smaller serialisation): arbitrary, and
- * DECLARED arbitrary by `reason: "tie"`. What it must not be is random or
- * order-dependent, because then two people merging the same two files would end
- * up with different projects and no way to tell.
- *
- * When either side carries no stamp the date did NOT decide: the incoming
- * version is kept (the historical behaviour) and the reason says `unstamped`, so
- * nobody reads it as a judgement. An absent stamp is unknown, not older.
- */
-/** Let the incoming version take the place of the local one, IN PLACE.
+/** Let the merged version take the place of the local one, IN PLACE.
  *
  *  In place and not by swapping the array element, because the node object may
  *  already be referenced elsewhere (a store, a selection). And the local keys
- *  the incoming node does not have are DROPPED: `Object.assign` alone would
+ *  the merged payload does not have are DROPPED: `Object.assign` alone would
  *  leave a field the other author deleted quietly alive, which is a third
  *  version neither of them wrote. */
 function replaceNode(
@@ -395,79 +341,56 @@ function replaceNode(
   Object.assign(existing, incoming);
 }
 
-function pickWinner(
-  mine: Record<string, unknown>,
-  theirs: Record<string, unknown>,
-): ["mine" | "theirs", ConflictReason] {
-  const [mineAt, mineBy] = stampOf(mine);
-  const [theirsAt, theirsBy] = stampOf(theirs);
-  const a = instant(mineAt);
-  const b = instant(theirsAt);
-  if (a === null || b === null) return ["theirs", "unstamped"];
-  if (a > b) return ["mine", "newer"];
-  if (b > a) return ["theirs", "newer"];
-  const ka = mineBy ?? "";
-  const kb = theirsBy ?? "";
-  if (ka !== kb) return [ka < kb ? "mine" : "theirs", "tie"];
-  return [canonicalJson(mine) <= canonicalJson(theirs) ? "mine" : "theirs", "tie"];
-}
-
 /**
- * Fold an incoming graph section into an existing one, keyed by UUID.
+ * Resolve ONE node two sides both have — the single point where "who wins" is
+ * decided. The container merge calls it per node, and so does the live op-log
+ * (`applyRemoteOp`): a conflict that arrives one operation at a time is the same
+ * conflict and must not be judged by a second rule.
  *
- * A node id IS the identity — that is what the UUID ids were for (ADR-002 §6
- * says so: they guard offline merges) — so a node already present is the same
- * node and is overwritten by the incoming one; a node absent is added. Edges are
- * identified by their (source, type, target) triple, the only definition that
- * survives two people minting edge ids independently.
- *
- * P3 · when the same node is on both sides with DIFFERENT content, the editorial
- * stamps decide (`pickWinner`) and the loser is recorded in `report.conflicts`.
- * The winner keeps ITS OWN stamps — never re-stamped with the session running
- * the merge, the same rule the audit applies to `applyRemoteOp`.
- *
- * DECLARED LIMIT: the unit of resolution is the NODE, not the field. If you
- * changed a description and somebody else changed a date, the newer node wins
- * whole and the other edit is in the conflict list, not merged in. Keeping both
- * needs a common ancestor (three-way) or a version vector — P4.
- */
-/**
- * Resolve ONE node two sides both have. The single point where "who wins" is
- * decided — the merge calls it per node, and so does the live op-log
- * (`applyRemoteOp`), because a conflict that arrives one operation at a time is
- * the same conflict and must not be judged by a second rule.
- *
- * Returns which side wins and, when the two versions actually diverge, the
- * `Conflict` to report. `conflict` is null when the content is the same: no
- * work is at stake, and a list that cries wolf is a list nobody reads.
+ * P4.1 · the arbitration moved to `crdt.ts`: **OR-Set** for presence and
+ * **LWW-per-field** for content. So this returns the MERGED payload — two people
+ * who edited different fields both keep their edit — plus one `Conflict` per
+ * field that actually had to be decided.
  */
 export function resolveNodePair(
-  nodeId: string,
+  _nodeId: string,
   mine: Record<string, unknown>,
   theirs: Record<string, unknown>,
-): { side: "mine" | "theirs"; reason: ConflictReason; conflict: Conflict | null } {
-  const mineContent = contentOf(mine);
-  const theirsContent = contentOf(theirs);
-  const [side, reason] = pickWinner(mine, theirs);
-  if (canonicalJson(mineContent) === canonicalJson(theirsContent)) {
-    return { side, reason, conflict: null };
-  }
-  const winnerNode = side === "mine" ? mine : theirs;
-  const loserNode = side === "mine" ? theirs : mine;
-  const [wAt, wBy, wStamp] = stampOf(winnerNode);
-  const [lAt, lBy, lStamp] = stampOf(loserNode);
+): {
+  side: "mine" | "theirs";
+  reason: ConflictReason;
+  merged: Record<string, unknown>;
+  conflicts: Conflict[];
+  removed: boolean;
+  resurrected: boolean;
+  /** back-compat with the P3 callers: the first field outcome, or null */
+  conflict: Conflict | null;
+} {
+  const outcome = mergePayloads(mine, theirs);
+  const conflicts: Conflict[] = outcome.fields.map((f) => ({
+    nodeId: f.nodeId,
+    reason: f.reason as ConflictReason,
+    winner: f.winner,
+    loser: f.loser,
+    fieldHint: [f.field],
+    field: f.field,
+    loserValue: f.loserValue,
+    loserPayload: f.winner.side === "mine" ? { ...theirs } : { ...mine },
+  }));
+  // "which side won" is no longer one answer for the whole node — the merge is
+  // per field. For the callers that still ask one question, the honest one is
+  // "did anything of theirs land?", measured on CONTENT: a clock written by the
+  // merge is not a change somebody made.
+  const side: "mine" | "theirs" =
+    contentSignature(outcome.payload) === contentSignature(mine) ? "mine" : "theirs";
   return {
     side,
-    reason,
-    conflict: {
-      nodeId,
-      reason,
-      winner: { by: wBy, at: wAt, stamp: wStamp, side },
-      loser: { by: lBy, at: lAt, stamp: lStamp,
-               side: side === "mine" ? "theirs" : "mine" },
-      fieldHint: divergingFields(mineContent, theirsContent),
-      loserPayload: { ...loserNode },
-    },
+    reason: (conflicts[0]?.reason ?? "newer") as ConflictReason,
+    merged: outcome.payload,
+    conflicts,
+    removed: outcome.removed,
+    resurrected: outcome.resurrected,
+    conflict: conflicts[0] ?? null,
   };
 }
 
@@ -485,9 +408,11 @@ export function mergeGraphSections(
     if (existing) {
       report.mergedNodes++;
       // ONE decision point, shared with the live op-log — see `resolveNodePair`.
-      const { side, conflict } = resolveNodePair(id, existing, node);
-      if (side === "theirs") replaceNode(targetNodes, byId, id, node);
-      if (conflict) report.conflicts.push(conflict);
+      const { merged, conflicts, removed, resurrected } = resolveNodePair(id, existing, node);
+      replaceNode(targetNodes, byId, id, merged);
+      report.conflicts.push(...conflicts);
+      if (removed) report.removedNodes++;
+      if (resurrected) report.resurrectedNodes++;
     } else {
       targetNodes.push(node);
       byId.set(id, node);
@@ -526,7 +451,8 @@ export function mergeContainers(
 ): MergeReport {
   const report: MergeReport = {
     addedGraphs: [], mergedGraphs: [], mergedNodes: 0,
-    addedNodes: 0, addedEdges: 0, conflicts: [], warnings: [...other.warnings],
+    addedNodes: 0, addedEdges: 0, conflicts: [], removedNodes: 0,
+    resurrectedNodes: 0, warnings: [...other.warnings],
   };
   for (const incoming of other.members) {
     const mine = into.members.find((m) => m.id === incoming.id);

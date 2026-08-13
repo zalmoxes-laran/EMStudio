@@ -162,6 +162,7 @@ import type {
 } from "./stratiminer";
 import { type HostInfo, SyncClient, SYNC_DIRECTIONS, type SyncDirection } from "./sync";
 import { buildCommand, type CommandVerb } from "./commands";
+import { isRemoved } from "./crdt";
 import {
   AI_PROVIDERS,
   getSettings,
@@ -1515,6 +1516,17 @@ function filteredView(opts: { wholeGraph?: boolean } = {}): {
     : undefined;
   let vNodes = foldedView?.nodes ?? doc.graph.nodes;
   let vEdges = foldedView?.edges ?? doc.graph.edges;
+  // P4.1 · a TOMBSTONED node is deleted, and a view must not show it. The mark
+  // stays in the document (the merge needs it: "deleted" and "not yet known to
+  // you" are different states), so the hiding happens HERE — at the one place
+  // that decides what is on screen — and nowhere else.
+  if (vNodes.some((n) => isRemoved(n as unknown as Record<string, unknown>))) {
+    const dead = new Set(
+      vNodes.filter((n) => isRemoved(n as unknown as Record<string, unknown>))
+        .map((n) => n.id));
+    vNodes = vNodes.filter((n) => !dead.has(n.id));
+    vEdges = vEdges.filter((e) => !dead.has(e.source) && !dead.has(e.target));
+  }
   // ALWAYS drop HDT-O-profile nodes (and any node the panel tagged with
   // data.hdto_role) + their incident edges, so graph-level HDT-O metadata never
   // clutters the stratigraphic canvas. The nodes remain in em.json (single
