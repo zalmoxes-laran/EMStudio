@@ -137,4 +137,51 @@ const eq = (got, want, what) => {
   eq(message.payload.source, "US1", "…and the edge still starts where it starts");
 }
 
+// ── 6 · P4.5 · a remote op of ANY verb lands in the document, live ──────────
+//
+// What was missing until now: only `update_field` was applied in real time, so
+// a node or an edge somebody else made appeared at the next re-sync. The CRDT
+// could always do all five; this asserts the SEMANTICS the client now relies on
+// — in particular that a removal is a TOMBSTONE, which is what lets a view hide
+// it while the merge still knows the difference between "deleted" and "never
+// seen".
+{
+  const M = await load("crdt.ts");
+  const section = { graph_id: "scavo", nodes: [], edges: [] };
+  const at = (n) => `2026-08-14T12:0${n}:00Z`;
+
+  const added = M.applyOp(section, { op: "add_node", ts: at(0), author: "anna",
+    node: { id: "US1", node_type: "US", name: "US1" } });
+  ok(added.applied, "a remote add_node lands");
+  M.applyOp(section, { op: "add_node", ts: at(1), author: "anna",
+    node: { id: "US2", node_type: "US", name: "US2" } });
+  const edged = M.applyOp(section, { op: "add_edge", ts: at(2), author: "anna",
+    id: "e-1", source: "US1", target: "US2", edge_type: "is_before" });
+  ok(edged.applied, "…and so does a remote add_edge");
+  eq(M.liveEdges(section)[0].source, "US1",
+     "…with its endpoints, which is the WIRE 2 regression restated");
+
+  eq(M.liveNodes(section).length, 2, "two nodes are visible");
+  const removed = M.applyOp(section, { op: "remove_node", ts: at(3),
+                                       author: "bruno", id: "US2" });
+  ok(removed.applied, "a remote remove_node lands");
+  eq(M.liveNodes(section).length, 1, "…and the node leaves the VIEW");
+  eq(section.nodes.length, 2,
+     "…while staying in the document: a tombstone, not a missing key — the " +
+     "merge has to keep telling 'deleted' from 'never seen'");
+  ok(M.isRemoved(section.nodes.find((n) => n.id === "US2")),
+     "…and it is marked as removed, with the remote clock");
+
+  const unedged = M.applyOp(section, { op: "remove_edge", ts: at(4),
+    author: "bruno", id: "e-1", source: "US1", target: "US2",
+    edge_type: "is_before" });
+  ok(unedged.applied, "a remote remove_edge lands");
+  eq(M.liveEdges(section).length, 0, "…and the connector leaves the view");
+  eq(section.edges.length, 1, "…while its tombstone stays in the document");
+
+  const stale = M.applyOp(section, { op: "remove_node", ts: at(1),
+                                     author: "bruno", id: "US2" });
+  ok(!stale.applied, "an OLDER removal of the same node is not news");
+}
+
 console.log(`wire: ${checks} checks passed`);

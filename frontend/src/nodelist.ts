@@ -4,6 +4,7 @@
 import { nodeStyle } from "./palette";
 import { isGroupType } from "./rules";
 import type { EmDocument } from "./types";
+import { liveNodes } from "./crdt";
 
 export interface NodeListApi {
   refresh: () => void;
@@ -131,7 +132,10 @@ export function buildNodeList(
 
     // ---- groups section (fold / explode inline) ----
     // node groups by type PLUS stratigraphic containers (is_part_of members)
-    const groups = doc.graph.nodes
+    // P4.5 · the same live view the canvas draws: a tombstoned node is gone
+    // from every surface, and still in the document for the merge
+    const visible = liveNodes(doc.graph as never) as unknown as typeof doc.graph.nodes;
+    const groups = visible
       .filter(
         (n) =>
           (isGroupType(n.node_type) || groupCb.isContainer(n.id)) && matches(n),
@@ -220,12 +224,12 @@ export function buildNodeList(
       }
     }
 
-    const nodes = doc.graph.nodes
+    const nodes = visible
       .filter((n) => !isGroupType(n.node_type) && matches(n))
       .sort((a, b) =>
         String(a.name || a.id).localeCompare(String(b.name || b.id)),
       );
-    count.textContent = `${nodes.length + groups.length} / ${doc.graph.nodes.length} nodes`;
+    count.textContent = `${nodes.length + groups.length} / ${visible.length} nodes`;
     // The Nodes heading is now ALWAYS there, where before it only appeared when
     // there were groups above it: a collapsed section whose heading disappears
     // takes its rows out of reach, and the way back would be gone with it.

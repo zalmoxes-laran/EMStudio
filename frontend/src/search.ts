@@ -1,5 +1,7 @@
 import type { EmDocument } from "./types";
 
+import { liveNodes } from "./crdt";
+
 export function setupSearch(
   input: HTMLInputElement,
   resultsBox: HTMLElement,
@@ -18,7 +20,10 @@ export function setupSearch(
       hide();
       return;
     }
-    const hits = doc.graph.nodes
+    // P4.5 · what somebody else just deleted must not still be findable: the
+    // tombstone stays in the document for the merge, and every SURFACE reads the
+    // live view (the canvas always did; now the search does too).
+    const hits = (liveNodes(doc.graph as never) as unknown as typeof doc.graph.nodes)
       .filter(
         (n) =>
           n.id.toLowerCase().includes(q) ||

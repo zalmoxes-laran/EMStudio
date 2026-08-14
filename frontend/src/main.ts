@@ -1523,9 +1523,19 @@ function updateInfo(): void {
     (store.doc.header?.["name"] as string | undefined) ??
     g.graph_id ??
     "untitled";
+  // P4.5 · count what is THERE, not what the file still remembers. A removal
+  // leaves a tombstone in the document (the merge needs it), so after somebody
+  // else deletes a node the raw length is one MORE than what anybody can see —
+  // and a status bar that disagrees with the canvas is a status bar nobody
+  // trusts. The buried ones are named separately when there are any, because
+  // they are still in the file that gets saved.
+  const liveNodeCount = store.liveNodes().length;
+  const liveEdgeCount = store.liveEdges().length;
+  const buried = g.nodes.length - liveNodeCount;
   info.textContent =
-    `${title} — ${g.nodes.length} nodes, ${g.edges.length} edges` +
-    (lanes ? `, ${lanes} epochs` : "");
+    `${title} — ${liveNodeCount} nodes, ${liveEdgeCount} edges` +
+    (lanes ? `, ${lanes} epochs` : "") +
+    (buried > 0 ? ` (+${buried} deleted)` : "");
 }
 
 // The visible subgraph after folding + the "circles of detail" filter — one
@@ -2626,23 +2636,84 @@ function hubWriteFieldLocally(op: HubOp): boolean {
   return true;
 }
 
-/** Apply an operation that arrived from the room, carrying ITS clock. */
+/**
+ * Apply an operation that arrived from the room, carrying ITS clock.
+ *
+ * **Every verb, live** (P4.5). Until now only `update_field` landed in real
+ * time: a node or an edge somebody else created appeared at the next re-sync,
+ * which made the structural graph a shared FILE rather than a shared canvas.
+ * The CRDT already knew how to do all five (P4.1) — what was missing was this
+ * wiring.
+ *
+ * `update_field` keeps its own path because it is the one that must go through
+ * the field writer (clocks per field, tombstones per field, P4.1b) and because
+ * it is the one that produces an awareness note naming who changed what. The
+ * structural verbs go straight to `store.applyCrdtOp`, which is the same
+ * algebra the relay and the library run — including the part that matters most:
+ * a removal writes a TOMBSTONE, not a missing key.
+ */
 function hubApplyRemote(message: Record<string, unknown>): void {
   if (!store) return;
   const op = message as unknown as HubOp;
-  if (op.op === "update_field") {
+  const kind = String(op.op ?? "");
+
+  if (kind === "update_field") {
     const node = store.node(String(op.node_id ?? op.id ?? ""));
     if (!hubWriteFieldLocally(op)) return;
     const who = hubPresence.members.find((m) => m.author === op.author)?.display
       ?? (op.author as string | null);
     noteHub(noteForRemoteOp(op, who, node?.name ? String(node.name) : null));
+  } else if (kind === "add_node" || kind === "remove_node"
+             || kind === "add_edge" || kind === "remove_edge") {
+    // the name BEFORE the operation: after a `remove_node` there is a tombstone
+    // and the note would have nothing to point at
+    const subject = structuralSubject(op);
+    const result = store.applyCrdtOp(message);
+    if (!result.applied) {
+      // not news: the room already knew, or this is older than what is here.
+      // Said in the log rather than silently dropped, because "nothing
+      // happened" and "it was refused" look identical on a canvas.
+      logInfo(`${kind}: ${result.reason}`);
+    } else {
+      const who = hubPresence.members.find((m) => m.author === op.author)?.display
+        ?? (op.author as string | null);
+      noteHub(noteForStructuralOp(kind, subject, who, String(op.ts ?? "")));
+    }
   }
+
   hubBase = String(op.ts ?? hubBase ?? "");
   sync.setSince(hubBase);
   buildScenes();
   draw();
   refreshInspector();
   nodeList.refresh();
+  refreshEMTree();          // the node/edge counts are part of "it arrived"
+}
+
+/** What a structural operation is ABOUT, for the awareness feed. */
+function structuralSubject(op: HubOp): string {
+  const nodeId = String(op.id ?? op.node_id ?? "");
+  const named = store?.node(nodeId);
+  if (named?.name) return String(named.name);
+  if (op.op === "add_node") {
+    const node = (op as unknown as { node?: { name?: string; id?: string } }).node;
+    if (node?.name) return String(node.name);
+    if (node?.id) return String(node.id);
+  }
+  if (op.op === "add_edge" || op.op === "remove_edge") {
+    const from = store?.node(String(op.source ?? ""))?.name ?? String(op.source ?? "");
+    const to = store?.node(String(op.target ?? ""))?.name ?? String(op.target ?? "");
+    return `${from} → ${to}`;
+  }
+  return nodeId;
+}
+
+/** The sentence for a structural operation somebody else made. */
+function noteForStructuralOp(kind: string, subject: string, who: string | null,
+                             at: string): AwarenessNote {
+  const author = who || t("hub.somebody");
+  const what = t(`hub.op.${kind}`, { subject });
+  return { kind: "remote-edit", text: `${author} ${what}`, at };
 }
 
 /**

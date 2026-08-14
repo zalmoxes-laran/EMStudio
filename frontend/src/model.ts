@@ -19,10 +19,12 @@ import { currentIdentity } from "./identity";
 import { resolveNodePair } from "./container";
 import type { Conflict } from "./container";
 import {
-  canonicalValue, clearField, contentFields, getField, setFieldClock,
-  unstampedFields, writeField,
+  applyOp as crdtApplyOp,
+  canonicalValue, clearField, contentFields, getField,
+  liveEdges as crdtLiveEdges, liveNodes as crdtLiveNodes,
+  setFieldClock, unstampedFields, writeField,
 } from "./crdt";
-import type { Payload } from "./crdt";
+import type { CrdtOp, OpResult, Payload } from "./crdt";
 
 /** A structured graph mutation for the live op-log bridge (ADR-002 phase 2).
  * Kept small and additive; more variants (add/delete node/edge) land next. */
@@ -252,6 +254,64 @@ export class DocumentStore {
    *  channel is not implemented (P4); this is where its conflicts collect so the
    *  UI has one place to read them from when it is. */
   readonly remoteConflicts: Conflict[] = [];
+
+  /**
+   * The nodes a SURFACE should show: the document's, minus the tombstoned.
+   *
+   * P4.1 keeps a deleted node in the document — the merge needs to tell
+   * "deleted" from "not yet known to you" — and the canvas has always hidden
+   * them. Once removals arrive LIVE (P4.5) every other surface needs the same
+   * reading, or a node somebody just deleted stays findable in the search and
+   * counted in the status bar. One reader, used by all of them, rather than the
+   * same filter written four times and forgotten in the fifth.
+   */
+  liveNodes(): EmNode[] {
+    return crdtLiveNodes(this.doc.graph as unknown as Payload) as unknown as EmNode[];
+  }
+
+  /** The connectors a surface should show: live, and between live nodes. */
+  liveEdges(): EmEdge[] {
+    const alive = new Set(this.liveNodes().map((n) => n.id));
+    return (crdtLiveEdges(this.doc.graph as unknown as Payload) as unknown as EmEdge[])
+      .filter((e) => alive.has(e.source) && alive.has(e.target));
+  }
+
+  /**
+   * P4.5 · apply a CRDT operation from the room — **every verb**, live.
+   *
+   * The one entry point for the wire's own vocabulary (`add_node`,
+   * `update_field`, `remove_node`, `add_edge`, `remove_edge`), applied by
+   * `crdt.applyOp`: the same algebra the library and the relay run, so what a
+   * remote peer did lands here the way it landed there.
+   *
+   * Two properties this buys, and both were missing while only `update_field`
+   * was wired:
+   *
+   * * **structural work is live.** A node or an edge somebody else creates
+   *   appears now, not at the next re-sync — which is the difference between a
+   *   shared canvas and a shared file;
+   * * **a removal is a TOMBSTONE, not a missing key.** `crdt.applyOp` marks
+   *   `data.removed` / `attributes.removed` with the operation's clock, so the
+   *   merge keeps knowing the difference between "she deleted it" and "I have
+   *   something she has never seen". The views already hide what is tombstoned.
+   *
+   * Nothing is re-stamped: the clock travels with the payload (`ts`/`author`
+   * from the room), and `suppressOp` keeps this from bouncing back out.
+   *
+   * Returns the CRDT's own verdict, so a caller can say "applied" or "stale"
+   * rather than guessing.
+   */
+  applyCrdtOp(op: Record<string, unknown>): OpResult {
+    this.suppressOp = true;
+    try {
+      const section = this.doc.graph as unknown as Payload;
+      const result = crdtApplyOp(section, op as unknown as CrdtOp);
+      if (result.applied) this.emit();
+      return result;
+    } finally {
+      this.suppressOp = false;
+    }
+  }
 
   /** Apply an operation that arrived from a peer, WITHOUT re-emitting it. */
   applyRemoteOp(op: GraphOp): void {
