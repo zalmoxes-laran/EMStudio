@@ -107,6 +107,24 @@ export function planRejoin(base: string | null | undefined,
   };
 }
 
+/**
+ * STEP 4 · the unconfirmed work, re-stamped for a re-send after a re-sync.
+ *
+ * Pure, and separate from the sending, because the property that matters is a
+ * property of the LIST: everything that had not been acknowledged comes back,
+ * **including the emptyings**. A re-send that carried only the values would
+ * leave a field the person emptied offline looking full again — the room's
+ * older document would win a comparison the local intent never got to enter.
+ *
+ * The clock is refreshed (the room settled everything before its compaction
+ * point, so an old stamp would simply lose), but `remove: true` is carried
+ * through untouched: it is what makes the operation an ACT rather than an
+ * absence, and absence is exactly what the merge is allowed to overrule.
+ */
+export function stampForResend(pending: Iterable<HubOp>, now: string): HubOp[] {
+  return [...pending].map((op) => ({ ...op, ts: now }));
+}
+
 // ── translating a local edit into operations the relay understands ───────────
 
 /**

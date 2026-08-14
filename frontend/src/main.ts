@@ -165,7 +165,8 @@ import type { GraphOp } from "./model";
 import { buildCommand, type CommandVerb } from "./commands";
 import {
   type AwarenessNote, emptyPresence, type HubOp, noteForRemoteOp, noteForStale,
-  opsForLocalChange, peerSelections, planRejoin, type PresenceState,
+  opsForLocalChange, peerSelections, planRejoin, stampForResend,
+  type PresenceState,
   reducePresence,
 } from "./hub";
 import { clearField as crdtClearField, writeField as crdtWriteField } from "./crdt";
@@ -2551,6 +2552,9 @@ let hubWatermark: string | null = null;
 /** Local operations sent and not yet acknowledged — the ones a re-sync has to
  *  re-send rather than lose. */
 const hubUnconfirmed = new Map<string, HubOp>();
+/** STEP 4 · after a re-sync, the unconfirmed work waiting for the room's
+ *  document to land before it is re-applied here and re-sent there. */
+let hubResyncPending: HubOp[] = [];
 /** The last few awareness notes ("B updated dating after you"). */
 const hubNotes: AwarenessNote[] = [];
 
@@ -2576,31 +2580,92 @@ function hubSendLocal(op: GraphOp): void {
   }
 }
 
+/**
+ * Write one `update_field` operation into the local document, with ITS clock.
+ *
+ * Shared by the two paths that must produce exactly the same result: an edit
+ * arriving from somebody else, and this client's own unconfirmed work being
+ * re-applied on top of a re-synced document (STEP 4). Sharing it is the point —
+ * a second implementation is how "the value came back but the emptying did not"
+ * happens.
+ *
+ * A field that was EMPTIED goes through `crdtClearField`, which leaves the
+ * tombstone. Writing `undefined` instead would drop the key, and a dropped key
+ * says "I never had that" — which the merge is designed to overrule with the
+ * other side's value. That is the resurrection this function exists to prevent.
+ */
+function hubWriteFieldLocally(op: HubOp): boolean {
+  if (!store || op.op !== "update_field") return false;
+  const nodeId = String(op.node_id ?? op.id ?? "");
+  const node = store.node(nodeId);
+  const field = String(op.field ?? "");
+  if (!node || !field) return false;
+  // through the store's remote path: `applyRemoteOp` does not re-stamp, so the
+  // hand that made this edit stays the hand that made it (AUDIT1)
+  const payload = JSON.parse(JSON.stringify(node)) as Record<string, unknown>;
+  if (op.remove === true) crdtClearField(payload, field, { ts: op.ts, by: op.author });
+  else crdtWriteField(payload, field, op.value, { ts: op.ts, by: op.author });
+  store.applyRemoteOp({
+    op: "update_node", node_id: nodeId,
+    patch: { name: payload.name, description: payload.description,
+             data: payload.data } as Partial<EmNode>,
+  });
+  return true;
+}
+
 /** Apply an operation that arrived from the room, carrying ITS clock. */
 function hubApplyRemote(message: Record<string, unknown>): void {
   if (!store) return;
   const op = message as unknown as HubOp;
   if (op.op === "update_field") {
-    const nodeId = String(op.node_id ?? op.id ?? "");
-    const node = store.node(nodeId);
-    const field = String(op.field ?? "");
-    if (!node || !field) return;
-    // through the store's remote path: `applyRemoteOp` does not re-stamp, so the
-    // hand that made this edit stays the hand that made it (AUDIT1)
-    const payload = JSON.parse(JSON.stringify(node)) as Record<string, unknown>;
-    if (op.remove === true) crdtClearField(payload, field, { ts: op.ts, by: op.author });
-    else crdtWriteField(payload, field, op.value, { ts: op.ts, by: op.author });
-    store.applyRemoteOp({
-      op: "update_node", node_id: nodeId,
-      patch: { name: payload.name, description: payload.description,
-               data: payload.data } as Partial<EmNode>,
-    });
+    const node = store.node(String(op.node_id ?? op.id ?? ""));
+    if (!hubWriteFieldLocally(op)) return;
     const who = hubPresence.members.find((m) => m.author === op.author)?.display
       ?? (op.author as string | null);
-    noteHub(noteForRemoteOp(op, who, node.name ? String(node.name) : null));
+    noteHub(noteForRemoteOp(op, who, node?.name ? String(node.name) : null));
   }
   hubBase = String(op.ts ?? hubBase ?? "");
   sync.setSince(hubBase);
+  buildScenes();
+  draw();
+  refreshInspector();
+  nodeList.refresh();
+}
+
+/**
+ * STEP 4 · put the unconfirmed work back, on top of the room's document.
+ *
+ * Called once the snapshot has been loaded, and doing both halves in this order
+ * is the whole fix:
+ *
+ * 1. **re-apply locally** — with the operation's own clock, through the same
+ *    writer the remote path uses, so an emptied field is emptied again (its
+ *    tombstone, not a missing key) instead of coming back full from the room's
+ *    older document;
+ * 2. **re-send** — as new operations, stamped now, so the room converges to the
+ *    same thing rather than to the state it had before this client reconnected.
+ *
+ * The operations this cannot re-apply locally (a node added while offline, an
+ * edge) are still SENT, and counted in the note: the room takes them and the
+ * next snapshot brings them back. That is a declared limit, not a silence —
+ * `applyRemoteOp` speaks the store's vocabulary and the relay speaks per-field
+ * CRDT, and widening that translation is P4.5, not a line here.
+ */
+function replayAfterResync(): void {
+  if (!hubResyncPending.length) return;
+  const pending = hubResyncPending;
+  hubResyncPending = [];
+  let reapplied = 0;
+  for (const op of pending) {
+    if (hubWriteFieldLocally(op)) reapplied += 1;
+    hubUnconfirmed.set(hubKey(op), op);
+    sync.sendCommand({ v: 1, type: "op", source: "emstudio", ...op });
+  }
+  if (reapplied < pending.length) {
+    noteHub({ kind: "resync", at: new Date().toISOString(),
+              text: t("hub.resent.structural",
+                      { n: String(pending.length - reapplied) }) });
+  }
   buildScenes();
   draw();
   refreshInspector();
@@ -2654,6 +2719,13 @@ function connectToHub(url: string, room: string, token: string | null): void {
       // document arrived and nothing appeared, because it had no `.graph`.
       loadContainerDocument(doc, `${room} (hub)`);
       info.textContent = t("hub.joined", { room });
+      // STEP 4 · and only NOW the work that was not confirmed before the
+      // re-sync. The order is the fix: the snapshot the room sends was built
+      // BEFORE it received these operations, so re-sending them without
+      // re-applying them here would leave this screen showing the room's older
+      // document — with an emptied field looking full again. The room converges
+      // either way; the person watching does not.
+      replayAfterResync();
     },
     onHostInfo: (info2) => {
       hostInfo = { ...hostInfo, ...info2 };
@@ -2670,17 +2742,17 @@ function connectToHub(url: string, room: string, token: string | null): void {
         // NOT replayed. The snapshot that follows is the truth, and the work
         // this client had not yet had acknowledged is re-sent as new operations,
         // stamped now — visible, not silently dropped.
-        const pending = [...hubUnconfirmed.values()];
+        //
+        // Held, not sent, until the snapshot has landed: see `replayAfterResync`.
+        // Sending here and re-applying later would be two orders for the same
+        // facts, and the one the screen shows would be the wrong one.
+        const now = new Date().toISOString().replace(/\.\d+Z$/, "Z");
+        hubResyncPending = stampForResend(hubUnconfirmed.values(), now);
         hubUnconfirmed.clear();
         hubBase = null;
         sync.setSince(null);
-        noteHub({ kind: "resync", at: new Date().toISOString(),
-                  text: t("hub.resynced", { n: String(pending.length) }) });
-        for (const op of pending) {
-          const fresh: HubOp = { ...op, ts: new Date().toISOString().replace(/\.\d+Z$/, "Z") };
-          hubUnconfirmed.set(hubKey(fresh), fresh);
-          sync.sendCommand({ v: 1, type: "op", source: "emstudio", ...fresh });
-        }
+        noteHub({ kind: "resync", at: now,
+                  text: t("hub.resynced", { n: String(hubResyncPending.length) }) });
       }
       renderHubRoster();
     },

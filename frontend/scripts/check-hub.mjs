@@ -185,4 +185,50 @@ const T3 = "2026-08-13T12:00:00Z";
   ok(emptied.text.includes("emptied"), "…and telling an emptying from a change");
 }
 
+// ── 7 · STEP 4 · a re-sync must not resurrect what was emptied ──────────────
+//
+// The hole this closes: after a re-sync the client re-sends the work the room
+// never acknowledged. If that re-send carried only the VALUES, a field the
+// person emptied while offline would come back full — the room's older document
+// would win against an intention that never travelled.
+//
+// The scenario is played with the same CRDT the app runs: the room's document
+// still has the value; the client's pending list has the EMPTYING.
+{
+  const now = "2026-08-13T13:00:00Z";
+  const pending = [
+    { op: "update_field", node_id: "US1", field: "description",
+      value: "muro in opus", ts: T1 },
+    { op: "update_field", node_id: "US1", field: "data.dating", remove: true,
+      ts: T1 },
+  ];
+  const resend = H.stampForResend(pending, now);
+  eq(resend.length, 2, "everything unconfirmed comes back…");
+  eq(resend[1].remove, true, "…INCLUDING the emptying, not only the values");
+  eq(resend[0].ts, now, "…re-stamped now, or the room's settled state would win");
+  ok(!("value" in resend[1]),
+     "an emptying carries no value — it is an act, not a blank");
+
+  // the room's document, as it was BEFORE this client's pending work
+  const roomNode = { id: "US1", node_type: "US", name: "US1",
+                     description: "muro",
+                     data: { dating: "II sec.", created_at: T1, created_by: BRUNO } };
+  // …and the client re-applies its pending operations on top of it, exactly as
+  // `hubWriteFieldLocally` does: a removal goes through clearField
+  for (const op of resend) {
+    if (op.remove === true) C.clearField(roomNode, op.field, { ts: op.ts, by: ANNA });
+    else C.writeField(roomNode, op.field, op.value, { ts: op.ts, by: ANNA });
+  }
+  eq(roomNode.description, "muro in opus", "the unconfirmed value is back");
+  eq(C.getField(roomNode, "data.dating"), undefined,
+     "and the emptied field is STILL empty — no resurrection");
+  const tomb = C.fieldTombstone(roomNode, "data.dating");
+  ok(tomb !== null,
+     "…because what was written is a TOMBSTONE, not a missing key");
+  eq(tomb.ts, now,
+     "…dated now, so the room's older value cannot out-date it");
+  ok(C.knownFields(roomNode).includes("data.dating"),
+     "…and the merge still SEES the field, which is what stops it coming back");
+}
+
 console.log(`hub: ${checks} checks passed`);
