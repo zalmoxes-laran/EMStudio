@@ -5986,3 +5986,44 @@ object.viewer-media {
   background: var(--bg-accent-soft);
   color: var(--accent);
 }
+
+/* A2/IIIF · the interoperability corner of the annotator bar.
+   Only shown when the picture really is served by an Image API — see
+   `renderAnnotator`. */
+.annot-iiif {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.annot-iiif-badge {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  padding: 1px 5px;
+  border-radius: 3px;
+  border: 1px solid var(--line);
+  color: var(--text-faint);
+}
+.annot-iiif .ghost-btn {
+  font-size: 11px;
+  padding: 2px 7px;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.annot-iiif .ghost-btn:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+/* IIIF · the shelf's own thumbnail. Sized to the glyph it replaces, so a list
+   with and without an image service has the same rhythm. */
+.shelf-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 3px;
+  display: block;
+}

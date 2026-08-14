@@ -175,10 +175,22 @@ import {
   AI_PROVIDERS,
   getSettings,
   getSyncUrl,
+  iiifBase,
+  miradorBase,
   saveSettings,
   SYNC_TOOLS,
   type Settings,
 } from "./settings";
+import {
+  fetchImageInfo,
+  fittedUrl,
+  type ImageInfo,
+  imageService as iiifImageService,
+  isImageResource,
+  regionToWebAnnotation,
+  webAnnotationToRegion,
+  thumbnailUrl as iiifThumbnailUrl,
+} from "./iiif";
 import {
   ADORNMENT_EDGE_TYPES,
   CIRCLES,
@@ -5148,6 +5160,10 @@ function openSettings(section?: string): void {
   setAiKey.value = "";
   setAtonBase.value = s.viewer.atonBase;
   setHeriverseApp.value = s.viewer.heriverseApp;
+  const iiifInput = document.getElementById("set-iiif-base") as HTMLInputElement | null;
+  if (iiifInput) iiifInput.value = s.iiif.base;
+  const miradorInput = document.getElementById("set-mirador") as HTMLInputElement | null;
+  if (miradorInput) miradorInput.value = s.iiif.mirador;
   void refreshAiKeyState();
   refreshIdentityPanel();
   refreshSyncUrlPreview();
@@ -5309,6 +5325,12 @@ settingsModal.addEventListener("click", (e) => {
       heriverseApp:
         setHeriverseApp.value.trim().replace(/^\/+|\/+$/g, "") || "a/heriverse",
     },
+    iiif: {
+      base: (document.getElementById("set-iiif-base") as HTMLInputElement)
+        ?.value.trim().replace(/\/+$/, "") ?? "",
+      mirador: (document.getElementById("set-mirador") as HTMLInputElement)
+        ?.value.trim() || getSettings().iiif.mirador,
+    },
   };
   saveSettings(next);
   closeSettings();
@@ -5439,6 +5461,9 @@ function renderResDocuments(): void {
       folder: previewFolder(),
       doc: docJson,
       bridge: bridgeUrl,
+      // IIIF · a document that IS a published image gets its thumbnail from the
+      // image server instead of a round trip through the bridge
+      node: d,
       declaredType: typeof data.resource_type === "string"
         ? data.resource_type : undefined,
       locator,
@@ -5573,6 +5598,7 @@ async function renderResLinks(): Promise<void> {
       folder: previewFolder(),
       doc: docJson,
       bridge: bridgeUrl,
+      node,
       declaredType: typeof data.resource_type === "string"
         ? data.resource_type : undefined,
       locator: r.locator,
@@ -7684,11 +7710,36 @@ function shelfRow(entry: ShelfEntry): HTMLElement {
   row.className = "shelf-row";
   row.dataset.entry = entry.id;
 
+  // IIIF · a shelf that shows what it holds. The entry already carries the
+  // checksum (SHELF1), and the checksum IS the image's identifier, so a
+  // thumbnail is one URL and no download of the original. Everything else keeps
+  // the glyph it had: no service, no checksum, not an image → unchanged.
   const icon = document.createElement("span");
   icon.className = "shelf-icon";
-  icon.textContent = entry.kind === "image" ? "🖼"
-    : entry.kind === "document" ? "📄"
-    : entry.kind === "web_page" ? "🔗" : "•";
+  const thumb = entry.kind === "image"
+    ? iiifThumbnailUrl({ id: entry.id, node_type: "resource", name: entry.name,
+                         data: { checksum: entry.checksum,
+                                 media_type: "image/jpeg" } } as EmNode,
+                       iiifBase(), 96)
+    : null;
+  if (thumb) {
+    const img = new Image();
+    img.className = "shelf-thumb";
+    img.src = thumb;
+    img.alt = "";
+    img.loading = "lazy";
+    // a service that is configured but cannot answer must not leave a broken
+    // frame in the list: fall back to the glyph, silently
+    img.addEventListener("error", () => {
+      img.remove();
+      icon.textContent = "🖼";
+    });
+    icon.appendChild(img);
+  } else {
+    icon.textContent = entry.kind === "image" ? "🖼"
+      : entry.kind === "document" ? "📄"
+      : entry.kind === "web_page" ? "🔗" : "•";
+  }
 
   const main = document.createElement("div");
   main.className = "shelf-main";
@@ -7921,7 +7972,7 @@ let annotatorTool: AnnotatorTool = "rect";
 let annotatorDraft: AnnotatorDraft | null = null;
 /** The image the window is on: resolved once per source, like the viewer's. */
 let annotatorImage: { key: string; nodeId: string; title: string; url: string;
-                      path?: string; page: number } | null = null;
+                      path?: string; page: number; iiif?: boolean } | null = null;
 let annotatorLoading: string | null = null;
 
 /** SHELF1 · a resource PICKED FROM THE SHELF, when there is one.
@@ -7939,6 +7990,38 @@ function setAnnotatorShelfSource(entry: ShelfEntry | null): void {
   annotatorImage = null;        // force the picture to be resolved again
   annotatorDraft = null;
   renderAnnotator();
+}
+
+/** How wide the annotator's picture is on screen, in CSS pixels. What the Image
+ *  API is asked for — not the file's own size, which is the point. */
+function srcWidthForAnnotator(): number {
+  const host = document.getElementById("annotator-view");
+  const width = host?.clientWidth ?? 0;
+  return width > 64 ? width : 1024;
+}
+
+/** What `info.json` said about the picture on screen, once it has answered.
+ *  Filled asynchronously; until then the annotator asks for `max`, which always
+ *  works. */
+let annotatorInfo: { key: string; info: ImageInfo | null } | null = null;
+
+/** The Image API URL for the picture on screen, or null when there is no image
+ *  service, no checksum, or the resource is not an image — in which case the
+ *  annotator does exactly what it did before. */
+function iiifImageUrlFor(node: EmNode | null, cssWidth: number): string | null {
+  if (!node || !isImageResource(node)) return null;
+  const base = iiifBase();
+  const key = `${base}|${node.id}`;
+  if (annotatorInfo?.key !== key) {
+    // ask once, then redraw: the size of the source decides how much of it is
+    // worth fetching, and it is the image server that knows
+    void fetchImageInfo(node, base).then((info) => {
+      annotatorInfo = { key, info };
+      if (info) renderAnnotator();
+    });
+  }
+  return fittedUrl(node, base, cssWidth,
+                   annotatorInfo?.key === key ? annotatorInfo.info : null);
 }
 
 /** The node the annotator is showing — the current element, as everywhere else. */
@@ -7991,8 +8074,33 @@ function renderAnnotator(): void {
     return;
   }
 
-  const key = `${picked ? picked.id : nodeId}|${src}`;
+  // A2/IIIF · when the picture is a published image and this deployment has an
+  // Image API, the annotator asks THE IMAGE SERVER for it, at the size of its
+  // own viewport, instead of pulling the original through a blob. A 200-megapixel
+  // scan then costs what fits on screen — which is the difference between an
+  // annotator that opens and one that hangs.
+  //
+  // The geometry is untouched by this: regions are normalised [0,1], so which
+  // rendition is on screen changes nothing about what is recorded.
+  const service = iiifBase() ? iiifImageUrlFor(node, srcWidthForAnnotator()) : null;
+  const key = `${picked ? picked.id : nodeId}|${service ?? src}`;
   if (annotatorImage?.key === key) {
+    drawAnnotatorOverlay();
+    renderAnnotatorPanel();
+    return;
+  }
+  if (service) {
+    annotatorImage = {
+      key, nodeId: picked ? picked.id : nodeId!,
+      title: picked ? picked.name : String(node?.name || nodeId),
+      url: service, page: 0, iiif: true,
+    };
+    img.classList.remove("hidden");
+    img.src = service;              // public by design: an Image API needs no token
+    title.textContent = annotatorImage.title;
+    hint.textContent = annotatorMode() === "annotate"
+      ? t("annotator.hintDraw") : t("annotator.hintView");
+    refreshAnnotatorIiif();
     drawAnnotatorOverlay();
     renderAnnotatorPanel();
     return;
@@ -8062,6 +8170,142 @@ function annotatorRegions(): EmNode[] {
     const page = Number(data.page ?? 0);
     return data.resource_id === image.nodeId && page === image.page;
   });
+}
+
+// ── A2/IIIF · the interoperability corner ────────────────────────────────────
+//
+// Three gestures, and all three are the SAME claim seen from different sides:
+// the regions of this image are nodes in the em.json, and W3C Web Annotation /
+// IIIF are how they travel. Nothing here writes a second copy of anything.
+
+/** Show the corner only when the picture really is served by an Image API. */
+function refreshAnnotatorIiif(): void {
+  const corner = document.getElementById("annotator-iiif");
+  if (!corner) return;
+  corner.classList.toggle("hidden", !annotatorImage?.iiif);
+}
+
+/** The node the annotator is showing, when it is a graph resource. */
+function annotatorResourceNode(): EmNode | null {
+  const id = annotatorImage?.nodeId;
+  return id ? (store?.node(id) ?? null) : null;
+}
+
+/** The image's pixel size, as the <img> reports it once loaded. Used to project
+ *  a region into PIXEL selectors, which is what viewers implement; without it
+ *  the projection falls back to percentages, which are exact anyway. */
+function annotatorPixelSize(): { width: number; height: number } | null {
+  // info.json first: the <img> holds whatever RENDITION was requested, and a
+  // selector in the pixels of a downscaled copy would put the region in the
+  // wrong place for everybody else.
+  if (annotatorInfo?.info) return annotatorInfo.info;
+  const img = document.getElementById("annotator-image") as HTMLImageElement | null;
+  if (!img?.naturalWidth || !img.naturalHeight) return null;
+  return { width: img.naturalWidth, height: img.naturalHeight };
+}
+
+/** EMIT · this image's regions as W3C Web Annotations, on the clipboard.
+ *
+ *  An AnnotationPage rather than a bare list: it is what a viewer expects to be
+ *  handed, and it is what Mirador reads. The target is the image's own IIIF
+ *  service id, so the annotations mean something away from this app. */
+function copyWebAnnotations(): void {
+  const resource = annotatorResourceNode();
+  const service = iiifImageService(resource, iiifBase());
+  const regions = annotatorRegions();
+  if (!service || !regions.length) {
+    toast(t("annotator.iiifNothing"));
+    return;
+  }
+  const size = annotatorPixelSize();
+  const page = {
+    "@context": "http://iiif.io/api/presentation/3/context.json",
+    id: `${service.id}/annotations`,
+    type: "AnnotationPage",
+    items: regions.map((r) => regionToWebAnnotation(r, service.id, size)),
+  };
+  const text = JSON.stringify(page, null, 2);
+  void navigator.clipboard?.writeText(text).catch(() => { /* no clipboard: below */ });
+  logInfo(text);
+  toast(t("annotator.iiifCopied", { n: String(regions.length) }));
+}
+
+/** CONSUME · a Web Annotation somebody else made becomes a region of the graph.
+ *
+ *  Written through the store's ordinary stamped path, so an annotation that
+ *  arrives from Mirador is indistinguishable — in provenance terms — from one
+ *  traced here: it has an author, a time, and a place in the CRDT. That is the
+ *  half of "round-trippable" that matters, and the half most tools skip. */
+function pasteWebAnnotation(): void {
+  const image = annotatorImage;
+  if (!image || !store) return;
+  const raw = window.prompt(t("annotator.iiifPastePrompt"));
+  if (!raw) return;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    toast(t("annotator.iiifBadJson"));
+    return;
+  }
+  const items = Array.isArray((parsed as { items?: unknown[] })?.items)
+    ? ((parsed as { items: unknown[] }).items)
+    : [parsed];
+  const size = annotatorPixelSize();
+  let made = 0;
+  for (const item of items) {
+    try {
+      const region = webAnnotationToRegion(item as never, size);
+      const id = region.id || store.newId();
+      if (store.node(id)) continue;              // already here: not news
+      store.addNode({
+        id, node_type: "annotation_region",
+        name: region.name || t("annotator.importedRegion"),
+        data: {
+          shape_kind: region.shape_kind,
+          ...(region.rect ? { rect: region.rect } : {}),
+          ...(region.points ? { points: region.points } : {}),
+          page: region.page ?? 0,
+          resource_id: image.nodeId,
+        },
+      } as EmNode);
+      store.addEdge(id, image.nodeId, "is_on_resource");
+      made += 1;
+    } catch (err) {
+      logInfo(String(err));
+    }
+  }
+  toast(made ? t("annotator.iiifPasted", { n: String(made) })
+             : t("annotator.iiifNoRegion"));
+  renderAnnotator();
+}
+
+/** The manifest of this image, as a URL a viewer can be pointed at.
+ *
+ *  Built by em-server from the ROOM's graph (`/v1/rooms/…/iiif/…/manifest`),
+ *  because a manifest must be fetchable by the viewer — a document this page
+ *  holds in memory is not something Mirador can open. Without a room there is
+ *  no such URL, and the button says so instead of opening an empty viewer. */
+function manifestUrlForAnnotator(): string | null {
+  const image = annotatorImage;
+  const settings = getSettings();
+  if (!image || !sync.room || !settings.sync.hubUrl) return null;
+  const base = settings.sync.hubUrl.replace(/\/+$/, "");
+  return `${base}/v1/rooms/${encodeURIComponent(sync.room)}/iiif/`
+    + `${encodeURIComponent(image.nodeId)}/manifest`;
+}
+
+/** Open this image, with its regions, in Mirador. */
+function openInMirador(): void {
+  const manifest = manifestUrlForAnnotator();
+  if (!manifest) {
+    toast(t("annotator.miradorNeedsRoom"));
+    return;
+  }
+  const viewer = miradorBase();
+  const url = `${viewer}${viewer.includes("?") ? "&" : "?"}`
+    + `iiif-content=${encodeURIComponent(manifest)}`;
+  window.open(url, "_blank", "noopener");
 }
 
 /** Geometry of a region node, in normalised coordinates. */
@@ -11718,6 +11962,16 @@ updateToolbar();
 // without a store).
 renderTiles(); // WIN5 · lay out the arrangement this session was left in
 applyWorkspace(activeWorkspace());
+
+// A2/IIIF · the interoperability corner of the annotator. Bound once, here,
+// like every other piece of static chrome: the buttons exist in the markup and
+// are hidden until the picture on screen actually has an Image API service.
+document.getElementById("annotator-copy-anno")
+  ?.addEventListener("click", () => copyWebAnnotations());
+document.getElementById("annotator-paste-anno")
+  ?.addEventListener("click", () => pasteWebAnnotation());
+document.getElementById("annotator-mirador")
+  ?.addEventListener("click", () => openInMirador());
 
 // EM-Data (DP-81): a live tabular view on the active store. Reads `store`
 // through a getter so it always sees the current slot; re-renders from the

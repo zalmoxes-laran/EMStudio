@@ -25,6 +25,9 @@
  */
 
 import { create3dEmbed, isRef3D } from "./embed3d";
+import { thumbnailUrl } from "./iiif";
+import { iiifBase } from "./settings";
+import type { EmNode } from "./types";
 import type { Ref3D } from "./embed3d";
 import { dtcGlyphUrl, iconUrlFor } from "./icons";
 import { onFirstVisible } from "./lazy";
@@ -152,6 +155,9 @@ function typedMark(resourceType: string, label: string): HTMLElement {
 }
 
 export interface ThumbOptions extends PreviewRequest {
+  /** The graph node behind this row, when there is one. Read for exactly one
+   *  thing: its checksum, which IS its IIIF identifier. */
+  node?: EmNode | null;
   /** bridge base URL — resolved by the caller (it owns `bridgeUrl()`) */
   bridge: () => Promise<string>;
   /** `data.resource_type` off the node, when the row has one */
@@ -175,6 +181,26 @@ export function createResourceThumb(opts: ThumbOptions): HTMLElement {
   box.title = opts.label ?? "";
 
   onFirstVisible(box, () => {
+    // IIIF · a PUBLISHED image needs neither the bridge nor a download: its
+    // thumbnail is a size request to the image server, and the identifier is
+    // the asset's own checksum. This is the cheap half of the image layer — a
+    // shelf of three hundred photographs stops fetching three hundred
+    // photographs — and it costs one branch.
+    //
+    // No service, no checksum, not an image: fall through to exactly what this
+    // row did before. A missing image service must read as "as before", never
+    // as a broken frame.
+    const iiif = thumbnailUrl(opts.node ?? null, iiifBase(), 240);
+    if (iiif) {
+      box.classList.remove("rp-loading");
+      // `resource_type: "image"` is not a guess: the URL exists only because the
+      // node passed `isImageResource`. Without it `fill` would classify the row
+      // by the locator's extension — and an asset URL ends in a digest, so it
+      // would draw a typed mark next to a perfectly good picture.
+      fill(box, { url: iiif, media_type: "image/jpeg", resource_type: "image",
+                  filename: opts.label ?? undefined }, opts);
+      return;
+    }
     void (async () => {
       // A resource that is ALREADY a web URL needs no bridge: the browser can
       // fetch it itself, and asking the bridge would mean posting the whole

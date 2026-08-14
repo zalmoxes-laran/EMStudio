@@ -75,6 +75,21 @@ export interface AiSettings {
  * a scene id, or a resource — comes from the graph. Empty `atonBase` means "not
  * configured", and an epoch3d embed then says so instead of failing silently.
  */
+export interface IiifSettings {
+  /** The IIIF Image API base of the deployment (`https://host/iiif/3`).
+   *
+   *  Configuration, never a stored fact: the identifier of an image is its own
+   *  checksum, so only the HOST is unknown, and writing that host into a study
+   *  would give every project a dead address the day the server moves. Empty
+   *  means "no image service": thumbnails and the zoomable annotator fall back
+   *  to what they did before, quietly. */
+  base: string;
+  /** Where to send "open in Mirador". The public demo by default — a viewer we
+   *  do not maintain, reading a manifest we generate, which is the whole point
+   *  of speaking the standard. */
+  mirador: string;
+}
+
 export interface ViewerSettings {
   /** ATON server root, e.g. `https://localhost:8083`. Empty = unconfigured. */
   atonBase: string;
@@ -88,6 +103,7 @@ export interface Settings {
   interaction: InteractionSettings;
   ai: AiSettings;
   viewer: ViewerSettings;
+  iiif: IiifSettings;
 }
 
 const KEY = "emstudio.settings";
@@ -101,6 +117,9 @@ const DEFAULTS: Settings = {
   // No default host on purpose: a wrong one would look like a broken viewer.
   // The Heriverse deployment guide mounts the wapp at /a/heriverse.
   viewer: { atonBase: "", heriverseApp: "a/heriverse" },
+  // No default base, for the same reason the ATON one has none: a wrong host
+  // would look like a broken image service rather than an unconfigured one.
+  iiif: { base: "", mirador: "https://projectmirador.org/embed/" },
 };
 
 /** Providers em-bridge registers (`tools/llm_provider.py`). `echo` is a real
@@ -128,6 +147,7 @@ function clone(s: Settings): Settings {
     interaction: { ...s.interaction },
     ai: { ...s.ai },
     viewer: { ...s.viewer },
+    iiif: { ...s.iiif },
   };
 }
 
@@ -143,6 +163,7 @@ function load(): Settings {
       interaction: { ...DEFAULTS.interaction, ...(parsed.interaction ?? {}) },
       ai: { ...DEFAULTS.ai, ...(parsed.ai ?? {}) },
       viewer: { ...DEFAULTS.viewer, ...(parsed.viewer ?? {}) },
+      iiif: { ...DEFAULTS.iiif, ...(parsed.iiif ?? {}) },
     };
   } catch {
     return clone(DEFAULTS);
@@ -173,6 +194,20 @@ export function getSyncUrl(): string {
 /** ATON root with no trailing slash, or "" when unconfigured. */
 export function atonBase(): string {
   return current.viewer.atonBase.trim().replace(/\/+$/, "");
+}
+
+/** The IIIF Image API base, trimmed — or "" when there is no image service.
+ *
+ *  Every caller treats "" as "do what you did before this existed": no
+ *  thumbnail, no zoomable image, no Mirador button. A missing service must
+ *  degrade quietly, not produce a broken picture. */
+export function iiifBase(): string {
+  return current.iiif.base.trim().replace(/\/+$/, "");
+}
+
+/** Where "open in Mirador" points. */
+export function miradorBase(): string {
+  return current.iiif.mirador.trim();
 }
 
 /** URL of a Heriverse SCENE — the app that reads an EM graph in 3D. */

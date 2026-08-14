@@ -391,6 +391,25 @@
           <div id="annotator-bar">
             <span id="annotator-title"></span>
             <span id="annotator-hint"></span>
+            <!-- The interoperability corner. Hidden until the picture actually
+                 has a IIIF service: an affordance that is offered and then
+                 refused is worse than one that is not there. -->
+            <span id="annotator-iiif" class="annot-iiif hidden">
+              <span id="annotator-iiif-badge" class="annot-iiif-badge"
+                    title="questa immagine è servita via IIIF Image API">IIIF</span>
+              <button id="annotator-copy-anno" class="ghost-btn"
+                      title="Copia le regioni di questa immagine come W3C Web Annotation">
+                Copia annotazioni
+              </button>
+              <button id="annotator-paste-anno" class="ghost-btn"
+                      title="Incolla una W3C Web Annotation e falla diventare una regione del grafo">
+                Incolla annotazione
+              </button>
+              <button id="annotator-mirador" class="ghost-btn"
+                      title="Apri questa immagine e le sue regioni in Mirador">
+                Apri in Mirador
+              </button>
+            </span>
           </div>
           <div id="annotator-stage">
             <div id="annotator-frame">
@@ -742,6 +761,38 @@
             <p class="settings-url">
               Scena: <code id="set-aton-scene-url"></code>
             </p>
+          </section>
+
+          <section class="settings-sect" id="settings-sect-iiif">
+            <h4 data-i18n="settings.iiif">Immagini (IIIF)</h4>
+            <p class="settings-hint">
+              Dove vivono le <b>immagini</b>. L'indirizzo di un servizio
+              <b>IIIF Image API</b> (Cantaloupe, nello stack StratiGraph):
+              l'identificatore di un'immagine è il suo <b>sha256</b>, quindi qui
+              serve solo l'host. Con questo, le miniature sono una richiesta di
+              <i>taglia</i> e l'annotatore chiede l'immagine grande quanto gli
+              serve — niente pipeline di miniature, niente file duplicati.
+              Lasciato vuoto, tutto funziona come prima: nessuna miniatura,
+              nessun riquadro rotto.
+            </p>
+            <label
+              >Servizio IIIF (Image API 3)
+              <input
+                id="set-iiif-base"
+                type="text"
+                spellcheck="false"
+                placeholder="https://localhost:8182/iiif/3"
+              />
+            </label>
+            <label
+              >Mirador (apri altrove)
+              <input
+                id="set-mirador"
+                type="text"
+                spellcheck="false"
+                placeholder="https://projectmirador.org/embed/"
+              />
+            </label>
           </section>
           <section class="settings-sect">
             <h4 data-i18n="settings.developer">Developer</h4>
