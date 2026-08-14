@@ -181,6 +181,7 @@ import {
   SYNC_TOOLS,
   type Settings,
 } from "./settings";
+import { envelope as wireEnvelope } from "./wire";
 import {
   fetchImageInfo,
   fittedUrl,
@@ -2588,7 +2589,7 @@ function hubSendLocal(op: GraphOp): void {
   const ops = opsForLocalChange(op as Parameters<typeof opsForLocalChange>[0]);
   for (const hubOp of ops) {
     hubUnconfirmed.set(hubKey(hubOp), hubOp);
-    sync.sendCommand({ v: 1, type: "op", source: "emstudio", ...hubOp });
+    sync.sendCommand(wireEnvelope("op", hubOp as unknown as Record<string, unknown>));
   }
 }
 
@@ -2671,7 +2672,7 @@ function replayAfterResync(): void {
   for (const op of pending) {
     if (hubWriteFieldLocally(op)) reapplied += 1;
     hubUnconfirmed.set(hubKey(op), op);
-    sync.sendCommand({ v: 1, type: "op", source: "emstudio", ...op });
+    sync.sendCommand(wireEnvelope("op", op as unknown as Record<string, unknown>));
   }
   if (reapplied < pending.length) {
     noteHub({ kind: "resync", at: new Date().toISOString(),
@@ -2769,7 +2770,12 @@ function connectToHub(url: string, room: string, token: string | null): void {
       renderHubRoster();
     },
     onPresence: (message) => {
-      hubPresence = reducePresence(hubPresence, message);
+      // `reducePresence` folds a FRAME (it switches on `type`); what arrives
+      // here is the payload, because WIRE 2 hands the body to the callback and
+      // keeps the envelope to itself. Naming the kind back is the whole
+      // translation — without it the roster silently stayed empty, which is how
+      // this was noticed.
+      hubPresence = reducePresence(hubPresence, { type: "presence", ...message });
       renderHubRoster();
       draw();
     },
@@ -2833,7 +2839,7 @@ function sendHostCommand(verb: string, target: string): void {
     toast(t("cmd.blocked.disconnected"));
     return;
   }
-  pendingCommands.set(msg.cmd_id, { verb, target });
+  pendingCommands.set(msg.payload.cmd_id, { verb, target });
   logInfo(t("cmd.sent", { verb, target: nodeLabelFor(target) ?? target }));
   info.textContent = t("cmd.sent", { verb, target: nodeLabelFor(target) ?? target });
 }
@@ -4594,6 +4600,12 @@ btnSync.addEventListener("click", () => {
       refreshInspector();
     },
     onCommandResult: (res) => applyCommandResult(res),
+    // WIRE 2 · a host that speaks another protocol version is SAID. Without
+    // this it would look exactly like a host that has gone quiet.
+    onWireMismatch: (reason) => {
+      logInfo(reason);
+      toast(t("sync.wireMismatch"));
+    },
     onStatus: (state) => {
       btnSync.classList.toggle("active", state === "open");
       // clear, high-visibility signal that we are in live-sync mode

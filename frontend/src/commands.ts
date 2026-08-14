@@ -18,20 +18,25 @@
 
 /** The verbs the protocol defines today. Small on purpose: a vocabulary
  *  invented before the two ends agree on the mechanism is how protocols rot. */
+import { envelope, type WireMessage } from "./wire";
+
 export const COMMAND_VERBS = ["create_proxy_for_unit", "import_geometry"] as const;
 export type CommandVerb = (typeof COMMAND_VERBS)[number];
 
-export interface CommandMessage {
-  v: 1;
-  type: "command";
+/** The BODY of a `command` message. WIRE 2: the envelope (`v`, `type`,
+ *  `source`) is `wire.ts`'s and is not repeated here — which is also what stops
+ *  a future verb with a `target` or a `source` parameter from colliding with
+ *  the wire's own words. */
+export interface CommandBody {
   verb: CommandVerb;
   /** what the verb acts on: a US id, a ResourceNode id */
   target: string;
   params: Record<string, unknown>;
   /** deterministic over (verb, target, params) — see `commandId` */
   cmd_id: string;
-  source: "emstudio";
 }
+
+export type CommandMessage = WireMessage & { payload: CommandBody };
 
 export interface CommandResult {
   cmd_id: string;
@@ -80,10 +85,11 @@ export function buildCommand(
   target: string,
   params: Record<string, unknown> = {},
 ): CommandMessage {
-  return {
-    v: 1, type: "command", verb, target, params,
-    cmd_id: commandId(verb, target, params), source: "emstudio",
+  const body: CommandBody = {
+    verb, target, params, cmd_id: commandId(verb, target, params),
   };
+  const message = envelope("command", body as unknown as Record<string, unknown>);
+  return message as CommandMessage;
 }
 
 // ── uuid5 ────────────────────────────────────────────────────────────────────

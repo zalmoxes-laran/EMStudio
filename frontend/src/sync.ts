@@ -6,14 +6,16 @@
 // graph data, so there is no ownership/collision concern (the op-log data
 // channel is a separate, later phase).
 //
-// Wire format (JSON text frames):
-//   { v:1, type:"select", node_id:"<uuid>", source:"emstudio"|"emtools" }
-//   { v:1, type:"focus",  node_id:"<uuid>", source:... }   // reserved
-// `source` lets a peer ignore its own echo.
+// Wire format (JSON text frames), WIRE 2 — the envelope and the BODY are
+// separate namespaces, and `wire.ts` says why at length:
+//   { v:2, type:"select", source:"emstudio", payload:{ node_id, node_ids? } }
+// `source` (the envelope's) lets a peer ignore its own echo; nothing inside
+// `payload` can ever collide with it.
 
 import type { GraphOp } from "./model";
 import type { EmDocument } from "./types";
 import { roomUrl } from "./hub";
+import { envelope, read as readWire, SOURCE } from "./wire";
 
 function hubUrl(options: { url: string; room: string; token?: string | null;
                            since?: string | null }): string {
@@ -44,62 +46,44 @@ export interface HostInfo {
   accepts_commands?: boolean;
 }
 
-export type SyncMessage =
-  | {
-      v: number;
-      type: "select" | "focus";
-      node_id: string | null;
-      /** full multi-selection (active + others); node_id is the active one */
-      node_ids?: string[];
-      source?: string;
-    }
-  | { v: number; type: "request_snapshot"; source?: string }
-  | {
-      v: number;
-      type: "snapshot";
-      doc: EmDocument;
-      source?: string;
-      /** optional host metadata piggy-backed on the snapshot */
-      host?: HostInfo;
-    }
-  | { v: number; type: "request_save"; source?: string }
-  | ({ v: number; type: "host_info"; source?: string } & HostInfo)
-  | {
-      v: number;
-      type: "command";
-      verb: string;
-      target: string;
-      params: Record<string, unknown>;
-      cmd_id: string;
-      source?: string;
-    }
-  | {
-      v: number;
-      type: "command_result";
-      cmd_id: string;
-      ok: boolean;
-      delta?: { nodes?: unknown[]; edges?: unknown[] };
-      error?: string;
-      repeated?: boolean;
-      info?: Record<string, unknown>;
-      source?: string;
-    }
-  | {
-      v: number;
-      type: "presence";
-      room?: string;
-      members?: Array<Record<string, unknown>>;
-      source?: string;
-    }
-  | {
-      v: number;
-      type: "op_result";
-      applied: boolean;
-      reason?: string;
-      op?: Record<string, unknown>;
-      source?: string;
-    }
-  | ({ v: number; type: "op"; source?: string } & GraphOp);
+/** The BODY of each message type. The envelope (`v`, `type`, `source`) is
+ *  `wire.ts`'s business and is not repeated in any of these. */
+export interface SelectPayload {
+  node_id: string | null;
+  /** full multi-selection (active + others); node_id is the active one */
+  node_ids?: string[];
+  /** set by a ROOM: whose selection this is. Its presence is what makes the
+   *  frame AWARENESS rather than a mirror to follow. */
+  connection_id?: string;
+  author?: string | null;
+}
+
+export interface SnapshotPayload {
+  doc: EmDocument;
+  /** optional host metadata piggy-backed on the snapshot */
+  host?: HostInfo;
+  gc_watermark?: string | null;
+}
+
+export interface CommandResultPayload {
+  cmd_id: string;
+  ok: boolean;
+  delta?: { nodes?: unknown[]; edges?: unknown[] };
+  error?: string;
+  repeated?: boolean;
+  info?: Record<string, unknown>;
+}
+
+export interface OpResultPayload {
+  applied: boolean;
+  reason?: string;
+  op?: Record<string, unknown>;
+}
+
+export interface PresencePayload {
+  room?: string;
+  members?: Array<Record<string, unknown>>;
+}
 
 /** P4.3 · what a HUB connection needs that a sidecar one does not. */
 export interface HubOptions {
@@ -131,6 +115,11 @@ export interface SyncCallbacks {
   /** P4.3 · the socket dropped and a reconnect is scheduled / has happened.
    *  Reported so the UI can say "reconnecting" instead of going quiet. */
   onReconnect?: (attempt: number, delayMs: number) => void;
+  /** WIRE 2 · a frame this client cannot read — another protocol version, or a
+   *  host that answered `error`. Surfaced rather than dropped: a host talking
+   *  a different wire looks exactly like a host that has gone quiet, and the
+   *  user deserves the difference. */
+  onWireMismatch?: (reason: string) => void;
   /** CMD1 · the host answered a command: a delta to merge, or an error */
   onCommandResult?: (result: {
     cmd_id: string; ok: boolean;
@@ -163,7 +152,8 @@ export type SyncDirection = "off" | "send" | "receive" | "both";
 
 export const SYNC_DIRECTIONS: SyncDirection[] = ["off", "send", "receive", "both"];
 
-const SOURCE = "emstudio";
+// `SOURCE` now lives in `wire.ts` beside the envelope it belongs to: one
+// spelling of "who is speaking", used by both the builder and the echo guard.
 
 export class SyncClient {
   private ws: WebSocket | null = null;
@@ -258,7 +248,7 @@ export class SyncClient {
       // ask the host for its current graph — this is what makes "sync mode"
       // show the host's data (ADR-002 snapshot-READ). No-op if it fails.
       try {
-        ws.send(JSON.stringify({ v: 1, type: "request_snapshot", source: SOURCE }));
+        ws.send(JSON.stringify(envelope("request_snapshot")));
       } catch {
         /* dropped */
       }
@@ -283,49 +273,59 @@ export class SyncClient {
       /* onclose follows */
     };
     ws.onmessage = (ev) => {
-      let msg: SyncMessage;
+      let parsed: unknown;
       try {
-        msg = JSON.parse(String(ev.data));
+        parsed = JSON.parse(String(ev.data));
       } catch {
         return;
       }
-      if (msg.source === SOURCE) return; // ignore our own echo
-      if (msg.type === "select" && (msg.node_id || msg.node_ids?.length)) {
+      const answer = readWire(parsed);
+      if (!answer.ok) {
+        // A host from another protocol version is SAID, not half-understood.
+        // Reading a v1 frame as a v2 one is exactly how an edge lost its
+        // endpoints, so this refuses and reports instead of guessing.
+        this.cb?.onWireMismatch?.(answer.error);
+        return;
+      }
+      const { type, payload, source } = answer.message;
+      if (source === SOURCE) return; // ignore our own echo
+
+      if (type === "select") {
+        const body = payload as unknown as SelectPayload;
+        if (!body.node_id && !body.node_ids?.length) return;
         // P4.3 · a selection frame that says WHO made it is a ROOM frame, and it
         // is AWARENESS: it must not move my selection. Following somebody's
         // clicks is the two-screens mirror (a sidecar), and in a room it would
         // drag every view around whenever anybody looked at something.
-        const from = (msg as unknown as Record<string, unknown>).connection_id;
-        if (from) {
-          this.cb?.onPeerSelect?.(msg as unknown as Record<string, unknown>);
+        if (body.connection_id) {
+          this.cb?.onPeerSelect?.(payload);
         } else if (this.receives) {
           // MODES1 · gated, not disconnected: the socket stays up (the host's
           // document and its status keep arriving), only the echo stops.
-          this.cb?.onSelect(msg.node_id ?? "", msg.node_ids);
+          this.cb?.onSelect(body.node_id ?? "", body.node_ids);
         }
-      } else if (msg.type === "snapshot") {
-        this.cb?.onSnapshot(msg.doc);
-        if (msg.host) this.cb?.onHostInfo?.(msg.host);
-      } else if (msg.type === "host_info") {
-        const { type: _t, v: _v, source: _s, ...info } = msg;
-        this.cb?.onHostInfo?.(info as HostInfo);
-      } else if (msg.type === "presence") {
+      } else if (type === "snapshot") {
+        const body = payload as unknown as SnapshotPayload;
+        this.cb?.onSnapshot(body.doc);
+        if (body.host) this.cb?.onHostInfo?.(body.host);
+      } else if (type === "host_info") {
+        this.cb?.onHostInfo?.(payload as HostInfo);
+      } else if (type === "presence") {
         // P4.3 · awareness, never gated by the sync direction: knowing who is in
         // the room is not an echo of anybody's work.
-        this.cb?.onPresence?.(msg as unknown as Record<string, unknown>);
-      } else if (msg.type === "op_result") {
-        this.cb?.onOpResult?.(msg as unknown as Record<string, unknown>);
-      } else if (msg.type === "command_result") {
+        this.cb?.onPresence?.(payload);
+      } else if (type === "op_result") {
+        this.cb?.onOpResult?.(payload);
+      } else if (type === "command_result") {
         // CMD1 · NOT gated by the sync direction: this is the answer to
         // something this user explicitly asked for, and dropping it would leave
         // the request hanging with no way to tell why.
-        const { type: _t, v: _v, source: _s, ...res } = msg;
-        this.cb?.onCommandResult?.(res as Parameters<
-          NonNullable<SyncCallbacks["onCommandResult"]>>[0]);
-      } else if (msg.type === "op") {
+        this.cb?.onCommandResult?.(payload as unknown as CommandResultPayload);
+      } else if (type === "op") {
         if (!this.receives) return;   // MODES1 · same gate as the selection
-        const { type: _t, v: _v, source: _s, ...op } = msg;
-        this.cb?.onOp(op as GraphOp);
+        this.cb?.onOp(payload as unknown as GraphOp);
+      } else if (type === "error") {
+        this.cb?.onWireMismatch?.(String(payload.detail ?? "the host reported an error"));
       }
     };
   }
@@ -335,15 +335,10 @@ export class SyncClient {
   sendSelect(nodeId: string | null, nodeIds?: string[]): void {
     if (!this.sends) return;          // MODES1 · off / receive: nothing leaves
     if (!this.connected || (!nodeId && !nodeIds?.length)) return;
-    const msg: SyncMessage = {
-      v: 1,
-      type: "select",
-      node_id: nodeId,
-      source: SOURCE,
-    };
-    if (nodeIds && nodeIds.length > 1) msg.node_ids = nodeIds;
+    const body: SelectPayload = { node_id: nodeId };
+    if (nodeIds && nodeIds.length > 1) body.node_ids = nodeIds;
     try {
-      this.ws!.send(JSON.stringify(msg));
+      this.ws!.send(JSON.stringify(envelope("select", body as unknown as Record<string, unknown>)));
     } catch {
       /* dropped */
     }
@@ -354,7 +349,8 @@ export class SyncClient {
     if (!this.sends) return;          // MODES1 · off / receive: nothing leaves
     if (!this.connected) return;
     try {
-      this.ws!.send(JSON.stringify({ v: 1, type: "op", source: SOURCE, ...op }));
+      this.ws!.send(JSON.stringify(
+        envelope("op", op as unknown as Record<string, unknown>)));
     } catch {
       /* dropped */
     }
@@ -387,9 +383,7 @@ export class SyncClient {
   sendRequestSave(): void {
     if (!this.connected) return;
     try {
-      this.ws!.send(
-        JSON.stringify({ v: 1, type: "request_save", source: SOURCE }),
-      );
+      this.ws!.send(JSON.stringify(envelope("request_save")));
     } catch {
       /* dropped */
     }

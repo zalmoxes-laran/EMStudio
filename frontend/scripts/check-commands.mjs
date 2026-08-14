@@ -58,10 +58,12 @@ ok(C.commandId("create_proxy_for_unit", "US101", {}) !==
 {
   const msg = C.buildCommand("create_proxy_for_unit", "US101");
   eq(msg.type, "command", "it is a command message");
-  eq(msg.source, "emstudio", "…and it says who asked");
-  eq(msg.cmd_id, C.commandId("create_proxy_for_unit", "US101", {}),
+  eq(msg.source, "emstudio", "…and the ENVELOPE says who asked");
+  // WIRE 2 · the command's own words live in the payload, where a `target` or a
+  // `source` parameter cannot be mistaken for one of the wire's
+  eq(msg.payload.cmd_id, C.commandId("create_proxy_for_unit", "US101", {}),
      "…carrying the deterministic id, so a re-send is recognised");
-  eq(msg.params, {}, "no params is an empty object, not undefined");
+  eq(msg.payload.params, {}, "no params is an empty object, not undefined");
 }
 
 eq([...C.COMMAND_VERBS], ["create_proxy_for_unit", "import_geometry"],
