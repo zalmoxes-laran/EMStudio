@@ -73,6 +73,47 @@ validation driven by the same versioned JSON datamodels that drive s3Dgraphy.
    optional reconstructable `layout`. Spec: [`docs/emjson-v1-draft.md`](docs/emjson-v1-draft.md);
    reference implementation in s3Dgraphy (`emjson_exporter` / `emjson_importer`).
 
+## For the person using it
+
+*If you are here to work on a study rather than on the code, this section is the
+whole of it.*
+
+**Open something.** Drop an `.em.json` file on the window, or **File ▸ Apri…**.
+Nothing to configure first: the empty canvas says so and offers the two ways in.
+**File ▸ Nuovo** starts an empty study; **File ▸ Importa GraphML…** brings in an
+old yEd matrix as a new graph in the project.
+
+**The two views are one datum.** The chips in the top bar switch how you look at
+the same graph, never *what* you are looking at:
+
+* **Modifica grafo** — the canvas. `Matrix Mode` lays it out as the EM swimlane
+  (epochs as lanes, time flowing upward); the other mode shows the full knowledge
+  graph with every relation visible. `Layout` re-arranges; `1:1` returns to
+  actual size;
+* **Narrativa** — the study told as text, with its sources;
+* **Tabella** — the same nodes as rows, for when a table is the faster way to
+  fix twenty of them.
+
+**Save.** **File ▸ Salva** / **Salva come…** writes an `.em.json` container —
+one file holding the whole project, its graphs and its shelf. **Fissa
+versione…** freezes a citable snapshot; **Pubblica su StratiGraph…** registers
+the study in a catalogue.
+
+**Working with Blender, or with other people.** The badge at the bottom-left says
+which mode you are in: **Standalone** (just this window), **Sidecar** (connected
+to a running Blender with EM-blender-tools — edits travel both ways) or **Hub**
+(a room on an em-server, where several people edit at once). You do not choose
+the badge; it reflects what is actually connected.
+
+**Two things worth knowing early.** A deletion is *kept* in the file as a mark,
+not erased — that is what lets two copies of a study merge later without one of
+them quietly resurrecting what the other deleted. And your identity (an ORCID)
+is claimed offline and verified later: what you publish is signed rather than
+merely dated.
+
+**Where this sits in the wider system:**
+[`ARCHITECTURE-SYSTEM.md`](../em-server/docs/ARCHITECTURE-SYSTEM.md).
+
 ## Quickstart — how to run EMStudio
 
 **A. Standalone desktop app (Tauri).** Native window, no browser, with
