@@ -21,6 +21,8 @@
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
     "@tauri-apps/plugin-dialog": "^2.7.1",
-    "@tauri-apps/plugin-fs": "^2.5.1"
+    "@tauri-apps/plugin-fs": "^2.5.1",
+    "@types/three": "^0.185.4",
+    "three": "^0.185.1"
   }
 }

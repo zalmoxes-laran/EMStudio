@@ -18,6 +18,7 @@
  */
 
 import { create3dEmbed, isRef3D, resolve3d } from "./embed3d";
+import { isGltf, mount3dViewer } from "./embed3d-native";
 import { geoOf, georeferenceScene, reprojectPoint } from "./geo";
 import type { GeoRef } from "./geo";
 import { onFirstVisible } from "./lazy";
@@ -416,6 +417,21 @@ function drawMap(box: HTMLElement, node: EmNode,
  * When there is nothing to show, the card says which of the gaps it is: no
  * reference in the graph, no server configured, or a file no web viewer can read.
  */
+/** The glTF this node points at, if it points at one.
+ *
+ *  Read at RENDER time from whichever field carries it — `url` on a promoted
+ *  ResourceNode (DP-76: reference + url + checksum), or the locator a Shelf
+ *  asset uses. Nothing is copied into the narrative: the story holds an id, and
+ *  what that id resolves to is the graph's business, now. */
+function modelLocator(node: EmNode): string | null {
+  const data = (node.data ?? {}) as Record<string, unknown>;
+  for (const key of ["url", "locator", "path", "scene_url"]) {
+    const value = data[key];
+    if (typeof value === "string" && isGltf(value)) return value;
+  }
+  return null;
+}
+
 function scene3dCard(node: EmNode, doc: EmDocument | null,
                      key: string, kind = "scene3d"): HTMLElement {
   const ref = resolve3d(node, doc);
@@ -424,6 +440,18 @@ function scene3dCard(node: EmNode, doc: EmDocument | null,
   box.appendChild(el("div", "nv-embed-title", String(node.name || node.id)));
   const what = narrativeViewTypeDescription(kind);
   if (what) box.title = what;
+  // P5b · a MODEL is shown here, self-contained; a SCENE stays an iframe.
+  // Two different jobs, not one job done twice: a glTF is orbited in the card
+  // and needs no ATON deployed anywhere (the field case, and the offline one),
+  // while a Heriverse scene carries epochs and a temporal UI that are exactly
+  // what a viewer-whose-whole-job-is-to-be-the-viewer is for.
+  const locator = modelLocator(node);
+  if (locator) {
+    const stage = el("div", "nv-3d-stage");
+    box.appendChild(stage);
+    mount3dViewer(stage, locator, { label: String(node.name || node.id) });
+    return box;
+  }
   if (!isRef3D(ref)) {
     box.classList.add("nv-pending");
     box.appendChild(el("div", "nv-embed-note", ref.hint));

@@ -72,8 +72,8 @@ const all = (el, sel) => [...el.querySelectorAll(sel)].map(text);
 // The counts are asserted so a fixture edited for one test cannot silently
 // change what another one measures. P5 added an image and two annotated
 // regions (the IIIF embed needs something to be live ABOUT).
-eq(doc.graph.nodes.length, 16, "fixture · nodes");
-eq(doc.graph.edges.length, 13, "fixture · edges");
+eq(doc.graph.nodes.length, 17, "fixture · nodes");
+eq(doc.graph.edges.length, 14, "fixture · edges");
 // P4 corrected the fixture to the datamodel's real class names (`EpochNode`,
 // `ActivityNodeGroup`): the lowercase spellings are what a hand-written em.json
 // carries, and the Python side loaded them as generic nodes. Both are read by
@@ -433,6 +433,43 @@ eq(doc.graph.nodes.filter(
   drag(ch, V.NODE_MIME, "us2", "dragover");
   ok(!ch.classList.contains("nv-drop-over"),
      "workspace · the dissemination viewer accepts no drops");
+}
+
+
+
+// ── P5b · the 3D embed, as a CONTRACT ───────────────────────────────────────
+//
+// The gesture (orbit, zoom) is a browser thing and is proved there. What is
+// headless is the contract: an RM that points at a glTF gets a VIEWER — not a
+// placeholder, not an iframe — and the viewer is aimed at the right asset.
+// RMDoc stays 2D and must NOT end up here (the domain correction of P3).
+{
+  const N = await load("embed3d-native.ts");
+  ok(N.isGltf("/testdata/colonnato.gltf"), "3d · a .gltf is a model");
+  ok(N.isGltf("https://x/y.glb?v=2"), "3d · …and so is a .glb with a query");
+  ok(!N.isGltf("https://x/scan.obj"), "3d · another format is not ours");
+  ok(!N.isGltf(""), "3d · nothing is not a model");
+
+  const rm = byId("rm-1");
+  ok(rm, "3d · the fixture carries a representation model");
+  eq(rm.data.residency, "reference",
+     "3d · it is a REFERENCE (DP-76), never a copy of the geometry");
+  ok(String(rm.data.checksum).startsWith("sha256:"),
+     "3d · …with the digest that makes it verifiable");
+
+  // the card: a viewer stage, aimed at the asset the graph names NOW
+  const V = await load("narrative.ts");
+  const host = document.createElement("div");
+  V.renderNarrativeView(host, doc, "narr-1", () => {});
+  const card = [...host.querySelectorAll(".nv-embed.nv-3d")]
+    .find((e) => e.textContent.includes("Colonnato · modello"));
+  ok(card, "3d · the rm embed renders");
+  ok(!card.className.includes("nv-pending"),
+     "3d · …as a viewer, not as a placeholder");
+  ok(card.querySelector(".nv-3d-stage"),
+     "3d · …with a stage for the model");
+  ok(!card.querySelector("iframe"),
+     "3d · a MODEL is shown here, not handed to an ATON iframe");
 }
 
 console.log(`narrative: ${checks} checks passed`);

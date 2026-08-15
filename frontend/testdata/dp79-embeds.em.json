@@ -153,6 +153,11 @@
           "block_type": "embed",
           "ref": "img-1",
           "view_type": "document"
+         },
+         {
+          "block_type": "embed",
+          "ref": "rm-1",
+          "view_type": "rm"
          }
         ]
        }
@@ -199,6 +204,17 @@
       ],
       "page": 0,
       "resource_id": "img-1"
+     }
+    },
+    {
+     "id": "rm-1",
+     "node_type": "representation_model",
+     "name": "Colonnato · modello",
+     "data": {
+      "url": "/testdata/colonnato.gltf",
+      "residency": "reference",
+      "checksum": "sha256:541399d3b217155bb971dafd581dc1ffc80df9e2dd08fd3af4eb6eb8e1f16140",
+      "media_type": "model/gltf+json"
      }
     }
    ],
@@ -280,6 +296,12 @@
      "source": "reg-b",
      "target": "img-1",
      "edge_type": "is_on_resource"
+    },
+    {
+     "id": "rm_of_usv",
+     "source": "rm-1",
+     "target": "usv1",
+     "edge_type": "is_representation_model_of"
     }
    ]
   }

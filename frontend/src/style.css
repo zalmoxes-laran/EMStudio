@@ -6320,3 +6320,18 @@ body.nv-standalone main.nv-standalone-main {
   cursor: pointer;
   padding: 2px 8px;
 }
+
+/* P5b · the 3D model, orbitable in the card. Sized like the iframe stage it
+   sits beside, so a chapter with both does not jump. */
+.nv-3d-stage { margin-top: 8px; }
+.nv-3d-canvas {
+  width: 100%;
+  height: auto;
+  display: block;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-panel);
+  touch-action: none;   /* the orbit gesture is ours, not the page's */
+  cursor: grab;
+}
+.nv-3d-canvas:active { cursor: grabbing; }
