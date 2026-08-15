@@ -1,0 +1,229 @@
+{
+ "header": {
+  "format": "em.json",
+  "version": "1.0"
+ },
+ "graphs": {
+  "portico": {
+   "graph_id": "portico",
+   "name": "Portico (fixture DP-79)",
+   "nodes": [
+    {
+     "id": "ep-2",
+     "node_type": "epoch",
+     "name": "Fase 2 · restauro",
+     "data": {
+      "start_time": 1450,
+      "end_time": 1520
+     }
+    },
+    {
+     "id": "ep-1",
+     "node_type": "epoch",
+     "name": "Fase 1 · impianto",
+     "data": {
+      "start_time": 1200,
+      "end_time": 1450
+     }
+    },
+    {
+     "id": "ep-0",
+     "node_type": "epoch",
+     "name": "Fase 0 · non datata",
+     "data": {}
+    },
+    {
+     "id": "act-1",
+     "node_type": "activity",
+     "name": "Cantiere del portico"
+    },
+    {
+     "id": "us1",
+     "node_type": "US",
+     "name": "US 1 · muro",
+     "description": "muro in opus mixtum"
+    },
+    {
+     "id": "us2",
+     "node_type": "US",
+     "name": "US 2 · soglia"
+    },
+    {
+     "id": "usv1",
+     "node_type": "USVs",
+     "name": "USV 1 · colonnato restituito"
+    },
+    {
+     "id": "prop1",
+     "node_type": "property",
+     "name": "certainty_level",
+     "data": {
+      "value": "probable"
+     }
+    },
+    {
+     "id": "prop2",
+     "node_type": "property",
+     "name": "height",
+     "data": {
+      "value": "3.2 m"
+     }
+    },
+    {
+     "id": "ext1",
+     "node_type": "extractor",
+     "name": "lettura del prospetto"
+    },
+    {
+     "id": "doc1",
+     "node_type": "document",
+     "name": "Rossi 1987, tav. XII",
+     "description": "rilievo del prospetto nord"
+    },
+    {
+     "id": "scene1",
+     "node_type": "group",
+     "name": "Scena · il portico nel 1450"
+    },
+    {
+     "id": "narr-1",
+     "node_type": "narrative",
+     "name": "Il portico, raccontato",
+     "data": {
+      "chapters": [
+       {
+        "title": "Le due fasi",
+        "blocks": [
+         {
+          "block_type": "prose",
+          "text": "Il portico e' documentato in due fasi. **La matrice** che segue mostra l'ambito dell'attivita':"
+         },
+         {
+          "block_type": "embed",
+          "ref": "act-1",
+          "view_type": "matrix"
+         },
+         {
+          "block_type": "prose",
+          "text": "Le stesse unita' su un *asse temporale*:"
+         },
+         {
+          "block_type": "embed",
+          "ref": "act-1",
+          "view_type": "timeline"
+         },
+         {
+          "block_type": "prose",
+          "text": "E come tabella viva, interrogata adesso:"
+         },
+         {
+          "block_type": "embed",
+          "ref": "act-1",
+          "view_type": "table"
+         },
+         {
+          "block_type": "prose",
+          "text": "L'altezza del muro non e' un'asserzione isolata: ecco la catena."
+         },
+         {
+          "block_type": "embed",
+          "ref": "us1",
+          "view_type": "paradata"
+         },
+         {
+          "block_type": "prose",
+          "text": "Il colonnato e' restituito, e la sua certezza d'esistenza lo dice:"
+         },
+         {
+          "block_type": "embed",
+          "ref": "usv1",
+          "view_type": "us"
+         },
+         {
+          "block_type": "embed",
+          "ref": "scene1",
+          "view_type": "un_scene"
+         },
+         {
+          "block_type": "embed",
+          "ref": "doc1",
+          "view_type": "document"
+         }
+        ]
+       }
+      ]
+     }
+    }
+   ],
+   "edges": [
+    {
+     "id": "e1",
+     "source": "us1",
+     "target": "ep-1",
+     "edge_type": "has_first_epoch"
+    },
+    {
+     "id": "e2",
+     "source": "us2",
+     "target": "ep-1",
+     "edge_type": "has_first_epoch"
+    },
+    {
+     "id": "e3",
+     "source": "usv1",
+     "target": "ep-2",
+     "edge_type": "has_first_epoch"
+    },
+    {
+     "id": "e4",
+     "source": "us2",
+     "target": "us1",
+     "edge_type": "is_after"
+    },
+    {
+     "id": "e5",
+     "source": "us1",
+     "target": "act-1",
+     "edge_type": "is_in_activity"
+    },
+    {
+     "id": "e6",
+     "source": "us2",
+     "target": "act-1",
+     "edge_type": "is_in_activity"
+    },
+    {
+     "id": "e7",
+     "source": "usv1",
+     "target": "act-1",
+     "edge_type": "is_in_activity"
+    },
+    {
+     "id": "e8",
+     "source": "usv1",
+     "target": "prop1",
+     "edge_type": "has_property"
+    },
+    {
+     "id": "e9",
+     "source": "us1",
+     "target": "prop2",
+     "edge_type": "has_property"
+    },
+    {
+     "id": "e10",
+     "source": "prop2",
+     "target": "ext1",
+     "edge_type": "has_data_provenance"
+    },
+    {
+     "id": "e11",
+     "source": "ext1",
+     "target": "doc1",
+     "edge_type": "extracted_from"
+    }
+   ]
+  }
+ },
+ "active_graph_id": "portico"
+}

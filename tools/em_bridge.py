@@ -510,6 +510,9 @@ def make_handler(api):
                 self._import_graphml(raw)
             elif route == "/export-ttl":
                 self._export_ttl(raw)
+            elif route == "/export-narrative":
+                self._export_narrative(raw, urllib.parse.parse_qs(
+                    urllib.parse.urlparse(self.path).query))
             elif route == "/resolve-authority":
                 try:
                     body = json.loads(raw.decode("utf-8")) if raw else {}
@@ -1978,6 +1981,102 @@ def make_handler(api):
             self.send_header("Content-Length", str(len(graphml)))
             self.end_headers()
             self.wfile.write(graphml)
+
+        # em.json (JSON body) + ?format=latex|docx|html → the narrative, rendered.
+        #
+        # DP-79 P1 · one route, three formats, because they are three renderings
+        # of ONE bake (`api.bake_narrative`): the moment they became three routes
+        # somebody would add a fourth traversal of the graph and the formats
+        # would start disagreeing about what the narrative said.
+        #
+        # Invariant 2 holds here as everywhere: the exporters live in s3Dgraphy
+        # and this is transport. Nothing about a narrative is decided in the
+        # bridge, and nothing is re-stamped — the truth stays in the
+        # NarrativeNode, and an export is a reading of it.
+        FORMATS = {
+            "latex": ("application/x-tex", "tex"),
+            "docx": ("application/vnd.openxmlformats-officedocument"
+                     ".wordprocessingml.document", "docx"),
+            "html": ("text/html; charset=utf-8", "html"),
+        }
+
+        def _export_narrative(self, raw, query):
+            fmt = (query.get("format") or ["html"])[0].lower()
+            if fmt not in self.FORMATS:
+                self._fail(400, f"unknown format {fmt!r} — "
+                                f"expected one of {', '.join(self.FORMATS)}")
+                return
+            try:
+                body = json.loads(raw.decode("utf-8"))
+            except Exception as exc:
+                self._fail(400, f"invalid JSON body: {exc}")
+                return
+            doc = body.get("doc") if isinstance(body, dict) and "doc" in body else body
+            narrative_id = (body.get("narrative_id")
+                            if isinstance(body, dict) else "") or ""
+            try:
+                graph, warnings = api.load_emjson(doc)
+                for w in warnings:
+                    sys.stderr.write(f"  [bridge] warning: {w}\n")
+                if not narrative_id:
+                    # No id given: if the graph holds exactly ONE narrative that
+                    # is unambiguous, and asking the user to name it would be
+                    # ceremony. More than one and we refuse rather than guess —
+                    # exporting the wrong story is worse than an error.
+                    found = [n.node_id for n in graph.nodes
+                             if getattr(n, "node_type", "") == "narrative"]
+                    if len(found) == 1:
+                        narrative_id = found[0]
+                    elif not found:
+                        self._fail(404, "this graph holds no narrative to export")
+                        return
+                    else:
+                        self._fail(400, "this graph holds several narratives — "
+                                        "say which one (narrative_id)")
+                        return
+                if fmt == "latex":
+                    parts = api.export_narrative_latex(graph, narrative_id)
+                    payload = parts.get("tex", "").encode("utf-8")
+                    bib = parts.get("bib", "")
+                elif fmt == "docx":
+                    payload = api.export_narrative_docx(graph, narrative_id)
+                    bib = ""
+                else:
+                    payload = api.export_narrative_html(
+                        graph, narrative_id).encode("utf-8")
+                    bib = ""
+            except KeyError:
+                self._fail(404, f"no narrative {narrative_id!r} in this graph")
+                return
+            except ImportError as exc:
+                # python-docx missing: a 501 rather than a 500, because the
+                # request was fine and this build simply cannot do that one.
+                self._fail(501, f"{fmt} export unavailable in this build ({exc})")
+                return
+            except Exception as exc:  # pragma: no cover — surface to the UI
+                import traceback
+                traceback.print_exc()
+                self._fail(500, f"narrative export failed: {exc}")
+                return
+
+            mime, suffix = self.FORMATS[fmt]
+            safe = "".join(c if c.isalnum() or c in "-_" else "_"
+                           for c in (narrative_id or "narrative"))
+            self.send_response(200)
+            self._cors()
+            self.send_header("Content-Type", mime)
+            self.send_header(
+                "Content-Disposition", f'attachment; filename="{safe}.{suffix}"')
+            # The .bib travels in a header rather than a second request: a
+            # citation file that has to be fetched separately is a citation file
+            # somebody forgets to fetch.
+            if bib:
+                self.send_header("X-EM-Bib", base64.b64encode(
+                    bib.encode("utf-8")).decode("ascii"))
+                self.send_header("Access-Control-Expose-Headers", "X-EM-Bib")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
 
         # em.json (JSON body) → Turtle (RDF/CIDOC projection), downloadable.
         # rdflib is imported lazily: the sidecar still starts and serves GraphML

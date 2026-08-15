@@ -24,6 +24,11 @@ import { onFirstVisible } from "./lazy";
 import { blockStatus, bylineOf, narrativeAuthors } from "./narrative-authorship";
 import type { AuthorRef, BlockStatus } from "./narrative-authorship";
 import { canonicalViewType, VIEW_TYPES } from "./narrative-edit";
+import {
+  certaintyLadder, documentEmbed, existenceCertainty, isRmDoc, matrixEmbed,
+  paradataEmbed, rmDocEmbed, tableEmbed, timelineEmbed, unSceneEmbed,
+} from "./narrative-embeds";
+import { iiifBase } from "./settings";
 import { createOsmMap } from "./osm-map";
 import type { OsmView } from "./osm-map";
 import { nodeStyle } from "./palette";
@@ -61,11 +66,16 @@ export interface Narrative {
   chapters: NarrativeChapter[];
 }
 
-/** The view types this phase actually draws. Anything else is labelled as not
- *  yet rendered — an honest placeholder, never an error: the enum is allowed to
- *  lead the implementations. */
+/** The view types this build actually draws.
+ *
+ *  DP-79 P1 closed the gap: all ELEVEN declared types now have a branch in
+ *  `renderEmbed`, so this set and `narrativeViewTypes()` finally agree. It stays
+ *  as a separate list on purpose — `check-narrative.mjs` compares the two, so a
+ *  view type added to the datamodel without a renderer fails a check instead of
+ *  silently becoming a placeholder in somebody's story. */
 const RENDERED_VIEW_TYPES = new Set([
   "source", "document", "us", "map", "scene3d", "rm",
+  "matrix", "timeline", "table", "paradata", "un_scene",
 ]);
 
 export function narrativesIn(doc: EmDocument | null): Narrative[] {
@@ -135,12 +145,18 @@ function unresolved(ref: string): HTMLElement {
   return box;
 }
 
-function sourceCard(node: EmNode, kind: string): HTMLElement {
+function sourceCard(node: EmNode, kind: string,
+                    doc?: EmDocument | null): HTMLElement {
   const box = el("div", "nv-embed nv-source");
   box.appendChild(el("div", "nv-embed-kind", kind));
   box.appendChild(el("div", "nv-embed-title", String(node.name || node.id)));
   if (node.description)
     box.appendChild(el("div", "nv-embed-note", node.description));
+  // DP-79 P1 · the picture, when there is one and a IIIF service to serve it.
+  // A size request on the image that is already in the store — no second copy.
+  const figure = documentEmbed(node, iiifBase());
+  if (figure) box.appendChild(figure);
+  void doc;
   const data = (node.data ?? {}) as Record<string, unknown>;
   const url = typeof data.url === "string" ? data.url : undefined;
   if (url) {
@@ -155,7 +171,7 @@ function sourceCard(node: EmNode, kind: string): HTMLElement {
   return box;
 }
 
-function usCard(node: EmNode): HTMLElement {
+function usCard(node: EmNode, doc?: EmDocument | null): HTMLElement {
   // Colour and label from the datamodel, via the same helpers the canvas uses.
   const style = nodeStyle(node.node_type);
   const box = el("div", "nv-embed nv-us");
@@ -170,6 +186,11 @@ function usCard(node: EmNode): HTMLElement {
   box.appendChild(el("div", "nv-embed-title", String(node.name || node.id)));
   if (node.description)
     box.appendChild(el("div", "nv-embed-note", node.description));
+  // DP-79 P1 · the qualia the design asks for: how sure we are it EXISTED.
+  // Drawn as the whole ladder with one rung lit, because "asserted" alone does
+  // not tell a reader it is the third of four.
+  const certainty = existenceCertainty(node, doc ?? null);
+  if (certainty) box.appendChild(certaintyLadder(certainty));
   const description = typeDescription(node.node_type);
   if (description) box.title = description;
   return box;
@@ -430,11 +451,29 @@ function renderEmbed(
   if (!node) {
     box = unresolved(ref);
   } else if (viewType === "source" || viewType === "document") {
-    box = sourceCard(node, viewType);
+    box = sourceCard(node, viewType, doc);
   } else if (viewType === "us") {
-    box = usCard(node);
+    box = usCard(node, doc);
+  } else if (viewType === "matrix") {
+    box = matrixEmbed(node, doc);
+  } else if (viewType === "timeline") {
+    box = timelineEmbed(node, doc);
+  } else if (viewType === "table") {
+    box = tableEmbed(node, doc, block.options ?? {});
+  } else if (viewType === "paradata") {
+    box = paradataEmbed(node, doc);
+  } else if (viewType === "un_scene") {
+    box = unSceneEmbed(node, doc);
   } else if (viewType === "map") {
     box = mapCard(node, block.options ?? {}, key, doc);
+  } else if (viewType === "rm" && isRmDoc(node)) {
+    // DP-79 P3 · the domain correction. RM and RMSF are 3D — one way this app
+    // shows 3D, and it is the stage below. An **RMDoc** is the other family: a
+    // 2D document that had to be PLACED, so its embed is the document (with its
+    // IIIF picture) plus what the placement is worth. Routing both through the
+    // 3D stage showed an empty viewer for a photograph, which is the wrong
+    // answer twice: nothing to see, and a claim that there was.
+    box = rmDocEmbed(node, doc, iiifBase());
   } else if (viewType === "scene3d" || viewType === "rm") {
     // `rm` renders through the same ATON embed (G2): a representation model IS a
     // 3D asset, and there is one way this app shows 3D.

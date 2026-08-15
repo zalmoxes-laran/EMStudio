@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="it">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>StratiGraph · lettura</title>
+    <!--
+      DP-79 P3 · the DISSEMINATION viewer (T6.3).
+
+      A page whose entire job is to let somebody READ a study. No editor shell,
+      no palette, no toolbar, no canvas — those exist in EMStudio and a reader
+      does not need them. What it does have is the same rendering engine
+      (`narrative.ts` + `narrative-embeds.ts`), so an embed here means exactly
+      what it means in the editor: a REFERENCE, resolved now.
+
+      NOT the same page as `viewer.html`, which is the phase-2 read-only SVG
+      GRAPH viewer (drop an .em.json, see the matrix drawn). That one shows the
+      graph; this one shows the STORY. Two different things a reader might want,
+      two files.
+
+      Twin of the HTML export, and the difference is the whole point:
+        · the export (P1) is a SNAPSHOT — one reading, frozen, portable, e-mailable;
+        · this is LIVE — the document is fetched and the embeds resolve at render,
+          so the 3D is navigable and the matrix says what the graph says today.
+      Same NarrativeNode, two renderings, one engine. There is no third traversal.
+    -->
+  </head>
+  <body class="nv-standalone">
+    <main id="viewer" class="nv-standalone-main" aria-live="polite"></main>
+    <script type="module" src="/src/reader.ts"></script>
+  </body>
+</html>

@@ -4522,6 +4522,101 @@ document.getElementById("btn-graphml")!.addEventListener("click", async () => {
   }
 });
 
+// DP-79 P1 · export the NARRATIVE — LaTeX, Word, HTML.
+//
+// Same shape as the Turtle button below and for the same reason (invariant 2):
+// the exporters live in s3Dgraphy, this POSTs the document and downloads what
+// comes back. Three formats through ONE route because they are three renderings
+// of one bake — the moment they became three traversals of the graph they would
+// start disagreeing about what the narrative said.
+//
+// A static target is a SNAPSHOT: the embeds are resolved once, at export. That
+// is stated in the exported file itself, not only here — a reader who is handed
+// the .docx has no other way to know.
+const NARRATIVE_FORMATS: Record<string, { mime: string; ext: string; label: string }> = {
+  html: { mime: "text/html", ext: "html", label: "HTML" },
+  docx: {
+    mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ext: "docx", label: "Word",
+  },
+  latex: { mime: "application/x-tex", ext: "tex", label: "LaTeX" },
+};
+
+async function exportNarrative(format: string): Promise<void> {
+  if (!store) {
+    toast("Apri prima un documento");
+    return;
+  }
+  const spec = NARRATIVE_FORMATS[format];
+  const narratives = store.doc.graph.nodes.filter(
+    (n) => n.node_type === "narrative");
+  if (!narratives.length) {
+    // Not an error: a graph without a narrative is an ordinary graph.
+    toast("Questo grafo non contiene narrative da esportare");
+    return;
+  }
+  // Which one: the open one when the narrative view is showing it, else the
+  // only one there is. Guessing between several would export the wrong story.
+  const chosen = (selectedNarrativeId
+    && narratives.some((n) => n.id === selectedNarrativeId))
+    ? selectedNarrativeId
+    : (narratives.length === 1 ? narratives[0].id : null);
+  if (!chosen) {
+    toast("Ci sono più narrative: aprine una e riprova");
+    return;
+  }
+  toast(`Esporto la narrativa in ${spec.label}…`);
+  try {
+    const res = await fetch(
+      `${await bridgeUrl()}/export-narrative?format=${encodeURIComponent(format)}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ doc: JSON.parse(store.toJSON()),
+                               narrative_id: chosen }),
+      });
+    if (!res.ok) {
+      let msg = `bridge error ${res.status}`;
+      try {
+        const j = await res.json();
+        if (j?.error) msg = j.error;
+      } catch { /* non-JSON error body */ }
+      toast(`Esportazione ${spec.label} fallita: ${msg}`);
+      return;
+    }
+    const blob = await res.blob();
+    const base = String(store.doc.graph["name"] ?? chosen)
+      .replace(/[^\w.-]+/g, "_");
+    downloadBlob(blob, `${base}.${spec.ext}`, spec.mime);
+    // LaTeX comes with its bibliography: a .bib the author has to fetch
+    // separately is a .bib the author forgets to fetch.
+    const bib = res.headers.get("X-EM-Bib");
+    if (bib) {
+      const text = decodeURIComponent(escape(atob(bib)));
+      downloadBlob(new Blob([text], { type: "text/plain" }), `${base}.bib`,
+                   "text/plain");
+      toast(`Narrativa esportata in ${spec.label} (+ .bib)`);
+    } else {
+      toast(`Narrativa esportata in ${spec.label}`);
+    }
+  } catch {
+    toast(BRIDGE_UNREACHABLE);
+  }
+}
+
+function downloadBlob(blob: Blob, filename: string, _mime: string): void {
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+for (const format of Object.keys(NARRATIVE_FORMATS)) {
+  document.getElementById(`btn-narr-${format}`)
+    ?.addEventListener("click", () => { void exportNarrative(format); });
+}
+
 // Export the RDF/CIDOC Turtle projection via the transformer (s3Dgraphy
 // rdf_exporter — invariant 2: produced in Python, never reimplemented in TS).
 document.getElementById("btn-ttl")!.addEventListener("click", async () => {

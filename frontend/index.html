@@ -71,6 +71,15 @@
               <button id="btn-svg" title="Export current view as SVG">SVG</button>
               <button id="btn-graphml" title="Export as yEd GraphML (needs the local dev bridge — see dev.sh)">GraphML</button>
               <button id="btn-ttl" title="Export as RDF/CIDOC Turtle (.ttl) via the s3Dgraphy projection">Turtle (.ttl)</button>
+              <!-- DP-79 P1 · the narrative, rendered. Three formats, ONE bake
+                   (s3Dgraphy `bake_narrative`): they are three readings of the
+                   same snapshot, so they cannot disagree about what the story
+                   said. Separated from the graph exports above because what
+                   they export is a different thing — a text, not a graph. -->
+              <div class="dd-sep"></div>
+              <button id="btn-narr-html" title="Esporta la narrativa come pagina HTML autosufficiente (snapshot)">Narrativa → HTML</button>
+              <button id="btn-narr-docx" title="Esporta la narrativa come documento Word (snapshot)">Narrativa → Word</button>
+              <button id="btn-narr-latex" title="Esporta la narrativa come LaTeX + BibTeX (snapshot)">Narrativa → LaTeX</button>
             </div>
           </div>
           <div class="dd-sep"></div>
