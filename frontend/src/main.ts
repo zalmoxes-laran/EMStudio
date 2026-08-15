@@ -39,7 +39,7 @@ import {
   type IdentityProvider,
 } from "./identity";
 import { renderInspector } from "./inspector";
-import { narrativesIn, renderNarrativeView } from "./narrative";
+import { narrativesIn, renderNarrativeView, VIEW_TYPE_MIME } from "./narrative";
 import {
   addEpochChapter,
   scaffoldNarrativeFromGraph,
@@ -4540,6 +4540,9 @@ const NARRATIVE_FORMATS: Record<string, { mime: string; ext: string; label: stri
     ext: "docx", label: "Word",
   },
   latex: { mime: "application/x-tex", ext: "tex", label: "LaTeX" },
+  // The fourth, and the only live one: its cells QUERY the study instead of
+  // quoting it, so re-running the notebook says what the study says then.
+  ipynb: { mime: "application/x-ipynb+json", ext: "ipynb", label: "Jupyter" },
 };
 
 async function exportNarrative(format: string): Promise<void> {
@@ -7015,10 +7018,32 @@ function renderNarrativePalette(host: HTMLElement): void {
 
   // embeds — the datamodel's narrative view-types, as a guide (insert with a
   // reference from the chapter's + button, which knows chapter and node).
-  section("Blocchi (inserisci col + del capitolo)");
+  // D1-full (P5) · the view types were listed as a GUIDE and were dead buttons.
+  // Now they are draggable: drop one on an embed and that embed changes how it
+  // is shown. They still cannot be clicked to insert, and that is deliberate —
+  // an embed without a reference points at nothing, so a view type alone is not
+  // a block anybody wants. Inserting WITH a reference is the other gesture:
+  // drag a node from the node list onto a chapter (D2).
+  section("Viste (trascina su un embed)");
   for (const vt of narrativeViewTypes()) {
-    item(vt, narrativeViewTypeDescription(vt) || vt, null);
+    const hint = narrativeViewTypeDescription(vt) || vt;
+    const b = document.createElement("button");
+    b.className = "np-item np-item-drag";
+    b.title = `${hint}\n\nTrascina questa vista su un embed per cambiarne la resa.`;
+    b.draggable = true;
+    b.innerHTML = `<span class="np-label">${vt}</span><span class="np-hint">${hint}</span>`;
+    b.addEventListener("dragstart", (e) => {
+      e.dataTransfer?.setData(VIEW_TYPE_MIME, vt);
+      e.dataTransfer?.setData("text/plain", vt);
+      if (e.dataTransfer) e.dataTransfer.effectAllowed = "copy";
+    });
+    host.appendChild(b);
   }
+  const guide = document.createElement("div");
+  guide.className = "np-sect np-sect-note";
+  guide.textContent =
+    "Trascina un nodo dall'elenco su un capitolo per citarlo.";
+  host.appendChild(guide);
 }
 
 // NARR-BUTTONS · `setNarrativeOpen()` is GONE. It was the WIN1 back-compat

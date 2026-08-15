@@ -1998,6 +1998,10 @@ def make_handler(api):
             "docx": ("application/vnd.openxmlformats-officedocument"
                      ".wordprocessingml.document", "docx"),
             "html": ("text/html; charset=utf-8", "html"),
+            # DP-79 P4 · the fourth rendering, and the only LIVE one: the
+            # notebook holds the QUESTIONS and the reader runs them. Same
+            # route, because it is the same NarrativeNode read a fourth way.
+            "ipynb": ("application/x-ipynb+json", "ipynb"),
         }
 
         def _export_narrative(self, raw, query):
@@ -2040,6 +2044,17 @@ def make_handler(api):
                     bib = parts.get("bib", "")
                 elif fmt == "docx":
                     payload = api.export_narrative_docx(graph, narrative_id)
+                    bib = ""
+                elif fmt == "ipynb":
+                    # `emjson_url` goes into the loader cell so the notebook can
+                    # fetch the study rather than carry it. Passed by the caller
+                    # when it knows one (the Catalog's /emjson); otherwise the
+                    # cell names a local file and the reader edits one line.
+                    payload = api.export_narrative_ipynb(
+                        graph, narrative_id,
+                        emjson_url=(body.get("emjson_url")
+                                    if isinstance(body, dict) else None),
+                    ).encode("utf-8")
                     bib = ""
                 else:
                     payload = api.export_narrative_html(

@@ -28,8 +28,8 @@
  * graph being built; a red box would be a lie about a mistake nobody made.
  */
 
-import { thumbnailUrl } from "./iiif";
-import { isImageResource } from "./iiif";
+import { fetchImageInfo, fittedUrl, imageUrl, isImageResource, regionUrl,
+         thumbnailUrl } from "./iiif";
 import { nodeStyle } from "./palette";
 import rules from "./assets/em_visual_rules.json";
 import { typeDescription } from "./rules";
@@ -668,7 +668,7 @@ const broken = (why: string): HTMLElement =>
  * says why — it does not show a broken frame.
  */
 export function documentEmbed(node: EmNode, base: string,
-                              onOpen?: (n: EmNode) => void): HTMLElement | null {
+                              doc?: EmDocument | null): HTMLElement | null {
   if (!base || !isImageResource(node)) return null;
   const url = thumbnailUrl(node, base, 240);
   if (!url) return null;
@@ -683,13 +683,157 @@ export function documentEmbed(node: EmNode, base: string,
     fig.replaceChildren(el("figcaption", "nv-embed-note nv-implied",
       "il servizio immagini non risponde per questa risorsa"));
   });
-  if (onOpen) {
-    img.style.cursor = "zoom-in";
-    img.title = "apri l'immagine";
-    img.addEventListener("click", (e) => { e.stopPropagation(); onOpen(node); });
-  }
+
+  // DP-79 P5 · the image, LIVE: click the thumbnail and it opens at reading
+  // size. A size request on the same IIIF service — no second copy of the
+  // pixels, which is the whole reason IIIF was adopted.
+  img.style.cursor = "zoom-in";
+  img.title = "apri l'immagine a grandezza di lettura";
+  img.addEventListener("click", (event) => {
+    event.stopPropagation();
+    openImage(node, base, doc ?? null);
+  });
   fig.appendChild(img);
+
+  // …and the regions somebody annotated on it, named. The annotator (DP-2D)
+  // writes them as `annotation_region` nodes pointing at the resource; a story
+  // that showed the picture without them would be hiding the reading of it.
+  const regions = annotationsOn(node, doc ?? null);
+  if (regions.length) {
+    const list = el("div", "nv-embed-note",
+      plural(regions.length, "regione annotata", "regioni annotate") + ": "
+      + regions.map(nameOf).join(", "));
+    fig.appendChild(list);
+  }
   return fig;
+}
+
+/** The annotation regions drawn on this image (DP-2D), in graph order. */
+export function annotationsOn(node: EmNode, doc: EmDocument | null): EmNode[] {
+  const index = indexOf(doc);
+  const out: EmNode[] = [];
+  for (const id of incoming(doc, node.id, ["is_on_resource"])) {
+    const region = index.get(id);
+    if (region && String(region.node_type ?? "") === "annotation_region")
+      out.push(region);
+  }
+  // a region may also name its resource in `data` rather than by an edge
+  for (const candidate of nodesOf(doc)) {
+    if (String(candidate.node_type ?? "") !== "annotation_region") continue;
+    const data = (candidate.data ?? {}) as Record<string, unknown>;
+    if (data["resource_id"] === node.id && !out.includes(candidate))
+      out.push(candidate);
+  }
+  return out;
+}
+
+const RECT_KEYS = ["rect", "xywh", "region"] as const;
+
+function rectOf(region: EmNode): [number, number, number, number] | null {
+  const data = (region.data ?? {}) as Record<string, unknown>;
+  for (const key of RECT_KEYS) {
+    const raw = data[key];
+    if (Array.isArray(raw) && raw.length === 4
+        && raw.every((v) => typeof v === "number")) {
+      return raw as [number, number, number, number];
+    }
+  }
+  return null;
+}
+
+/**
+ * Open the image at reading size, with its annotated regions listed.
+ *
+ * A lightbox rather than an embedded deep-zoom viewer, and the reason is
+ * honesty about what is here: tiling needs OpenSeadragon (declared missing
+ * since the IIIF layer was built), and a fake zoom that just loaded a bigger
+ * JPEG while pretending to tile would be worse than saying so. What this DOES
+ * do is a real IIIF size request — the image at the width of the screen — and a
+ * real region request per annotation, which is the part IIIF makes free.
+ *
+ * Every region is a link to the SAME service with a `pct:` region, so clicking
+ * one shows exactly what was annotated, cropped by the image server.
+ */
+export function openImage(node: EmNode, base: string,
+                          doc: EmDocument | null): void {
+  const overlay = el("div", "nv-lightbox");
+  overlay.setAttribute("role", "dialog");
+  overlay.setAttribute("aria-label", nameOf(node));
+  overlay.tabIndex = -1;
+
+  const close = () => {
+    overlay.remove();
+    document.removeEventListener("keydown", onKey);
+  };
+  const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") close(); };
+  document.addEventListener("keydown", onKey);
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) close();
+  });
+
+  const frame = el("div", "nv-lightbox-frame");
+  const picture = document.createElement("img");
+  picture.className = "nv-lightbox-img";
+  picture.alt = nameOf(node);
+
+  // The size has to be CLAMPED to the source, and that is why `info.json` is
+  // fetched first. Asking an image server for a size larger than the original
+  // is a **400** — measured on Cantaloupe, including the `!w,h` form — so a
+  // lightbox that simply asked for the width of the screen showed a broken
+  // frame on every image smaller than the monitor. `fittedUrl` does the
+  // clamping; `max` is the answer while we do not know yet, and it is always
+  // valid.
+  picture.src = imageUrl(node, base, { size: "max" }) ?? "";
+  const wanted = Math.min(2048, Math.max(640,
+    Math.round((globalThis.innerWidth || 1200) * 0.9)));
+  void fetchImageInfo(node, base).then((info) => {
+    if (!info) return;
+    const fitted = fittedUrl(node, base, wanted, info);
+    if (fitted && fitted !== picture.src) picture.src = fitted;
+  }).catch(() => { /* no info: `max` already works */ });
+
+  picture.addEventListener("error", () => {
+    picture.replaceWith(el("div", "nv-embed-note nv-implied",
+      "il servizio immagini non ha potuto servire questa immagine"));
+  });
+  frame.appendChild(picture);
+
+  const caption = el("div", "nv-lightbox-caption");
+  caption.appendChild(el("strong", undefined, nameOf(node)));
+  if (node.description)
+    caption.appendChild(el("div", "nv-embed-note", String(node.description)));
+
+  const regions = annotationsOn(node, doc);
+  for (const region of regions) {
+    const rect = rectOf(region);
+    const line = el("div", "nv-lightbox-region");
+    line.appendChild(el("span", "nv-chain-role", "regione"));
+    line.appendChild(el("span", undefined, nameOf(region)));
+    const url = rect ? regionUrl(node, base, rect, "!600,600") : null;
+    if (url) {
+      const link = document.createElement("a");
+      link.className = "nv-embed-link";
+      link.href = url;
+      link.target = "_blank";
+      link.rel = "noreferrer noopener";
+      link.textContent = "vedi il ritaglio";
+      line.appendChild(link);
+    }
+    caption.appendChild(line);
+  }
+  if (!regions.length)
+    caption.appendChild(el("div", "nv-embed-note nv-implied",
+      "nessuna regione annotata su questa immagine"));
+
+  const dismiss = el("button", "nv-lightbox-close", "✕") as HTMLButtonElement;
+  dismiss.title = "Chiudi (Esc)";
+  dismiss.addEventListener("click", close);
+
+  frame.appendChild(caption);
+  frame.appendChild(dismiss);
+  overlay.appendChild(frame);
+  document.body.appendChild(overlay);
+  overlay.focus();
 }
 
 // ── 7 · un_scene (DP-29) ─────────────────────────────────────────────────────
@@ -782,7 +926,7 @@ export function rmDocEmbed(node: EmNode, doc: EmDocument | null,
     .map((id) => index.get(id))
     .filter(Boolean) as EmNode[]];
   for (const candidate of source) {
-    const figure = documentEmbed(candidate, base);
+    const figure = documentEmbed(candidate, base, doc);
     if (figure) { b.appendChild(figure); break; }
   }
 

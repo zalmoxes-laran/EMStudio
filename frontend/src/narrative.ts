@@ -35,6 +35,28 @@ import { nodeStyle } from "./palette";
 import { narrativeViewTypeDescription, typeDescription } from "./rules";
 import type { EmDocument, EmNode } from "./types";
 
+/**
+ * What may be DRAGGED into a story, and where it may land.
+ *
+ * Two gestures, and they are different acts:
+ *
+ * * a **node** dropped on a chapter becomes an embed of that node. This one
+ *   already existed (the handler further down, `nv-drop-over`) — measured, not
+ *   assumed: NARRWS1's report still listed it as deferred, and re-adding it
+ *   inserted the citation TWICE. The MIME is named here so both ends of the
+ *   gesture and its check read the same constant;
+ * * a **view type** (from the narrative palette) dropped on an existing embed
+ *   changes how that embed is shown — the gesture NARRWS1 left open (D1-full).
+ *   It cannot create a block: an embed without a reference points at nothing,
+ *   and a story does not need a way to write an empty citation.
+ *
+ * Both go through the `NarrativeEditor` — the same mutators every button uses.
+ * A drop that wrote to the document directly would be a second write path, and
+ * the first divergence would be an undo that only half works.
+ */
+export const NODE_MIME = "application/x-em-node-id";
+export const VIEW_TYPE_MIME = "application/x-em-view-type";
+
 /** A block as it is serialised by s3Dgraphy (`narrative_node.Block`). */
 interface NarrativeBlock {
   block_type: "prose" | "embed";
@@ -154,9 +176,8 @@ function sourceCard(node: EmNode, kind: string,
     box.appendChild(el("div", "nv-embed-note", node.description));
   // DP-79 P1 · the picture, when there is one and a IIIF service to serve it.
   // A size request on the image that is already in the store — no second copy.
-  const figure = documentEmbed(node, iiifBase());
+  const figure = documentEmbed(node, iiifBase(), doc ?? null);
   if (figure) box.appendChild(figure);
-  void doc;
   const data = (node.data ?? {}) as Record<string, unknown>;
   const url = typeof data.url === "string" ? data.url : undefined;
   if (url) {
@@ -878,6 +899,7 @@ export function renderNarrativeView(
     if (currentChapter?.index() === ci) section.classList.add("nv-current");
     if (currentChapter)
       section.addEventListener("mousedown", () => currentChapter.set(ci));
+
     const h = el("div", "nv-chapter-head");
     h.appendChild(el("h2", "nv-chapter-title", chapter.title || "(untitled)"));
     if (chapter.canonical) {
@@ -1024,6 +1046,29 @@ export function renderNarrativeView(
           : renderProse(block.text ?? ""))
         : renderEmbed(block, index, doc,
             `${current.id}:${ci}:${bi}:${block.ref ?? ""}`, onReveal);
+      // D1-full · drop a VIEW TYPE on an embed and it changes how that embed is
+      // shown. Only on an embed, and only to change one: a view type cannot
+      // create a block, because a block without a reference points at nothing.
+      if (editor && block.block_type === "embed") {
+        body.addEventListener("dragover", (e) => {
+          const dt = (e as DragEvent).dataTransfer;
+          if (!dt || !dt.types.includes(VIEW_TYPE_MIME)) return;
+          e.preventDefault();
+          dt.dropEffect = "copy";
+          body.classList.add("nv-drop-target");
+        });
+        body.addEventListener("dragleave", () =>
+          body.classList.remove("nv-drop-target"));
+        body.addEventListener("drop", (e) => {
+          const dt = (e as DragEvent).dataTransfer;
+          body.classList.remove("nv-drop-target");
+          const viewType = dt?.getData(VIEW_TYPE_MIME);
+          if (!viewType) return;
+          e.preventDefault();
+          e.stopPropagation();
+          editor.setViewType(ci, bi, viewType);
+        });
+      }
       // Provenance rides with the paragraph in BOTH modes: knowing a machine
       // wrote this is not an authoring convenience, it is what the reader needs.
       const strip = block.block_type === "prose"

@@ -10,7 +10,7 @@
    "nodes": [
     {
      "id": "ep-2",
-     "node_type": "epoch",
+     "node_type": "EpochNode",
      "name": "Fase 2 · restauro",
      "data": {
       "start_time": 1450,
@@ -19,7 +19,7 @@
     },
     {
      "id": "ep-1",
-     "node_type": "epoch",
+     "node_type": "EpochNode",
      "name": "Fase 1 · impianto",
      "data": {
       "start_time": 1200,
@@ -28,13 +28,13 @@
     },
     {
      "id": "ep-0",
-     "node_type": "epoch",
+     "node_type": "EpochNode",
      "name": "Fase 0 · non datata",
      "data": {}
     },
     {
      "id": "act-1",
-     "node_type": "activity",
+     "node_type": "ActivityNodeGroup",
      "name": "Cantiere del portico"
     },
     {
@@ -82,7 +82,7 @@
     },
     {
      "id": "scene1",
-     "node_type": "group",
+     "node_type": "ActivityNodeGroup",
      "name": "Scena · il portico nel 1450"
     },
     {
@@ -148,10 +148,57 @@
           "block_type": "embed",
           "ref": "doc1",
           "view_type": "document"
+         },
+         {
+          "block_type": "embed",
+          "ref": "img-1",
+          "view_type": "document"
          }
         ]
        }
       ]
+     }
+    },
+    {
+     "id": "img-1",
+     "node_type": "resource",
+     "name": "Foto del prospetto",
+     "data": {
+      "checksum": "sha256:4239fc67504c2b22c584d4de71b7329e3c01b2a0b716aaa198ca6c4120b00abe",
+      "media_type": "image/png",
+      "residency": "reference"
+     }
+    },
+    {
+     "id": "reg-a",
+     "node_type": "annotation_region",
+     "name": "muro",
+     "data": {
+      "shape_kind": "rect",
+      "rect": [
+       0.1,
+       0.1,
+       0.3,
+       0.2
+      ],
+      "page": 0,
+      "resource_id": "img-1"
+     }
+    },
+    {
+     "id": "reg-b",
+     "node_type": "annotation_region",
+     "name": "soglia",
+     "data": {
+      "shape_kind": "rect",
+      "rect": [
+       0.55,
+       0.6,
+       0.25,
+       0.25
+      ],
+      "page": 0,
+      "resource_id": "img-1"
      }
     }
    ],
@@ -221,6 +268,18 @@
      "source": "ext1",
      "target": "doc1",
      "edge_type": "extracted_from"
+    },
+    {
+     "id": "e-ra",
+     "source": "reg-a",
+     "target": "img-1",
+     "edge_type": "is_on_resource"
+    },
+    {
+     "id": "e-rb",
+     "source": "reg-b",
+     "target": "img-1",
+     "edge_type": "is_on_resource"
     }
    ]
   }

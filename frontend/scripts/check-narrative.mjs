@@ -69,9 +69,17 @@ const text = (el) => (el.textContent ?? "").replace(/\s+/g, " ").trim();
 const all = (el, sel) => [...el.querySelectorAll(sel)].map(text);
 
 // ── the fixture is what we think it is ──────────────────────────────────────
-eq(doc.graph.nodes.length, 13, "fixture · nodes");
-eq(doc.graph.edges.length, 11, "fixture · edges");
-eq(doc.graph.nodes.filter((n) => n.node_type === "epoch").length, 3,
+// The counts are asserted so a fixture edited for one test cannot silently
+// change what another one measures. P5 added an image and two annotated
+// regions (the IIIF embed needs something to be live ABOUT).
+eq(doc.graph.nodes.length, 16, "fixture · nodes");
+eq(doc.graph.edges.length, 13, "fixture · edges");
+// P4 corrected the fixture to the datamodel's real class names (`EpochNode`,
+// `ActivityNodeGroup`): the lowercase spellings are what a hand-written em.json
+// carries, and the Python side loaded them as generic nodes. Both are read by
+// the code; the fixture now uses the ones a real study has.
+eq(doc.graph.nodes.filter(
+     (n) => n.node_type === "EpochNode" || n.node_type === "epoch").length, 3,
    "fixture · epochs");
 
 // ── matrix ──────────────────────────────────────────────────────────────────
@@ -307,6 +315,124 @@ eq(doc.graph.nodes.filter((n) => n.node_type === "epoch").length, 3,
   // IIIF stays on the 2D side: a 3D asset must not be asked for a thumbnail
   ok(N.documentEmbed(rm, "https://example.org/iiif/3") === null,
      "iiif · a 3D representation model gets no image thumbnail");
+}
+
+
+// ── P5 · the image embed, live ──────────────────────────────────────────────
+//
+// IIIF is on the 2D DOCUMENT and nowhere else (the P3 correction). What is
+// asserted here is that the thumbnail is a size request on the service, that
+// the annotated regions are found however the graph records them, and that a
+// study with no IIIF service degrades rather than showing a broken frame.
+{
+  const N = await load("narrative-embeds.ts");
+  const BASE = "https://em.example.org/iiif/3";
+  const image = byId("img-1");
+
+  const fig = N.documentEmbed(image, BASE, doc);
+  ok(fig, "iiif · an image resource gets a figure");
+  const img = fig.querySelector("img");
+  ok(img.getAttribute("src").startsWith(BASE), "iiif · served by the service");
+  ok(/!240,240|240,/.test(img.getAttribute("src")),
+     `iiif · the thumbnail is a SIZE REQUEST, not a second copy (${img.getAttribute("src")})`);
+  has(fig, "2 regioni annotate", "iiif · the annotated regions are named");
+
+  // found by edge AND by the resource_id a region carries: the annotator writes
+  // one, older graphs carry the other, and a reader should not have to know
+  const regions = N.annotationsOn(image, doc);
+  eq(regions.map((r) => r.name), ["muro", "soglia"], "iiif · both regions found");
+
+  // no service configured → no figure at all, and the card degrades to what it
+  // was. A broken frame in a story is worse than no picture.
+  eq(N.documentEmbed(image, "", doc), null, "iiif · no service, no frame");
+  // …and a node that is not an image never asks for one
+  eq(N.documentEmbed(byId("us1"), BASE, doc), null,
+     "iiif · a stratigraphic unit is not an image");
+}
+
+
+// ── P5 · the workspace gestures NARRWS1 left open ───────────────────────────
+//
+// Two drops, and they are different acts: a NODE on a chapter becomes a
+// citation (D2); a VIEW TYPE on an embed changes how that embed is shown
+// (D1-full). Both go through the `NarrativeEditor` — the same mutators every
+// button uses — so there is no second write path and undo keeps working.
+{
+  const V = await load("narrative.ts");
+  const calls = [];
+  const editor = {
+    narrativeId: "narr-1",
+    addChapter() {}, renameChapter() {}, moveChapter() {}, deleteChapter() {},
+    toggleCanonical() {}, setAnchor() {}, addProse() {}, setProse() {},
+    addEmbed: (chapter, ref, at) => calls.push(["addEmbed", chapter, ref, at]),
+    setViewType: (c, b, vt) => calls.push(["setViewType", c, b, vt]),
+    moveBlock() {}, deleteBlock() {}, lanes: () => [],
+    authors: () => [], humanAuthors: () => [], addAuthor() {}, removeAuthor() {},
+    setChapterAuthor() {}, signer: () => null, setSigner() {}, endorse() {},
+    endorseChapter() {}, pendingIn: () => 0,
+    // the optional half of the interface: a stub answers "no" to everything it
+    // is asked, which is what an editor without a bridge says anyway
+    canGenerate: () => false, canRegenerate: () => false,
+    undescribedEpochs: () => [], generateDraft() {}, promptOf: () => null,
+  };
+
+  const host = document.createElement("div");
+  V.renderNarrativeView(host, doc, "narr-1", () => {}, undefined, editor,
+                        { index: () => 0, set: () => {} });
+
+  const chapter = host.querySelector(".nv-chapter");
+  ok(chapter, "workspace · the chapter renders in editing mode");
+
+  const drag = (target, type, value, kind) => {
+    const data = new Map([[type, value]]);
+    const event = new host.ownerDocument.defaultView.Event(kind,
+      { bubbles: true, cancelable: true });
+    event.dataTransfer = {
+      types: [type],
+      getData: (t) => data.get(t) ?? "",
+      setData: (t, v) => data.set(t, v),
+      dropEffect: "", effectAllowed: "",
+    };
+    target.dispatchEvent(event);
+    return event;
+  };
+
+  // D2 · a node dropped on a chapter becomes a citation. This gesture already
+  // existed; the check is here so it stays true — and because adding a SECOND
+  // handler for it (which P5 briefly did) inserted the citation twice, which
+  // this assertion is what caught.
+  drag(chapter, V.NODE_MIME, "us2", "dragover");
+  ok(chapter.classList.contains("nv-drop-over"),
+     "workspace · a chapter that will take the node says so");
+  drag(chapter, V.NODE_MIME, "us2", "drop");
+  eq(calls.filter((c) => c[0] === "addEmbed").map((c) => [c[1], c[2]]),
+     [[0, "us2"]],
+     "workspace · dropping a node cites it ONCE, through the editor's mutator");
+
+  // D1-full · a view type dropped on an EMBED changes it
+  const embed = host.querySelector(".nv-embed");
+  ok(embed, "workspace · there is an embed to drop on");
+  drag(embed, V.VIEW_TYPE_MIME, "table", "dragover");
+  ok(embed.classList.contains("nv-drop-target"),
+     "workspace · an embed that will take the view type says so");
+  drag(embed, V.VIEW_TYPE_MIME, "table", "drop");
+  eq(calls.filter((c) => c[0] === "setViewType").map((c) => c[3]), ["table"],
+     "workspace · dropping a view type re-renders that embed, via setViewType");
+
+  // …and a view type may NOT create a block: an embed with no reference points
+  // at nothing, and a story does not need a way to write an empty citation.
+  const countBefore = calls.filter((c) => c[0] === "addEmbed").length;
+  drag(chapter, V.VIEW_TYPE_MIME, "matrix", "drop");
+  eq(calls.filter((c) => c[0] === "addEmbed").length, countBefore,
+     "workspace · a view type on a chapter creates nothing");
+
+  // read-only stays read-only: no editor, no drop targets
+  const readOnly = document.createElement("div");
+  V.renderNarrativeView(readOnly, doc, "narr-1", () => {});
+  const ch = readOnly.querySelector(".nv-chapter");
+  drag(ch, V.NODE_MIME, "us2", "dragover");
+  ok(!ch.classList.contains("nv-drop-over"),
+     "workspace · the dissemination viewer accepts no drops");
 }
 
 console.log(`narrative: ${checks} checks passed`);
