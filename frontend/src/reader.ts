@@ -32,6 +32,7 @@
  */
 
 import { renderNarrativeView } from "./narrative";
+import { mount3dViewer } from "./embed3d-native";
 import { applyTheme, storedMode } from "./theme";
 import type { EmDocument } from "./types";
 import "./style.css";
@@ -166,7 +167,20 @@ function render(doc: EmDocument): void {
   // read-only: the `editor` argument is deliberately not passed. That single
   // omission is what makes this page a viewer — there is no second code path,
   // and therefore no way for the two to drift.
-  renderNarrativeView(container, doc, narrativeId, () => { /* no selection UI */ });
+  //
+  // The 3D, on the other hand, is passed IN — and this is the only page that
+  // does. Measured in P5b: three.js inlined into the editor's single-file build
+  // cost +41% (1.96 → 2.76 MB), and the editor is a desk tool that reaches ATON
+  // when it is online. This page is SERVED (by em-catalog, by the field node),
+  // so it is not bound by the one-file rule, and it is where a reader who was
+  // handed a link should be able to turn the model with no ATON deployed
+  // anywhere. Same reference, same contract, the engine only where it earns its
+  // weight.
+  renderNarrativeView(container, doc, narrativeId, () => { /* no selection UI */ },
+                      undefined, undefined, undefined,
+                      (host, spec) => {
+                        mount3dViewer(host, spec.url, { label: spec.label });
+                      });
 
   if (!container.textContent?.trim()) {
     problem("Questo studio non ha una narrativa",

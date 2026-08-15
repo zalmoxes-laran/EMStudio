@@ -437,19 +437,14 @@ eq(doc.graph.nodes.filter(
 
 
 
-// ── P5b · the 3D embed, as a CONTRACT ───────────────────────────────────────
+// ── P5b/A · the 3D embed, as a CONTRACT — in BOTH modes ─────────────────────
 //
-// The gesture (orbit, zoom) is a browser thing and is proved there. What is
-// headless is the contract: an RM that points at a glTF gets a VIEWER — not a
-// placeholder, not an iframe — and the viewer is aimed at the right asset.
-// RMDoc stays 2D and must NOT end up here (the domain correction of P3).
+// The engine moved out of this module (arc A): a model is shown by a factory
+// the CALLER injects — nothing in the editor, three in the reader. So the
+// contract is asserted twice against one card: with a factory (a viewer, aimed
+// at the right asset) and without one (the ATON path, never a broken box).
+// A fake factory is enough, because what is under test is the seam.
 {
-  const N = await load("embed3d-native.ts");
-  ok(N.isGltf("/testdata/colonnato.gltf"), "3d · a .gltf is a model");
-  ok(N.isGltf("https://x/y.glb?v=2"), "3d · …and so is a .glb with a query");
-  ok(!N.isGltf("https://x/scan.obj"), "3d · another format is not ours");
-  ok(!N.isGltf(""), "3d · nothing is not a model");
-
   const rm = byId("rm-1");
   ok(rm, "3d · the fixture carries a representation model");
   eq(rm.data.residency, "reference",
@@ -457,19 +452,39 @@ eq(doc.graph.nodes.filter(
   ok(String(rm.data.checksum).startsWith("sha256:"),
      "3d · …with the digest that makes it verifiable");
 
-  // the card: a viewer stage, aimed at the asset the graph names NOW
   const V = await load("narrative.ts");
+
+  // READER mode: a factory is injected, and it is handed the locator the graph
+  // names — resolved now, not a copy stored in the story.
+  const asked = [];
   const host = document.createElement("div");
-  V.renderNarrativeView(host, doc, "narr-1", () => {});
+  V.renderNarrativeView(host, doc, "narr-1", () => {}, undefined, undefined,
+                        undefined,
+                        (stage, spec) => {
+                          asked.push(spec);
+                          stage.appendChild(document.createElement("canvas"));
+                        });
   const card = [...host.querySelectorAll(".nv-embed.nv-3d")]
     .find((e) => e.textContent.includes("Colonnato · modello"));
   ok(card, "3d · the rm embed renders");
   ok(!card.className.includes("nv-pending"),
      "3d · …as a viewer, not as a placeholder");
-  ok(card.querySelector(".nv-3d-stage"),
-     "3d · …with a stage for the model");
+  ok(card.querySelector(".nv-3d-stage"), "3d · …with a stage for the model");
+  eq(asked.map((s) => s.url), ["/testdata/colonnato.gltf"],
+     "3d · the factory is aimed at the asset the graph names");
+  eq(asked[0].label, "Colonnato · modello", "3d · …and told what it is");
   ok(!card.querySelector("iframe"),
-     "3d · a MODEL is shown here, not handed to an ATON iframe");
+     "3d · a MODEL is not handed to an ATON iframe when a viewer exists");
+
+  // EDITOR mode: no factory. The card must still render something honest —
+  // never a stage with nothing in it, which would read as a broken viewer.
+  const plain = document.createElement("div");
+  V.renderNarrativeView(plain, doc, "narr-1", () => {});
+  const editorCard = [...plain.querySelectorAll(".nv-embed.nv-3d")]
+    .find((e) => e.textContent.includes("Colonnato · modello"));
+  ok(editorCard, "3d · the editor renders the embed too");
+  ok(!editorCard.querySelector(".nv-3d-stage"),
+     "3d · …with no empty stage: without an engine there is nothing to stage");
 }
 
 console.log(`narrative: ${checks} checks passed`);

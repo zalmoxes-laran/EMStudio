@@ -32,7 +32,14 @@ const entry = process.env.EM_ENTRY === "reader" ? "reader" : "index";
 export default defineConfig({
   base: "./",
   define: { __EMSTUDIO_VERSION__: JSON.stringify(pkg.version) },
-  plugins: [viteSingleFile()],
+  // The EDITOR is one file you can double-click, and that is a product
+  // property: it opens from a USB stick, in a trench, with no server. The
+  // READER is SERVED (em-catalog, the field node), so it does not need to be —
+  // and paying the single-file tax there is what made the 3D engine cost +800 kB
+  // of inlined base64 instead of a chunk fetched only when a model appears.
+  //
+  // So: single-file for the editor, ordinary assets for the reader.
+  plugins: entry === "reader" ? [] : [viteSingleFile()],
   build: {
     outDir: "dist",
     rollupOptions: {
@@ -41,8 +48,10 @@ export default defineConfig({
     // single-file output: nothing stale can linger, and unlink is not
     // always permitted on synced/mounted folders
     emptyOutDir: false,
-    // inline every asset (official EM icons) into the single file
-    assetsInlineLimit: 100000000,
+    // inline every asset (official EM icons) into the single file — for the
+    // editor. The reader keeps its assets beside it, which is what lets three
+    // be a lazily fetched chunk rather than base64 in the HTML.
+    assetsInlineLimit: entry === "reader" ? 4096 : 100000000,
     chunkSizeWarningLimit: 6000,
   },
 });

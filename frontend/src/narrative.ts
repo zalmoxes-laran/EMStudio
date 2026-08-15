@@ -18,7 +18,6 @@
  */
 
 import { create3dEmbed, isRef3D, resolve3d } from "./embed3d";
-import { isGltf, mount3dViewer } from "./embed3d-native";
 import { geoOf, georeferenceScene, reprojectPoint } from "./geo";
 import type { GeoRef } from "./geo";
 import { onFirstVisible } from "./lazy";
@@ -57,6 +56,34 @@ import type { EmDocument, EmNode } from "./types";
  */
 export const NODE_MIME = "application/x-em-node-id";
 export const VIEW_TYPE_MIME = "application/x-em-view-type";
+
+/**
+ * How a 3D MODEL gets shown — injected, never imported here.
+ *
+ * The measured reason (P5b): pulling three.js into this module put it in the
+ * **editor's** single-file build, which grew 1.96 → 2.76 MB (+41%) because
+ * `vite-plugin-singlefile` inlines the dynamic chunk too. The editor is a desk
+ * tool that already reaches ATON when it is online; the **reader** is served,
+ * unconstrained by the single-file rule, and is where a self-contained
+ * navigable model belongs.
+ *
+ * So the decision moved to the CALLER, and this module stayed free of three:
+ *
+ * * the **editor** injects nothing → a model falls to the ATON iframe (0 kB);
+ * * the **reader** injects a three-backed factory → the glTF is orbited in the
+ *   card, offline, with no ATON deployed anywhere.
+ *
+ * Both produce a viewer for the same reference, which is why `check-narrative`
+ * can assert one contract against either: **a viewer, aimed at the right
+ * asset, never a placeholder**.
+ */
+export interface ModelSpec {
+  /** The locator the graph names, resolved at render time. Never a copy. */
+  url: string;
+  label: string;
+}
+
+export type ViewerFactory = (host: HTMLElement, spec: ModelSpec) => void;
 
 /** A block as it is serialised by s3Dgraphy (`narrative_node.Block`). */
 interface NarrativeBlock {
@@ -423,17 +450,20 @@ function drawMap(box: HTMLElement, node: EmNode,
  *  ResourceNode (DP-76: reference + url + checksum), or the locator a Shelf
  *  asset uses. Nothing is copied into the narrative: the story holds an id, and
  *  what that id resolves to is the graph's business, now. */
+const GLTF_LOCATOR = /\.(gltf|glb)(\?|#|$)/i;
+
 function modelLocator(node: EmNode): string | null {
   const data = (node.data ?? {}) as Record<string, unknown>;
   for (const key of ["url", "locator", "path", "scene_url"]) {
     const value = data[key];
-    if (typeof value === "string" && isGltf(value)) return value;
+    if (typeof value === "string" && GLTF_LOCATOR.test(value)) return value;
   }
   return null;
 }
 
 function scene3dCard(node: EmNode, doc: EmDocument | null,
-                     key: string, kind = "scene3d"): HTMLElement {
+                     key: string, kind = "scene3d",
+                     viewer?: ViewerFactory): HTMLElement {
   const ref = resolve3d(node, doc);
   const box = el("div", "nv-embed nv-3d");
   box.appendChild(el("div", "nv-embed-kind", kind));
@@ -446,10 +476,10 @@ function scene3dCard(node: EmNode, doc: EmDocument | null,
   // while a Heriverse scene carries epochs and a temporal UI that are exactly
   // what a viewer-whose-whole-job-is-to-be-the-viewer is for.
   const locator = modelLocator(node);
-  if (locator) {
+  if (locator && viewer) {
     const stage = el("div", "nv-3d-stage");
     box.appendChild(stage);
-    mount3dViewer(stage, locator, { label: String(node.name || node.id) });
+    viewer(stage, { url: locator, label: String(node.name || node.id) });
     return box;
   }
   if (!isRef3D(ref)) {
@@ -489,6 +519,7 @@ function renderEmbed(
    *  view's rebuild without being written into the document. */
   key: string,
   onReveal?: (nodeId: string) => void,
+  viewer?: ViewerFactory,
 ): HTMLElement {
   const ref = block.ref ?? "";
   const node = index.get(ref) ?? null;
@@ -526,7 +557,7 @@ function renderEmbed(
   } else if (viewType === "scene3d" || viewType === "rm") {
     // `rm` renders through the same ATON embed (G2): a representation model IS a
     // 3D asset, and there is one way this app shows 3D.
-    box = scene3dCard(node, doc, key, viewType);
+    box = scene3dCard(node, doc, key, viewType, viewer);
   } else {
     box = notYetRendered(viewType || "embed", node, ref);
   }
@@ -809,6 +840,9 @@ export function renderNarrativeView(
   onReveal?: (nodeId: string) => void,
   editor?: NarrativeEditor,
   currentChapter?: CurrentChapter,
+  /** How a 3D MODEL is shown. Absent → the ATON iframe (the editor's case, and
+   *  0 kB); a three-backed factory → navigable in the card (the reader's). */
+  viewer?: ViewerFactory,
 ): void {
   container.textContent = "";
   const narratives = narrativesIn(doc);
@@ -1073,7 +1107,7 @@ export function renderNarrativeView(
             editor.setProse(ci, bi, t))
           : renderProse(block.text ?? ""))
         : renderEmbed(block, index, doc,
-            `${current.id}:${ci}:${bi}:${block.ref ?? ""}`, onReveal);
+            `${current.id}:${ci}:${bi}:${block.ref ?? ""}`, onReveal, viewer);
       // D1-full · drop a VIEW TYPE on an embed and it changes how that embed is
       // shown. Only on an embed, and only to change one: a view type cannot
       // create a block, because a block without a reference points at nothing.
