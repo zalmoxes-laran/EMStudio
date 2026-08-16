@@ -221,4 +221,64 @@ const digest = (s) => K.contentDigest({ graphs: { [s.graph_id]: s },
      "…and the reverse order lands there too");
 }
 
+// ── the WHOLE `data` map travels, not half of it ─────────────────────────────
+//
+// The bug this guards against, measured live: a rights edit changed a node's
+// NAME through `updateNode` (which emits an operation) and then wrote the
+// node's `data` with a bare `Object.assign` — silent. The room received the new
+// name and kept the old `data.license_type`, and the server (which reads the
+// data first) went on serving the licence nobody had chosen any more.
+//
+// The cure had to be at the ROOT, not on the licence: every content field —
+// `name`, `description`, and every `data.*` key — is stamped and emitted, so a
+// change to two of them at once arrives as two operations and neither sibling
+// is left stale. That is what this checks, on an ordinary node, with no rights
+// in sight.
+{
+  const M = await load("model.ts");
+  const H = await load("hub.ts");
+
+  const document = () => ({
+    header: { format: "em.json", version: "1.0" },
+    graph: { graph_id: "g", name: "g", nodes: [
+      { id: "R1", node_type: "resource", name: "foto",
+        data: { checksum: "sha256:aa", media_type: "image/png", size: 10 } },
+    ], edges: [] },
+  });
+  const store = new M.DocumentStore(document());
+
+  const sent = [];
+  store.onOp((op) => sent.push(...H.opsForLocalChange(op)));
+
+  // TWO data fields at once, plus the name — one act
+  store.updateNode("R1", {
+    name: "prospetto",
+    data: { checksum: "sha256:aa", media_type: "image/tiff", size: 42 },
+  });
+
+  const byField = new Map(sent.filter((o) => o.op === "update_field")
+                              .map((o) => [o.field, o.value]));
+  eq(byField.get("name"), "prospetto", "data · the name travels");
+  eq(byField.get("data.media_type"), "image/tiff",
+     "data · …and so does the first data field");
+  eq(byField.get("data.size"), 42,
+     "data · …and the SECOND one, which is the half that used to be lost");
+  ok(!byField.has("data.checksum"),
+     "data · an untouched sibling is not re-sent: only what changed is news");
+
+  // …and the receiving side lands on the same document. Applying the operations
+  // to a fresh copy must reproduce every field, not just the one somebody
+  // happened to test with.
+  const far = new M.DocumentStore(document());
+  // …through `applyCrdtOp`, which is the path a ROOM takes: the relay speaks
+  // per-field CRDT operations and the store applies them as such.
+  for (const op of sent) far.applyCrdtOp(op);
+  const landed = far.node("R1");
+  eq(landed.name, "prospetto", "data · the far side has the name");
+  eq(landed.data.media_type, "image/tiff", "data · …and the first field");
+  eq(landed.data.size, 42, "data · …and the second: no stale sibling");
+  eq(landed.data.checksum, "sha256:aa",
+     "data · …and what nobody touched is still there");
+}
+
 console.log(`crdt: ${checks} checks passed`);
