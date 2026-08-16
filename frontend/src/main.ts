@@ -636,6 +636,36 @@ const SYNC_GLYPHS: Record<SyncDirection, string> = {
   off: "⃠", send: "→", receive: "←", both: "⇄",
 };
 
+/**
+ * P5 · does the ROOM let this client write?
+ *
+ * The server decides (`host_info.can_write`, from the role it resolved at the
+ * door) and this is where the client believes it. A host that says nothing —
+ * every EMtools pairing — is writable: the question only arises where roles do.
+ */
+function hubReadOnly(): boolean {
+  return hostInfo.can_write === false;
+}
+
+/**
+ * Make the session match what the room allows.
+ *
+ * Reuses the sync DIRECTION rather than inventing a lockdown: `receive` is
+ * already "listen, do not send", it is already respected by every send path in
+ * `sync.ts`, and a second mechanism for the same idea is a second thing to keep
+ * right. What is added on top is that the control cannot be turned back on —
+ * an affordance that is offered and then refused is worse than one that is
+ * greyed out with a reason.
+ */
+function applyRoomPermission(): void {
+  if (hubReadOnly()) {
+    sync.setDirection("receive");
+  } else {
+    sync.setDirection(syncDirection());
+  }
+  renderSyncControl();
+}
+
 function renderSyncControl(): void {
   if (!syncControlEl) return;
   const connected = sessionMode !== "standalone";
@@ -644,8 +674,21 @@ function renderSyncControl(): void {
     syncControlEl.innerHTML = "";
     return;
   }
-  const active = syncDirection();
+  const readOnly = hubReadOnly();
+  const active: SyncDirection = readOnly ? "receive" : syncDirection();
   syncControlEl.innerHTML = "";
+  if (readOnly) {
+    // Said once, where the session's state is shown, and not as a toast that
+    // scrolls away: "you are reading" is a property of this connection, not an
+    // event that happened.
+    const badge = document.createElement("span");
+    badge.className = "sync-readonly";
+    badge.textContent = t("room.readOnly");
+    badge.title = t("room.readOnlyHint", {
+      role: hostInfo.role ?? t("room.roleUnknown"),
+    });
+    syncControlEl.appendChild(badge);
+  }
   const label = document.createElement("span");
   label.className = "sync-ctl-label";
   label.textContent = t("sync.label");
@@ -659,7 +702,16 @@ function renderSyncControl(): void {
     b.textContent = SYNC_GLYPHS[dir];
     b.title = `${t(`sync.dir.${dir}`)} — ${t(`sync.dirTitle.${dir}`)}`;
     b.dataset.dir = dir;
-    b.addEventListener("click", () => setSyncDirection(dir));
+    if (readOnly && (dir === "send" || dir === "both")) {
+      // sending is not this client's to choose here: the room refuses the op
+      // anyway, and a button that produces a refusal is a button that lies
+      b.disabled = true;
+      b.title = t("room.readOnlyHint", {
+        role: hostInfo.role ?? t("room.roleUnknown"),
+      });
+    } else {
+      b.addEventListener("click", () => setSyncDirection(dir));
+    }
     syncControlEl.appendChild(b);
   }
 }
@@ -2814,6 +2866,11 @@ function connectToHub(url: string, room: string, token: string | null): void {
     onHostInfo: (info2) => {
       hostInfo = { ...hostInfo, ...info2 };
       renderSidecarDetail();
+      // P5 · the room said what this client may do. Believe it now, before the
+      // first edit: discovering a role by having an operation refused shows an
+      // editing UI that does not work, which reads as a broken app rather than
+      // as a study somebody let you read.
+      applyRoomPermission();
       // the same frame tells this client WHICH member it is — without that, the
       // roster cannot mark "you" and every halo would look like somebody else's
       hubPresence = reducePresence(hubPresence,

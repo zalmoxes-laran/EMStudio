@@ -5995,6 +5995,24 @@ object.viewer-media {
   align-items: center;
   gap: 2px;
 }
+/* P5 - the room said this client may only read. It is a state of the
+   CONNECTION, so it sits with the connection's other state in the footer, and
+   not in a toast: a toast scrolls away while the fact stays true. */
+.sync-readonly {
+  color: var(--warn, #d9bd7a);
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  padding: 0 5px;
+  font-size: 10.5px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  margin-right: 6px;
+  cursor: help;
+}
+.sync-ctl-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
 .sync-ctl-label {
   color: var(--text-faint);
   font-size: 11px;

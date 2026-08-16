@@ -410,6 +410,10 @@ const EN: Dict = {
   "emtree.unsaved": "\"{name}\" has unsaved changes. Close it anyway?",
 
   // settings
+  "room.readOnly": "read-only",
+  "room.readOnlyHint": "This room gives you the role “{role}”: you can read and "
+    + "be seen, and the server refuses edits from here.",
+  "room.roleUnknown": "viewer",
   "settings.title": "Settings",
   "settings.close": "Close",
   // The tab strip. One word each, because the strip is as wide as the dialog
@@ -789,6 +793,10 @@ const IT: Dict = {
     "bake e cataloghi remoti sono ancora da fare.",
   "emtree.unsaved": "«{name}» ha modifiche non salvate. Chiuderlo comunque?",
 
+  "room.readOnly": "sola lettura",
+  "room.readOnlyHint": "In questa stanza hai il ruolo «{role}»: puoi leggere ed "
+    + "essere visto, e il server rifiuta le modifiche fatte da qui.",
+  "room.roleUnknown": "viewer",
   "settings.title": "Impostazioni",
   "settings.close": "Chiudi",
   "settings.tab.general": "Generale",

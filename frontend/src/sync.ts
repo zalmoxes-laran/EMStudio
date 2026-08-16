@@ -44,6 +44,17 @@ export interface HostInfo {
    * when the question is "may I act on your scene".
    */
   accepts_commands?: boolean;
+  /**
+   * P5 · what this client may do in the room, decided by the SERVER.
+   *
+   * A room resolves a role at the door (owner/admin/editor/viewer) and says so
+   * here, so a viewer's client can show a read-only session instead of offering
+   * editing that leaves and comes back refused. A host that says nothing is
+   * treated as writable — that is every EMtools pairing, where the question
+   * does not arise.
+   */
+  role?: string;
+  can_write?: boolean;
 }
 
 /** The BODY of each message type. The envelope (`v`, `type`, `source`) is
