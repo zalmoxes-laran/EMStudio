@@ -126,6 +126,13 @@ export interface SyncCallbacks {
   /** P4.3 · the socket dropped and a reconnect is scheduled / has happened.
    *  Reported so the UI can say "reconnecting" instead of going quiet. */
   onReconnect?: (attempt: number, delayMs: number) => void;
+  /** P5 · the room REFUSED something this client sent, and said why.
+   *
+   *  A refusal that arrives and is dropped is indistinguishable from a message
+   *  that never arrived: the edit vanishes and the room looks broken. So it is
+   *  surfaced, with the role the server resolved. */
+  onDenied?: (info: { verb?: string; reason?: string; role?: string;
+                      can_write?: boolean }) => void;
   /** WIRE 2 · a frame this client cannot read — another protocol version, or a
    *  host that answered `error`. Surfaced rather than dropped: a host talking
    *  a different wire looks exactly like a host that has gone quiet, and the
@@ -335,6 +342,11 @@ export class SyncClient {
       } else if (type === "op") {
         if (!this.receives) return;   // MODES1 · same gate as the selection
         this.cb?.onOp(payload as unknown as GraphOp);
+      } else if (type === "denied") {
+        // NOT gated by the sync direction: this is the answer to something this
+        // user did, and swallowing it would leave them staring at an edit that
+        // silently did not happen.
+        this.cb?.onDenied?.(payload as { verb?: string; reason?: string });
       } else if (type === "error") {
         this.cb?.onWireMismatch?.(String(payload.detail ?? "the host reported an error"));
       }

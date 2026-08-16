@@ -7,6 +7,7 @@ import { qualiaList } from "./vocab";
 import { getSettings } from "./settings";
 import { createOsmMap } from "./osm-map";
 import { geocode, GeocodeOffline, zoomFor } from "./geocode";
+import { currentIdentity } from "./identity";
 
 export interface InspectorCallbacks {
   onJump: (nodeId: string) => void;
@@ -1057,6 +1058,94 @@ export function renderInspector(
       bar.appendChild(b);
       root.appendChild(bar);
     }
+  }
+
+  // ── DTC · the rights of THIS resource (licence / embargo / author) ─────────
+  //
+  // On a resource, because a resource is the thing that has bytes behind it and
+  // the bytes are what somebody downloads. em-server reads exactly these three
+  // statements before serving an asset: while an embargo runs the file is for
+  // the people working on the study, and the licence travels with it.
+  //
+  // Apposing and removing, deliberately — not a provenance editor. The full DTC
+  // chain (who acquired what with which instrument) is a different surface; this
+  // is the sentence somebody needs to say the day they upload a photograph.
+  if (nodeId && node.node_type === "resource") {
+    const rights = store.readNodeRights(nodeId);
+    const panel = el("div", "insp-canvas");
+    panel.appendChild(el("h3", "insp-sect", "Diritti di questa risorsa (DTC)"));
+    panel.appendChild(el("div", "insp-hint",
+      "Vale per i BYTE: finché l'embargo corre il server serve il file solo a "
+      + "chi lavora allo studio (editor in su), e la licenza viaggia con il "
+      + "download. Vuoto = non dichiarato (allora vale il default del grafo)."));
+
+    const field = (
+      label: string, value: string, placeholder: string,
+      commit: (v: string) => void, kind = "text",
+    ): HTMLInputElement => {
+      panel.appendChild(el("label", "insp-field-label", label));
+      const input = document.createElement("input");
+      input.className = "insp-name-input";
+      input.type = kind;
+      input.value = value;
+      input.placeholder = placeholder;
+      input.addEventListener("change", () => commit(input.value));
+      panel.appendChild(input);
+      return input;
+    };
+
+    field("Licenza", rights.license, "CC-BY-SA-4.0",
+          (v) => store.setNodeRights(nodeId, { license: v }));
+    if (!rights.license) {
+      const suggest = el("button", "insp-btn",
+                         "Apponi CC-BY-SA-4.0") as HTMLButtonElement;
+      suggest.title = "Il default StratiGraph. Finché non lo apponi, la licenza "
+        + "resta NON dichiarata: il server la espone come default, che è una "
+        + "cosa diversa da una licenza concessa.";
+      suggest.addEventListener("click", () =>
+        store.setNodeRights(nodeId, { license: "CC-BY-SA-4.0" }));
+      panel.appendChild(suggest);
+    }
+
+    const embargo = field("Embargo fino al", rights.embargo, "2027-01-01",
+                          (v) => store.setNodeRights(nodeId, { embargo: v }),
+                          "date");
+    field("Motivo dell'embargo", rights.reason, "in corso di studio",
+          (v) => store.setNodeRights(nodeId, { reason: v, embargo: embargo.value }));
+
+    const me = currentIdentity();
+    panel.appendChild(el("label", "insp-field-label", "Autore"));
+    const who = el("div", "insp-hint",
+      rights.author
+        ? `${rights.author}${rights.orcid ? ` · ${rights.orcid}` : ""}`
+        : "nessun autore apposto");
+    panel.appendChild(who);
+    const actions = el("div", "insp-actions");
+    const claim = el("button", "insp-btn",
+                     "Apponi la mia identità") as HTMLButtonElement;
+    claim.disabled = !me;
+    claim.title = me
+      ? `Appone ${me.orcid} come autore di questa risorsa.`
+      : "Nessuna identità dichiarata in questa sessione: dichiara il tuo ORCID "
+        + "in Impostazioni ▸ Identità.";
+    claim.addEventListener("click", () => {
+      if (!me) return;
+      store.setNodeRights(nodeId, {
+        author: [me.name, me.surname].filter(Boolean).join(" ") || me.orcid,
+        orcid: me.orcid,
+      });
+    });
+    actions.appendChild(claim);
+    if (rights.author || rights.license || rights.embargo) {
+      const clear = el("button", "insp-btn", "Rimuovi i diritti") as HTMLButtonElement;
+      clear.title = "Toglie licenza, embargo e autore da questa risorsa. Il "
+        + "file torna a valere quel che dice il grafo intorno.";
+      clear.addEventListener("click", () =>
+        store.setNodeRights(nodeId, { author: "", license: "", embargo: "" }));
+      actions.appendChild(clear);
+    }
+    panel.appendChild(actions);
+    root.appendChild(panel);
   }
 
   // FUNNEL1 · "Propagative metadata" — the value + provenance of each propagative

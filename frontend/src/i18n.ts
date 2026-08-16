@@ -410,6 +410,7 @@ const EN: Dict = {
   "emtree.unsaved": "\"{name}\" has unsaved changes. Close it anyway?",
 
   // settings
+  "room.denied": "The room refused that operation.",
   "room.readOnly": "read-only",
   "room.readOnlyHint": "This room gives you the role “{role}”: you can read and "
     + "be seen, and the server refuses edits from here.",
@@ -793,6 +794,7 @@ const IT: Dict = {
     "bake e cataloghi remoti sono ancora da fare.",
   "emtree.unsaved": "«{name}» ha modifiche non salvate. Chiuderlo comunque?",
 
+  "room.denied": "La stanza ha rifiutato questa operazione.",
   "room.readOnly": "sola lettura",
   "room.readOnlyHint": "In questa stanza hai il ruolo «{role}»: puoi leggere ed "
     + "essere visto, e il server rifiuta le modifiche fatte da qui.",

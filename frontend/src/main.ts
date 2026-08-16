@@ -2866,6 +2866,7 @@ function connectToHub(url: string, room: string, token: string | null): void {
     onHostInfo: (info2) => {
       hostInfo = { ...hostInfo, ...info2 };
       renderSidecarDetail();
+      // …and if it refuses something later, say so out loud (see onDenied).
       // P5 · the room said what this client may do. Believe it now, before the
       // first edit: discovering a role by having an operation refused shows an
       // editing UI that does not work, which reads as a broken app rather than
@@ -2906,6 +2907,18 @@ function connectToHub(url: string, room: string, token: string | null): void {
       hubPresence = reducePresence(hubPresence, { type: "presence", ...message });
       renderHubRoster();
       draw();
+    },
+    onDenied: (info) => {
+      // The room refused an operation, and said why. Told out loud: a refusal
+      // that arrives and is dropped is indistinguishable from a message that
+      // never arrived — the edit vanishes and the room looks broken.
+      toast(String(info?.reason || t("room.denied")));
+      if (info?.can_write === false) {
+        // and if this is the first news that the room is read-only here, make
+        // the session match rather than letting the next edit be refused too
+        hostInfo = { ...hostInfo, can_write: false, role: info.role };
+        applyRoomPermission();
+      }
     },
     onOpResult: (message) => {
       const op = (message.op ?? {}) as HubOp;

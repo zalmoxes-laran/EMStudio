@@ -21,6 +21,7 @@ import type { Conflict } from "./container";
 import {
   applyOp as crdtApplyOp,
   canonicalValue, clearField, contentFields, getField,
+  isRemoved,
   liveEdges as crdtLiveEdges, liveNodes as crdtLiveNodes,
   setFieldClock, unstampedFields, writeField,
 } from "./crdt";
@@ -2037,6 +2038,130 @@ export class DocumentStore {
           const pdgId = this.graphParadataGroup();
           const existing = pdgId ? this.graphScopeMember(pdgId, nt) : undefined;
           if (existing) this.deleteNode(existing.id);
+        }
+      }
+    });
+  }
+
+  // ── RIGHTS ON ONE NODE (DTC) · licence / embargo / author of a resource ────
+  //
+  // The graph-scope trio above is the DEFAULT everything inherits. This is the
+  // statement about ONE object — "this photograph is CC-BY, embargoed until
+  // March, taken by me" — and it is what em-server reads before serving the
+  // bytes (`s3dgraphy.rights`, `GET /rooms/{id}/asset/{ref}`).
+  //
+  // Same three classes, attached DIRECTLY to the node with `has_license` /
+  // `has_embargo` / `has_author` rather than through a paradata group: the
+  // group is the graph's own furniture, and a licence on a photograph is not
+  // paradata about the graph. The edges are the ones the datamodel already
+  // defines for exactly this, and the DTC chain reads them the same way.
+
+  private static readonly RIGHTS_EDGE: Record<
+    "author" | "license" | "embargo", string
+  > = { author: "has_author", license: "has_license", embargo: "has_embargo" };
+
+  /** The node attached to `nodeId` by one of the rights edges, if any. */
+  private rightsMember(
+    nodeId: string,
+    key: "author" | "license" | "embargo",
+  ): EmNode | undefined {
+    const edgeType = DocumentStore.RIGHTS_EDGE[key];
+    const nt = nodeTypeForClass(DocumentStore.GRAPH_SCOPE_CLASS[key]);
+    for (const e of this.doc.graph.edges) {
+      if (e.edge_type !== edgeType) continue;
+      const other = e.source === nodeId ? e.target : e.target === nodeId ? e.source : null;
+      if (!other) continue;
+      const found = this.node(other);
+      // …and it must still be STANDING. A tombstoned licence is one somebody
+      // removed: reusing it would write the new statement onto a dead node —
+      // measured live, where "apponi" after a "rimuovi" updated the corpse and
+      // the server went on reading nothing.
+      if (found && (!nt || found.node_type === nt)
+          && !isRemoved(found as unknown as Payload)) return found;
+    }
+    return undefined;
+  }
+
+  /** What this node says about its own rights. Empty strings where it says
+   *  nothing — the graph-scope default is a different question, asked
+   *  elsewhere, and answering it here would hide which of the two you are
+   *  looking at. */
+  readNodeRights(nodeId: string): {
+    author: string;
+    orcid: string;
+    license: string;
+    embargo: string;
+    reason: string;
+  } {
+    const out = { author: "", orcid: "", license: "", embargo: "", reason: "" };
+    for (const key of ["author", "license", "embargo"] as const) {
+      const m = this.rightsMember(nodeId, key);
+      if (!m) continue;
+      out[key] = String(m.name ?? "");
+      const data = (m.data ?? {}) as Record<string, unknown>;
+      if (key === "author" && data.orcid != null) out.orcid = String(data.orcid);
+      if (key === "embargo") {
+        if (data.reason != null) out.reason = String(data.reason);
+        if (data.embargo_end != null) out.embargo = String(data.embargo_end);
+      }
+    }
+    return out;
+  }
+
+  /** Attach (or update, or remove) the rights of ONE node. One undo step.
+   *
+   *  An empty value REMOVES the statement rather than storing an empty one:
+   *  "no licence declared" and "declared to be nothing" would look identical in
+   *  the file and mean different things to a reader.
+   */
+  setNodeRights(
+    nodeId: string,
+    patch: {
+      author?: string;
+      orcid?: string;
+      license?: string;
+      /** ISO date the embargo runs until; empty removes it */
+      embargo?: string;
+      reason?: string;
+    },
+  ): void {
+    if (!this.node(nodeId)) return;
+    this.batch(() => {
+      for (const key of ["author", "license", "embargo"] as const) {
+        const value = patch[key];
+        if (value === undefined) continue;
+        const nt = nodeTypeForClass(DocumentStore.GRAPH_SCOPE_CLASS[key]);
+        if (!nt) continue;
+        const val = value.trim();
+        const existing = this.rightsMember(nodeId, key);
+        if (!val) {
+          if (existing) this.deleteNode(existing.id);
+          continue;
+        }
+        // The fields s3Dgraphy's own classes read, so the same statement means
+        // the same thing on the Python side: `LicenseNode.data.license_type`,
+        // `EmbargoNode.data.embargo_end`, `AuthorNode.data.orcid`.
+        const data: Record<string, unknown> = {};
+        if (key === "author" && patch.orcid) data.orcid = patch.orcid;
+        if (key === "license") data.license_type = val;
+        if (key === "embargo") {
+          data.embargo_end = val;
+          if (patch.reason !== undefined) data.reason = patch.reason.trim();
+        }
+        if (existing) {
+          this.updateNode(existing.id, { name: val });
+          const d = (existing.data ??= {}) as Record<string, unknown>;
+          Object.assign(d, data);
+          this.emit();
+        } else {
+          const made = this.addNode({
+            id: `${nodeId}_${nt}_${this.newId().slice(0, 8)}`,
+            name: val,
+            node_type: nt,
+            description: "",
+            ...(Object.keys(data).length ? { data } : {}),
+          });
+          this.addEdge(nodeId, made.id, DocumentStore.RIGHTS_EDGE[key]);
         }
       }
     });
