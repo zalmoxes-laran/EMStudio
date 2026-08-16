@@ -7,7 +7,7 @@ import { qualiaList } from "./vocab";
 import { getSettings } from "./settings";
 import { createOsmMap } from "./osm-map";
 import { geocode, GeocodeOffline, zoomFor } from "./geocode";
-import { currentIdentity } from "./identity";
+import { currentIdentity, orcidProblem } from "./identity";
 
 export interface InspectorCallbacks {
   onJump: (nodeId: string) => void;
@@ -1113,19 +1113,63 @@ export function renderInspector(
     field("Motivo dell'embargo", rights.reason, "in corso di studio",
           (v) => store.setNodeRights(nodeId, { reason: v, embargo: embargo.value }));
 
+    // ── AUTORE ≠ ATTRIBUTORE ───────────────────────────────────────────────
+    //
+    // L'autore è chi HA FATTO il dato: può essere qualcun altro, può essere
+    // assente, può essere morto. L'attributore è chi lo DICHIARA, adesso, ed è
+    // chi sta alla tastiera. Un campo solo non saprebbe dire «questa foto è di
+    // Bruno, e lo affermo io» — che è la frase normale per tutto ciò che si
+    // cataloga dopo. Protocollo: `s3Dgraphy/docs/asset-dtc-protocol.md`.
     const me = currentIdentity();
-    panel.appendChild(el("label", "insp-field-label", "Autore"));
-    const who = el("div", "insp-hint",
-      rights.author
-        ? `${rights.author}${rights.orcid ? ` · ${rights.orcid}` : ""}`
-        : "nessun autore apposto");
-    panel.appendChild(who);
+    panel.appendChild(el("label", "insp-field-label", "Autore (chi l'ha fatto)"));
+    const authorName = document.createElement("input");
+    authorName.className = "insp-name-input";
+    authorName.value = rights.author;
+    authorName.placeholder = "nome e cognome";
+    const authorOrcid = document.createElement("input");
+    authorOrcid.className = "insp-name-input";
+    authorOrcid.value = rights.orcid;
+    authorOrcid.placeholder = "0000-0000-0000-0000";
+    const commitAuthor = (): void => {
+      const iD = authorOrcid.value.trim();
+      const problem = iD ? orcidProblem(iD) : null;
+      if (problem) {
+        // Said, not swallowed: an iD with a typo is not an identity, and
+        // writing it anyway would put a person in the graph who does not exist.
+        authorOrcid.title = `ORCID non valido (${problem}) — non l'ho scritto.`;
+        authorOrcid.classList.add("insp-input-bad");
+        return;
+      }
+      authorOrcid.classList.remove("insp-input-bad");
+      store.setNodeRights(nodeId, {
+        author: authorName.value.trim() || iD,
+        orcid: iD,
+      });
+    };
+    authorName.addEventListener("change", commitAuthor);
+    authorOrcid.addEventListener("change", commitAuthor);
+    panel.appendChild(authorName);
+    panel.appendChild(authorOrcid);
+    panel.appendChild(el("div", "insp-hint",
+      "L'ORCID di chi ha prodotto questi byte — anche di una persona che non è "
+      + "qui. Chi lo dichiara sei tu, e resta scritto qui sotto."));
+
+    // …e la firma dell'atto, in chiaro
+    if (rights.attributedBy || rights.attributedAt) {
+      const when = rights.attributedAt
+        ? new Date(rights.attributedAt).toLocaleString()
+        : "";
+      panel.appendChild(el("div", "insp-hint",
+        `Attribuito da ${rights.attributedBy || "?"}${when ? ` il ${when}` : ""}`));
+    }
+
     const actions = el("div", "insp-actions");
     const claim = el("button", "insp-btn",
-                     "Apponi la mia identità") as HTMLButtonElement;
+                     "Sono io l'autore") as HTMLButtonElement;
     claim.disabled = !me;
     claim.title = me
-      ? `Appone ${me.orcid} come autore di questa risorsa.`
+      ? `Appone ${me.orcid} come autore — e come attributore, perché in questo `
+        + "caso sono la stessa persona."
       : "Nessuna identità dichiarata in questa sessione: dichiara il tuo ORCID "
         + "in Impostazioni ▸ Identità.";
     claim.addEventListener("click", () => {

@@ -2092,13 +2092,24 @@ export class DocumentStore {
     license: string;
     embargo: string;
     reason: string;
+    /** who signed the most recent of these statements, and when */
+    attributedBy: string;
+    attributedAt: string;
   } {
-    const out = { author: "", orcid: "", license: "", embargo: "", reason: "" };
+    const out = { author: "", orcid: "", license: "", embargo: "", reason: "",
+                  attributedBy: "", attributedAt: "" };
     for (const key of ["author", "license", "embargo"] as const) {
       const m = this.rightsMember(nodeId, key);
       if (!m) continue;
       out[key] = String(m.name ?? "");
       const data = (m.data ?? {}) as Record<string, unknown>;
+      // the most recent signature wins the summary line: the panel says who
+      // vouches for what is written there NOW
+      if (data.attributed_at != null
+          && String(data.attributed_at) >= out.attributedAt) {
+        out.attributedAt = String(data.attributed_at);
+        out.attributedBy = String(data.attributed_by ?? "");
+      }
       if (key === "author" && data.orcid != null) out.orcid = String(data.orcid);
       if (key === "embargo") {
         if (data.reason != null) out.reason = String(data.reason);
@@ -2108,11 +2119,23 @@ export class DocumentStore {
     return out;
   }
 
-  /** Attach (or update, or remove) the rights of ONE node. One undo step.
+  /** Attach (or update, or remove) the rights of ONE node — as an ACT.
+   *
+   *  ATTRIBUTION IS AN ACT, NOT A FIELD (protocol:
+   *  `s3Dgraphy/docs/asset-dtc-protocol.md`). The **author** is who made the
+   *  data — an ORCID that may belong to somebody absent, retired or dead — and
+   *  the **attributor** is who says so, now. They are frequently different:
+   *  anything catalogued after the fact is attributed by a cataloguer. So each
+   *  statement carries `attributed_by` + `attributed_at`, the signature of the
+   *  act, exactly as `enrich_asset_dtc` writes it on the Python side.
+   *
+   *  Distinct from the editorial stamps (`created_by`/`modified_by`), which
+   *  record the hand that touched the FILE: "somebody edited this" and
+   *  "somebody vouches for this" are different sentences.
    *
    *  An empty value REMOVES the statement rather than storing an empty one:
    *  "no licence declared" and "declared to be nothing" would look identical in
-   *  the file and mean different things to a reader.
+   *  the file and mean different things to a reader. One undo step.
    */
   setNodeRights(
     nodeId: string,
@@ -2123,6 +2146,13 @@ export class DocumentStore {
       /** ISO date the embargo runs until; empty removes it */
       embargo?: string;
       reason?: string;
+      /** ORCID of whoever is MAKING this declaration. Defaults to the session's
+       *  identity — the person at the keyboard is the one signing. */
+      attributor?: string;
+      /** when the act was made (ISO); defaults to now, so a posthumous
+       *  attribution says when it was made rather than pretending to be
+       *  contemporary with the file */
+      at?: string;
     },
   ): void {
     if (!this.node(nodeId)) return;
@@ -2148,11 +2178,24 @@ export class DocumentStore {
           data.embargo_end = val;
           if (patch.reason !== undefined) data.reason = patch.reason.trim();
         }
+        // THE SIGNATURE OF THE ACT. On every statement, including one that only
+        // changed value: an attribution somebody revised is theirs now, not
+        // still the first person's.
+        const signer = patch.attributor ?? currentIdentity()?.orcid;
+        if (signer) {
+          data.attributed_by = signer;
+          data.attributed_at = patch.at ?? new Date().toISOString();
+        }
         if (existing) {
-          this.updateNode(existing.id, { name: val });
-          const d = (existing.data ??= {}) as Record<string, unknown>;
-          Object.assign(d, data);
-          this.emit();
+          // ONE update, name AND data together — not a rename followed by a
+          // silent `Object.assign`. Measured live: the assignment emitted no
+          // operation, so a room received the new NAME of a licence and kept
+          // the old `license_type` in its data, and the server (which reads the
+          // data first) went on serving the licence nobody had chosen any more.
+          this.updateNode(existing.id, {
+            name: val,
+            data: { ...(existing.data as Record<string, unknown> | undefined), ...data },
+          } as Partial<EmNode>);
         } else {
           const made = this.addNode({
             id: `${nodeId}_${nt}_${this.newId().slice(0, 8)}`,

@@ -9172,13 +9172,15 @@ function renderStorage(): void {
   if (win.type !== "storage") return;
 
   if (winModeOf(win) === "minio") {
-    // Phase 2, said plainly. The Mode exists because the decision ("resources
-    // travel as a treefolder + JSON-LD; the object store comes after") is made
-    // — hiding the Mode until then would make the plan invisible.
-    crumb.textContent = "";
+    // THE OBJECT STORE, for real now. A file goes to the room's store, comes
+    // back as its own sha256, becomes a ResourceNode that POINTS at those bytes
+    // — never carries them — and the upload is also the moment the rights are
+    // declared, because that is when the asset first exists as a thing anybody
+    // can point at (`s3Dgraphy/docs/asset-dtc-protocol.md`).
+    crumb.textContent = sync.room ? `${t("storage.minio")} · ${sync.room}` : "";
     up.classList.add("hidden");
     body.textContent = "";
-    body.appendChild(storageEmpty(t("storage.minioPhase2")));
+    body.appendChild(minioPanel());
     return;
   }
 
@@ -9237,6 +9239,138 @@ function renderStorage(): void {
     body.appendChild(list);
   })();
 }
+
+/**
+ * The object-store panel: pick a file, publish it, declare what it is.
+ *
+ * Only inside a ROOM, and that is not a limitation to apologise for: the bytes
+ * go to *that room's* store with *that session's* token, and an upload with
+ * nowhere to go would be a button that fails. Standalone says so instead.
+ */
+function storageText(message: string): HTMLElement {
+  const p = document.createElement("p");
+  p.textContent = message;
+  return p;
+}
+
+function minioPanel(): HTMLElement {
+  const box = document.createElement("div");
+  box.className = "storage-empty";
+
+  if (!sync.room || !getSettings().sync.hubUrl) {
+    box.appendChild(storageText(t("storage.minioNeedsRoom")));
+    return box;
+  }
+
+  box.appendChild(storageText(t("storage.minioReady", { room: sync.room })));
+
+  const picker = document.createElement("input");
+  picker.type = "file";
+  picker.className = "storage-file";
+  box.appendChild(picker);
+
+  const log = document.createElement("div");
+  log.className = "insp-hint";
+  box.appendChild(log);
+
+  picker.addEventListener("change", () => {
+    const file = picker.files?.[0];
+    if (file) void uploadToRoom(file, log);
+  });
+  return box;
+}
+
+/**
+ * Publish bytes into the room's store, then say what they are.
+ *
+ * Four steps, and the order is the point: the bytes go FIRST, so a crash leaves
+ * an orphan object rather than a graph pointing at nothing; the digest comes
+ * back from the server (it is the store's answer, not our guess); the
+ * ResourceNode is created with `residency: "resident"` — resident meaning the
+ * bytes live in the room's store — and only then the rights are declared, which
+ * is the act this moment exists for.
+ *
+ * Re-uploading the same file is not an error and not a duplicate: same bytes,
+ * same digest, same node. The server says `created: false` and we say so too.
+ */
+async function uploadToRoom(file: File, log: HTMLElement): Promise<void> {
+  const base = getSettings().sync.hubUrl.replace(/\/+$/, "");
+  const room = sync.room;
+  if (!room) return;
+  log.textContent = t("storage.uploading", { name: file.name });
+  try {
+    const bytes = await file.arrayBuffer();
+    const url = `${base}/v1/rooms/${encodeURIComponent(room)}/asset`
+      + `?media_type=${encodeURIComponent(file.type || "application/octet-stream")}`;
+    const answer = await fetch(url, {
+      method: "PUT",
+      headers: hubToken ? { Authorization: `Bearer ${hubToken}` } : {},
+      body: bytes,
+    });
+    if (!answer.ok) {
+      log.textContent = t("storage.uploadFailed",
+                          { detail: `${answer.status} ${await answer.text()}` });
+      return;
+    }
+    const info = await answer.json() as {
+      ref: string; sha256?: string; size?: number; created?: boolean;
+    };
+
+    // the node POINTS at the bytes; it never carries them.
+    // Captured once: `store` is the ACTIVE document and it can be reassigned
+    // (another slot made active) while an upload is in flight — writing to
+    // whichever store is current when the answer lands would put the resource
+    // in a graph nobody uploaded it for.
+    const doc = store;
+    if (!doc) {
+      log.textContent = t("storage.uploadFailed", { detail: "no document" });
+      return;
+    }
+    const existing = doc.doc.graph.nodes.find(
+      (n) => n.node_type === "resource"
+        && String((n.data as Record<string, unknown> | undefined)?.checksum ?? "")
+          === info.ref);
+    const nodeId = existing?.id ?? doc.newId();
+    if (!existing) {
+      doc.addNode({
+        id: nodeId,
+        name: file.name,
+        node_type: "resource",
+        description: "",
+        data: {
+          checksum: info.ref,
+          media_type: file.type || "application/octet-stream",
+          residency: "resident",
+          size: info.size ?? file.size,
+        },
+      } as unknown as EmNode);
+    }
+
+    // …and the upload is when the rights get declared. The attributor is the
+    // session — whoever is at the keyboard is the one signing — and the author
+    // defaults to the same person, which the panel then lets you change to
+    // somebody else entirely.
+    const me = currentIdentity();
+    doc.setNodeRights(nodeId, {
+      license: DEFAULT_ASSET_LICENSE,
+      ...(me ? { author: [me.name, me.surname].filter(Boolean).join(" ") || me.orcid,
+                 orcid: me.orcid } : {}),
+    });
+
+    select(nodeId);
+    log.textContent = info.created === false
+      ? t("storage.uploadSame", { sha: info.ref.slice(0, 19) })
+      : t("storage.uploaded", { sha: info.ref.slice(0, 19) });
+  } catch (err) {
+    log.textContent = t("storage.uploadFailed", { detail: String(err) });
+  }
+}
+
+/** What StratiGraph publishes under when nobody says otherwise. The same
+ *  default the library exposes (`s3dgraphy.study.DEFAULT_LICENSE`) — declared
+ *  here rather than assumed, so an upload leaves a licence somebody can read
+ *  and change instead of a silence. */
+const DEFAULT_ASSET_LICENSE = "CC-BY-SA-4.0";
 
 function storageRow(win: Win, entry: FsEntry): HTMLElement {
   const row = document.createElement("div");
