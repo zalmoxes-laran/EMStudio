@@ -30,6 +30,22 @@ const pkg = JSON.parse(
 const entry = process.env.EM_ENTRY === "reader" ? "reader" : "index";
 
 export default defineConfig({
+  // RELATIVE, and for the reader that is a contract with whoever serves it.
+  //
+  // The editor is one file, so its base is moot. The reader is a shell that
+  // asks for `./assets/reader-*.{js,css}` — and, when a model appears,
+  // `./three.module-*.js` beside them — every one of which the browser resolves
+  // against the URL DIRECTORY the shell came from. em-catalog therefore serves
+  // the whole `dist/` as a directory and puts the shell at its root
+  // (`/catalog/reader/reader.html`, `app/main.py::READER_MOUNT`), and the
+  // requests land.
+  //
+  // An ABSOLUTE base (`/catalog/reader/`) would work for exactly that one
+  // deployment and break every other: a different prefix, a Caddy sub-path, a
+  // reader opened from a file manager. Relative asks nothing of the host but
+  // that the shell and its assets stay together, which is what a dist IS.
+  // `scripts/check-narrative.mjs` asserts it against the built shell, so this
+  // is a checked promise rather than a comment.
   base: "./",
   define: { __EMSTUDIO_VERSION__: JSON.stringify(pkg.version) },
   // The EDITOR is one file you can double-click, and that is a product

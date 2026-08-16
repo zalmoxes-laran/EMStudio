@@ -487,4 +487,48 @@ eq(doc.graph.nodes.filter(
      "3d · …with no empty stage: without an engine there is nothing to stage");
 }
 
+// ── the SERVED reader: shell and assets, and the promise between them ────────
+//
+// The reader is no longer one self-contained file — arc A took `viteSingleFile`
+// off it so the 3D engine could be a chunk fetched on demand instead of 800 kB
+// of base64 in the HTML. What that bought has a price, and this is it: the page
+// now depends on WHERE it is served from, because it asks for its assets
+// relatively.
+//
+// em-catalog holds up its end by serving the whole `dist/` as a directory with
+// the shell at its root (`READER_MOUNT`). This asserts the other end: that the
+// shell asks relatively and that what it asks for is actually in the dist. A
+// build that started emitting absolute `/assets/…` would 404 every asset behind
+// any prefix, and the symptom would be a blank page that reads like an empty
+// study — the exact failure the 501 exists to avoid.
+{
+  const dist = new URL("../dist/", import.meta.url);
+  let shell = null;
+  try {
+    shell = readFileSync(new URL("reader.html", dist), "utf-8");
+  } catch {
+    // Not built here. Said out loud rather than passed silently: a check that
+    // reports success for work it did not do is worse than no check.
+    console.log("reader: dist/reader.html absent — served-reader checks SKIPPED "
+                + "(npm run build:reader)");
+  }
+  if (shell) {
+    const refs = [...shell.matchAll(/(?:src|href)="([^"]+)"/g)].map((m) => m[1]);
+    const assets = refs.filter((r) => !r.startsWith("data:"));
+    ok(assets.length > 0, "reader · the shell references its bundle");
+    for (const ref of assets) {
+      ok(ref.startsWith("./"),
+         `reader · «${ref}» must be RELATIVE: an absolute path nails the reader `
+         + "to one deployment's prefix");
+      ok(readFileSync(new URL(ref.replace(/^\.\//, ""), dist)).length > 0,
+         `reader · «${ref}» exists in the dist that will be served`);
+    }
+    // …and the shell is a SHELL: if it ever grows back to a megabyte, the
+    // single-file plugin has crept back onto the reader entry and the 3D chunk
+    // is inlined again.
+    ok(shell.length < 100_000,
+       `reader · the shell stays a shell (${shell.length} bytes)`);
+  }
+}
+
 console.log(`narrative: ${checks} checks passed`);
