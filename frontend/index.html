@@ -535,10 +535,16 @@
           <span data-i18n="settings.title">Settings</span>
           <button id="settings-close" class="modal-x" data-i18n-title="settings.close">✕</button>
         </div>
+        <!-- The tab strip is BUILT, not written: every section below declares
+             which tab it belongs to (`data-settings-tab`) and `main.ts` derives
+             the strip from that. Adding a section costs one attribute, and a
+             section naming a new tab gets a new tab — the same rule the rest of
+             this UI follows, where the markup declares and the code reads. -->
+        <nav id="settings-tabs" class="settings-tabs" role="tablist"></nav>
         <div class="modal-body">
           <!-- Language first: it changes every other label in this dialog, so
                having to scroll past the sync ports to find it would be odd. -->
-          <section class="settings-sect">
+          <section data-settings-tab="general" class="settings-sect">
             <h4 data-i18n="settings.language">Language</h4>
             <p class="settings-hint" data-i18n="settings.languageHint">
               The language of this interface. Node labels and narrative text are
@@ -565,7 +571,7 @@
               Turns off the “AI draft” badge on this computer.
             </p>
           </section>
-          <section class="settings-sect" id="settings-sect-sync">
+          <section data-settings-tab="sync" class="settings-sect" id="settings-sect-sync">
             <h4 data-i18n="settings.liveSync">Live sync</h4>
             <p class="settings-hint">
               Where EMStudio connects for live sync (ADR-002). The chosen tool
@@ -620,7 +626,7 @@
           </section>
           <!-- DARK1: the theme, first after the language — both change every
                other label in this dialog, so they belong together at the top. -->
-          <section class="settings-sect">
+          <section data-settings-tab="general" class="settings-sect">
             <h4>Tema</h4>
             <p class="settings-hint">
               Il tema cambia lo <b>chrome</b> e il canvas. I colori dei nodi
@@ -637,7 +643,7 @@
               </select>
             </label>
           </section>
-          <section class="settings-sect">
+          <section data-settings-tab="general" class="settings-sect">
             <h4 data-i18n="settings.interaction">Interaction</h4>
             <label class="settings-check">
               <input id="set-edge-tooltips" type="checkbox" />
@@ -663,7 +669,7 @@
                the AI key below: an iD is a PUBLIC identifier (it is printed on
                papers) and lives in localStorage in clear text, while the tokens
                that verify it are secrets and never touch this window. -->
-          <section class="settings-sect" id="settings-sect-identity">
+          <section data-settings-tab="identity" class="settings-sect" id="settings-sect-identity">
             <h4>Identità (ORCID)</h4>
             <p class="settings-hint">
               L'<b>ORCID iD è l'identità</b>: quello che crei e modifichi porta
@@ -700,11 +706,75 @@
             <p class="settings-hint" id="set-orcid-state"></p>
             <div id="set-orcid-known"></div>
           </section>
+          <section data-settings-tab="viewers" class="settings-sect">
+            <h4 data-i18n="settings.viewer">3D viewer</h4>
+            <p class="settings-hint">
+              Dove vive il 3D. EMStudio non incorpora un motore 3D: le scene
+              sono di <b>ATON</b>, e <b>Heriverse</b> è la web-app ATON che
+              legge questo stesso grafo. Serve solo l'indirizzo del server —
+              il riferimento (id di scena o risorsa) sta nel grafo. Lasciato
+              vuoto, un blocco <code>epoch3d</code> lo dice invece di restare
+              muto.
+            </p>
+            <label
+              >Server ATON
+              <input
+                id="set-aton-base"
+                type="text"
+                spellcheck="false"
+                placeholder="https://localhost:8083"
+              />
+            </label>
+            <label
+              >App Heriverse (montata sotto il server)
+              <input
+                id="set-heriverse-app"
+                type="text"
+                spellcheck="false"
+                placeholder="a/heriverse"
+              />
+            </label>
+            <p class="settings-url">
+              Scena: <code id="set-aton-scene-url"></code>
+            </p>
+          </section>
+
+          <section data-settings-tab="viewers" class="settings-sect" id="settings-sect-iiif">
+            <h4 data-i18n="settings.iiif">Immagini (IIIF)</h4>
+            <p class="settings-hint">
+              Dove vivono le <b>immagini</b>. L'indirizzo di un servizio
+              <b>IIIF Image API</b> (Cantaloupe, nello stack StratiGraph):
+              l'identificatore di un'immagine è il suo <b>sha256</b>, quindi qui
+              serve solo l'host. Con questo, le miniature sono una richiesta di
+              <i>taglia</i> e l'annotatore chiede l'immagine grande quanto gli
+              serve — niente pipeline di miniature, niente file duplicati.
+              Lasciato vuoto, tutto funziona come prima: nessuna miniatura,
+              nessun riquadro rotto.
+            </p>
+            <label
+              >Servizio IIIF (Image API 3)
+              <input
+                id="set-iiif-base"
+                type="text"
+                spellcheck="false"
+                placeholder="https://localhost:8182/iiif/3"
+              />
+            </label>
+            <label
+              >Mirador (apri altrove)
+              <input
+                id="set-mirador"
+                type="text"
+                spellcheck="false"
+                placeholder="https://projectmirador.org/embed/"
+              />
+            </label>
+          </section>
           <!-- WIN7 · the narrative window's ⌁ button opens Settings straight
                here: "who writes the draft, and with which key" is the data the
                AI needs, and hunting for it in a long dialog was the reason
                generating a chapter felt like a dead end. -->
-          <section class="settings-sect" id="settings-sect-ai">
+          <section data-settings-tab="advanced" class="settings-sect" id="settings-sect-ai">
             <h4 data-i18n="settings.aiProvider">AI provider</h4>
             <p class="settings-hint">
               Chi scrive le bozze narrative. La chiave non viene <b>mai</b>
@@ -744,71 +814,7 @@
             </p>
             <p class="settings-hint" id="set-ai-key-hint"></p>
           </section>
-          <section class="settings-sect">
-            <h4 data-i18n="settings.viewer">3D viewer</h4>
-            <p class="settings-hint">
-              Dove vive il 3D. EMStudio non incorpora un motore 3D: le scene
-              sono di <b>ATON</b>, e <b>Heriverse</b> è la web-app ATON che
-              legge questo stesso grafo. Serve solo l'indirizzo del server —
-              il riferimento (id di scena o risorsa) sta nel grafo. Lasciato
-              vuoto, un blocco <code>epoch3d</code> lo dice invece di restare
-              muto.
-            </p>
-            <label
-              >Server ATON
-              <input
-                id="set-aton-base"
-                type="text"
-                spellcheck="false"
-                placeholder="https://localhost:8083"
-              />
-            </label>
-            <label
-              >App Heriverse (montata sotto il server)
-              <input
-                id="set-heriverse-app"
-                type="text"
-                spellcheck="false"
-                placeholder="a/heriverse"
-              />
-            </label>
-            <p class="settings-url">
-              Scena: <code id="set-aton-scene-url"></code>
-            </p>
-          </section>
-
-          <section class="settings-sect" id="settings-sect-iiif">
-            <h4 data-i18n="settings.iiif">Immagini (IIIF)</h4>
-            <p class="settings-hint">
-              Dove vivono le <b>immagini</b>. L'indirizzo di un servizio
-              <b>IIIF Image API</b> (Cantaloupe, nello stack StratiGraph):
-              l'identificatore di un'immagine è il suo <b>sha256</b>, quindi qui
-              serve solo l'host. Con questo, le miniature sono una richiesta di
-              <i>taglia</i> e l'annotatore chiede l'immagine grande quanto gli
-              serve — niente pipeline di miniature, niente file duplicati.
-              Lasciato vuoto, tutto funziona come prima: nessuna miniatura,
-              nessun riquadro rotto.
-            </p>
-            <label
-              >Servizio IIIF (Image API 3)
-              <input
-                id="set-iiif-base"
-                type="text"
-                spellcheck="false"
-                placeholder="https://localhost:8182/iiif/3"
-              />
-            </label>
-            <label
-              >Mirador (apri altrove)
-              <input
-                id="set-mirador"
-                type="text"
-                spellcheck="false"
-                placeholder="https://projectmirador.org/embed/"
-              />
-            </label>
-          </section>
-          <section class="settings-sect">
+          <section data-settings-tab="advanced" class="settings-sect">
             <h4 data-i18n="settings.developer">Developer</h4>
             <label class="settings-check">
               <input id="set-dev-uuid" type="checkbox" />

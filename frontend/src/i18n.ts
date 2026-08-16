@@ -412,6 +412,13 @@ const EN: Dict = {
   // settings
   "settings.title": "Settings",
   "settings.close": "Close",
+  // The tab strip. One word each, because the strip is as wide as the dialog
+  // and a label that wraps turns a row of tabs into a paragraph.
+  "settings.tab.general": "General",
+  "settings.tab.identity": "Identity",
+  "settings.tab.sync": "Sync",
+  "settings.tab.viewers": "Viewers",
+  "settings.tab.advanced": "Advanced",
   "settings.language": "Language",
   "settings.languageHint":
     "The language of this interface. Node labels and narrative text are " +
@@ -430,6 +437,7 @@ const EN: Dict = {
   "settings.interaction": "Interaction",
   "settings.aiProvider": "AI provider",
   "settings.viewer": "Viewer",
+  "settings.iiif": "Images (IIIF)",
   "settings.save": "Save",
   "settings.cancel": "Cancel",
 
@@ -783,6 +791,11 @@ const IT: Dict = {
 
   "settings.title": "Impostazioni",
   "settings.close": "Chiudi",
+  "settings.tab.general": "Generale",
+  "settings.tab.identity": "Identità",
+  "settings.tab.sync": "Sync",
+  "settings.tab.viewers": "Visori",
+  "settings.tab.advanced": "Avanzate",
   "settings.language": "Lingua",
   "settings.languageHint":
     "La lingua di questa interfaccia. Le etichette dei nodi e il testo " +
@@ -801,6 +814,7 @@ const IT: Dict = {
   "settings.interaction": "Interazione",
   "settings.aiProvider": "Fornitore AI",
   "settings.viewer": "Visualizzatore",
+  "settings.iiif": "Immagini (IIIF)",
   "settings.save": "Salva",
   "settings.cancel": "Annulla",
 

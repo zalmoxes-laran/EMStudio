@@ -722,6 +722,61 @@ body.sync-active #mode-indicator::before {
   overflow-y: auto;
   overscroll-behavior: contain;   /* a scroll that ends here does not move the page */
 }
+/* ── the settings TABS ──────────────────────────────────────────────────────
+   Between the head and the scrolling body, and outside both: the strip must not
+   scroll away with the content it is switching, which is the whole reason it
+   exists. The dialog is a little wider than the other modals to hold it. */
+#settings-modal .modal-card {
+  width: min(520px, 94vw);
+}
+.settings-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 8px 10px 0;
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--border);
+  /* Never wrap: a strip on two rows reads as two groups of settings, which is
+     precisely the thing it is not. Narrow windows scroll it instead. */
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: thin;
+}
+.settings-tab {
+  padding: 6px 11px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  white-space: nowrap;
+  cursor: pointer;
+  border-radius: 5px 5px 0 0;
+}
+.settings-tab:hover {
+  color: var(--text);
+  background: var(--bg-app);
+}
+.settings-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+  font-weight: 600;
+}
+/* Keyboard arrival has to be visible: with a roving tabindex the strip is one
+   tab stop, so the ring is the only thing saying you are inside it. */
+.settings-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+/* Two sections in one tab need a seam: with the whole dialog scrolling they read
+   as a continuum, but side by side in a short panel "Viewer" and "Images" run
+   together into one form. The GENERAL sibling combinator, not the adjacent one:
+   sections of a tab are not necessarily neighbours in the markup, so the rule
+   has to mean "any visible section that follows another visible one". */
+.settings-sect:not(.hidden) ~ .settings-sect:not(.hidden) {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
 .settings-sect h4 {
   margin: 0 0 6px;
   font-size: 13px;

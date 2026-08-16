@@ -5350,8 +5350,115 @@ function openSettings(section?: string): void {
   refreshSyncUrlPreview();
   refreshAtonUrlPreview();
   settingsModal.classList.remove("hidden");
+  // The tab FIRST, then the block: revealing something inside a hidden tab
+  // scrolls against a panel that is not laid out, and lands nowhere.
+  showSettingsTab(section ? tabOfSection(section) : lastSettingsTab());
   if (section) revealBlock(document.getElementById(section));
 }
+
+// ── the settings TABS ────────────────────────────────────────────────────────
+//
+// Nine sections in one scroll is a list you read by scrolling past what you did
+// not come for. Tabs cost one thing — you can no longer see everything at once —
+// and buy the thing that matters here: the panel opens ON what you asked for.
+//
+// Derived from the markup, never listed here: each `<section>` carries
+// `data-settings-tab`, and the strip is whatever those attributes say, in DOM
+// order. A hardcoded list would be a second place to edit and the first one to
+// go stale — the rule this codebase already follows for node types and palettes.
+
+/** Remembering where you were: a settings dialog that reopens on the first tab
+ *  makes you navigate back every time you fix two related things. */
+const SETTINGS_TAB_KEY = "emstudio.settings.tab";
+
+function settingsSections(): HTMLElement[] {
+  return [...settingsModal.querySelectorAll<HTMLElement>("[data-settings-tab]")];
+}
+
+function settingsTabIds(): string[] {
+  const seen: string[] = [];
+  for (const section of settingsSections()) {
+    const tab = section.dataset.settingsTab ?? "";
+    if (tab && !seen.includes(tab)) seen.push(tab);
+  }
+  return seen;
+}
+
+/** Which tab holds this section — by element id, the way every caller asks. */
+function tabOfSection(sectionId: string): string | null {
+  const section = document.getElementById(sectionId);
+  return section?.dataset.settingsTab ?? null;
+}
+
+function lastSettingsTab(): string | null {
+  try {
+    return localStorage.getItem(SETTINGS_TAB_KEY);
+  } catch {
+    return null;                       // private mode: a forgotten tab, no more
+  }
+}
+
+function showSettingsTab(wanted: string | null): void {
+  const tabs = settingsTabIds();
+  if (!tabs.length) return;
+  // An unknown tab (a stale localStorage value after a section was renamed) is
+  // not an error state to show: fall back to the first, silently.
+  const active = wanted && tabs.includes(wanted) ? wanted : tabs[0];
+  for (const section of settingsSections()) {
+    section.classList.toggle("hidden", section.dataset.settingsTab !== active);
+  }
+  for (const button of settingsTabBar.querySelectorAll<HTMLButtonElement>(
+    "[data-tab-target]")) {
+    const isActive = button.dataset.tabTarget === active;
+    button.classList.toggle("active", isActive);
+    button.setAttribute("aria-selected", String(isActive));
+    // Roving tabindex: one stop for the whole strip, then ← → inside it. A
+    // tab strip that costs nine tab-presses to walk past is a worse dialog
+    // than the scrolling one it replaced.
+    button.tabIndex = isActive ? 0 : -1;
+  }
+  // The scroll belongs to the tab, not to the dialog: arriving on a tab
+  // half-way down the previous one's scroll is disorienting.
+  settingsModal.querySelector(".modal-body")?.scrollTo({ top: 0 });
+  try {
+    localStorage.setItem(SETTINGS_TAB_KEY, active);
+  } catch {
+    /* not remembering is not a failure worth reporting */
+  }
+}
+
+const settingsTabBar = document.getElementById("settings-tabs")!;
+
+function buildSettingsTabs(): void {
+  settingsTabBar.textContent = "";
+  for (const tab of settingsTabIds()) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "settings-tab";
+    button.dataset.tabTarget = tab;
+    button.setAttribute("role", "tab");
+    // `data-i18n` rather than a label written here: a language switch
+    // re-translates the static DOM in one pass, and these come along.
+    button.dataset.i18n = `settings.tab.${tab}`;
+    button.textContent = t(`settings.tab.${tab}`);
+    button.addEventListener("click", () => showSettingsTab(tab));
+    settingsTabBar.appendChild(button);
+  }
+  settingsTabBar.addEventListener("keydown", (event) => {
+    const key = (event as KeyboardEvent).key;
+    const step = key === "ArrowRight" ? 1 : key === "ArrowLeft" ? -1 : 0;
+    if (!step) return;
+    event.preventDefault();
+    const tabs = settingsTabIds();
+    const here = tabs.indexOf(lastSettingsTab() ?? tabs[0]);
+    const next = tabs[(here + step + tabs.length) % tabs.length];
+    showSettingsTab(next);
+    settingsTabBar.querySelector<HTMLButtonElement>(
+      `[data-tab-target="${next}"]`)?.focus();
+  });
+}
+
+buildSettingsTabs();
 
 /**
  * Bring a block into view and say so — the last step of every "open the panel ON
