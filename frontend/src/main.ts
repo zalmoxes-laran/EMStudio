@@ -11913,13 +11913,30 @@ function setWorkspace(id: WorkspaceId): void {
  */
 function renderWorkspaceBar(): void {
   workspaceBar.innerHTML = "";
+  let separated = false;
   for (const w of WORKSPACES) {
+    // PHASES first, then a hairline, then the VIEWS and whatever the user made.
+    // The line is the whole point of the reframe being visible: Documentation →
+    // Analysis → Comparisons → Output is a sequence of work, and IDE/Table are
+    // arrangements of the same material — a bar that mixed them read as six
+    // equal choices.
+    if (!separated && !w.phase) {
+      const rule = document.createElement("span");
+      rule.className = "ws-sep";
+      rule.title = t("ws.viewNote");
+      workspaceBar.appendChild(rule);
+      separated = true;
+    }
     const b = document.createElement("button");
     b.dataset.ws = w.id;
     const isActive = w.id === activeWorkspace();
-    b.className = "ws-tab" + (isActive ? " active" : "");
+    b.className = "ws-tab" + (isActive ? " active" : "")
+      + (w.phase ? " ws-phase" : "");
     const label = workspaceLabel(w, t);
-    b.title = label;
+    // the tooltip says WHAT THE PHASE IS FOR; a label alone answers "where am I"
+    // and not "what am I supposed to be doing here"
+    b.title = w.hintKey ? `${label} — ${t(w.hintKey)}`
+      : w.view ? `${label} — ${t("ws.viewNote")}` : label;
     b.innerHTML =
       `<span class="ws-ic">${w.icon}</span><span class="ws-lb">${escapeHtml(label)}</span>`;
     b.addEventListener("click", () => setWorkspace(w.id));

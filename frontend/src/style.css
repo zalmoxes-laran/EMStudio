@@ -6503,3 +6503,14 @@ body.nv-standalone main.nv-standalone-main {
   align-items: center;
   padding: 10px;
 }
+
+/* PHASES · the leader bar shows the sequence of work (Documentation → Analysis →
+   Comparisons → Output) and then, after a hairline, the arrangements of the same
+   material. Without the rule the bar read as six equal choices. */
+.ws-sep {
+  width: 1px;
+  align-self: stretch;
+  margin: 4px 4px;
+  background: var(--border);
+  opacity: 0.7;
+}

@@ -126,6 +126,14 @@ export interface WorkspacePreset {
   graphMode?: GraphMode;
   /** built-ins cannot be deleted or renamed. */
   builtin?: boolean;
+  /** which PHASE of the work this tab is (1..4). Absent = not a phase but a
+   *  view (an arrangement of the same material), which the bar says out loud. */
+  phase?: number;
+  /** a view rather than a phase: IDE, Table. Declared so the bar can group them
+   *  and nobody reads "Table" as a step in the work. */
+  view?: boolean;
+  /** i18n key of the one-line "what this phase is for", shown in the tooltip. */
+  hintKey?: string;
   /** seed this workspace with a declared arrangement the first time it is
    *  opened. `ide` = editor + Tabular + EMtree/Inspector column; `assets` =
    *  the two storages side by side with the Inspector/Log column. */
@@ -148,15 +156,49 @@ export interface WorkspacePreset {
  * `canvas` keeps its id (now labelled "Graph editing") because the persisted
  * arrangements and the tiling checks are keyed by it.
  */
+/**
+ * THE TABS ARE THE PHASES OF THE WORK, in the order the work happens:
+ *
+ *   Documentation → Analysis → Comparisons → Output
+ *
+ * The reframe (E.D., 2026-08-17) is not cosmetic. The tabs used to name
+ * SURFACES — "Graph editing", "Table", "Narrative" — so the leader bar answered
+ * "which editor am I in" and the phase you were actually in (ingesting?
+ * interpreting? comparing? publishing?) was nowhere. A projection is not a
+ * phase: the matrix, the graph and the table are three ways of looking at the
+ * same interpretation, and they belong INSIDE Analysis as window types and
+ * modes, not beside it as peers.
+ *
+ * `Documentation` keeps the id `assets`: the persisted arrangements, the
+ * `arrangement: "assets"` seed and the tiling checks are keyed by it, and
+ * renaming an id to match a label would reset every saved layout for a word
+ * nobody sees. The label is the part that had to change.
+ *
+ * IDE and Table stay at the end as **views**, not phases — declared as such
+ * (`view: true`) rather than removed: they are arrangements people have in their
+ * hands, and taking them away to make a diagram tidier is the kind of change
+ * that costs somebody a morning.
+ */
 const BUILTIN_WORKSPACES: WorkspacePreset[] = [
-  { id: "canvas", labelKey: "ws.graphEditing", icon: "▦", windowType: "graph", graphMode: "matrix", builtin: true },
-  // ASSETS · second from the left, right after graph editing, because ingesting
-  // the material is what happens BEFORE (and constantly beside) the drawing of
-  // the matrix — not a corner of the app somebody has to go looking for.
-  { id: "assets", labelKey: "ws.assets", icon: "⬗", windowType: "storage", builtin: true, arrangement: "assets" },
-  { id: "ide", labelKey: "ws.ide", icon: "⌗", windowType: "graph", graphMode: "matrix", builtin: true, arrangement: "ide" },
-  { id: "narrative", labelKey: "ws.narrative", icon: "❧", windowType: "narrative", builtin: true },
-  { id: "table", labelKey: "ws.table", icon: "▤", windowType: "table", builtin: true },
+  // PHASE 1 · the material comes in: the disk, the room's store, the ingestion
+  // of a lot and the provenance of what was ingested.
+  { id: "assets", labelKey: "ws.documentation", hintKey: "ws.documentationHint",
+    icon: "⬗", windowType: "storage", builtin: true, arrangement: "assets", phase: 1 },
+  // PHASE 2 · the interpretation. Matrix, graph, DTC and the table are its
+  // WINDOWS and its modes — the projections of one study, not four phases.
+  { id: "canvas", labelKey: "ws.analysis", hintKey: "ws.analysisHint",
+    icon: "▦", windowType: "graph", graphMode: "matrix", builtin: true, phase: 2 },
+  // PHASE 3 · comparing with what is not yours: the shelf's three fences
+  // (own-study / own-HDT / other-HDT). The external search that fills it is
+  // deliberately NOT here yet — see the report's follow-up list.
+  { id: "comparisons", labelKey: "ws.comparisons", hintKey: "ws.comparisonsHint",
+    icon: "⇄", windowType: "shelf", builtin: true, phase: 3 },
+  // PHASE 4 · what leaves the study: the narrative, and (later) the exports.
+  { id: "narrative", labelKey: "ws.output", hintKey: "ws.outputHint",
+    icon: "❧", windowType: "narrative", builtin: true, phase: 4 },
+  // …and the two ARRANGEMENTS people already use, kept as views.
+  { id: "ide", labelKey: "ws.ide", icon: "⌗", windowType: "graph", graphMode: "matrix", builtin: true, arrangement: "ide", view: true },
+  { id: "table", labelKey: "ws.table", icon: "▤", windowType: "table", builtin: true, view: true },
 ];
 
 const CUSTOM_KEY = "emstudio.workspaces.custom";
