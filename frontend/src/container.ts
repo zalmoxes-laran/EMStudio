@@ -37,6 +37,12 @@ export type { CrdtOp, OpResult, FieldOutcome } from "./crdt";
 export const GRAPHS_KEY = "graphs";
 export const SHELF_COLLECTION = "ShelfGraph";
 export const SHELF_MEMBER_ID = "shelf";
+/** The DOCUMENTATION member: acquisitions, transformations and the resources
+ *  they are about — a forest that shares its leaves, and ontologically NOT a
+ *  stratigraphic matrix. Same mechanism as the shelf (a marker on the graph, not
+ *  a special key in the file), same words as `s3dgraphy.dtc.corpus`. */
+export const DTC_CORPUS_COLLECTION = "DTCCorpus";
+export const DTC_CORPUS_MEMBER_ID = "dtc";
 /** P3 · where the project's revision travels. Deliberately NOT in `header`:
  *  the header describes the FORMAT, this describes the WORK. */
 export const VERSION_KEY = "version";
@@ -72,6 +78,11 @@ export interface ParsedContainer {
   members: ContainerMember[];
   /** the project shelf, when the container carries one */
   shelf: GraphSection | null;
+  /** the DOCUMENTATION member (the DTC corpus), when the container carries one.
+   *  Kept OUT of `members` for the reason the shelf is: a caller iterating the
+   *  study's graphs must not meet it, and the bug that would cause is a
+   *  provenance forest drawn as a stratigraphic matrix. */
+  corpus: GraphSection | null;
   activeGraphId: string | null;
   /** true when the source was a legacy single-graph document */
   wasLegacy: boolean;
@@ -113,6 +124,23 @@ export function isShelfSection(section: unknown): boolean {
   return !!data && data.em_collection === SHELF_COLLECTION;
 }
 
+/** Is this member the DTC corpus? Same rule, same reason: the MARKER decides. */
+export function isCorpusSection(section: unknown): boolean {
+  const data = (section as { data?: Record<string, unknown> } | null)?.data;
+  return !!data && data.em_collection === DTC_CORPUS_COLLECTION;
+}
+
+/** An empty corpus section, tagged as one — for a project that has none yet. */
+export function newCorpusSection(id: string = DTC_CORPUS_MEMBER_ID): GraphSection {
+  return {
+    graph_id: id,
+    name: "Documentation (DTC)",
+    data: { em_collection: DTC_CORPUS_COLLECTION },
+    nodes: [],
+    edges: [],
+  };
+}
+
 /**
  * Read a container OR a legacy single-graph document.
  *
@@ -124,13 +152,13 @@ export function parseContainer(doc: unknown): ParsedContainer {
   if (!isContainer(doc)) {
     const single = doc as EmDocument | null;
     if (!single?.graph?.nodes) {
-      return { members: [], shelf: null, activeGraphId: null, wasLegacy: true,
-               version: null,
+      return { members: [], shelf: null, corpus: null, activeGraphId: null,
+               wasLegacy: true, version: null,
                warnings: ["not an .em.json document (missing graph.nodes)"] };
     }
     const id = String(single.graph.graph_id ?? "graph");
-    return { members: [{ id, doc: single }], shelf: null, activeGraphId: id,
-             wasLegacy: true,
+    return { members: [{ id, doc: single }], shelf: null, corpus: null,
+             activeGraphId: id, wasLegacy: true,
              version: readVersion((single as unknown as ContainerDoc).version),
              warnings };
   }
@@ -138,6 +166,7 @@ export function parseContainer(doc: unknown): ParsedContainer {
   const header = doc.header ?? { format: "em.json", version: "1.0" };
   const members: ContainerMember[] = [];
   let shelf: GraphSection | null = null;
+  let corpus: GraphSection | null = null;
   for (const [memberId, section] of Object.entries(doc.graphs)) {
     if (!section || typeof section !== "object") {
       // One broken member must not cost the rest of the project.
@@ -146,6 +175,10 @@ export function parseContainer(doc: unknown): ParsedContainer {
     }
     if (isShelfSection(section)) {
       shelf = section;
+      continue;
+    }
+    if (isCorpusSection(section)) {
+      corpus = section;
       continue;
     }
     const graph = { ...section, graph_id: section.graph_id ?? memberId };
@@ -169,13 +202,15 @@ export function parseContainer(doc: unknown): ParsedContainer {
   }
   if (!activeGraphId) activeGraphId = members[0]?.id ?? null;
 
-  if (!members.length && shelf) {
+  if (!members.length && (shelf || corpus)) {
+    const held = [shelf ? "a shelf" : "", corpus ? "a DTC corpus" : ""]
+      .filter(Boolean).join(" and ");
     warnings.push(
-      "this project holds a shelf and no study graph — readable, but there is " +
-        "nothing to draw",
+      `this project holds ${held} and no study graph — readable, but there is ` +
+        `no matrix to draw`,
     );
   }
-  return { members, shelf, activeGraphId, wasLegacy: false,
+  return { members, shelf, corpus, activeGraphId, wasLegacy: false,
            version: readVersion(doc.version), warnings };
 }
 
@@ -188,6 +223,8 @@ export function parseContainer(doc: unknown): ParsedContainer {
 export function buildContainer(input: {
   graphs: Array<{ id: string; doc: EmDocument }>;
   shelf?: GraphSection | null;
+  /** the DOCUMENTATION member, written back under its own id */
+  corpus?: GraphSection | null;
   activeGraphId?: string | null;
 }): ContainerDoc {
   const graphs: Record<string, GraphSection> = {};
@@ -199,6 +236,10 @@ export function buildContainer(input: {
   if (input.shelf) {
     const shelfId = String(input.shelf.graph_id ?? SHELF_MEMBER_ID);
     graphs[shelfId] = input.shelf;
+  }
+  if (input.corpus) {
+    const corpusId = String(input.corpus.graph_id ?? DTC_CORPUS_MEMBER_ID);
+    graphs[corpusId] = input.corpus;
   }
   // The header comes from the first member so the format/version/datamodel
   // stamps stay written in one place (whoever wrote that document wrote them).

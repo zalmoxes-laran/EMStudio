@@ -355,4 +355,59 @@ const freshReport = () => ({ addedGraphs: [], mergedGraphs: [], mergedNodes: 0,
   eq(same.conflict, null, "the same content is never a conflict, wherever it arrives from");
 }
 
+// ── THE DOCUMENTATION MEMBER · a corpus is not a matrix ─────────────────────
+//
+// The separation, measured on the FILE: a container with a study graph, a shelf
+// and a corpus must come back as three distinct things, and the corpus must not
+// be in `members` — a caller iterating the study's graphs meeting a provenance
+// forest is the bug this exists to prevent.
+{
+  const corpus = C.newCorpusSection();
+  corpus.nodes = [
+    { id: "acq1", node_type: "dtc_acquisition", name: "Volo 2026-03",
+      data: { dtc_kind: "local_import", member_count: 1 } },
+    { id: "img1", node_type: "resource", name: "IMG_1.jpg",
+      data: { checksum: "sha256:" + "ab".repeat(32), residency: "resident" } },
+  ];
+  corpus.edges = [{ id: "e1", source: "acq1", target: "img1",
+                    edge_type: "dtc_had_output" }];
+  const shelf = { graph_id: "shelf", data: { em_collection: "ShelfGraph" },
+                  nodes: [], edges: [] };
+  const built = C.buildContainer({
+    graphs: [{ id: "study", doc: { header: {}, graph: { graph_id: "study", nodes: [], edges: [] } } }],
+    shelf, corpus, activeGraphId: "study",
+  });
+  eq(Object.keys(built.graphs).sort(), ["dtc", "shelf", "study"],
+     "three members in the file, each under its own id");
+  eq(built.graphs.dtc.data.em_collection, "DTCCorpus",
+     "…and the corpus carries the marker that identifies it");
+
+  const parsed = C.parseContainer(built);
+  eq(parsed.members.map((m) => m.id), ["study"],
+     "the corpus is NOT one of the study's graphs");
+  ok(parsed.shelf !== null, "the shelf is still the shelf");
+  ok(parsed.corpus !== null, "and the corpus came back as itself");
+  eq(parsed.corpus.nodes.length, 2, "…with what was in it");
+  eq(parsed.warnings, [], "nothing to warn about: this is a normal project");
+
+  ok(C.isCorpusSection(built.graphs.dtc), "recognised by its marker");
+  ok(!C.isCorpusSection(shelf), "…and a shelf is not a corpus");
+  ok(!C.isShelfSection(built.graphs.dtc), "…nor the other way round");
+  // a member id that LOOKS like one, without the marker, is a study graph
+  const decoy = C.parseContainer({
+    graphs: { dtc: { graph_id: "dtc", nodes: [], edges: [] } }, active_graph_id: "dtc" });
+  eq(decoy.corpus, null, "the id `dtc` alone does not make a corpus");
+  eq(decoy.members.map((m) => m.id), ["dtc"], "…it is just a graph called dtc");
+}
+
+{
+  // a project that holds only a corpus is readable, and says what it is missing
+  const parsed = C.parseContainer({
+    graphs: { dtc: C.newCorpusSection() }, active_graph_id: null });
+  ok(parsed.corpus !== null, "the corpus opens");
+  eq(parsed.members, [], "…with no study graph");
+  ok(parsed.warnings.some((w) => w.includes("no matrix to draw")),
+     "…and the absence of a matrix is stated, not crashed on");
+}
+
 console.log(`container: ${checks} checks passed`);

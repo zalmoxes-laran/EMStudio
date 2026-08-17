@@ -47,6 +47,13 @@ export interface InspectorCallbacks {
   commandsBlocked?: () => string | null;
   /** P4.1b · empty ONE field, through the act that leaves its tombstone. */
   onClearField?: (nodeId: string, field: string) => void;
+  /** DOCUMENTATION · put this asset on the shelf — the study's explicit
+   *  SELECTION from what the documentation holds. Absent = the build has no
+   *  shelf, and the action is simply not drawn. */
+  onAddToShelf?: (nodeId: string) => void;
+  /** …and whether it is already there, so the button can say "on the shelf"
+   *  instead of adding it twice. */
+  isOnShelf?: (nodeId: string) => boolean;
 }
 
 function el(tag: string, cls?: string, text?: string): HTMLElement {
@@ -1178,6 +1185,24 @@ export function renderInspector(
     }
 
     const actions = el("div", "insp-actions");
+    // THE SHELF IS A SELECTION. The documentation holds everything the study
+    // ingested; the shelf is the handful you are working from, and it travels
+    // with the em.json. Putting an asset on it is therefore a CHOICE somebody
+    // makes here, not a side effect of having ingested the file.
+    if (!isLot && cb.onAddToShelf) {
+      const already = cb.isOnShelf?.(nodeId) ?? false;
+      const shelve = el("button", "insp-btn",
+                        already ? "✓ Sullo scaffale" : "Aggiungi allo scaffale",
+                       ) as HTMLButtonElement;
+      shelve.disabled = already;
+      shelve.title = already
+        ? "Questa risorsa è già nella selezione che viaggia con l'em.json."
+        : "Mette questa risorsa nella SELEZIONE del progetto (lo scaffale): la "
+          + "documentazione tiene tutto, lo scaffale tiene quello con cui stai "
+          + "lavorando — e viaggia con l'em.json.";
+      shelve.addEventListener("click", () => cb.onAddToShelf!(nodeId));
+      actions.appendChild(shelve);
+    }
     const claim = el("button", "insp-btn",
                      "Sono io l'autore") as HTMLButtonElement;
     claim.disabled = !me;

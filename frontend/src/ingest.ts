@@ -292,6 +292,28 @@ export function acquisitionMembers(store: IngestStore, acquisitionId: string): s
   return out;
 }
 
+/**
+ * The SHARED LEAVES: resources more than one event consumed.
+ *
+ * The number that says this is a forest and not a set of trees — an orthophoto
+ * made from two flights, a photograph feeding both a mesh and a rectification.
+ * A stratigraphic matrix cannot draw it (everything there wants a single parent
+ * to be nested under), which is why the corpus is a member of its own.
+ */
+export function sharedLeaves(store: IngestStore): string[] {
+  const consumers = new Map<string, Set<string>>();
+  for (const e of store.liveEdges()) {
+    if (e.edge_type !== EDGE_HAD_INPUT) continue;
+    const set = consumers.get(e.target) ?? new Set<string>();
+    set.add(e.source);
+    consumers.set(e.target, set);
+  }
+  return [...consumers.entries()]
+    .filter(([, events]) => events.size > 1)
+    .map(([id]) => id)
+    .sort();
+}
+
 /** Every live acquisition in the graph, with its member count. */
 export function acquisitions(store: IngestStore): Array<{
   id: string; name: string; count: number; kind: string;

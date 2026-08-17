@@ -3,6 +3,7 @@ import { applyFolding, buildMembership, MEMBERSHIP_EDGES } from "./folding";
 import { setBridgeResolver } from "./geo";
 import {
   buildContainer,
+  newCorpusSection,
   bumpVersion,
   mergeContainers,
   parseContainer,
@@ -302,6 +303,7 @@ import {
   SCOPES,
   acquisitions,
   bucketAcquisition,
+  sharedLeaves,
   declareDerivation,
   defaultUse,
   findResource,
@@ -1209,6 +1211,32 @@ function refreshInspector(): void {
       isPinned: (nodeId) => store!.isPinned(nodeId),
       resolveAuthority: resolveAuthority,
       onCommand: (verb, target) => sendHostCommand(verb, target),
+      // DOCUMENTATION → SHELF · the study's explicit selection. The locator is
+      // the asset's own url (a room asset endpoint, or a path for a reference),
+      // and the digest travels with it: the shelf deduplicates on CONTENT, so
+      // the same file chosen twice is one entry.
+      onAddToShelf: (nodeId) => {
+        const node = store?.node(nodeId);
+        if (!node) return;
+        const data = (node.data ?? {}) as Record<string, unknown>;
+        const entry = addToShelf({
+          locator: String(data.url ?? ""),
+          name: node.name || nodeId,
+          checksum: typeof data.checksum === "string" ? data.checksum : undefined,
+          scope: (typeof data.scope === "string" ? data.scope : "own-study") as ShelfScope,
+          residency: (data.residency === "reference" ? "reference" : "resident"),
+        });
+        renderShelf();
+        refreshInspector();
+        toast(t("shelf.added", { name: entry.name }));
+      },
+      isOnShelf: (nodeId) => {
+        const node = store?.node(nodeId);
+        const digest = String(((node?.data ?? {}) as Record<string, unknown>).checksum ?? "");
+        if (!node) return false;
+        return shelfEntries().some(
+          (e) => (digest && e.checksum === digest) || e.name === node.name);
+      },
       commandsBlocked: commandsBlockedReason,
       onClearField: (nodeId, field) => {
         store!.clearField(nodeId, field);
@@ -2244,6 +2272,11 @@ function loadContainerDocument(
         doc: s.store.doc,
       })),
       shelf: projectShelfSection(),
+      // DECLARED LIMIT · an incoming project's corpus is not merged yet: the
+      // container merge folds `members` and the shelf, and doing the corpus by
+      // the same UUID rule is the follow-up. Whatever is open stays open, and
+      // nothing of theirs is silently dropped from THEIR file.
+      corpus: projectCorpusSection(),
     };
     const before = new Set(mine.members.map((m) => m.id));
     const report = mergeContainers(mine, parsed);
@@ -2296,6 +2329,9 @@ function loadContainerDocument(
     if (member.id === parsed.activeGraphId) activeSlotId = slot.id;
   }
   if (parsed.shelf) adoptProjectShelf(parsed.shelf);
+  // the documentation travels with the project, like the shelf
+  corpusStore = null;
+  if (parsed.corpus) adoptProjectCorpus(parsed.corpus);
   if (activeSlotId) activateSlot(activeSlotId, { rebuildOnly: false });
   if (parsed.members.length > 1) {
     toast(t("container.opened", { n: String(parsed.members.length) }));
@@ -2315,6 +2351,56 @@ function loadContainerDocument(
 function projectShelfSection(): Record<string, unknown> | null {
   if (!shelfEntries().length) return null;
   return shelfToDocument().graph as Record<string, unknown>;
+}
+
+// ── THE DOCUMENTATION MEMBER · the DTC corpus, as a store of its own ─────────
+//
+// A study's provenance is a graph of a different KIND (`s3dgraphy.dtc.corpus`):
+// acquisitions, transformations and the resources they are about, a forest that
+// shares its leaves. It used to be written INTO the study graph, which is why a
+// DTC chain drawn here came out inside a stratigraphic matrix — where an
+// acquisition is not a unit and a swimlane has nothing to say about it.
+//
+// It is a `DocumentStore` like any other, so every rule already written applies
+// to it (ids, editorial stamps, tombstones, undo). It is NOT a workspace slot:
+// slots are the study's graphs and the EMtree lists them, and a corpus in that
+// list would be exactly the confusion this separation removes.
+//
+// DECLARED LIMIT: this store's `onOp` is not wired to the room. Corpus edits are
+// local until the project is saved; syncing the member live is the follow-up
+// (the wire has no member addressing yet — an op says which node, not which
+// graph of the container).
+let corpusStore: DocumentStore | null = null;
+
+/** The corpus store, made on demand. `create: false` answers "is there one?"
+ *  without making one — a panel that showed an empty corpus it had just invented
+ *  would be reporting its own side effect. */
+function documentationCorpus(opts: { create?: boolean } = {}): DocumentStore | null {
+  if (corpusStore) return corpusStore;
+  if (opts.create === false) return null;
+  corpusStore = new DocumentStore({
+    header: { format: "em.json", version: "1.0" },
+    graph: newCorpusSection() as unknown as EmDocument["graph"],
+  } as EmDocument);
+  return corpusStore;
+}
+
+function projectCorpusSection(): Record<string, unknown> | null {
+  const store = documentationCorpus({ create: false });
+  if (!store) return null;
+  const graph = store.doc.graph as unknown as Record<string, unknown>;
+  const nodes = (graph.nodes as unknown[] | undefined) ?? [];
+  // an empty corpus is not written: a project that never documented anything
+  // should not grow a member saying it did
+  if (!nodes.length) return null;
+  return graph;
+}
+
+function adoptProjectCorpus(section: Record<string, unknown>): void {
+  corpusStore = new DocumentStore({
+    header: { format: "em.json", version: "1.0" },
+    graph: section as unknown as EmDocument["graph"],
+  } as EmDocument);
 }
 
 function adoptProjectShelf(section: Record<string, unknown>): void {
@@ -2601,6 +2687,7 @@ function projectContainer(): ReturnType<typeof buildContainer> {
   const container = buildContainer({
     graphs,
     shelf: projectShelfSection(),
+    corpus: projectCorpusSection(),
     activeGraphId: activeSlot
       ? String((activeSlot.store.doc.graph as Record<string, unknown>).graph_id ?? activeSlot.id)
       : null,
@@ -9844,7 +9931,19 @@ async function publishQueue(): Promise<void> {
   }
 
   if (published.length) {
-    const lot = bucketAcquisition(doc, {
+    // THE BUCKET GOES IN THE DOCUMENTATION, not in the matrix.
+    //
+    // The resources stay in the study graph (that is where they are USED, and
+    // where `has_linked_resource` reaches them); the acquisition that brought
+    // them in — and the licence said over the lot — belongs in the corpus. The
+    // assets are mirrored there under their own ids: the same node id in two
+    // members is the shared leaf, not a copy (`s3dgraphy.dtc.corpus`).
+    const corpus = documentationCorpus()!;
+    for (const id of published) {
+      const node = doc.node(id);
+      if (node) mirrorIntoCorpus(corpus, node);
+    }
+    const lot = bucketAcquisition(corpus, {
       resources: published,
       name: ingestDraft.lot || undefined,
       metadata: {
@@ -9858,7 +9957,7 @@ async function publishQueue(): Promise<void> {
     // …and the LOT is attributed, once. `setNodeRights` signs it with the
     // session's ORCID (the attributor), which is a different person from the
     // author whenever somebody catalogues what a colleague made.
-    doc.setNodeRights(lot.acquisitionId, {
+    corpus.setNodeRights(lot.acquisitionId, {
       license: ingestDraft.license,
       ...(ingestDraft.authorOrcid || ingestDraft.authorName
         ? { author: ingestDraft.authorName || ingestDraft.authorOrcid,
@@ -9867,14 +9966,48 @@ async function publishQueue(): Promise<void> {
     });
     ingestLog(t("assets.bucketed", {
       n: String(lot.count),
-      lot: doc.node(lot.acquisitionId)?.name ?? lot.acquisitionId,
+      lot: corpus.node(lot.acquisitionId)?.name ?? lot.acquisitionId,
     }));
-    select(lot.acquisitionId);
+    // the selection stays on the STUDY's side (the asset), because that is the
+    // node the inspector can show rights and usages for
+    select(published[0]);
     draw();
     renderEmData();
     refreshInspector();
   }
   renderStorage();
+}
+
+/**
+ * Put an asset in the corpus **under its own id** — the shared leaf.
+ *
+ * The TS twin of `s3dgraphy.dtc.corpus.mirror_resource`: what travels is the
+ * little that makes the corpus readable on its own (name, checksum, residency,
+ * media type), and a field already there is never clobbered by a thinner copy.
+ * The id is the identity, so the study's `has_linked_resource` and the corpus's
+ * `dtc_had_output` point at the same asset.
+ */
+function mirrorIntoCorpus(corpus: DocumentStore, node: EmNode): void {
+  const source = (node.data ?? {}) as Record<string, unknown>;
+  const keep = ["url", "url_type", "checksum", "residency", "scope",
+                "media_type", "size", "resource_use"] as const;
+  const existing = corpus.node(node.id);
+  const data: Record<string, unknown> = existing
+    ? { ...((existing.data ?? {}) as Record<string, unknown>) } : {};
+  for (const key of keep) {
+    if (source[key] !== undefined && data[key] === undefined) data[key] = source[key];
+  }
+  if (existing) {
+    corpus.updateNode(existing.id, { data } as Partial<EmNode>);
+    return;
+  }
+  corpus.addNode({
+    id: node.id,
+    name: node.name,
+    node_type: "resource",
+    description: "",
+    data,
+  } as unknown as EmNode);
 }
 
 /** The resource node for one published item — created, or found by digest and
@@ -9932,13 +10065,27 @@ async function bridgeChecksum(path: string): Promise<string | null> {
   }
 }
 
-/** The lots already in this graph — the object store as the STUDY sees it. */
+/**
+ * The DOCUMENTATION, as the corpus holds it: the lots, and one line of counts.
+ *
+ * Read from the corpus member and not from the study graph — that is the whole
+ * separation. The line under the title is the forest in numbers, and the number
+ * worth watching is `shared`: a file more than one chain consumed, which is what
+ * a stratigraphic matrix could not draw.
+ */
 function ingestLots(): HTMLElement {
   const box = document.createElement("div");
   box.className = "ing-lots";
-  const lots = store ? acquisitions(store) : [];
-  if (!lots.length) return box;
-  box.appendChild(ing("h3", "insp-sect", t("assets.lots")));
+  const corpus = documentationCorpus({ create: false });
+  const lots = corpus ? acquisitions(corpus) : [];
+  const chains = corpus
+    ? corpus.liveNodes().filter((n) => n.node_type === "dtc_process").length : 0;
+  const shared = corpus ? sharedLeaves(corpus).length : 0;
+  if (!lots.length && !chains) return box;
+  box.appendChild(ing("h3", "insp-sect", t("assets.corpus")));
+  box.appendChild(ing("div", "insp-hint", t("assets.corpusCounts", {
+    lots: String(lots.length), chains: String(chains), shared: String(shared),
+  })));
   for (const lot of lots) {
     const row = document.createElement("div");
     row.className = "ing-row";
@@ -9965,10 +10112,16 @@ function ingestLots(): HTMLElement {
 function ingestDerivation(): HTMLElement {
   const box = document.createElement("div");
   box.className = "ing-derivation";
-  const doc = store;
-  if (!doc) return box;
+  const doc = documentationCorpus({ create: false });
+  if (!doc) {
+    box.appendChild(ing("div", "insp-hint", t("assets.corpusEmpty")));
+    return box;
+  }
   const resources = doc.liveNodes().filter((n) => n.node_type === "resource");
-  if (!resources.length) return box;
+  if (!resources.length) {
+    box.appendChild(ing("div", "insp-hint", t("assets.corpusEmpty")));
+    return box;
+  }
 
   box.appendChild(ing("h3", "insp-sect", t("assets.derivation")));
   box.appendChild(ing("div", "insp-hint", t("assets.derivationHint")));
@@ -10034,19 +10187,21 @@ function ingestDerivation(): HTMLElement {
   };
   refreshDeclare();
   declare.addEventListener("click", () => {
-    if (!store) return;
+    const corpus = documentationCorpus({ create: false });
+    if (!corpus) return;
     try {
-      const res = declareDerivation(store, {
+      const res = declareDerivation(corpus, {
         output: derivationDraft.output,
         inputs: derivationDraft.inputs,
         tool: derivationDraft.tool || undefined,
       });
       for (const w of res.warnings) ingestLog(w, "warn");
       ingestLog(t("assets.declared", {
-        out: store.node(res.output)?.name ?? res.output,
+        out: corpus.node(res.output)?.name ?? res.output,
         n: String(res.inputs.length),
       }));
-      select(res.processId);
+      // the chain lives in the corpus, so there is nothing to select on the
+      // study canvas: the selection stays where the user left it
       draw();
       renderEmData();
       refreshInspector();
