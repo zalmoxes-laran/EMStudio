@@ -6408,3 +6408,77 @@ body.nv-standalone main.nv-standalone-main {
   cursor: grab;
 }
 .nv-3d-canvas:active { cursor: grabbing; }
+
+/* ── ASSETS · the ingestion panel (Storage window, object-store mode) ───────
+   The Storage body centres its children (a file list looks right that way);
+   this panel is a FORM and must take the width it is given, hence the stretch. */
+.ing-panel {
+  align-self: stretch;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 12.5px;
+  color: var(--text);
+}
+.ing-drop {
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--bg-sunken);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ing-drop p { margin: 0; color: var(--text-faint); font-size: 12px; }
+/* the drop target says so while a drag is over it: an area that accepts a file
+   and looks identical to one that does not is a guess the user has to make */
+.ing-drop-over {
+  border-color: var(--accent, var(--text));
+  background: var(--bg-elevated);
+}
+.ing-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 6px;
+}
+.ing-label {
+  font-size: 11px;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.ing-select {
+  background: var(--bg-sunken);
+  border: 1px solid var(--border-subtle, var(--border));
+  border-radius: 5px;
+  color: var(--text);
+  padding: 4px 6px;
+  font-size: 12.5px;
+}
+.ing-queue, .ing-lots, .ing-derivation, .ing-trail, .ing-defaults {
+  display: flex;
+  flex-direction: column;
+}
+.ing-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto auto 22px;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 5px;
+}
+.ing-row:hover { background: var(--bg-elevated); }
+.ing-kind, .ing-state {
+  font-size: 11px;
+  color: var(--text-faint);
+  font-variant-numeric: tabular-nums;
+}
+.ing-use { max-width: 170px; }
+/* the four states a row can be in, said in colour as well as in words */
+.ing-row.ing-working { opacity: 0.7; }
+.ing-row.ing-done .ing-state,
+.ing-row.ing-referenced .ing-state { color: var(--ok, var(--text)); }
+.ing-row.ing-failed .ing-state { color: var(--danger); }
+.ing-lots .ing-row { grid-template-columns: 1fr auto; cursor: pointer; }

@@ -30,6 +30,7 @@ import {
 import {
   currentIdentity,
   declareIdentity,
+  orcidProblem,
   forgetIdentity,
   knownIdentities,
   MockIdentityProvider,
@@ -248,6 +249,7 @@ import {
   activeWindowType,
   closeWindow,
   GRAPH_MODES,
+  applyAssetsLayout,
   applyDefaultLayout,
   canJoin,
   joinWindow,
@@ -283,6 +285,7 @@ import {
   collectionFromFile,
   collectionFromFolder,
   collectionFromUrl,
+  fsFileUrl,
   fsList,
   isDecodable,
   kindOfExt,
@@ -293,6 +296,22 @@ import {
   type FsEntry,
   type FsListing,
 } from "./storage";
+import {
+  DEFAULT_ASSET_LICENSE,
+  RESIDENCIES,
+  SCOPES,
+  acquisitions,
+  bucketAcquisition,
+  declareDerivation,
+  defaultUse,
+  findResource,
+  kindOf,
+  supersessionOf,
+  type Residency,
+  type ResourceKind,
+  type ResourceUse,
+  type Scope,
+} from "./ingest";
 import { buildDtcGenesisScene, buildGroupScene } from "./views/context";
 import { buildDtcScene } from "./views/dtc";
 import { buildGraphScene, type GraphAlgorithm } from "./views/graph";
@@ -2855,6 +2874,11 @@ function connectToHub(url: string, room: string, token: string | null): void {
       // document arrived and nothing appeared, because it had no `.graph`.
       loadContainerDocument(doc, `${room} (hub)`);
       info.textContent = t("hub.joined", { room });
+      // ASSETS · the object-store panel is gated on being IN a room, and joining
+      // one is exactly the event that opens the gate. Measured live: the Assets
+      // tab went on saying "standalone: there is no store to publish to" after
+      // the room was joined, until something else happened to redraw it.
+      renderStorage();
       // STEP 4 · and only NOW the work that was not confirmed before the
       // re-sync. The order is the fix: the snapshot the room sends was built
       // BEFORE it received these operations, so re-sending them without
@@ -9241,136 +9265,751 @@ function renderStorage(): void {
 }
 
 /**
- * The object-store panel: pick a file, publish it, declare what it is.
+ * ASSETS · the ingestion panel — the object-store mode of a Storage window.
  *
- * Only inside a ROOM, and that is not a limitation to apologise for: the bytes
- * go to *that room's* store with *that session's* token, and an upload with
- * nowhere to go would be a button that fails. Standalone says so instead.
+ * Where a batch of files becomes a study's material: bytes into the room's
+ * store, one `ResourceNode` each pointing at them, ONE acquisition grouping the
+ * lot, and the licence said once for all of it. The Assets workspace puts this
+ * between the disk (a Storage window in `filesystem` mode) and the
+ * Inspector/Log column, which is the order the act actually happens in.
+ *
+ * Four things it refuses to do silently, each because the alternative is a lie
+ * somebody discovers months later:
+ *
+ *  · **replace an asset** — same name, different bytes: it says so, and counts
+ *    the citations at stake, because a superseded file may no longer be what a
+ *    published text cites;
+ *  · **hide where the gate is** — `reference` residency keeps the bytes outside
+ *    em-server, so no embargo can be applied to them. Offered, with the note,
+ *    and never for something embargoed;
+ *  · **guess a derivation** — output ← input is DECLARED here, by hand, with the
+ *    tool named;
+ *  · **attribute without an identity** — no ORCID, no ingestion: the whole point
+ *    of the act is that somebody signs it. The tab says so instead of publishing
+ *    files nobody stands behind.
  */
+
+/** The panel's little DOM helper — the same three arguments `inspector.ts`
+ *  uses, kept local because main.ts has no such helper of its own. */
+function ing(tag: string, cls?: string, text?: string): HTMLElement {
+  const node = document.createElement(tag);
+  if (cls) node.className = cls;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
+/** One file on its way in. The status is the whole story of the row. */
+interface IngestItem {
+  name: string;
+  size: number;
+  mediaType: string;
+  kind: ResourceKind;
+  /** deduced from the kind, and overridable — that is the point of showing it */
+  use: ResourceUse;
+  /** an OS drop/pick carries the bytes; a drag from the disk pane carries a path */
+  file?: File;
+  path?: string;
+  status: "pending" | "working" | "done" | "same" | "failed" | "referenced";
+  digest?: string;
+  nodeId?: string;
+  note?: string;
+}
+
+/** What the batch says about itself, before any of it is published. Kept across
+ *  renders (a form that forgot the lot name on every drop would be unusable). */
+interface IngestDraft {
+  lot: string;
+  license: string;
+  authorName: string;
+  authorOrcid: string;
+  residency: Residency;
+  scope: Scope;
+  items: IngestItem[];
+  lastAcquisition: string | null;
+  /** the panel's own trail; the Log window keeps the durable one */
+  log: string[];
+}
+
+const ingestDraft: IngestDraft = {
+  lot: "",
+  license: DEFAULT_ASSET_LICENSE,
+  authorName: "",
+  authorOrcid: "",
+  residency: "resident",
+  scope: "own-study",
+  items: [],
+  lastAcquisition: null,
+  log: [],
+};
+
+/** The derivation form's own state — an output, its inputs, and the tool. */
+const derivationDraft = { output: "", inputs: [] as string[], tool: "" };
+
+function ingestLog(message: string, level: "info" | "warn" = "info"): void {
+  ingestDraft.log.unshift(message);
+  if (ingestDraft.log.length > 40) ingestDraft.log.length = 40;
+  if (level === "warn") logWarn(`assets: ${message}`);
+  else logInfo(`assets: ${message}`);
+}
+
 function storageText(message: string): HTMLElement {
   const p = document.createElement("p");
   p.textContent = message;
   return p;
 }
 
+/** A labelled control, the shape the rest of the panel is built from. */
+function ingestField(
+  parent: HTMLElement, label: string, control: HTMLElement, hint?: string,
+): void {
+  const wrap = document.createElement("label");
+  wrap.className = "ing-field";
+  const span = document.createElement("span");
+  span.className = "ing-label";
+  span.textContent = label;
+  wrap.append(span, control);
+  parent.appendChild(wrap);
+  if (hint) {
+    const h = document.createElement("div");
+    h.className = "insp-hint";
+    h.textContent = hint;
+    parent.appendChild(h);
+  }
+}
+
+/**
+ * The panel. Rebuilt on every render (it is small and the state lives in
+ * `ingestDraft`), and gated in two ways that are NOT the same refusal:
+ *
+ *  · no room → there is nowhere for the bytes to go;
+ *  · no ORCID → there is nobody to sign what is said about them.
+ *
+ * Saying which one is missing is the difference between a disabled tab and an
+ * instruction.
+ */
 function minioPanel(): HTMLElement {
   const box = document.createElement("div");
-  box.className = "storage-empty";
+  box.className = "ing-panel";
 
   if (!sync.room || !getSettings().sync.hubUrl) {
+    box.classList.add("storage-empty");
     box.appendChild(storageText(t("storage.minioNeedsRoom")));
     return box;
   }
+  const me = currentIdentity();
+  if (!me) {
+    box.classList.add("storage-empty");
+    box.appendChild(storageText(t("assets.needsIdentity")));
+    return box;
+  }
+  if (!store) {
+    box.classList.add("storage-empty");
+    box.appendChild(storageText(t("assets.needsDocument")));
+    return box;
+  }
+  if (!ingestDraft.authorOrcid) {
+    ingestDraft.authorOrcid = me.orcid;
+    ingestDraft.authorName =
+      [me.name, me.surname].filter(Boolean).join(" ") || me.orcid;
+  }
 
-  box.appendChild(storageText(t("storage.minioReady", { room: sync.room })));
+  box.appendChild(ingestDropZone());
+  box.appendChild(ingestDefaults());
+  box.appendChild(ingestQueue());
+  box.appendChild(ingestPublishBar());
+  box.appendChild(ingestLots());
+  box.appendChild(ingestDerivation());
+  box.appendChild(ingestTrail());
+  return box;
+}
+
+/** Where files land: an OS drop, a pick, or a drag out of the disk pane. */
+function ingestDropZone(): HTMLElement {
+  const zone = document.createElement("div");
+  zone.className = "ing-drop";
+  zone.appendChild(storageText(t("assets.drop", { room: sync.room ?? "" })));
 
   const picker = document.createElement("input");
   picker.type = "file";
+  picker.multiple = true;                       // a batch, not a file
   picker.className = "storage-file";
-  box.appendChild(picker);
-
-  const log = document.createElement("div");
-  log.className = "insp-hint";
-  box.appendChild(log);
-
   picker.addEventListener("change", () => {
-    const file = picker.files?.[0];
-    if (file) void uploadToRoom(file, log);
+    queueFiles(Array.from(picker.files ?? []));
+    picker.value = "";
   });
+  zone.appendChild(picker);
+
+  // …and FROM THE SHELF, which is the honest answer to "how does a file on my
+  // disk get in here?" in a tiled workspace. Only one Storage surface is mounted
+  // at a time (the app's singleton-surface rule, WIN7), so a drag from the disk
+  // pane into this one is not a gesture that exists yet — while the shelf is a
+  // curated list that already carries the path AND the digest the bridge
+  // computed. Reusing it beats building a second file browser here.
+  const fromShelf = shelfEntries().filter(
+    (entry) => !/^(https?|s3):/i.test(entry.locator));
+  if (fromShelf.length) {
+    const bar = ing("div", "insp-actions");
+    const add = ing("button", "insp-btn",
+      t("assets.fromShelf", { n: String(fromShelf.length) })) as HTMLButtonElement;
+    add.title = t("assets.fromShelfHint");
+    add.addEventListener("click", () => {
+      for (const entry of fromShelf) queuePath(entry.locator, entry.name);
+    });
+    bar.appendChild(add);
+    zone.appendChild(bar);
+  }
+
+  const stop = (e: DragEvent): void => { e.preventDefault(); e.stopPropagation(); };
+  zone.addEventListener("dragover", (e) => {
+    stop(e);
+    zone.classList.add("ing-drop-over");
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+  });
+  zone.addEventListener("dragleave", () => zone.classList.remove("ing-drop-over"));
+  zone.addEventListener("drop", (e) => {
+    stop(e);
+    zone.classList.remove("ing-drop-over");
+    const fromDisk = storageDragPayload(e);
+    if (fromDisk) {
+      if (fromDisk.type === "dir") {
+        toast(t("assets.folderNotYet"));
+        return;
+      }
+      queuePath(fromDisk.path, fromDisk.name);
+      return;
+    }
+    queueFiles(Array.from(e.dataTransfer?.files ?? []));
+  });
+  return zone;
+}
+
+/** OS files (drop or picker) join the queue with their kind deduced. */
+function queueFiles(files: File[]): void {
+  for (const file of files) {
+    const kind = kindOf(file.name, file.type);
+    ingestDraft.items.push({
+      name: file.name,
+      size: file.size,
+      mediaType: file.type || "application/octet-stream",
+      kind,
+      use: defaultUse(kind),
+      file,
+      status: "pending",
+    });
+  }
+  if (files.length) ingestLog(t("assets.queued", { n: String(files.length) }));
+  renderStorage();
+}
+
+/** A file dragged out of the disk pane: the bridge holds the bytes, and the
+ *  panel fetches them at publish time (the browser may not read the path). */
+function queuePath(path: string, name: string): void {
+  const kind = kindOf(name);
+  ingestDraft.items.push({
+    name,
+    size: 0,
+    mediaType: "application/octet-stream",
+    kind,
+    use: defaultUse(kind),
+    path,
+    status: "pending",
+  });
+  ingestLog(t("assets.queued", { n: "1" }));
+  renderStorage();
+}
+
+/** The defaults of the LOT: one licence, one author, one name, one fence. */
+function ingestDefaults(): HTMLElement {
+  const box = document.createElement("div");
+  box.className = "ing-defaults";
+  box.appendChild(ing("h3", "insp-sect", t("assets.batchDefaults")));
+
+  const lot = document.createElement("input");
+  lot.className = "insp-name-input";
+  lot.value = ingestDraft.lot;
+  lot.placeholder = t("assets.lotPlaceholder");
+  lot.addEventListener("change", () => { ingestDraft.lot = lot.value.trim(); });
+  ingestField(box, t("assets.lot"), lot, t("assets.lotHint"));
+
+  const lic = document.createElement("input");
+  lic.className = "insp-name-input";
+  lic.value = ingestDraft.license;
+  lic.placeholder = DEFAULT_ASSET_LICENSE;
+  lic.addEventListener("change", () => { ingestDraft.license = lic.value.trim(); });
+  ingestField(box, t("assets.license"), lic, t("assets.licenseHint"));
+
+  const author = document.createElement("input");
+  author.className = "insp-name-input";
+  author.value = ingestDraft.authorName;
+  author.placeholder = t("assets.authorPlaceholder");
+  author.addEventListener("change", () => {
+    ingestDraft.authorName = author.value.trim();
+  });
+  const orcid = document.createElement("input");
+  orcid.className = "insp-name-input";
+  orcid.value = ingestDraft.authorOrcid;
+  orcid.placeholder = "0000-0000-0000-0000";
+  orcid.addEventListener("change", () => {
+    const iD = orcid.value.trim();
+    const problem = iD ? orcidProblem(iD) : null;
+    if (problem) {
+      orcid.classList.add("insp-input-bad");
+      orcid.title = t("assets.orcidBad", { problem });
+      return;
+    }
+    orcid.classList.remove("insp-input-bad");
+    ingestDraft.authorOrcid = iD;
+  });
+  ingestField(box, t("assets.author"), author);
+  ingestField(box, "ORCID", orcid, t("assets.authorHint"));
+
+  const residency = document.createElement("select");
+  residency.className = "ing-select";
+  for (const r of RESIDENCIES) {
+    const o = document.createElement("option");
+    o.value = r;
+    o.textContent = t(`assets.residency.${r}`);
+    if (r === ingestDraft.residency) o.selected = true;
+    residency.appendChild(o);
+  }
+  residency.addEventListener("change", () => {
+    ingestDraft.residency = residency.value as Residency;
+    renderStorage();      // the note appears/disappears with the choice
+  });
+  ingestField(box, t("assets.residencyLabel"), residency,
+              ingestDraft.residency === "reference"
+                ? t("assets.referenceNote")
+                : t("assets.residentNote"));
+
+  const scope = document.createElement("select");
+  scope.className = "ing-select";
+  for (const s of SCOPES) {
+    const o = document.createElement("option");
+    o.value = s;
+    o.textContent = s;
+    if (s === ingestDraft.scope) o.selected = true;
+    scope.appendChild(o);
+  }
+  scope.addEventListener("change", () => {
+    ingestDraft.scope = scope.value as Scope;
+  });
+  ingestField(box, t("assets.scope"), scope, t("assets.scopeHint"));
+  return box;
+}
+
+/** The queue: one row per file, with the deduced use as a correctable select. */
+function ingestQueue(): HTMLElement {
+  const box = document.createElement("div");
+  box.className = "ing-queue";
+  if (!ingestDraft.items.length) {
+    box.appendChild(ing("div", "insp-hint", t("assets.queueEmpty")));
+    return box;
+  }
+  box.appendChild(ing("h3", "insp-sect",
+    t("assets.queue", { n: String(ingestDraft.items.length) })));
+
+  for (const [i, item] of ingestDraft.items.entries()) {
+    const row = document.createElement("div");
+    row.className = `ing-row ing-${item.status}`;
+
+    const name = document.createElement("span");
+    name.className = "storage-name";
+    name.textContent = item.name;
+    name.title = item.path ?? item.name;
+
+    const kind = document.createElement("span");
+    kind.className = "ing-kind";
+    kind.textContent = item.kind;
+
+    const use = document.createElement("select");
+    use.className = "ing-select ing-use";
+    for (const u of ["iiif", "proxy", "document", "evidence", "raw"] as ResourceUse[]) {
+      const o = document.createElement("option");
+      o.value = u;
+      o.textContent = t(`assets.use.${u}`);
+      if (u === item.use) o.selected = true;
+      use.appendChild(o);
+    }
+    use.title = t("assets.useHint");
+    use.addEventListener("change", () => { item.use = use.value as ResourceUse; });
+    use.disabled = item.status === "done" || item.status === "working";
+
+    const state = document.createElement("span");
+    state.className = "ing-state";
+    state.textContent = item.note
+      ?? (item.digest ? item.digest.slice(0, 19) + "…" : t(`assets.status.${item.status}`));
+
+    const drop = document.createElement("button");
+    drop.className = "insp-btn";
+    drop.textContent = "✕";
+    drop.title = t("assets.remove");
+    drop.addEventListener("click", () => {
+      ingestDraft.items.splice(i, 1);
+      renderStorage();
+    });
+
+    row.append(name, kind, use, state, drop);
+    if (item.nodeId) {
+      row.addEventListener("dblclick", () => select(item.nodeId!));
+      row.title = t("assets.openInspector");
+    }
+    box.appendChild(row);
+  }
+  return box;
+}
+
+/** Publish, and clear what has been published. */
+function ingestPublishBar(): HTMLElement {
+  const bar = ing("div", "insp-actions");
+  const pending = ingestDraft.items.filter((i) => i.status === "pending").length;
+
+  const publish = ing("button", "insp-btn",
+    t("assets.publish", { n: String(pending) })) as HTMLButtonElement;
+  publish.disabled = !pending;
+  publish.title = t("assets.publishHint");
+  publish.addEventListener("click", () => { void publishQueue(); });
+  bar.appendChild(publish);
+
+  if (ingestDraft.items.some((i) => i.status !== "pending")) {
+    const clear = ing("button", "insp-btn", t("assets.clearDone")) as HTMLButtonElement;
+    clear.addEventListener("click", () => {
+      ingestDraft.items = ingestDraft.items.filter((i) => i.status === "pending");
+      renderStorage();
+    });
+    bar.appendChild(clear);
+  }
+  return bar;
+}
+
+/**
+ * Publish the queue: bytes first, then the graph.
+ *
+ * The order is the point and it has not changed since the single-file version —
+ * a crash leaves an orphan object in the store rather than a graph pointing at
+ * nothing. What is new is the PLURAL: the digests come back one by one, the
+ * resources are created as they land, and only at the end are they bucketed
+ * into one acquisition and the lot's rights declared. Ordering it the other way
+ * (a bucket first, filled as it goes) would leave an acquisition claiming
+ * members that never arrived.
+ */
+async function publishQueue(): Promise<void> {
+  const doc = store;
+  const room = sync.room;
+  if (!doc || !room) return;
+  const base = getSettings().sync.hubUrl.replace(/\/+$/, "");
+  const pending = ingestDraft.items.filter((i) => i.status === "pending");
+  if (!pending.length) return;
+
+  const published: string[] = [];
+  for (const item of pending) {
+    item.status = "working";
+    item.note = undefined;
+    renderStorage();
+    try {
+      // ── reference: the bytes stay where they are ────────────────────────
+      //
+      // Nothing is uploaded, so nothing passes the gate — which is exactly what
+      // the note above the toggle says. It needs a PATH: a file dropped from the
+      // desktop has no location the graph could point at, and recording its name
+      // would be a reference to nowhere.
+      if (ingestDraft.residency === "reference") {
+        if (!item.path) {
+          item.status = "failed";
+          item.note = t("assets.referenceNeedsPath");
+          ingestLog(t("assets.referenceNeedsPath"), "warn");
+          continue;
+        }
+        const digest = await bridgeChecksum(item.path);
+        const nodeId = writeResourceNode(doc, item, digest, item.path);
+        item.nodeId = nodeId;
+        item.digest = digest ?? undefined;
+        item.status = "referenced";
+        item.note = t("assets.status.referenced");
+        published.push(nodeId);
+        continue;
+      }
+
+      const bytes = item.file
+        ? await item.file.arrayBuffer()
+        : await bridgeBytes(item.path!);
+      const url = `${base}/v1/rooms/${encodeURIComponent(room)}/asset`
+        + `?media_type=${encodeURIComponent(item.mediaType)}`;
+      const answer = await fetch(url, {
+        method: "PUT",
+        headers: hubToken ? { Authorization: `Bearer ${hubToken}` } : {},
+        body: bytes,
+      });
+      if (!answer.ok) {
+        item.status = "failed";
+        item.note = `${answer.status} ${await answer.text()}`.slice(0, 120);
+        ingestLog(t("storage.uploadFailed", { detail: item.note }), "warn");
+        continue;
+      }
+      const info = await answer.json() as {
+        ref: string; size?: number; created?: boolean;
+      };
+
+      // SUPERSESSION · same name, other bytes. Said BEFORE the node is written,
+      // with the citations at stake, because after the fact it is archaeology.
+      const superseded = supersessionOf(doc, item.name, info.ref);
+      if (superseded) {
+        const message = t("assets.superseded", {
+          name: superseded.previousName,
+          n: String(superseded.usages.length),
+        });
+        toast(message);
+        ingestLog(message, "warn");
+        item.note = t("assets.supersedes", { n: String(superseded.usages.length) });
+      }
+
+      item.digest = info.ref;
+      item.nodeId = writeResourceNode(doc, item, info.ref,
+                                      `${base}/v1/rooms/${encodeURIComponent(room)}`
+                                      + `/asset/${encodeURIComponent(info.ref)}`);
+      item.status = info.created === false ? "same" : "done";
+      published.push(item.nodeId);
+      ingestLog(info.created === false
+        ? t("storage.uploadSame", { sha: info.ref.slice(0, 19) })
+        : t("storage.uploaded", { sha: info.ref.slice(0, 19) }));
+    } catch (err) {
+      item.status = "failed";
+      item.note = String(err instanceof Error ? err.message : err).slice(0, 120);
+      ingestLog(t("storage.uploadFailed", { detail: item.note }), "warn");
+    }
+    renderStorage();
+  }
+
+  if (published.length) {
+    const lot = bucketAcquisition(doc, {
+      resources: published,
+      name: ingestDraft.lot || undefined,
+      metadata: {
+        ingested_at: new Date().toISOString(),
+        source: ingestDraft.items.some((i) => i.path) ? "filesystem" : "drop",
+      },
+    });
+    ingestDraft.lastAcquisition = lot.acquisitionId;
+    for (const w of lot.warnings) ingestLog(w, "warn");
+
+    // …and the LOT is attributed, once. `setNodeRights` signs it with the
+    // session's ORCID (the attributor), which is a different person from the
+    // author whenever somebody catalogues what a colleague made.
+    doc.setNodeRights(lot.acquisitionId, {
+      license: ingestDraft.license,
+      ...(ingestDraft.authorOrcid || ingestDraft.authorName
+        ? { author: ingestDraft.authorName || ingestDraft.authorOrcid,
+            orcid: ingestDraft.authorOrcid }
+        : {}),
+    });
+    ingestLog(t("assets.bucketed", {
+      n: String(lot.count),
+      lot: doc.node(lot.acquisitionId)?.name ?? lot.acquisitionId,
+    }));
+    select(lot.acquisitionId);
+    draw();
+    renderEmData();
+    refreshInspector();
+  }
+  renderStorage();
+}
+
+/** The resource node for one published item — created, or found by digest and
+ *  updated. The node POINTS at the bytes; it never carries them. */
+function writeResourceNode(
+  doc: DocumentStore, item: IngestItem, digest: string | null, url: string,
+): string {
+  const existing = digest ? findResource(doc, digest) : null;
+  const data: Record<string, unknown> = {
+    ...(digest ? { checksum: digest } : {}),
+    media_type: item.mediaType,
+    residency: ingestDraft.residency,
+    scope: ingestDraft.scope,
+    // the DEDUCED kind and the (correctable) use, kept apart: one is a fact
+    // about the bytes, the other a decision about them
+    url_type: item.kind,
+    resource_use: item.use,
+    ...(item.size ? { size: item.size } : {}),
+    url,
+  };
+  if (existing) {
+    doc.updateNode(existing.id, {
+      data: { ...(existing.data as Record<string, unknown> | undefined), ...data },
+    } as Partial<EmNode>);
+    return existing.id;
+  }
+  const node = doc.addNode({
+    id: doc.newId(),
+    name: item.name,
+    node_type: "resource",
+    description: "",
+    data,
+  } as unknown as EmNode);
+  return node.id;
+}
+
+/** The bridge holds the bytes of a file on disk — the page may not read it. */
+async function bridgeBytes(path: string): Promise<ArrayBuffer> {
+  const res = await fetch(await fsFileUrl(path));
+  if (!res.ok) throw new Error(`bridge ${res.status}`);
+  return await res.arrayBuffer();
+}
+
+/** …and it is also the only side that can hash it. Null when it cannot: a
+ *  reference without a digest is weaker, and saying so beats inventing one. */
+async function bridgeChecksum(path: string): Promise<string | null> {
+  try {
+    const res = await fetch(
+      `${await bridgeUrl()}/fs/checksum?path=${encodeURIComponent(path)}`);
+    if (!res.ok) return null;
+    const data = (await res.json()) as { checksum?: string };
+    return data.checksum ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** The lots already in this graph — the object store as the STUDY sees it. */
+function ingestLots(): HTMLElement {
+  const box = document.createElement("div");
+  box.className = "ing-lots";
+  const lots = store ? acquisitions(store) : [];
+  if (!lots.length) return box;
+  box.appendChild(ing("h3", "insp-sect", t("assets.lots")));
+  for (const lot of lots) {
+    const row = document.createElement("div");
+    row.className = "ing-row";
+    const name = document.createElement("span");
+    name.className = "storage-name";
+    name.textContent = lot.name;
+    const meta = document.createElement("span");
+    meta.className = "storage-meta";
+    meta.textContent = t("assets.lotMembers", { n: String(lot.count) });
+    row.append(name, meta);
+    row.addEventListener("click", () => { select(lot.id); refreshInspector(); });
+    box.appendChild(row);
+  }
   return box;
 }
 
 /**
- * Publish bytes into the room's store, then say what they are.
+ * DECLARE a derivation: this output came out of those inputs, with this tool.
  *
- * Four steps, and the order is the point: the bytes go FIRST, so a crash leaves
- * an orphan object rather than a graph pointing at nothing; the digest comes
- * back from the server (it is the store's answer, not our guess); the
- * ResourceNode is created with `residency: "resident"` — resident meaning the
- * bytes live in the room's store — and only then the rights are declared, which
- * is the act this moment exists for.
- *
- * Re-uploading the same file is not an error and not a duplicate: same bytes,
- * same digest, same node. The server says `created: false` and we say so too.
+ * Two selects and a text field, and no cleverness whatsoever — the whole design
+ * decision is that nothing here is inferred. The input list offers the lots
+ * first (a campaign is one input) and then the resources.
  */
-async function uploadToRoom(file: File, log: HTMLElement): Promise<void> {
-  const base = getSettings().sync.hubUrl.replace(/\/+$/, "");
-  const room = sync.room;
-  if (!room) return;
-  log.textContent = t("storage.uploading", { name: file.name });
-  try {
-    const bytes = await file.arrayBuffer();
-    const url = `${base}/v1/rooms/${encodeURIComponent(room)}/asset`
-      + `?media_type=${encodeURIComponent(file.type || "application/octet-stream")}`;
-    const answer = await fetch(url, {
-      method: "PUT",
-      headers: hubToken ? { Authorization: `Bearer ${hubToken}` } : {},
-      body: bytes,
-    });
-    if (!answer.ok) {
-      log.textContent = t("storage.uploadFailed",
-                          { detail: `${answer.status} ${await answer.text()}` });
-      return;
-    }
-    const info = await answer.json() as {
-      ref: string; sha256?: string; size?: number; created?: boolean;
-    };
+function ingestDerivation(): HTMLElement {
+  const box = document.createElement("div");
+  box.className = "ing-derivation";
+  const doc = store;
+  if (!doc) return box;
+  const resources = doc.liveNodes().filter((n) => n.node_type === "resource");
+  if (!resources.length) return box;
 
-    // the node POINTS at the bytes; it never carries them.
-    // Captured once: `store` is the ACTIVE document and it can be reassigned
-    // (another slot made active) while an upload is in flight — writing to
-    // whichever store is current when the answer lands would put the resource
-    // in a graph nobody uploaded it for.
-    const doc = store;
-    if (!doc) {
-      log.textContent = t("storage.uploadFailed", { detail: "no document" });
-      return;
-    }
-    const existing = doc.doc.graph.nodes.find(
-      (n) => n.node_type === "resource"
-        && String((n.data as Record<string, unknown> | undefined)?.checksum ?? "")
-          === info.ref);
-    const nodeId = existing?.id ?? doc.newId();
-    if (!existing) {
-      doc.addNode({
-        id: nodeId,
-        name: file.name,
-        node_type: "resource",
-        description: "",
-        data: {
-          checksum: info.ref,
-          media_type: file.type || "application/octet-stream",
-          residency: "resident",
-          size: info.size ?? file.size,
-        },
-      } as unknown as EmNode);
-    }
+  box.appendChild(ing("h3", "insp-sect", t("assets.derivation")));
+  box.appendChild(ing("div", "insp-hint", t("assets.derivationHint")));
 
-    // …and the upload is when the rights get declared. The attributor is the
-    // session — whoever is at the keyboard is the one signing — and the author
-    // defaults to the same person, which the panel then lets you change to
-    // somebody else entirely.
-    const me = currentIdentity();
-    doc.setNodeRights(nodeId, {
-      license: DEFAULT_ASSET_LICENSE,
-      ...(me ? { author: [me.name, me.surname].filter(Boolean).join(" ") || me.orcid,
-                 orcid: me.orcid } : {}),
-    });
-
-    select(nodeId);
-    log.textContent = info.created === false
-      ? t("storage.uploadSame", { sha: info.ref.slice(0, 19) })
-      : t("storage.uploaded", { sha: info.ref.slice(0, 19) });
-  } catch (err) {
-    log.textContent = t("storage.uploadFailed", { detail: String(err) });
+  const output = document.createElement("select");
+  output.className = "ing-select";
+  const blank = document.createElement("option");
+  blank.value = "";
+  blank.textContent = t("assets.pickOutput");
+  output.appendChild(blank);
+  for (const r of resources) {
+    const o = document.createElement("option");
+    o.value = r.id;
+    o.textContent = r.name || r.id;
+    if (r.id === derivationDraft.output) o.selected = true;
+    output.appendChild(o);
   }
+  output.addEventListener("change", () => {
+    derivationDraft.output = output.value;
+    refreshDeclare();
+  });
+  ingestField(box, t("assets.output"), output);
+
+  const inputs = document.createElement("select");
+  inputs.className = "ing-select";
+  inputs.multiple = true;
+  inputs.size = 4;
+  for (const lot of acquisitions(doc)) {
+    const o = document.createElement("option");
+    o.value = lot.id;
+    o.textContent = `▣ ${lot.name} (${lot.count})`;
+    if (derivationDraft.inputs.includes(lot.id)) o.selected = true;
+    inputs.appendChild(o);
+  }
+  for (const r of resources) {
+    const o = document.createElement("option");
+    o.value = r.id;
+    o.textContent = r.name || r.id;
+    if (derivationDraft.inputs.includes(r.id)) o.selected = true;
+    inputs.appendChild(o);
+  }
+  inputs.addEventListener("change", () => {
+    derivationDraft.inputs = Array.from(inputs.selectedOptions).map((o) => o.value);
+    refreshDeclare();
+  });
+  ingestField(box, t("assets.inputs"), inputs, t("assets.inputsHint"));
+
+  const tool = document.createElement("input");
+  tool.className = "insp-name-input";
+  tool.value = derivationDraft.tool;
+  tool.placeholder = t("assets.toolPlaceholder");
+  tool.addEventListener("change", () => { derivationDraft.tool = tool.value.trim(); });
+  ingestField(box, t("assets.tool"), tool, t("assets.toolHint"));
+
+  const bar = ing("div", "insp-actions");
+  const declare = ing("button", "insp-btn", t("assets.declare")) as HTMLButtonElement;
+  // The form does NOT re-render on every choice (that would take the focus out
+  // of the list you are picking from), so the button's own state is refreshed
+  // by hand. Measured live: without this it stayed disabled after a perfectly
+  // valid output + input had been chosen, which reads as "this does not work".
+  const refreshDeclare = (): void => {
+    declare.disabled = !derivationDraft.output || !derivationDraft.inputs.length;
+  };
+  refreshDeclare();
+  declare.addEventListener("click", () => {
+    if (!store) return;
+    try {
+      const res = declareDerivation(store, {
+        output: derivationDraft.output,
+        inputs: derivationDraft.inputs,
+        tool: derivationDraft.tool || undefined,
+      });
+      for (const w of res.warnings) ingestLog(w, "warn");
+      ingestLog(t("assets.declared", {
+        out: store.node(res.output)?.name ?? res.output,
+        n: String(res.inputs.length),
+      }));
+      select(res.processId);
+      draw();
+      renderEmData();
+      refreshInspector();
+      renderStorage();
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      toast(detail);
+      ingestLog(detail, "warn");
+    }
+  });
+  bar.appendChild(declare);
+  box.appendChild(bar);
+  return box;
 }
 
-/** What StratiGraph publishes under when nobody says otherwise. The same
- *  default the library exposes (`s3dgraphy.study.DEFAULT_LICENSE`) — declared
- *  here rather than assumed, so an upload leaves a licence somebody can read
- *  and change instead of a silence. */
-const DEFAULT_ASSET_LICENSE = "CC-BY-SA-4.0";
+/** The panel's own trail. The Log window keeps the durable one — this is the
+ *  three lines somebody needs without looking away from the form. */
+function ingestTrail(): HTMLElement {
+  const box = document.createElement("div");
+  box.className = "ing-trail";
+  if (!ingestDraft.log.length) return box;
+  box.appendChild(ing("h3", "insp-sect", t("assets.trail")));
+  for (const line of ingestDraft.log.slice(0, 8)) {
+    box.appendChild(ing("div", "insp-hint", line));
+  }
+  return box;
+}
 
 function storageRow(win: Win, entry: FsEntry): HTMLElement {
   const row = document.createElement("div");
@@ -11161,6 +11800,7 @@ function setWorkspace(id: WorkspaceId): void {
   // would throw away the split you made the last time you were there.
   const preset = workspacePreset(id);
   if (preset.arrangement === "ide" && !isTiled(id)) applyDefaultLayout(id);
+  if (preset.arrangement === "assets" && !isTiled(id)) applyAssetsLayout(id);
   renderTiles(); // WIN5 · each workspace has its own arrangement
   // the tab follows the WORKSPACE and nothing else — mounting an editor never
   // moves it (that is what made a transformed window possible).

@@ -126,8 +126,10 @@ export interface WorkspacePreset {
   graphMode?: GraphMode;
   /** built-ins cannot be deleted or renamed. */
   builtin?: boolean;
-  /** seed this workspace with the IDE arrangement the first time it is opened. */
-  arrangement?: "ide";
+  /** seed this workspace with a declared arrangement the first time it is
+   *  opened. `ide` = editor + Tabular + EMtree/Inspector column; `assets` =
+   *  the two storages side by side with the Inspector/Log column. */
+  arrangement?: "ide" | "assets";
 }
 
 /**
@@ -148,6 +150,10 @@ export interface WorkspacePreset {
  */
 const BUILTIN_WORKSPACES: WorkspacePreset[] = [
   { id: "canvas", labelKey: "ws.graphEditing", icon: "▦", windowType: "graph", graphMode: "matrix", builtin: true },
+  // ASSETS · second from the left, right after graph editing, because ingesting
+  // the material is what happens BEFORE (and constantly beside) the drawing of
+  // the matrix — not a corner of the app somebody has to go looking for.
+  { id: "assets", labelKey: "ws.assets", icon: "⬗", windowType: "storage", builtin: true, arrangement: "assets" },
   { id: "ide", labelKey: "ws.ide", icon: "⌗", windowType: "graph", graphMode: "matrix", builtin: true, arrangement: "ide" },
   { id: "narrative", labelKey: "ws.narrative", icon: "❧", windowType: "narrative", builtin: true },
   { id: "table", labelKey: "ws.table", icon: "▤", windowType: "table", builtin: true },
@@ -718,6 +724,49 @@ export function applyDefaultLayout(ws: WorkspaceId = active): void {
       dir: "col",
       ratio: 0.42,
       a: { kind: "leaf", winId: tree.id },
+      b: { kind: "leaf", winId: insp.id },
+    },
+  };
+  persistWindows();
+}
+
+/**
+ * ASSETS · the ingestion arrangement, built on demand.
+ *
+ * The disk on the left, the room's object store in the middle, and the
+ * Inspector/Log column on the right — the three things the act needs in view at
+ * once: where the file IS, where it GOES, and what was just said about it.
+ *
+ * Both left panes are STORAGE windows in different modes, which is the point of
+ * that window having modes at all: nothing is rebuilt here, the file browser and
+ * the object store are the two backends the window already speaks.
+ *
+ * A preset, not a cage: every area is splittable, joinable and resizable
+ * afterwards, and the arrangement persists as it is left.
+ */
+export function applyAssetsLayout(ws: WorkspaceId = active): void {
+  const entry = registry[ws];
+  entry.maxOf = undefined;
+  entry.saved = undefined;
+  const disk = entry.wins[0] ?? seedWindows(workspacePreset(ws)).wins[0];
+  disk.type = "storage";
+  disk.state = { ...disk.state, "mode.storage": "filesystem" };
+  const store: Win = { id: `${ws}:store`, type: "storage",
+                       state: { "mode.storage": "minio" } };
+  const insp: Win = { id: `${ws}:inspector`, type: "inspector", state: {} };
+  entry.wins = [disk, store, insp];
+  // the STORE is the active area: the tab opens on the thing you came to do
+  entry.activeId = store.id;
+  entry.layout = {
+    kind: "split",
+    dir: "row",
+    ratio: 0.28,
+    a: { kind: "leaf", winId: disk.id },
+    b: {
+      kind: "split",
+      dir: "row",
+      ratio: 0.62,
+      a: { kind: "leaf", winId: store.id },
       b: { kind: "leaf", winId: insp.id },
     },
   };

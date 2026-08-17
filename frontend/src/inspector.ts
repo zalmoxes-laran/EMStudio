@@ -8,6 +8,7 @@ import { getSettings } from "./settings";
 import { createOsmMap } from "./osm-map";
 import { geocode, GeocodeOffline, zoomFor } from "./geocode";
 import { currentIdentity, orcidProblem } from "./identity";
+import { acquisitionMembers, derivationChain, resourceUsages } from "./ingest";
 
 export interface InspectorCallbacks {
   onJump: (nodeId: string) => void;
@@ -1070,14 +1071,27 @@ export function renderInspector(
   // Apposing and removing, deliberately — not a provenance editor. The full DTC
   // chain (who acquired what with which instrument) is a different surface; this
   // is the sentence somebody needs to say the day they upload a photograph.
-  if (nodeId && node.node_type === "resource") {
+  //
+  // …e vale anche per un LOTTO (`dtc_acquisition`): è lo stesso atto, detto una
+  // volta sopra N file. Il lettore (`s3dgraphy.rights`) risale la catena, quindi
+  // ogni membro legge la licenza del lotto senza averne una copia. Senza questo
+  // ramo la dichiarazione per lotto esisteva solo nel pannello di ingestione, e
+  // un lotto già creato non era più modificabile da nessuna parte.
+  if (nodeId && (node.node_type === "resource"
+                 || node.node_type === "dtc_acquisition")) {
+    const isLot = node.node_type === "dtc_acquisition";
     const rights = store.readNodeRights(nodeId);
     const panel = el("div", "insp-canvas");
-    panel.appendChild(el("h3", "insp-sect", "Diritti di questa risorsa (DTC)"));
+    panel.appendChild(el("h3", "insp-sect",
+      isLot ? "Diritti di questo lotto (DTC)" : "Diritti di questa risorsa (DTC)"));
     panel.appendChild(el("div", "insp-hint",
-      "Vale per i BYTE: finché l'embargo corre il server serve il file solo a "
-      + "chi lavora allo studio (editor in su), e la licenza viaggia con il "
-      + "download. Vuoto = non dichiarato (allora vale il default del grafo)."));
+      isLot
+        ? "Vale per TUTTI i file del lotto: ognuno legge questa licenza "
+          + "risalendo la catena, e chi ne ha una propria vince (la frase più "
+          + "specifica è quella detta su quell'oggetto). Vuoto = non dichiarato."
+        : "Vale per i BYTE: finché l'embargo corre il server serve il file solo a "
+          + "chi lavora allo studio (editor in su), e la licenza viaggia con il "
+          + "download. Vuoto = non dichiarato (allora vale il default del grafo)."));
 
     const field = (
       label: string, value: string, placeholder: string,
@@ -1189,6 +1203,94 @@ export function renderInspector(
       actions.appendChild(clear);
     }
     panel.appendChild(actions);
+    root.appendChild(panel);
+  }
+
+  // ── USATA DA… · dove questo asset è in uso, e da cosa è stato fatto ────────
+  //
+  // La domanda da farsi PRIMA di sostituire un file: una foto citata da tre
+  // unità e da un capitolo non è una foto che si scambia in silenzio. Vive qui,
+  // nell'ispettore della risorsa, e non in una seconda scheda «uso»: è una
+  // proprietà di questo oggetto, non un'altra vista dello studio.
+  //
+  // I diritti (licenza/embargo/autore) sono ESCLUSI dall'elenco — sono attaccati
+  // al file, non sono usi del file, e stanno già nel riquadro qui sopra. La
+  // catena DTC (chi l'ha prodotto, chi l'ha consumato) è invece mostrata, perché
+  // è la risposta all'altra metà della domanda: da dove viene.
+  if (nodeId && node.node_type === "resource") {
+    const usages = resourceUsages(store, nodeId).filter((u) => u.role !== "rights");
+    const chain = derivationChain(store, nodeId);
+    if (usages.length || chain.madeBy.length || chain.usedBy.length) {
+      const panel = el("div", "insp-canvas");
+      panel.appendChild(el("h3", "insp-sect", "Usata da…"));
+
+      if (chain.madeBy.length) {
+        panel.appendChild(el("div", "insp-hint", "Prodotta da:"));
+        for (const event of chain.madeBy) {
+          const b = el("button", "insp-btn",
+            `${event.tool ? `${event.name} · ${event.tool}` : event.name}`) as HTMLButtonElement;
+          b.title = event.type === "dtc_acquisition"
+            ? "L'acquisizione che ha portato dentro questo file"
+            : "L'evento DTC che ha prodotto questo file";
+          b.addEventListener("click", () => cb.onJump(event.id));
+          panel.appendChild(b);
+        }
+      }
+
+      const cited = usages.filter((u) => u.role === "reference" || u.role === "annotation");
+      if (cited.length) {
+        panel.appendChild(el("div", "insp-hint",
+          `Citata da ${cited.length} ${cited.length === 1 ? "nodo" : "nodi"}:`));
+        for (const use of cited) {
+          const b = el("button", "insp-btn",
+            `${use.name} — ${use.edgeType}`) as HTMLButtonElement;
+          b.addEventListener("click", () => cb.onJump(use.id));
+          panel.appendChild(b);
+        }
+      } else {
+        panel.appendChild(el("div", "insp-hint",
+          "Nessun nodo la cita. Non è un difetto: un archivio può contenere ciò "
+          + "che nessuno ha ancora usato — ma è anche il file che si può "
+          + "sostituire senza rompere niente."));
+      }
+
+      if (chain.usedBy.length) {
+        panel.appendChild(el("div", "insp-hint", "Usata come ingresso da:"));
+        for (const event of chain.usedBy) {
+          const b = el("button", "insp-btn",
+            `${event.tool ? `${event.name} · ${event.tool}` : event.name}`) as HTMLButtonElement;
+          b.addEventListener("click", () => cb.onJump(event.id));
+          panel.appendChild(b);
+        }
+      }
+      root.appendChild(panel);
+    }
+  }
+
+  // ── il LOTTO · un'acquisizione, con i suoi membri ─────────────────────────
+  //
+  // Il nodo seriale visto dall'ispettore: quanti file ha portato dentro, e la
+  // via per entrarci. I diritti del lotto si dichiarano nel riquadro DTC come
+  // per una risorsa (l'atto è lo stesso), e ogni membro li EREDITA leggendo la
+  // catena — non ne ha una copia.
+  if (nodeId && node.node_type === "dtc_acquisition") {
+    const members = acquisitionMembers(store, nodeId);
+    const panel = el("div", "insp-canvas");
+    panel.appendChild(el("h3", "insp-sect", "Lotto di acquisizione"));
+    panel.appendChild(el("div", "insp-hint",
+      `${members.length} file. La licenza e l'autore dichiarati QUI valgono per `
+      + "tutto il lotto: ogni membro li legge risalendo la catena, senza averne "
+      + "una copia (una copia è una cosa che può discordare)."));
+    for (const member of members.slice(0, 12)) {
+      const m = store.node(member);
+      const b = el("button", "insp-btn", m?.name ?? member) as HTMLButtonElement;
+      b.addEventListener("click", () => cb.onJump(member));
+      panel.appendChild(b);
+    }
+    if (members.length > 12) {
+      panel.appendChild(el("div", "insp-hint",
+        `…e altri ${members.length - 12}. L'elenco completo è nella tabella.`));
+    }
     root.appendChild(panel);
   }
 
