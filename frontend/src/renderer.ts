@@ -779,6 +779,23 @@ export function render(
           ctx.moveTo(lx, ly + 1.5);
           ctx.lineTo(lx + tw, ly + 1.5);
           ctx.stroke();
+        } else if (ctx.measureText(label).width > iw - 10 && n.w > iw + 8) {
+          // DAG · a glyph-only node whose name does not fit ON the glyph. The
+          // ellipsis path below would print "…" over a 30px gear, so the node
+          // ends up NAMELESS — measured on a DTC corpus where the processes are
+          // the story ("Metashape", "raddrizzamento") and read as three
+          // identical circles. When the node box is wider than its glyph, the
+          // name goes UNDER the glyph, inside the box that hit-testing uses.
+          ctx.textAlign = "center";
+          ctx.textBaseline = "top";
+          const maxW = n.w - 6;
+          let text = label;
+          if (ctx.measureText(text).width > maxW) {
+            while (text.length > 2 && ctx.measureText(text + "…").width > maxW)
+              text = text.slice(0, -1);
+            text += "…";
+          }
+          ctx.fillText(text, n.x + n.w / 2, iy + ih + 2);
         } else {
           // "over": centred on the icon (document sheet / property chip)
           ctx.textAlign = "center";

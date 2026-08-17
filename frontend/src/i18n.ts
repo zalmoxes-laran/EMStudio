@@ -132,6 +132,8 @@ const EN: Dict = {
   "assets.bucketed": "{n} file(s) in the lot «{lot}», with its licence and its author",
   "assets.lots": "Lots in this graph",
   "assets.corpus": "Documentation (the DTC corpus)",
+  "assets.seeDag": "See the DAG",
+  "assets.seeDagHint": "Draw the corpus as what it is: acquisitions → transformations → outputs, and a file two chains consumed showing BOTH of its inputs — which a stratigraphic matrix could not draw.",
   "assets.corpusCounts": "{lots} lot(s) · {chains} chain(s) · {shared} shared file(s). The corpus is a member of its own: acquisitions, transformations and the files they are about — a forest that shares its leaves, not a stratigraphic matrix.",
   "assets.corpusEmpty": "Nothing documented yet. Publish a lot above and its acquisition lands in the corpus; then a derivation can be declared from it.",
   "assets.lotMembers": "{n} file",
@@ -412,7 +414,17 @@ const EN: Dict = {
   "doc.reveal": "Show on the canvas",
   "dtc.empty":
     "DTC — no digital-twin chain in this graph yet (no dtc_ relation, no linked resource).",
+  // DAG · the view reads the DOCUMENTATION member now, so the empty state is
+  // about the corpus and says what fills it
+  "dtc.corpusEmpty":
+    "No documentation yet. Drop files in the Documentation tab (they arrive as a lot, with their acquisition), or declare a derivation — what appears here is the corpus: acquisitions, transformations, and the files they are about.",
+  // DAG · the corpus is drawn, not edited: every authoring path on this canvas
+  // writes to the STUDY graph, so a node made here would land where nobody was
+  // looking. The lots and the chains are authored in the panel that owns them.
+  "dtc.readOnly":
+    "The documentation DAG is read-only: publish a lot or declare a derivation in the Documentation panel, and it appears here.",
   // the four provenance lanes of the DTC projection
+  "dtc.laneAcquisition": "Acquisitions",
   "dtc.laneInput": "Inputs",
   "dtc.laneProcess": "Processes",
   "dtc.laneOutput": "Products",
@@ -607,6 +619,8 @@ const IT: Dict = {
   "assets.bucketed": "{n} file nel lotto «{lot}», con la sua licenza e il suo autore",
   "assets.lots": "Lotti in questo grafo",
   "assets.corpus": "Documentazione (il corpus DTC)",
+  "assets.seeDag": "Vedi il DAG",
+  "assets.seeDagHint": "Disegna il corpus per quel che è: acquisizioni → trasformazioni → output, e un file consumato da due catene che mostra ENTRAMBI i suoi ingressi — cosa che una matrice stratigrafica non sapeva disegnare.",
   "assets.corpusCounts": "{lots} lotti · {chains} catene · {shared} file condivisi. Il corpus è un membro a sé: acquisizioni, trasformazioni e i file di cui parlano — una foresta che condivide le foglie, non una matrice stratigrafica.",
   "assets.corpusEmpty": "Niente ancora documentato. Pubblica un lotto qui sopra e la sua acquisizione entra nel corpus; da lì si può dichiarare una derivazione.",
   "assets.lotMembers": "{n} file",
@@ -883,6 +897,11 @@ const IT: Dict = {
   "doc.reveal": "Mostra sul canvas",
   "dtc.empty":
     "DTC — questo grafo non ha ancora una catena di gemello digitale (nessuna relazione dtc_, nessuna risorsa collegata).",
+  "dtc.corpusEmpty":
+    "Nessuna documentazione, ancora. Trascina dei file nel tab Documentazione (arrivano come lotto, con la loro acquisizione), o dichiara una derivazione — quel che compare qui è il corpus: acquisizioni, trasformazioni e i file di cui parlano.",
+  "dtc.readOnly":
+    "Il DAG della documentazione è in lettura: pubblica un lotto o dichiara una derivazione nel pannello Documentazione, e comparirà qui.",
+  "dtc.laneAcquisition": "Acquisizioni",
   "dtc.laneInput": "Ingressi",
   "dtc.laneProcess": "Processi",
   "dtc.laneOutput": "Prodotti",

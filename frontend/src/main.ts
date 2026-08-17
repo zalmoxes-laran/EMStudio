@@ -322,6 +322,21 @@ import { buildMatrixScene } from "./views/matrix";
 declare global {
   interface Window {
     __EM_TEST_DATA__?: EmDocument;
+    /** A verification SEAM, the read-only twin of `__EM_TEST_DATA__`.
+     *
+     *  It returns what is already on screen — which projection is showing, and
+     *  the ids of the nodes and edges IN IT — so a check can assert that the DTC
+     *  canvas is drawing the corpus and not the study graph. Nothing here changes
+     *  state, and nothing else in the app reads it: it exists because "what is on
+     *  the canvas" is otherwise only knowable by looking at pixels, and a claim
+     *  that cannot be measured is a claim nobody should make. */
+    __EM_SCENE__?: () => {
+      view: string;
+      source: "corpus" | "study";
+      nodes: string[];
+      edges: Array<{ source: string; target: string; type: string }>;
+      fitted: boolean | null;
+    } | null;
   }
 }
 
@@ -401,6 +416,11 @@ const winViewports = new Map<string, Viewport>();
 /** (window, mode) pairs already framed for the CURRENT document — reset whenever
  *  the document changes, so every window re-frames on the new graph. */
 const framedViews = new Set<string>();
+
+/** DAG · which document the DTC view was last built from — the corpus or the
+ *  study graph. Kept so a change of SOURCE re-frames the camera (see
+ *  `buildScenes`); it is not state anybody else reads. */
+let lastDtcSource: "corpus" | "study" | null = null;
 /**
  * WIN7 · (window, mode) pairs whose camera the USER has moved — a pan, a zoom, a
  * fit they asked for. The app may re-frame a view it framed itself (see
@@ -906,6 +926,42 @@ function scene(): Scene | null {
   return inContext() ? contextScene : (scenes[view] ?? null);
 }
 
+// the seam declared above: what is on the canvas, as ids.
+window.__EM_SCENE__ = () => {
+  const s = scene();
+  if (!s) return null;
+  const corpus = documentationCorpus({ create: false });
+  const corpusIds = new Set((corpus?.liveNodes() ?? []).map((n) => n.id));
+  const ids = s.nodes.map((n) => n.id);
+  return {
+    view,
+    // WHOSE nodes these are, decided by where they actually live — the question
+    // the DTC view exists to answer correctly
+    source: ids.length && ids.every((id) => corpusIds.has(id)) ? "corpus" : "study",
+    nodes: ids,
+    // a SceneEdge is `{source, target, edge}` — the relation type lives on the
+    // document edge it carries, not on the scene edge itself (measured: reading
+    // `edge_type` off the scene edge gave every relation the empty string)
+    edges: (s.edges ?? []).map((e) => ({
+      source: e.source,
+      target: e.target,
+      type: String(e.edge.edge_type ?? ""),
+    })),
+    // is the whole picture on screen? (the DAG must OPEN fitted, and a camera
+    // left over from another picture is the way it opens at 300% on a corner)
+    fitted: (() => {
+      const vp = viewport();
+      const { w, h } = viewSize();
+      if (!s.nodes.length || w <= 0 || h <= 0) return null;
+      return s.nodes.every((n) => {
+        const x0 = n.x * vp.scale + vp.x;
+        const y0 = n.y * vp.scale + vp.y;
+        return x0 >= -1 && y0 >= -1 && x0 + n.w * vp.scale <= w + 1 && y0 + n.h * vp.scale <= h + 1;
+      });
+    })(),
+  };
+};
+
 function viewport(): Viewport {
   return inContext() ? contextViewport : viewportFor(activeWin().id, view);
 }
@@ -1127,9 +1183,17 @@ function refreshInspector(): void {
   renderViewer();
   renderAnnotator();
   if (!store) return;
+  // DAG · the inspector reads the store the SELECTION BELONGS TO. Clicking an
+  // acquisition on the DTC canvas selects a node of the CORPUS, and a panel that
+  // only ever looked at the study graph would answer "nothing selected" about a
+  // node the user can see. One rule, no special case in the panel itself.
+  const owning = selectedId && !store.node(selectedId)
+    && documentationCorpus({ create: false })?.node(selectedId)
+    ? documentationCorpus({ create: false })!
+    : store;
   renderInspector(
     inspector,
-    store,
+    owning,
     selectedId,
     {
       onJump: (id) => {
@@ -1819,9 +1883,33 @@ function buildScenes(): void {
     algorithm: graphAlgorithm,
     overrides: graphOverrides,
   });
-  // WIN2 · the DTC projection reads the SAME filtered view (folding + circles
-  // still apply) through the digital-twin-creation relations.
-  scenes.dtc = buildDtcScene(fview.nodes, fview.edges, dtcOverrides);
+  // DAG · the DTC projection reads the **corpus** — the documentation member —
+  // and not the study graph.
+  //
+  // This is the sentence the whole separation was for. A provenance forest drawn
+  // inside a stratigraphic matrix had to borrow the matrix's rules (one parent,
+  // one lane per epoch) to be drawn at all, and an orthophoto made from two
+  // flights cannot be drawn that way: it is ONE node with TWO inputs. The corpus
+  // is its own member precisely so the picture can be a DAG.
+  //
+  // The fall-back is not a courtesy: a project written before the corpus existed
+  // has its DTC chunks inside the study graph, and its DTC view must keep
+  // showing them. So the source is the corpus WHEN THERE IS SOMETHING IN IT, and
+  // the filtered study view otherwise.
+  const corpusForView = documentationCorpus({ create: false });
+  const corpusNodes = corpusForView?.liveNodes() ?? [];
+  const dtcSource = corpusNodes.length ? "corpus" : "study";
+  scenes.dtc = corpusNodes.length
+    ? buildDtcScene(corpusNodes, corpusForView!.liveEdges(), dtcOverrides)
+    : buildDtcScene(fview.nodes, fview.edges, dtcOverrides);
+  // …and when the SOURCE changes (a project with a corpus opens, or its first
+  // documentation arrives), the DTC view is framed again: the camera it was left
+  // with belonged to a different picture, and opening a DAG at 300% zoom on a
+  // corner of it is not "where you were".
+  if (dtcSource !== lastDtcSource) {
+    lastDtcSource = dtcSource;
+    for (const key of [...framedViews]) if (key.endsWith(":dtc")) framedViews.delete(key);
+  }
   // MULTIGRAPH · the same layered projection as Graph, over the WHOLE view:
   // ornaments as nodes and the graph-scope layer included, so author, licence,
   // embargo and the site position are visible and selectable (and therefore
@@ -2061,9 +2149,14 @@ function applyCanvasView(v: ViewKind): void {
     info.textContent =
       "no layout section — run: emstudio layout file.em.json -o out.em.json";
   } else if (v === "dtc" && (scenes.dtc?.nodes.length ?? 0) === 0) {
-    // An empty canvas has to say WHY: this graph cites no digital-twin chain,
-    // which is a fact about the document, not a failure of the view.
-    info.textContent = t("dtc.empty");
+    // An empty canvas has to say WHY, and WHICH emptiness it is: a project with
+    // no documentation member at all gets the sentence that says how one starts
+    // (drop files, or declare a derivation); a project whose STUDY graph simply
+    // cites no chain gets the older one. Two different facts, two sentences.
+    const corpus = documentationCorpus({ create: false });
+    info.textContent = corpus && corpus.liveNodes().length
+      ? t("dtc.empty")
+      : t("dtc.corpusEmpty");
   } else {
     updateInfo();
   }
@@ -3743,8 +3836,34 @@ const overview = buildOverview(
   },
 );
 
+/**
+ * DAG · is the DTC canvas showing the DOCUMENTATION CORPUS right now?
+ *
+ * The corpus is a document of its own (`container.corpus`), and every authoring
+ * path on this canvas writes to `store` — the active STUDY graph. So a node
+ * created while looking at the corpus would land in the matrix and vanish from
+ * the picture that was on screen: not an error message, just a node nobody asked
+ * for in a graph nobody was looking at. The canvas is READ-ONLY while it draws
+ * the corpus, and says so; the lots and the chains are authored in the
+ * Documentation panel, which writes to the corpus by construction.
+ *
+ * (Authoring the corpus ON the canvas is a declared follow-up: it needs the
+ * write paths — selection, inspector, undo — pointed at the corpus store, not
+ * just the drawing.)
+ */
+function corpusDagIsReadOnly(): boolean {
+  if (view !== "dtc") return false;
+  const corpus = documentationCorpus({ create: false });
+  return !!corpus && corpus.liveNodes().length > 0;
+}
+
 function placeNode(wx: number, wy: number): void {
   if (!store || !placingType) return;
+  if (corpusDagIsReadOnly()) {
+    toast(t("dtc.readOnly"));
+    cancelPlacing();
+    return;
+  }
   // Epochs are special: an EpochNode + a swimlane (Matrix lane / Graph node,
   // invariant 4). Lets you populate epochs in a fresh graph.
   if (placingType === "EpochNode") {
@@ -3991,6 +4110,10 @@ function finishConnect(forceCreate = false): void {
 
 function createEdge(source: string, target: string, edgeType: string): void {
   if (!store) return;
+  if (corpusDagIsReadOnly()) {
+    toast(t("dtc.readOnly"));
+    return;
+  }
   if (store.hasEdge(source, target, edgeType)) {
     toast(`${edgeTypeLabel(edgeType)} already exists`);
     return;
@@ -4077,6 +4200,10 @@ function hideEdgeMenu(): void {
 // ---------- create a node at a point (shared by placeNode & connect-create) ----------
 function createNodeAt(type: string, wx: number, wy: number): string | null {
   if (!store) return null;
+  if (corpusDagIsReadOnly()) {
+    toast(t("dtc.readOnly"));
+    return null;
+  }
   if (type === "EpochNode") {
     const w = 140,
       h = 30;
@@ -9581,22 +9708,30 @@ function minioPanel(): HTMLElement {
   const box = document.createElement("div");
   box.className = "ing-panel";
 
-  if (!sync.room || !getSettings().sync.hubUrl) {
-    box.classList.add("storage-empty");
-    box.appendChild(storageText(t("storage.minioNeedsRoom")));
+  // THE GATE IS ON THE UPLOAD, NOT ON THE DOCUMENTATION.
+  //
+  // Measured, and it was hiding the whole point of the tab: the room gate came
+  // first and returned, so a project opened OFFLINE — with a corpus full of
+  // acquisitions and chains in its own file — showed one sentence about not being
+  // in a room and nothing about its own documentation. Ingesting needs a room
+  // (the bytes must go somewhere); READING and drawing the corpus is a fact about
+  // the project, and belongs to nobody's connection.
+  const blocked = (!sync.room || !getSettings().sync.hubUrl)
+    ? t("storage.minioNeedsRoom")
+    : !currentIdentity() ? t("assets.needsIdentity")
+    : !store ? t("assets.needsDocument")
+    : null;
+  if (blocked) {
+    box.appendChild(storageText(blocked));
+    // …and the documentation that is already there, if any
+    box.appendChild(ingestLots());
+    box.appendChild(ingestDerivation());
+    if (!documentationCorpus({ create: false })?.liveNodes().length) {
+      box.classList.add("storage-empty");
+    }
     return box;
   }
-  const me = currentIdentity();
-  if (!me) {
-    box.classList.add("storage-empty");
-    box.appendChild(storageText(t("assets.needsIdentity")));
-    return box;
-  }
-  if (!store) {
-    box.classList.add("storage-empty");
-    box.appendChild(storageText(t("assets.needsDocument")));
-    return box;
-  }
+  const me = currentIdentity()!;
   if (!ingestDraft.authorOrcid) {
     ingestDraft.authorOrcid = me.orcid;
     ingestDraft.authorName =
@@ -10125,6 +10260,16 @@ function ingestLots(): HTMLElement {
   box.appendChild(ing("div", "insp-hint", t("assets.corpusCounts", {
     lots: String(lots.length), chains: String(chains), shared: String(shared),
   })));
+  // …and the way to LOOK at it. The DTC projection draws the corpus as the DAG
+  // it is (acquisitions → transformations → outputs, a shared leaf showing both
+  // of its inputs); getting there used to mean knowing that a graph window has a
+  // mode called DTC, which is knowledge about the app rather than about the work.
+  const seeBar = ing("div", "insp-actions");
+  const see = ing("button", "insp-btn", t("assets.seeDag")) as HTMLButtonElement;
+  see.title = t("assets.seeDagHint");
+  see.addEventListener("click", () => openCorpusDag());
+  seeBar.appendChild(see);
+  box.appendChild(seeBar);
   for (const lot of lots) {
     const row = document.createElement("div");
     row.className = "ing-row";
@@ -11520,6 +11665,36 @@ function splitAreaOf(win: Win, dir: "row" | "col"): void {
   const w = activeWin();
   if (w.type === "graph") setMode(winMode(w));
   else mountWindow(w);
+  renderAreaHeaders();
+}
+
+/**
+ * DAG · show the corpus as a picture, from the Documentation tab.
+ *
+ * A graph window in `dtc` mode: one already in this workspace is switched (and
+ * focused), otherwise a new area is split off. Nothing about the corpus is
+ * created here — the view reads what is there, and an empty one says so.
+ */
+function openCorpusDag(): void {
+  const existing = windowsOf().find((w) => w.type === "graph");
+  const win = existing ?? (() => {
+    splitWindow(activeWin().id, "row");
+    const made = activeWin();
+    setWinType(made, "graph");
+    return made;
+  })();
+  setActiveWin(win.id);
+  setWinMode(win, "dtc");
+  // A DAG needs ROOM. The Documentation arrangement is three columns of storage
+  // and inspector, so a graph area added to it gets ~a fifth of the tab — and a
+  // provenance chain drawn in a 300px strip is a picture of a DAG, not a DAG.
+  // Magnify it: reversible with the same ⤢ verb, so the arrangement comes back.
+  if (maximizedWin() !== win.id) toggleMaximize(win.id);
+  renderTiles();
+  // …and frame it for the size it ACTUALLY has now: the camera fitted for a
+  // narrow strip is the wrong camera for a full tab.
+  framedViews.delete(viewportKey(win.id, "dtc"));
+  setMode("dtc");
   renderAreaHeaders();
 }
 

@@ -67,8 +67,13 @@ const COL_GAP = 44; // between two process columns
 
 /** What a lane holds — decides its name and its colour. The colour tints the
  *  lane the way an epoch's own colour tints its swimlane. */
-type Role = "input" | "process" | "output" | "use";
+type Role = "acquisition" | "input" | "process" | "output" | "use";
 const ROLE_STYLE: Record<Role, { labelKey: string; color: string }> = {
+  // DAG · an ACQUISITION is not a transformation, and a corpus is mostly made of
+  // them: it is where material ENTERS the study (crmdig:D12), the root of every
+  // chain. Calling it "Processi" was true of the class hierarchy and useless to a
+  // reader — measured on a corpus whose first lane held two flights.
+  acquisition: { labelKey: "dtc.laneAcquisition", color: "#3d5a80" },
   input: { labelKey: "dtc.laneInput", color: "#2f4f6f" },
   process: { labelKey: "dtc.laneProcess", color: "#5b3f77" },
   output: { labelKey: "dtc.laneOutput", color: "#2c6249" },
@@ -168,10 +173,19 @@ export function buildDtcScene(
   const isOutput = new Set<string>();
   for (const e of chain)
     if (e.edge_type === "dtc_had_output") isOutput.add(e.target);
+  const isConsumed = new Set<string>();
+  for (const e of chain)
+    if (e.edge_type === "dtc_had_input") isConsumed.add(e.target);
   const roleOf = (n: EmNode): Role => {
+    if (n.node_type === "dtc_acquisition") return "acquisition";
     if (isDtcNodeType(n.node_type)) return "process";
-    if (!isDtcNode(n)) return "use"; // an EM node citing a product
-    return isOutput.has(n.id) ? "output" : "input";
+    // BEING PRODUCED is what makes a file an output — a fact in the graph, not a
+    // stamp on the node. Reading `dtc_kind` instead sent every plain resource of
+    // a corpus into "Uso nel record", which is where an EM node citing a product
+    // belongs and no file of the documentation ever does.
+    if (isOutput.has(n.id)) return "output";
+    if (isConsumed.has(n.id)) return "input";
+    return isDtcNode(n) ? "input" : "use";
   };
 
   // ── group by rank, and inside a rank keep the process columns together ────
@@ -184,32 +198,82 @@ export function buildDtcScene(
   const ranks = [...byRank.keys()].sort((a, b) => a - b);
   // a stable horizontal key: the process a node belongs to (its own id for a
   // process), so a chain reads as a column even across many ranks
+  //
+  // DAG · the column key is resolved to a FIXPOINT, taking the smallest
+  // candidate, instead of "whatever edge came last in the array". A shared leaf
+  // is reached by several edges (its producer and each of its consumers), so the
+  // single array-order pass this replaces gave it a different column depending
+  // on the order the edges happened to be written in — and an additive merge
+  // reorders edges without changing what the document says. Measured:
+  // reversing the input arrays moved img2 by three columns. Smallest-wins is
+  // arbitrary but total, so the same corpus draws the same picture.
   const columnKey = new Map<string, string>();
   for (const n of members) columnKey.set(n.id, n.id);
-  for (const e of chain) {
+  const flowsForColumn: Array<[string, string]> = [];
+  for (const e of chain)
     if (e.edge_type === "dtc_had_input" || e.edge_type === "dtc_had_output")
-      columnKey.set(e.target, columnKey.get(e.source) ?? e.source);
+      flowsForColumn.push([e.source, e.target]);
+  for (const e of bridges) flowsForColumn.push([e.target, e.source]);
+  flowsForColumn.sort((a, b) => a[0].localeCompare(b[0]) || a[1].localeCompare(b[1]));
+  for (let pass = 0; pass < members.length; pass++) {
+    let changed = false;
+    for (const [from, to] of flowsForColumn) {
+      const kf = columnKey.get(from);
+      const kt = columnKey.get(to);
+      if (kf == null || kt == null) continue;
+      if (kf < kt) {
+        columnKey.set(to, kf);
+        changed = true;
+      }
+    }
+    if (!changed) break;
   }
-  for (const e of bridges)
-    columnKey.set(e.source, columnKey.get(e.target) ?? e.target);
+
+  // where each node's producers ended up — a product wants to be UNDER the
+  // process that made it, which is the difference between a DAG you can follow
+  // and a correct picture whose lines you have to trace one by one. Ranks are
+  // laid out top-down, so by the time a rank is placed every predecessor of its
+  // nodes already has an x (the flow only ever goes down a rank).
+  const preds = new Map<string, string[]>();
+  for (const [from, tos] of flow)
+    for (const to of tos) {
+      if (!preds.has(to)) preds.set(to, []);
+      preds.get(to)!.push(from);
+    }
 
   const laneH = NODE_H + LANE_PAD * 2;
-  const rowWidth = (n: number): number =>
-    n > 0 ? n * NODE_W + (n - 1) * H_GAP : 0;
-  let widest = NODE_W;
+  const placedX = new Map<string, number>();
   ranks.forEach((r, i) => {
-    const row = byRank
-      .get(r)!
-      .sort(
-        (a, b) =>
-          (columnKey.get(a.id) ?? "").localeCompare(columnKey.get(b.id) ?? "") ||
-          byName(a, b),
+    // the barycentre of a node's producers, when they are already placed
+    const wanted = new Map<string, number>();
+    for (const n of byRank.get(r)!) {
+      const xs = (preds.get(n.id) ?? [])
+        .map((id) => placedX.get(id))
+        .filter((x): x is number => x != null);
+      if (xs.length) wanted.set(n.id, xs.reduce((a, b) => a + b, 0) / xs.length);
+    }
+    const row = byRank.get(r)!.sort((a, b) => {
+      const wa = wanted.get(a.id);
+      const wb = wanted.get(b.id);
+      if (wa != null && wb != null && wa !== wb) return wa - wb;
+      if (wa != null && wb == null) return 1; // a root of its own chain goes left
+      if (wa == null && wb != null) return -1;
+      return (
+        (columnKey.get(a.id) ?? "").localeCompare(columnKey.get(b.id) ?? "") ||
+        byName(a, b)
       );
-    widest = Math.max(widest, rowWidth(row.length));
-    row.forEach((n, j) => {
+    });
+    // pack left to right, but never before where a node WANTS to be: collisions
+    // push right, so the alignment survives a crowded rank instead of being
+    // silently dropped.
+    let cursor = COL_GAP;
+    row.forEach((n) => {
+      const x = Math.max(cursor, Math.round(wanted.get(n.id) ?? cursor));
+      cursor = x + NODE_W + H_GAP;
+      placedX.set(n.id, x);
       const sn: SceneNode = {
         id: n.id,
-        x: j * (NODE_W + H_GAP) + COL_GAP,
+        x,
         y: i * laneH + LANE_PAD,
         w: NODE_W,
         h: NODE_H,
@@ -229,14 +293,29 @@ export function buildDtcScene(
       const role = roleOf(n);
       tally.set(role, (tally.get(role) ?? 0) + 1);
     }
-    const role = [...tally.entries()].sort((a, b) => b[1] - a[1])[0][0];
+    const ordered = [...tally.entries()].sort(
+      (a, b) => b[1] - a[1] || a[0].localeCompare(b[0]),
+    );
+    const role = ordered[0][0];
     const nth = (seen[role] = (seen[role] ?? 0) + 1);
     const style = ROLE_STYLE[role];
+    // A rank is not always of one kind: a process that consumed a whole
+    // ACQUISITION sits at the same rank as the files that acquisition produced —
+    // honest, and topologically necessary. Measured on a corpus, that lane said
+    // "Prodotti · 5" over four images AND a process. So a mixed lane names what
+    // it holds: `Prodotti · 4 + Processi · 1`.
+    const composition = ordered
+      .map(([rl, count], i) =>
+        i === 0
+          ? `${t(ROLE_STYLE[rl].labelKey)}${nth > 1 ? ` (${nth})` : ""} · ${count}`
+          : `${t(ROLE_STYLE[rl].labelKey)} · ${count}`,
+      )
+      .join(" + ");
     return {
       id: `dtc-lane-${r}`,
       // "Processi · 2" is the count; "Processi (2) · 1" is the second act of
       // making — the ordinal only appears when a role comes round again.
-      label: `${t(style.labelKey)}${nth > 1 ? ` (${nth})` : ""} · ${row.length}`,
+      label: composition,
       y: i * laneH,
       height: laneH,
       color: style.color,
