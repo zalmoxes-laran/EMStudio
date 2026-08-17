@@ -124,11 +124,22 @@ function join(label) {
     // main.ts folds the FRAME, not the payload (`reducePresence` switches on
     // `type`): the same adaptation here, so what is measured is what the app does
     onPresence: (message) => heard.presence.push({ type: "presence", ...message }),
+    // …and the host_info frame is folded too, because it is the ONLY one that
+    // says which member of the roster this client is (`presence.me`). Without it
+    // the check could count people but not recognise its own — which is exactly
+    // what made it fragile (see `rosterOf` below).
+    onHostInfo: (info) => heard.presence.push({ type: "host_info", ...info }),
     onOpResult: (r) => heard.results.push(r),
     onWireMismatch: (why) => heard.mismatch.push(why),
     onStatus: (state) => heard.status.push(state),
   });
   return { label, client, heard };
+}
+
+/** What one client believes about who is in the room, folded the app's way. */
+function rosterOf(client) {
+  return client.heard.presence.reduce(
+    (state, frame) => H.reducePresence(state, frame), H.emptyPresence());
 }
 
 // ── the URL the client builds, before anything is opened ─────────────────────
@@ -157,15 +168,33 @@ try {
   ok(units.length >= 2,
      `room · the seeded stratigraphy arrived (${units.length} units)`);
 
-  // ── presence: two, and each knows which one is itself ──────────────────────
-  const roster = await until("a roster of two", () => {
-    const folded = A.heard.presence.reduce(
-      (state, frame) => H.reducePresence(state, frame), H.emptyPresence());
-    return folded.members.length === 2 ? folded : null;
+  // ── presence: MY two clients are in there, and each knows which one it is ──
+  //
+  // It used to assert `members.length === 2`, which made the check fail for a
+  // reason that has nothing to do with the relay: an EMStudio TAB open on the
+  // same room is a third member, and the wait timed out with "a roster of two".
+  // Measured in a session, and the wrong conclusion was one step away — the
+  // protocol was fine, the assertion was counting strangers.
+  //
+  // A room is a shared place: how many people are in it is not this check's
+  // business. What IS its business is that the two clients it opened are both
+  // there, each recognising itself — which is a stronger statement than a count,
+  // and true whoever else is connected.
+  const roster = await until("a roster holding BOTH of my clients", () => {
+    const a = rosterOf(A);
+    const b = rosterOf(B);
+    if (!a.me || !b.me) return null;          // neither has heard host_info yet
+    const present = new Set(a.members.map((m) => m.id));
+    return present.has(a.me) && present.has(b.me) ? { a, b } : null;
   });
-  eq(roster.members.length, 2, "room · presence says TWO people are here");
-  ok(roster.members.every((m) => m.author),
-     "room · …and each of them is somebody: the author is the token's");
+  const mine = [roster.a.me, roster.b.me];
+  ok(mine.every((id) => roster.a.members.some((m) => m.id === id)),
+     `room · presence holds BOTH clients this check opened (${mine.length} of mine, `
+     + `${roster.a.members.length} in the room)`);
+  ok(roster.a.me !== roster.b.me,
+     "room · …and they are two connections, not one counted twice");
+  ok(roster.a.members.filter((m) => mine.includes(m.id)).every((m) => m.author),
+     "room · …each of them is somebody: the author is the token's");
 
   // ── the edit: A renames a unit, B must see it ─────────────────────────────
   const target = units[0].id;

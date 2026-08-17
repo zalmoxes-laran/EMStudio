@@ -6482,3 +6482,24 @@ body.nv-standalone main.nv-standalone-main {
 .ing-row.ing-referenced .ing-state { color: var(--ok, var(--text)); }
 .ing-row.ing-failed .ing-state { color: var(--danger); }
 .ing-lots .ing-row { grid-template-columns: 1fr auto; cursor: pointer; }
+
+/* WIN7-STORAGE · a Storage surface living in a SECONDARY area. The same three
+   boxes the focused `#storage-view` has, with the same metrics, so taking the
+   focus swaps which one is "the" surface without moving anything on screen. */
+.tile-storagebar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border-subtle, var(--border));
+  background: var(--bg-panel);
+}
+.tile-storagebody {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 10px;
+}

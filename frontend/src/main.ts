@@ -7786,6 +7786,10 @@ function renderTiles(): void {
   paletteUis.length = 0;
   // the areas that owned these are about to be discarded whole
   for (const h of tileEmDataHosts.splice(0)) removeEmDataHost(h);
+  // WIN7-STORAGE · same ownership rule for the Storage surfaces: their areas go
+  // with the tree, and a host left in the registry would be painted into a
+  // detached box on every render.
+  tileStorageHosts.length = 0;
   // WIN7 · a panel living in a secondary area would be DESTROYED by the reset
   // below (with every handler wired to it at boot) — send it home first. The
   // same reason `#canvas-wrap` is detached rather than left to be cleared.
@@ -7800,6 +7804,7 @@ function renderTiles(): void {
   // render that `addEmDataHost` fires found them disabled (`isConnected` false).
   // Now the tree is attached: paint them.
   renderEmData();
+  renderStorage();   // …and the Storage surfaces, for exactly the same reason
   refreshTileSurfaces();
   resizeCanvas(); // the live area changed size
   drawTiles();
@@ -9187,12 +9192,66 @@ function setStoragePath(win: Win, path: string | null): void {
   renderStorage();
 }
 
-function renderStorage(): void {
+/**
+ * WIN7-STORAGE · **the Storage surface is a host registry now.**
+ *
+ * It used to be one element (`#storage-view`) mounted in whichever area had the
+ * focus, so a workspace with two Storage areas — the Assets tab: the disk on the
+ * left, the room's object store in the middle — had exactly one of them alive
+ * and the other saying "step in to work here". Which made the one gesture the
+ * arrangement exists for impossible: **you cannot drag a file from an area that
+ * is not drawn into an area that is not drawn.**
+ *
+ * So Storage follows the table's pattern (WIN5, `emdata.ts`): one renderer, as
+ * many mounts as there are areas. Each host carries the WINDOW it belongs to —
+ * which is what makes the two independent: the mode (filesystem / minio) and the
+ * folder are per-instance state on the window, and always were.
+ *
+ * Not the panels' pattern (re-homing a singleton), deliberately: a panel is one
+ * element with handlers wired at boot, while a Storage surface is rebuilt from a
+ * listing on every render. Copying the second is cheap; copying the first would
+ * be two editors for one state.
+ */
+interface StorageHost {
+  /** the window this surface belongs to — its mode and its folder */
+  win: Win;
+  body: HTMLElement;
+  crumb: HTMLElement | null;
+  up: HTMLButtonElement | null;
+  /** false once the area is gone: a render into a detached box is wasted work */
+  enabled: () => boolean;
+}
+
+/** The hosts THIS module built for secondary areas. Owned explicitly, exactly as
+ *  `tileEmDataHosts` is (WIN-FIX1): `renderTiles` drops them when it rebuilds the
+ *  tree, so nothing has to guess from the DOM which mounts are still alive. */
+const tileStorageHosts: StorageHost[] = [];
+
+/** Every Storage surface on screen right now: the focused window's, plus every
+ *  secondary area's. Computed rather than registered for the focused one — it is
+ *  the fixed `#storage-view`, and a registration lifecycle for a permanent
+ *  element is a second thing to keep in step. */
+function storageHostsNow(): StorageHost[] {
+  const out: StorageHost[] = [];
+  const view = document.getElementById("storage-view");
   const body = document.getElementById("storage-body");
   const crumb = document.getElementById("storage-crumb");
   const up = document.getElementById("storage-up") as HTMLButtonElement | null;
-  if (!body || !crumb || !up) return;
   const win = activeWin();
+  if (view && body && !view.classList.contains("hidden") && win.type === "storage") {
+    out.push({ win, body, crumb, up, enabled: () => body.isConnected });
+  }
+  for (const host of tileStorageHosts) if (host.enabled()) out.push(host);
+  return out;
+}
+
+/** Paint every Storage surface on screen. */
+function renderStorage(): void {
+  for (const host of storageHostsNow()) renderStorageInto(host);
+}
+
+function renderStorageInto(host: StorageHost): void {
+  const { win, body, crumb, up } = host;
   if (win.type !== "storage") return;
 
   if (winModeOf(win) === "minio") {
@@ -9201,14 +9260,14 @@ function renderStorage(): void {
     // — never carries them — and the upload is also the moment the rights are
     // declared, because that is when the asset first exists as a thing anybody
     // can point at (`s3Dgraphy/docs/asset-dtc-protocol.md`).
-    crumb.textContent = sync.room ? `${t("storage.minio")} · ${sync.room}` : "";
-    up.classList.add("hidden");
+    if (crumb) crumb.textContent = sync.room ? `${t("storage.minio")} · ${sync.room}` : "";
+    up?.classList.add("hidden");
     body.textContent = "";
     body.appendChild(minioPanel());
     return;
   }
 
-  up.classList.remove("hidden");
+  up?.classList.remove("hidden");
   const path = storagePath(win);
   body.textContent = "";
   body.appendChild(storageEmpty(t("storage.loading")));
@@ -9218,6 +9277,7 @@ function renderStorage(): void {
     try {
       listing = await fsList(path ?? undefined);
     } catch (err) {
+      if (!body.isConnected) return;
       body.textContent = "";
       const down = err instanceof BridgeDownError;
       const box = storageEmpty(
@@ -9230,25 +9290,29 @@ function renderStorage(): void {
         box.appendChild(why);
       }
       body.appendChild(box);
-      crumb.textContent = down ? "" : (path ?? "");
+      if (crumb) crumb.textContent = down ? "" : (path ?? "");
       return;
     }
-    // The window may have moved on (another folder clicked, another type
-    // mounted) while the request was in flight — an answer to a question
-    // nobody is asking any more must not overwrite the current screen.
-    if (activeWin().id !== win.id || storagePath(win) !== path) return;
+    // The area may have moved on (another folder clicked, the tree rebuilt)
+    // while the request was in flight — an answer to a question nobody is asking
+    // any more must not overwrite the current screen. The test is now the BODY
+    // rather than "am I the focused window": with several surfaces alive, a
+    // secondary one is a legitimate place for an answer to land.
+    if (!body.isConnected || storagePath(win) !== path) return;
 
-    crumb.textContent = listing.roots ? t("storage.roots") : listing.path;
+    if (crumb) crumb.textContent = listing.roots ? t("storage.roots") : listing.path;
     // Up from a ROOT is the list of roots — not "nothing". The bridge says
     // `parent: null` there because there is no parent INSIDE the fence, and
     // reading that as "the button is dead" is what stranded the first version:
     // enter a root and the other roots became unreachable.
-    up.disabled = listing.roots;
-    up.title = listing.parent ? t("storage.up") : t("storage.upToRoots");
-    up.onclick = () => {
-      if (listing.roots) return;
-      setStoragePath(win, listing.parent); // null at a root → the roots list
-    };
+    if (up) {
+      up.disabled = listing.roots;
+      up.title = listing.parent ? t("storage.up") : t("storage.upToRoots");
+      up.onclick = () => {
+        if (listing.roots) return;
+        setStoragePath(win, listing.parent); // null at a root → the roots list
+      };
+    }
 
     body.textContent = "";
     if (!listing.entries.length) {
@@ -10723,6 +10787,35 @@ function buildSecondarySurface(area: HTMLElement, win: Win): void {
     // rendering of the prose beside the editor is a second renderer for the same
     // document, which is the thing WIN5-7 have been avoiding throughout.)
     tileNote(area, t("tile.narrativeNote"));
+    return;
+  }
+  if (win.type === "storage") {
+    // WIN7-STORAGE · a LIVE second Storage surface. The same three boxes the
+    // focused window has (`#storage-bar` / crumb / body) and the same classes,
+    // so the two measure identically and taking the focus moves nothing.
+    //
+    // This is what makes the Assets arrangement work as an arrangement: the disk
+    // and the object store are both drawn, so a file can be dragged from one
+    // into the other. With one surface at a time the gesture had nowhere to
+    // start OR nowhere to land.
+    const bar = document.createElement("div");
+    bar.id = "";                       // ids belong to the focused view only
+    bar.className = "tile-storagebar";
+    const up = document.createElement("button");
+    up.className = "storage-nav";
+    up.textContent = "↑";
+    const crumb = document.createElement("div");
+    crumb.className = "storage-crumb";
+    bar.append(up, crumb);
+    const body = document.createElement("div");
+    body.className = "tile-storagebody";
+    area.append(bar, body);
+    const host: StorageHost = {
+      win, body, crumb, up, enabled: () => body.isConnected,
+    };
+    tileStorageHosts.push(host);
+    // painted by `renderTiles` once the tree is attached — rendering into a
+    // detached box now would throw the listing away
     return;
   }
   // W1 · every OTHER type without a secondary surface says its own name. This
