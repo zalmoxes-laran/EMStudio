@@ -164,6 +164,17 @@ export function renderEmData(): void {
 /** Draw the current sheet into one host. */
 function renderEmDataInto(host: EmDataHost): void {
   const body = host.body;
+  // HDR2 · the table is rebuilt on every render (including a focus change) and
+  // this body is the scroller: a row somebody had scrolled down to must not jump
+  // back to the top because the pointer crossed a divider.
+  const wasAt = body.scrollTop;
+  const keepScroll = (): void => {
+    if (!wasAt) return;
+    body.scrollTop = wasAt;
+    if (body.scrollTop !== wasAt) {
+      requestAnimationFrame(() => { body.scrollTop = wasAt; });
+    }
+  };
   const countEl = host.count;
   const actions = host.actions;
 
@@ -302,6 +313,8 @@ function renderEmDataInto(host: EmDataHost): void {
       deleteRow(store, btn.getAttribute("data-del")!);
     };
   });
+
+  keepScroll();
 }
 
 function renderCell(col: Column, rowId: string, value: string): string {

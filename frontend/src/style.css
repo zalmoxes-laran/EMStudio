@@ -6514,3 +6514,51 @@ body.nv-standalone main.nv-standalone-main {
   background: var(--border);
   opacity: 0.7;
 }
+
+
+/* HDR2 · ONE header row per window. The type's own strip (storage crumb, panel
+   tabs, table count) sits IN the header instead of a second row beneath it:
+   they answer the same question — what this window is showing — and two rows of
+   furniture over four areas is eight strips of nothing. */
+.win-strip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+}
+.win-strip-crumb {
+  font-size: 11px;
+  color: var(--text-faint);
+  max-width: 42ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;          /* a long path truncates at the FRONT: the leaf is the news */
+  text-align: left;
+}
+.win-strip-tab {
+  font-size: 11.5px;
+  padding: 2px 7px;
+}
+.win-strip-count { font-size: 11px; color: var(--text-faint); }
+/* the strips that used to be a second row: kept in the DOM (the surfaces keep
+   their shape), emptied and out of the way */
+#storage-bar, #table-view-head { display: none; }
+.panel-tabs.hidden { display: none; }
+
+/* ACTIVE IS A STYLE, not a row. The focused area's header carries the accent;
+   the others are the same bar, quieter. */
+#window-header.win-header { border-bottom: 1px solid var(--border); }
+.tile-area > .tile-bar.win-header { opacity: 0.82; }
+.tile-area.tile-active > .tile-bar.win-header { opacity: 1; }
+
+/* the mode label is ONE line: wrapped, it made a single header look like two
+   rows — which is the very thing HDR2 is about */
+.win-header .win-mode-label,
+.win-header .win-menu-toggle,
+.win-strip-tab { white-space: nowrap; }
+/* …and when the room is tight the SEARCH gives way first: a crumb and the
+   window's verbs matter more than an input nobody is typing in */
+.win-header .win-search { flex: 0 1 12ch; min-width: 0; }

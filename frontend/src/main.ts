@@ -9322,13 +9322,29 @@ function storageHostsNow(): StorageHost[] {
   const out: StorageHost[] = [];
   const view = document.getElementById("storage-view");
   const body = document.getElementById("storage-body");
-  const crumb = document.getElementById("storage-crumb");
-  const up = document.getElementById("storage-up") as HTMLButtonElement | null;
   const win = activeWin();
   if (view && body && !view.classList.contains("hidden") && win.type === "storage") {
-    out.push({ win, body, crumb, up, enabled: () => body.isConnected });
+    // HDR2 · the crumb and the up-button live in the window HEADER now, not in a
+    // second strip under it. The host reads them from there — one row of chrome,
+    // and the listing code did not have to know.
+    const head = document.getElementById("window-header");
+    out.push({
+      win, body,
+      crumb: head?.querySelector<HTMLElement>(".win-strip-crumb") ?? null,
+      up: head?.querySelector<HTMLButtonElement>(".win-strip-up") ?? null,
+      enabled: () => body.isConnected,
+    });
   }
-  for (const host of tileStorageHosts) if (host.enabled()) out.push(host);
+  for (const host of tileStorageHosts) {
+    if (!host.enabled()) continue;
+    // …and a secondary area reads them from ITS bar, by the same rule
+    const bar = host.body.parentElement?.querySelector<HTMLElement>(":scope > .tile-bar");
+    out.push({
+      ...host,
+      crumb: bar?.querySelector<HTMLElement>(".win-strip-crumb") ?? host.crumb,
+      up: bar?.querySelector<HTMLButtonElement>(".win-strip-up") ?? host.up,
+    });
+  }
   return out;
 }
 
@@ -9349,13 +9365,27 @@ function renderStorageInto(host: StorageHost): void {
     // can point at (`s3Dgraphy/docs/asset-dtc-protocol.md`).
     if (crumb) crumb.textContent = sync.room ? `${t("storage.minio")} · ${sync.room}` : "";
     up?.classList.add("hidden");
+    // the ingestion panel is LONG: keep the place, per window (the body is a new
+    // element after a tree rebuild)
+    const at = body.scrollTop || surfaceScroll.get(win.id) || 0;
+    if (body.scrollTop) surfaceScroll.set(win.id, body.scrollTop);
     body.textContent = "";
     body.appendChild(minioPanel());
+    if (at) {
+      body.scrollTop = at;
+      if (body.scrollTop !== at) requestAnimationFrame(() => { body.scrollTop = at; });
+      surfaceScroll.set(win.id, at);
+    }
     return;
   }
 
   up?.classList.remove("hidden");
   const path = storagePath(win);
+  // the listing is rebuilt from scratch on every render (including a focus
+  // change), and on a focus change the BODY ITSELF is a new element — so the
+  // position is remembered per WINDOW and not per element.
+  const wasAt = body.scrollTop || surfaceScroll.get(win.id) || 0;
+  if (body.scrollTop) surfaceScroll.set(win.id, body.scrollTop);
   body.textContent = "";
   body.appendChild(storageEmpty(t("storage.loading")));
 
@@ -9412,6 +9442,15 @@ function renderStorageInto(host: StorageHost): void {
       list.appendChild(storageRow(win, entry));
     }
     body.appendChild(list);
+    // …and put it back where it was: a folder you had scrolled through does not
+    // jump to the top because the pointer crossed a divider
+    if (wasAt) {
+      body.scrollTop = wasAt;
+      if (body.scrollTop !== wasAt) {
+        requestAnimationFrame(() => { body.scrollTop = wasAt; });
+      }
+      surfaceScroll.set(win.id, wasAt);
+    }
   })();
 }
 
@@ -10786,12 +10825,97 @@ function panelIsMounted(el: HTMLElement): boolean {
 }
 
 /** Ask a panel to redraw itself, whichever window it is living in. */
+/**
+ * HDR2 · keep the SCROLL across a rebuild (or a re-parenting).
+ *
+ * The symptom: scroll a long panel down, move the focus to another window, and
+ * the one you left jumps back to the top. Two causes, both real — the panel's
+ * body is rebuilt (`innerHTML = ""` and a fresh tree) and the singleton element
+ * is MOVED into another area's box, which resets `scrollTop` in every browser.
+ *
+ * So the position is saved and put back around whatever does that. And it is put
+ * back TWICE when it has to be: right after the rebuild the new content can be
+ * momentarily shorter than the old, and a `scrollTop` written against a short
+ * body clamps to 0 — the frame after, when the layout has settled, it takes.
+ * (Measured: without the second write the inspector landed a few hundred pixels
+ * above where it had been.)
+ */
+/**
+ * …and across the WHOLE release→re-home cycle, which is what a focus change is.
+ *
+ * Measured, and the reason the first fix was not enough: moving the focus runs
+ * `renderTiles`, which sends every hosted panel back to `#side` (a move: scroll
+ * 0) and then re-homes it into the new tree. By the time the re-home could
+ * restore anything the position was already gone — so it is remembered HERE, at
+ * the release, and put back when the panel lands. Keyed by panel id, because the
+ * element is the same singleton wherever it goes.
+ */
+const panelScroll = new Map<string, number>();
+
+/** …and the same for the surfaces that are REBUILT rather than moved (a storage
+ *  listing, the ingestion panel): after a tree rebuild the body is a different
+ *  element, so the position belongs to the WINDOW. */
+const surfaceScroll = new Map<string, number>();
+
+function rememberPanelScroll(el: HTMLElement | null): void {
+  if (!el?.id) return;
+  const scroller = scrollerOf(el);
+  const at = scroller?.scrollTop ?? 0;
+  if (at) panelScroll.set(el.id, at);
+}
+
+function restorePanelScroll(el: HTMLElement | null): void {
+  if (!el?.id) return;
+  const at = panelScroll.get(el.id);
+  if (!at) return;
+  const scroller = scrollerOf(el);
+  if (!scroller) return;
+  scroller.scrollTop = at;
+  if (scroller.scrollTop !== at) {
+    requestAnimationFrame(() => { scroller.scrollTop = at; });
+  }
+}
+
+function preservingScroll<T>(el: HTMLElement | null | undefined, fn: () => T): T {
+  if (!el) return fn();
+  const top = el.scrollTop;
+  const left = el.scrollLeft;
+  const out = fn();
+  if (!top && !left) return out;
+  el.scrollTop = top;
+  el.scrollLeft = left;
+  if (el.scrollTop !== top) {
+    requestAnimationFrame(() => {
+      el.scrollTop = top;
+      el.scrollLeft = left;
+    });
+  }
+  return out;
+}
+
+/** The element that actually SCROLLS inside a panel — the panel box itself when
+ *  it is the scroller, otherwise its `.panel-body`-ish child. Read from the DOM
+ *  rather than assumed, because the four panels are built by four modules. */
+function scrollerOf(el: HTMLElement | null): HTMLElement | null {
+  if (!el) return null;
+  if (el.scrollHeight > el.clientHeight + 1) return el;
+  const inner = Array.from(el.querySelectorAll<HTMLElement>("*")).find(
+    (c) => c.scrollHeight > c.clientHeight + 1
+      && getComputedStyle(c).overflowY !== "visible");
+  return inner ?? el;
+}
+
 function refreshPanelById(id: string): void {
-  if (id === "emtree") refreshEMTree();
-  else if (id === "nodelist") nodeList.refresh();
-  else if (id === "inspector") refreshInspector();
-  else if (id === "logpanel") refreshLogPanel();
-  else if (id === "stratiminer") refreshStratiMiner();
+  // …and every panel refresh goes through it: the panel a person scrolled is the
+  // one they were reading.
+  const el = document.getElementById(id);
+  preservingScroll(scrollerOf(el), () => {
+    if (id === "emtree") refreshEMTree();
+    else if (id === "nodelist") nodeList.refresh();
+    else if (id === "inspector") refreshInspector();
+    else if (id === "logpanel") refreshLogPanel();
+    else if (id === "stratiminer") refreshStratiMiner();
+  });
 }
 
 /** Send every panel currently living in a TILED area back to the aside.
@@ -10805,6 +10929,7 @@ function releaseTilePanels(): void {
   for (const id of PANEL_ELEMENT_IDS) {
     const el = document.getElementById(id);
     if (!el?.parentElement?.classList.contains("tile-panel-body")) continue;
+    rememberPanelScroll(el);    // …before the move takes it to 0
     el.classList.add("hidden"); // the aside shows one at a time, via its tabs
     side.appendChild(el);
   }
@@ -10817,6 +10942,7 @@ function releasePanels(): void {
   if (!side || !body) return;
   while (body.firstChild) {
     const el = body.firstChild as HTMLElement;
+    rememberPanelScroll(el);    // same rule on the focused side
     el.classList.add("hidden"); // the aside shows one at a time, via its tabs
     side.appendChild(el);
   }
@@ -10881,18 +11007,23 @@ function buildSecondarySurface(area: HTMLElement, win: Win): void {
     // which (a) is the window's MODE now, stated in its header two centimetres
     // above, and (b) existed only here, so entering the window made it vanish
     // and the rows move.
-    const head = document.createElement("div");
-    head.className = "tile-tablehead";
-    const count = document.createElement("span");
-    count.className = "emdata-count";
-    head.appendChild(count);
+    // HDR2 · no head of its own: the row count is in this area's window header,
+    // with every other type's strip. One row of chrome per window.
     const body = document.createElement("div");
     body.className = "tile-tablebody";
-    area.appendChild(head);
     area.appendChild(body);
     // This host lives exactly as long as its area does; `renderTiles` drops it
-    // (tileEmDataHosts) when the tree is rebuilt.
-    const host: EmDataHost = { body, count, enabled: () => body.isConnected };
+    // (tileEmDataHosts) when the tree is rebuilt. The count element is looked up
+    // at RENDER time (the header is rebuilt often), so the host holds a getter
+    // rather than a reference that would go stale.
+    const host: EmDataHost = {
+      body,
+      get count() {
+        return body.parentElement
+          ?.querySelector<HTMLElement>(":scope > .tile-bar .win-strip-count") ?? null;
+      },
+      enabled: () => body.isConnected,
+    };
     tileEmDataHosts.push(host);
     addEmDataHost(host);
     return;
@@ -10953,20 +11084,14 @@ function buildSecondarySurface(area: HTMLElement, win: Win): void {
     // and the object store are both drawn, so a file can be dragged from one
     // into the other. With one surface at a time the gesture had nowhere to
     // start OR nowhere to land.
-    const bar = document.createElement("div");
-    bar.id = "";                       // ids belong to the focused view only
-    bar.className = "tile-storagebar";
-    const up = document.createElement("button");
-    up.className = "storage-nav";
-    up.textContent = "↑";
-    const crumb = document.createElement("div");
-    crumb.className = "storage-crumb";
-    bar.append(up, crumb);
+    // HDR2 · no bar of its own any more: the up-button and the crumb are in this
+    // area's window header, like every other type's strip. One row of chrome per
+    // window, whether or not it has the focus.
     const body = document.createElement("div");
     body.className = "tile-storagebody";
-    area.append(bar, body);
+    area.append(body);
     const host: StorageHost = {
-      win, body, crumb, up, enabled: () => body.isConnected,
+      win, body, crumb: null, up: null, enabled: () => body.isConnected,
     };
     tileStorageHosts.push(host);
     // painted by `renderTiles` once the tree is attached — rendering into a
@@ -11005,18 +11130,11 @@ function syncSecondaryPanels(): void {
     if (!win || !tabs || !body) continue;
     const showing = panelIdOf(win);
     const taken = claimed.has(showing);
+    // HDR2 · the tabs are in this area's window header, like the focused one's.
+    // The strip is emptied and hidden rather than removed: the surface keeps its
+    // shape, and one builder means the two areas still measure identically.
     tabs.innerHTML = "";
-    for (const tab of PANEL_TABS[win.type] ?? []) {
-      // FOCUS-NOJITTER · a BUTTON with the same class as the focused strip's, so
-      // the two strips measure identically and taking the focus moves nothing.
-      // Inert (the strip carries `panel-tabs-passive`): a secondary area is a
-      // view, and the pointer entering it promotes the area anyway.
-      const chip = document.createElement("button");
-      chip.className = "panel-tab" + (tab.id === showing ? " active" : "");
-      chip.tabIndex = -1;
-      chip.textContent = t(tab.labelKey);
-      tabs.appendChild(chip);
-    }
+    tabs.classList.add("hidden");
     body.innerHTML = "";
     if (taken) {
       // honest rather than blank: the panel is a single element and another area
@@ -11031,8 +11149,13 @@ function syncSecondaryPanels(): void {
     const el = document.getElementById(showing);
     if (!el) continue;
     el.classList.remove("hidden");
-    body.appendChild(el);
-    refreshPanelById(showing);
+    // MOVING an element resets its scrollTop — so the position is saved around
+    // the move as well as around the rebuild
+    preservingScroll(scrollerOf(el), () => {
+      body.appendChild(el);
+      refreshPanelById(showing);
+    });
+    restorePanelScroll(el);     // …and back where the reader left it
   }
   reflectEmptyAside();
 }
@@ -11059,28 +11182,24 @@ function renderPanelWindow(type: WindowType): void {
   if (!tabsHost || !body || !tabs) return;
   releasePanels();
   const showing = currentPanelId(type);
+  // HDR2 · the tabs are in the window HEADER now (`buildHeaderStrip`): which
+  // panel this window shows is a MODE of it, and modes live in the header. The
+  // strip stays in the DOM, empty and hidden, so the surface keeps its shape and
+  // nothing else had to move.
+  tabsHost.classList.add("hidden");
   tabsHost.innerHTML = "";
-  for (const tab of tabs) {
-    // FOCUS-NOJITTER · the SAME element and the same class a secondary area
-    // builds (`syncSecondaryPanels`). It used to be a bare <button> here and a
-    // <span> there, at two font sizes — so taking the focus grew the strip by
-    // 7px and pushed the panel down. One implementation, one measurement.
-    const b = document.createElement("button");
-    b.className = "panel-tab" + (tab.id === showing ? " active" : "");
-    b.textContent = t(tab.labelKey);
-    b.addEventListener("click", () => {
-      setWinCurrent(activeWin(), "panel", tab.id);
-      renderPanelWindow(type);
-    });
-    tabsHost.appendChild(b);
-  }
   const el = document.getElementById(showing);
-  if (el) {
-    el.classList.remove("hidden");
-    body.appendChild(el);
-  }
-  // the panels are built on demand by their own renderers
-  refreshPanelById(showing);
+  // the same rule on the FOCUSED side: taking a panel back into this window is a
+  // move, and a move resets the scroll
+  preservingScroll(scrollerOf(el), () => {
+    if (el) {
+      el.classList.remove("hidden");
+      body.appendChild(el);
+    }
+    // the panels are built on demand by their own renderers
+    refreshPanelById(showing);
+  });
+  restorePanelScroll(el);
   // the focused window just took a panel (or gave one back): the secondary areas
   // have to re-resolve their claims, or one of them would be left holding a body
   // whose element has moved.
@@ -11314,6 +11433,19 @@ function buildAreaHeader(win: Win, active: boolean): DocumentFragment {
     act("⌁", t("win.aiTitle"), false, () => openSettings("settings-sect-ai"));
     act("⌖", t("win.geoTitle"), false, () => focusThen(win, revealSitePosition));
   }
+
+  // ── the type's OWN STRIP, in the SAME row (HDR2) ──────────────────────────
+  //
+  // Every window used to carry two stacked rows of chrome: this header, and then
+  // the surface's own strip underneath — the storage crumb, the panel tabs, the
+  // table's row count. Two rows of furniture over every area, and in a
+  // four-area arrangement that is eight strips of nothing.
+  //
+  // They are the same KIND of thing: what this window is showing and what you
+  // can do to it. So they live in one row. The strip is built here, for the
+  // focused window and every secondary area alike (one builder, so taking the
+  // focus never changes a measurement), and the in-surface strips are gone.
+  frag.appendChild(buildHeaderStrip(win));
 
   const spacer = document.createElement("span");
   spacer.className = "win-sep";
@@ -11568,6 +11700,83 @@ function buildWindowSearch(win: Win): HTMLElement | null {
 }
 
 /**
+ * HDR2 · the per-type strip that used to be a SECOND row under the header.
+ *
+ * One element per type, built the same way in every area:
+ *
+ *  · storage   — up · the folder crumb · add-a-root (what was `#storage-bar`)
+ *  · inspector — the panel tabs (Inspector / Log): which panel this window
+ *    shows is a MODE of it, and modes live in the header
+ *  · emtree    — the same, for Multigraph / Outliner
+ *  · table     — the row count (`#table-view-count` and the tile head's twin)
+ *
+ * Everything else returns an empty span: a type with nothing extra to say
+ * shows a header with nothing extra in it.
+ */
+function buildHeaderStrip(win: Win): HTMLElement {
+  const strip = document.createElement("span");
+  strip.className = "win-strip";
+
+  if (win.type === "storage" && winModeOf(win) === "filesystem") {
+    // the object-store mode has no folder to walk, so it has no crumb: its own
+    // "where am I" is the room, and the room is in the panel's first line
+    const up = document.createElement("button");
+    up.className = "win-act win-strip-up";
+    up.textContent = "↑";
+    up.title = t("storage.up");
+    const crumb = document.createElement("div");
+    crumb.className = "win-strip-crumb storage-crumb";
+    const root = document.createElement("button");
+    root.className = "win-act win-strip-root";
+    root.textContent = "+ 📁";
+    root.title = t("storage.rootTitle");
+    root.addEventListener("click", (e) => {
+      e.stopPropagation();
+      focusThen(win, () => void addStorageRoot());
+    });
+    strip.append(up, crumb, root);
+    return strip;
+  }
+
+  if (win.type === "storage") {
+    const crumb = document.createElement("div");
+    crumb.className = "win-strip-crumb storage-crumb";
+    strip.appendChild(crumb);
+    return strip;
+  }
+
+  const tabs = PANEL_TABS[win.type];
+  if (tabs) {
+    const showing = panelIdOf(win);
+    for (const tab of tabs) {
+      const chip = document.createElement("button");
+      chip.className = "panel-tab win-strip-tab"
+        + (tab.id === showing ? " active" : "");
+      chip.textContent = t(tab.labelKey);
+      chip.addEventListener("click", (e) => {
+        e.stopPropagation();
+        setWinCurrent(win, "panel", tab.id);
+        // the panel that is showing changed: re-home it and repaint the header
+        renderAreaHeaders();
+        if (activeWin().id === win.id) renderPanelWindow(win.type);
+        syncSecondaryPanels();
+      });
+      strip.appendChild(chip);
+    }
+    return strip;
+  }
+
+  if (win.type === "table") {
+    const count = document.createElement("span");
+    count.className = "emdata-count win-strip-count";
+    strip.appendChild(count);
+    return strip;
+  }
+
+  return strip;
+}
+
+/**
  * Rebuild the header of EVERY area (WIN-FIX1 §1).
  *
  * The focused area's bar is `#window-header` — the element `windowBarHeight()`
@@ -11596,6 +11805,14 @@ function renderAreaHeaders(): void {
     const bar = area.querySelector<HTMLElement>(":scope > .tile-bar");
     area.style.setProperty("--winbar-h", `${bar?.offsetHeight ?? 0}px`);
   }
+  // HDR2 · the header now CONTAINS the storage crumb, and rebuilding the header
+  // empties it. Measured: the folder path vanished from the bar on every
+  // arrangement change while the listing below it stayed. So the surfaces that
+  // write into the strip are repainted after it is rebuilt — cheap (they redraw
+  // from the listing they already have) and it keeps the strip and the body
+  // saying the same thing.
+  if (windowsOf().some((w) => w.type === "storage")) renderStorage();
+  if (windowsOf().some((w) => w.type === "table")) renderEmData();
   resizeCanvas();
 }
 
@@ -13403,7 +13620,14 @@ document.getElementById("annotator-mirador")
   if (body)
     addEmDataHost({
       body,
-      count: document.getElementById("table-view-count"),
+      // HDR2 · the count is in the window header (`.win-strip-count`), looked up
+      // at render time because that header is rebuilt whenever the arrangement
+      // changes. `#table-view-head` stays in the DOM, hidden and empty: the
+      // surface keeps its shape and nothing else had to move.
+      get count() {
+        return document.querySelector<HTMLElement>(
+          "#window-header .win-strip-count");
+      },
       actions: document.getElementById("table-view-actions"),
       enabled: () =>
         !document.getElementById("table-view")?.classList.contains("hidden"),
