@@ -410,4 +410,39 @@ const freshReport = () => ({ addedGraphs: [], mergedGraphs: [], mergedNodes: 0,
      "…and the absence of a matrix is stated, not crashed on");
 }
 
+{
+  // AUTHORING · what the corpus takes from the CANVAS.
+  //
+  // The gate lives here rather than in main.ts so it can be exercised without a
+  // DOM: main.ts holds the gesture, this holds the RULE. It is given the class
+  // predicates (never a list of literal type names) exactly as the app gives
+  // them, so what is checked is the rule the app runs.
+  const ctx = {
+    isDtc: (t) => t.startsWith("dtc_"),
+    resource: "resource",
+    rights: ["author", "license", "embargo"],
+  };
+  const takes = (t) => C.corpusAcceptsNodeType(t, ctx);
+
+  ok(takes("dtc_acquisition"), "an acquisition belongs in the documentation");
+  ok(takes("dtc_process"), "…so does a transformation");
+  ok(takes("resource"), "…and the file it produced");
+  ok(takes("license") && takes("author") && takes("embargo"),
+     "the rights a lot carries live there too (that is where attribution writes)");
+
+  ok(!takes("US"), "a stratigraphic unit does NOT: no epochs, no lanes, no matrix");
+  ok(!takes("USVs") && !takes("SF") && !takes("USD"),
+     "…nor any of its siblings");
+  ok(!takes("EpochNode"), "an epoch is a swimlane of the study, not of a corpus");
+  ok(!takes("property") && !takes("document") && !takes("extractor"),
+     "nor the paradata chain of the interpretation");
+
+  // the predicate is the AUTHORITY: a datamodel that adds a DTC class needs no
+  // change here (this is the ADR-001 rule, checked rather than asserted)
+  ok(C.corpusAcceptsNodeType("dtc_whatever_comes_next", ctx),
+     "a DTC class the datamodel adds tomorrow is accepted with no code change");
+  ok(!C.corpusAcceptsNodeType("resource", { ...ctx, resource: undefined }),
+     "…and with no Resource type resolved, nothing is silently assumed");
+}
+
 console.log(`container: ${checks} checks passed`);

@@ -130,6 +130,30 @@ export function isCorpusSection(section: unknown): boolean {
   return !!data && data.em_collection === DTC_CORPUS_COLLECTION;
 }
 
+/**
+ * Does the DOCUMENTATION corpus take a node of this class from the canvas?
+ *
+ * The corpus is acquisitions, transformations and the resources they are about
+ * (plus the rights ornaments an acquisition carries — that is where a lot's
+ * licence and author live). It is NOT stratigraphy: a US in here would be a unit
+ * in a document with no epochs, no lanes and no matrix to hold it, and the
+ * paradata written about it would answer questions the corpus never asks.
+ *
+ * Takes the CLASS PREDICATES rather than a list of type names, so the rule stays
+ * where the datamodel is the authority: the caller passes `isDtcNodeType` and
+ * the runtime names of ResourceNode / AuthorNode / LicenseNode / EmbargoNode,
+ * all resolved from the vendored JSON (ADR-001 — never a literal here).
+ */
+export function corpusAcceptsNodeType(
+  nodeType: string,
+  ctx: { isDtc: (t: string) => boolean; resource?: string; rights: Iterable<string> },
+): boolean {
+  if (ctx.isDtc(nodeType)) return true;
+  if (ctx.resource && nodeType === ctx.resource) return true;
+  for (const r of ctx.rights) if (nodeType === r) return true;
+  return false;
+}
+
 /** An empty corpus section, tagged as one — for a project that has none yet. */
 export function newCorpusSection(id: string = DTC_CORPUS_MEMBER_ID): GraphSection {
   return {

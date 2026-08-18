@@ -3,6 +3,7 @@ import { applyFolding, buildMembership, MEMBERSHIP_EDGES } from "./folding";
 import { setBridgeResolver } from "./geo";
 import {
   buildContainer,
+  corpusAcceptsNodeType,
   newCorpusSection,
   bumpVersion,
   mergeContainers,
@@ -108,6 +109,7 @@ import {
   isStratigraphicType,
   narrativeViewTypes,
   narrativeViewTypeDescription,
+  isDtcNodeType,
   nodeTypeForClass,
   resourceTypeOfLocator,
   typeDescription,
@@ -336,7 +338,22 @@ declare global {
       nodes: string[];
       edges: Array<{ source: string; target: string; type: string }>;
       fitted: boolean | null;
+      /** each node's box in SCREEN pixels — so a test can aim a real gesture
+       *  (drag a connector, click a node) at what is actually drawn */
+      boxes: Array<{ id: string; x: number; y: number; w: number; h: number }>;
     } | null;
+    /** DAG · the two documents side by side, and where undo would land. The
+     *  question authoring the corpus raises is "which document did that go
+     *  into?", and no visible surface answers it for both at once. */
+    __EM_DOCS__?: () => {
+      study: { name: string; nodes: number; edges: number; types: string[] };
+      corpus:
+        | { nodes: number; edges: number; types: string[]; names: string[] }
+        | null;
+      writeTarget: "study" | "corpus";
+      undoTarget: "study" | "corpus";
+      canUndo: boolean;
+    };
   }
 }
 
@@ -947,6 +964,16 @@ window.__EM_SCENE__ = () => {
       target: e.target,
       type: String(e.edge.edge_type ?? ""),
     })),
+    boxes: (() => {
+      const vp = viewport();
+      return s.nodes.map((n) => ({
+        id: n.id,
+        x: n.x * vp.scale + vp.x,
+        y: n.y * vp.scale + vp.y,
+        w: n.w * vp.scale,
+        h: n.h * vp.scale,
+      }));
+    })(),
     // is the whole picture on screen? (the DAG must OPEN fitted, and a camera
     // left over from another picture is the way it opens at 300% on a corner)
     fitted: (() => {
@@ -959,6 +986,30 @@ window.__EM_SCENE__ = () => {
         return x0 >= -1 && y0 >= -1 && x0 + n.w * vp.scale <= w + 1 && y0 + n.h * vp.scale <= h + 1;
       });
     })(),
+  };
+};
+
+window.__EM_DOCS__ = () => {
+  const corpus = documentationCorpus({ create: false });
+  const undoTo = undoStore();
+  return {
+    study: {
+      name: String((store?.doc.graph as Record<string, unknown> | undefined)?.name ?? ""),
+      nodes: store?.liveNodes().length ?? 0,
+      edges: store?.liveEdges().length ?? 0,
+      types: [...new Set((store?.liveNodes() ?? []).map((n) => n.node_type))].sort(),
+    },
+    corpus: corpus
+      ? {
+          nodes: corpus.liveNodes().length,
+          edges: corpus.liveEdges().length,
+          types: [...new Set(corpus.liveNodes().map((n) => n.node_type))].sort(),
+          names: corpus.liveNodes().map((n) => n.name || n.id),
+        }
+      : null,
+    writeTarget: canvasWritesToCorpus() ? "corpus" : "study",
+    undoTarget: undoTo && undoTo !== store ? "corpus" : "study",
+    canUndo: !!undoTo?.canUndo,
   };
 };
 
@@ -1187,10 +1238,7 @@ function refreshInspector(): void {
   // acquisition on the DTC canvas selects a node of the CORPUS, and a panel that
   // only ever looked at the study graph would answer "nothing selected" about a
   // node the user can see. One rule, no special case in the panel itself.
-  const owning = selectedId && !store.node(selectedId)
-    && documentationCorpus({ create: false })?.node(selectedId)
-    ? documentationCorpus({ create: false })!
-    : store;
+  const owning = storeOfNode(selectedId) ?? store;
   renderInspector(
     inspector,
     owning,
@@ -1201,15 +1249,18 @@ function refreshInspector(): void {
         centerOn(id);
       },
       onClose: () => select(null),
+      // DAG · act on the document the thing LIVES in: an acquisition deleted
+      // from the DTC canvas is deleted from the corpus, and `store!` there would
+      // have removed nothing while the panel closed as if it had.
       onDeleteNode: (id) => {
-        store!.deleteNode(id);
+        (storeOfNode(id) ?? store!).deleteNode(id);
         select(null);
       },
       onDeleteEdge: (edge) => {
         // clear first so the store's onChange re-render doesn't paint a panel
         // for the edge we're removing
         if (selectedEdge && sameEdge(selectedEdge, edge)) selectedEdge = null;
-        store!.deleteEdge(edge);
+        (storeOfEdge(edge) ?? store!).deleteEdge(edge);
       },
       onToggleFold: (gid) => requestFold(gid),
       onEnterGroup: enterGroup,
@@ -1280,7 +1331,7 @@ function refreshInspector(): void {
       // and the digest travels with it: the shelf deduplicates on CONTENT, so
       // the same file chosen twice is one entry.
       onAddToShelf: (nodeId) => {
-        const node = store?.node(nodeId);
+        const node = storeOfNode(nodeId)?.node(nodeId);
         if (!node) return;
         const data = (node.data ?? {}) as Record<string, unknown>;
         const entry = addToShelf({
@@ -1295,7 +1346,7 @@ function refreshInspector(): void {
         toast(t("shelf.added", { name: entry.name }));
       },
       isOnShelf: (nodeId) => {
-        const node = store?.node(nodeId);
+        const node = storeOfNode(nodeId)?.node(nodeId);
         const digest = String(((node?.data ?? {}) as Record<string, unknown>).checksum ?? "");
         if (!node) return false;
         return shelfEntries().some(
@@ -1303,7 +1354,7 @@ function refreshInspector(): void {
       },
       commandsBlocked: commandsBlockedReason,
       onClearField: (nodeId, field) => {
-        store!.clearField(nodeId, field);
+        (storeOfNode(nodeId) ?? store!).clearField(nodeId, field);
         refreshInspector();
         buildScenes();
         draw();
@@ -1558,8 +1609,8 @@ function updateLegend(): void {
 }
 
 function updateToolbar(): void {
-  btnUndo.disabled = !store?.canUndo;
-  btnRedo.disabled = !store?.canRedo;
+  btnUndo.disabled = !undoStore()?.canUndo;
+  btnRedo.disabled = !undoStore()?.canRedo;
   dirtyDot.classList.toggle("hidden", !store?.dirty);
   // POL1: the two canvas overlays that only mean something with a document.
   // The filter panel filters nothing without a graph, and an enabled control that
@@ -2198,6 +2249,7 @@ function wireStore(s: DocumentStore): void {
     // channel and a future aux bake could touch another one, and the symptom of
     // that would be the canvas flickering to a graph nobody selected.
     if (s !== store) return;
+    lastTouchedStore = s;  // …and undo now knows which stack the user means
     recomputeHiddenFromCircles(); // keep hidden sets in sync with new types
     refreshNameStatus();          // NAME1: label colours follow the graph
     buildScenes();
@@ -2475,7 +2527,50 @@ function documentationCorpus(opts: { create?: boolean } = {}): DocumentStore | n
     header: { format: "em.json", version: "1.0" },
     graph: newCorpusSection() as unknown as EmDocument["graph"],
   } as EmDocument);
+  wireCorpusStore(corpusStore);
   return corpusStore;
+}
+
+/**
+ * DAG · the corpus repaints what shows it, and remembers that it was touched.
+ *
+ * The study store's listener (`wireStore`) rebuilds every surface; the corpus is
+ * drawn by ONE of them (the DTC canvas) and read by two more (the inspector and
+ * the Documentation panel's counts), so its listener is deliberately narrow — a
+ * corpus edit has no business rebuilding the EMtree or the matrix.
+ *
+ * It also records the corpus as the store last written to, which is how undo
+ * finds its way back to the document the last gesture changed (see `undoStore`).
+ */
+function wireCorpusStore(s: DocumentStore): void {
+  s.onChange(() => {
+    lastTouchedStore = s;
+    buildScenes();
+    updateToolbar();
+    refreshInspector();
+    renderStorage();   // the Documentation panel's counts (lots · chains · shared)
+    draw();
+  });
+}
+
+/**
+ * The document the last edit landed in — study or corpus.
+ *
+ * Undo is per-store (each `DocumentStore` owns its snapshot stack), so a single
+ * ⌘Z button has to know WHICH stack the user means. The answer is not "the
+ * active graph": if the last thing you did was create an acquisition on the DTC
+ * canvas, undo must take that back, not the edit you made in the matrix five
+ * minutes ago. Whichever store emitted last is the one the gesture touched.
+ */
+let lastTouchedStore: DocumentStore | null = null;
+
+function undoStore(): DocumentStore | null {
+  if (lastTouchedStore && lastTouchedStore !== store) {
+    // a corpus with nothing left to undo hands the turn back to the study, so
+    // ⌘Z never becomes a dead key while an older study step is still waiting
+    if (lastTouchedStore.canUndo || lastTouchedStore.canRedo) return lastTouchedStore;
+  }
+  return store;
 }
 
 function projectCorpusSection(): Record<string, unknown> | null {
@@ -2494,6 +2589,7 @@ function adoptProjectCorpus(section: Record<string, unknown>): void {
     header: { format: "em.json", version: "1.0" },
     graph: section as unknown as EmDocument["graph"],
   } as EmDocument);
+  wireCorpusStore(corpusStore);
 }
 
 function adoptProjectShelf(section: Record<string, unknown>): void {
@@ -3837,31 +3933,121 @@ const overview = buildOverview(
 );
 
 /**
- * DAG · is the DTC canvas showing the DOCUMENTATION CORPUS right now?
+ * DAG · the store THIS CANVAS writes to.
  *
- * The corpus is a document of its own (`container.corpus`), and every authoring
- * path on this canvas writes to `store` — the active STUDY graph. So a node
- * created while looking at the corpus would land in the matrix and vanish from
- * the picture that was on screen: not an error message, just a node nobody asked
- * for in a graph nobody was looking at. The canvas is READ-ONLY while it draws
- * the corpus, and says so; the lots and the chains are authored in the
- * Documentation panel, which writes to the corpus by construction.
+ * Almost always the active study graph. But the DTC view draws the documentation
+ * corpus (`container.corpus`), a document of its own — so while that picture is
+ * on screen, what you create on it belongs to the CORPUS. Writing to `store`
+ * there would put a DTC node in the stratigraphic matrix, out of the picture the
+ * gesture was aimed at: not an error anyone would see, just a node in a graph
+ * nobody was looking at.
  *
- * (Authoring the corpus ON the canvas is a declared follow-up: it needs the
- * write paths — selection, inspector, undo — pointed at the corpus store, not
- * just the drawing.)
+ * One resolver, used by every authoring path on the canvas (`placeNode`,
+ * `createNodeAt`, `createEdge`, the delete key), so the four cannot disagree
+ * about which document a gesture lands in.
  */
-function corpusDagIsReadOnly(): boolean {
-  if (view !== "dtc") return false;
-  const corpus = documentationCorpus({ create: false });
-  return !!corpus && corpus.liveNodes().length > 0;
+function canvasStore(): DocumentStore | null {
+  if (view !== "dtc") return store;
+  // ONE RULE: you author the document you are looking at. The corpus is written
+  // exactly when the corpus is drawn (`lastDtcSource`), so a gesture never lands
+  // in a document that is not on screen.
+  //
+  // Consequence, deliberate: a project with no documentation yet keeps writing
+  // its DTC into the study graph (what it drew before, and what it draws now) —
+  // the corpus is STARTED from the Documentation panel, which is what the empty
+  // state says. Making an empty DTC canvas silently create the member would move
+  // the substrate of every old project the first time somebody dropped a node.
+  if (lastDtcSource === "corpus") {
+    const corpus = documentationCorpus({ create: false });
+    if (corpus) return corpus;
+  }
+  return store;
 }
+
+/**
+ * DAG · which document a NODE lives in — the active study graph, or the corpus.
+ *
+ * The selection is an id, and an id alone does not say which document it belongs
+ * to. Every path that acts on the selection (delete, clear a field, the
+ * inspector's own writes) asks this instead of assuming the study graph: the
+ * alternative is a delete key that silently does nothing because the node it was
+ * aimed at lives in the other document.
+ */
+function storeOfNode(id: string | null | undefined): DocumentStore | null {
+  if (!id) return store;
+  if (store?.node(id)) return store;
+  const corpus = documentationCorpus({ create: false });
+  return corpus?.node(id) ? corpus : store;
+}
+
+/** Same question for an EDGE: whoever has it. */
+function storeOfEdge(edge: EmEdge): DocumentStore | null {
+  if (store?.doc.graph.edges.some((e) => sameEdge(e, edge))) return store;
+  const corpus = documentationCorpus({ create: false });
+  if (corpus?.doc.graph.edges.some((e) => sameEdge(e, edge))) return corpus;
+  return store;
+}
+
+/** Is the canvas currently writing to the corpus rather than to the study? */
+function canvasWritesToCorpus(): boolean {
+  const target = canvasStore();
+  return !!target && target !== store;
+}
+
+/**
+ * Does the corpus accept a node of this type from the canvas?
+ *
+ * The corpus is acquisitions, transformations and the resources they are about —
+ * NOT stratigraphy. A US dropped in here would be a unit in a document that has
+ * no epochs, no lanes and no matrix to hold it, and the paradata written about
+ * it would answer questions the corpus never asks. The rights ornaments are
+ * allowed because the corpus is where an acquisition's licence and author live
+ * (that is what the lot attribution writes).
+ */
+function corpusAcceptsType(type: string): boolean {
+  return corpusAcceptsNodeType(type, {
+    isDtc: isDtcNodeType,
+    resource: nodeTypeForClass("ResourceNode"),
+    rights: RIGHTS_TYPES,
+  });
+}
+
+/** author / license / embargo, resolved from the datamodel (never spelled out
+ *  here): the ornaments an acquisition or a file carries. */
+const RIGHTS_TYPES = new Set<string>(
+  ["AuthorNode", "LicenseNode", "EmbargoNode"]
+    .map((cls) => nodeTypeForClass(cls))
+    .filter((nt): nt is string => !!nt),
+);
 
 function placeNode(wx: number, wy: number): void {
   if (!store || !placingType) return;
-  if (corpusDagIsReadOnly()) {
-    toast(t("dtc.readOnly"));
+  // DAG · authoring the CORPUS: the same gesture, a different document. The
+  // corpus has no lanes, no groups and no matrix, so none of the study-side
+  // homing below applies — a node is created, stamped with its DTC kind, and the
+  // DAG lays it out by rank the moment it exists.
+  if (canvasWritesToCorpus()) {
+    const corpus = canvasStore()!;
+    if (!corpusAcceptsType(placingType)) {
+      toast(t("dtc.corpusRefusesType", { type: placingType }));
+      cancelPlacing();
+      return;
+    }
+    const cid = corpus.newId();
+    const cnode: EmNode = {
+      id: cid,
+      name: corpus.freshLabel(placingType),
+      node_type: placingType,
+      description: "",
+    };
+    if (placingKind) {
+      cnode.data = { dtc_kind: placingKind };
+      if (placingIsResource) cnode.data.resource_type = placingKind;
+    }
+    corpus.addNode(cnode, { x: wx - 45, y: wy - 15, w: 90, h: 30 });
+    select(cid);
     cancelPlacing();
+    toast(t("dtc.corpusCreated", { name: cnode.name ?? cid }));
     return;
   }
   // Epochs are special: an EpochNode + a swimlane (Matrix lane / Graph node,
@@ -4068,7 +4254,10 @@ function updateConnect(wx: number, wy: number): void {
   if (hit && hit.id !== connect.fromId) {
     connect.targetId = hit.id;
     connect.validity = connectValidity(
-      store.node(connect.fromId)?.node_type,
+      // DAG · resolve the SOURCE in its own document: on the corpus canvas it
+      // is a corpus node, and `store.node` there returns nothing — which read as
+      // "no EM connection allows undefined → …" and refused every link.
+      storeOfNode(connect.fromId)?.node(connect.fromId)?.node_type,
       hit.node.node_type,
     );
   } else {
@@ -4093,8 +4282,8 @@ function finishConnect(forceCreate = false): void {
     return;
   }
   if (!validity) return;
-  const src = store.node(fromId)?.node_type;
-  const tgt = store.node(targetId)?.node_type;
+  const src = storeOfNode(fromId)?.node(fromId)?.node_type;
+  const tgt = storeOfNode(targetId)?.node(targetId)?.node_type;
   if (validity === "invalid") {
     toast(`No EM connection allows ${src} → ${tgt}`);
     return;
@@ -4110,8 +4299,16 @@ function finishConnect(forceCreate = false): void {
 
 function createEdge(source: string, target: string, edgeType: string): void {
   if (!store) return;
-  if (corpusDagIsReadOnly()) {
-    toast(t("dtc.readOnly"));
+  // DAG · connecting two nodes of the corpus writes the edge IN the corpus. This
+  // is how the shared leaf is made by hand: a second `dtc_had_input` on an
+  // output that already has one — one output, two inputs, no duplicate.
+  if (canvasWritesToCorpus()) {
+    const corpus = canvasStore()!;
+    if (corpus.hasEdge(source, target, edgeType)) {
+      toast(`${edgeTypeLabel(edgeType)} already exists`);
+      return;
+    }
+    corpus.addEdge(source, target, edgeType);
     return;
   }
   if (store.hasEdge(source, target, edgeType)) {
@@ -4159,7 +4356,12 @@ function showEdgeMenu(
   edgeMenu.innerHTML = "";
   const title = document.createElement("div");
   title.className = "edge-menu-title";
-  title.textContent = `${store?.node(source)?.name || source} → ${store?.node(target)?.name || target}`;
+  // DAG · name the two ends from THEIR document: on the corpus canvas both live
+  // in the corpus, and `store?.node` there gave the dialog two raw UUIDs to ask
+  // its question about.
+  const endName = (id: string): string =>
+    storeOfNode(id)?.node(id)?.name || id;
+  title.textContent = `${endName(source)} → ${endName(target)}`;
   edgeMenu.appendChild(title);
   for (const t of types) {
     const b = document.createElement("button");
@@ -4200,9 +4402,20 @@ function hideEdgeMenu(): void {
 // ---------- create a node at a point (shared by placeNode & connect-create) ----------
 function createNodeAt(type: string, wx: number, wy: number): string | null {
   if (!store) return null;
-  if (corpusDagIsReadOnly()) {
-    toast(t("dtc.readOnly"));
-    return null;
+  // DAG · the connect-drag dropped in the void, on the corpus canvas: the new
+  // target belongs to the corpus, like everything else drawn here.
+  if (canvasWritesToCorpus()) {
+    const corpus = canvasStore()!;
+    if (!corpusAcceptsType(type)) {
+      toast(t("dtc.corpusRefusesType", { type }));
+      return null;
+    }
+    const cid = corpus.newId();
+    corpus.addNode(
+      { id: cid, name: corpus.freshLabel(type), node_type: type, description: "" },
+      { x: wx - 45, y: wy - 15, w: 90, h: 30 },
+    );
+    return cid;
   }
   if (type === "EpochNode") {
     const w = 140,
@@ -4266,7 +4479,7 @@ function onPickCreate(
 ): void {
   if (!store) return;
   hideCreateMenu();
-  const srcType = store.node(fromId)?.node_type;
+  const srcType = storeOfNode(fromId)?.node(fromId)?.node_type;
   const newId = createNodeAt(type, wx, wy);
   if (!newId) return;
   const eTypes = allowedEdgeTypes(srcType, type);
@@ -4278,7 +4491,7 @@ function onPickCreate(
 }
 function showCreateNodeMenu(fromId: string, wx: number, wy: number): void {
   if (!store) return;
-  const srcType = store.node(fromId)?.node_type;
+  const srcType = storeOfNode(fromId)?.node(fromId)?.node_type;
   // group the datamodel-allowed target types by the palette taxonomy
   const groups: { label: string; types: string[] }[] = [];
   for (const sec of SECTIONS) {
@@ -4292,7 +4505,7 @@ function showCreateNodeMenu(fromId: string, wx: number, wy: number): void {
   menu.className = "connect-menu";
   const title = document.createElement("div");
   title.className = "cm-title";
-  title.textContent = `New node from ${store.node(fromId)?.name || srcType}`;
+  title.textContent = `New node from ${storeOfNode(fromId)?.node(fromId)?.name || srcType}`;
   menu.appendChild(title);
   if (!groups.length) {
     const empty = document.createElement("div");
@@ -7515,8 +7728,8 @@ btnNarrativeEdit.addEventListener("click", () => {
   refreshNarrativeView();
 });
 
-btnUndo.addEventListener("click", () => store?.undo());
-btnRedo.addEventListener("click", () => store?.redo());
+btnUndo.addEventListener("click", () => undoStore()?.undo());
+btnRedo.addEventListener("click", () => undoStore()?.redo());
 btnMatrix.addEventListener("click", () => setView("matrix"));
 btnGraph.addEventListener("click", () => setView("graph"));
 
@@ -13670,8 +13883,8 @@ window.addEventListener("keydown", (e) => {
   }
   if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
     e.preventDefault();
-    if (e.shiftKey) store?.redo();
-    else store?.undo();
+    if (e.shiftKey) undoStore()?.redo();
+    else undoStore()?.undo();
     return;
   }
   if (e.key === "0") fit();
@@ -13696,7 +13909,8 @@ window.addEventListener("keydown", (e) => {
     // epochs & phases must go through their dedicated flows (swimlane + temporal
     // PDG cleanup, unit re-home/un-attribution, relayout) — the generic
     // deleteNodes would leave a phantom lane and orphan PDGs.
-    const isEpochish = (id: string) => store!.node(id)?.node_type === "EpochNode";
+    const isEpochish = (id: string) =>
+      storeOfNode(id)?.node(id)?.node_type === "EpochNode";
     if (ids.length === 1 && isEpochish(ids[0])) {
       if (store.parentEpoch(ids[0]) != null) promptDeletePhase(ids[0]);
       else promptDeleteEpoch(ids[0]);
@@ -13706,7 +13920,18 @@ window.addEventListener("keydown", (e) => {
     if (plain.length !== ids.length)
       toast("Epochs/phases: use Delete epoch / Delete phase in the inspector");
     if (plain.length) {
-      store.deleteNodes(plain);
+      // DAG · one gesture can only ever hold nodes of one document (the canvas
+      // draws one), but group them by owner rather than trusting that: a
+      // selection that survived a document switch would otherwise delete nothing
+      // and say nothing.
+      const byOwner = new Map<DocumentStore, string[]>();
+      for (const id of plain) {
+        const owner = storeOfNode(id);
+        if (!owner) continue;
+        if (!byOwner.has(owner)) byOwner.set(owner, []);
+        byOwner.get(owner)!.push(id);
+      }
+      for (const [owner, ids2] of byOwner) owner.deleteNodes(ids2);
       select(null);
     }
   }
@@ -13714,7 +13939,7 @@ window.addEventListener("keydown", (e) => {
     e.preventDefault();
     const edge = selectedEdge;
     selectedEdge = null; // clear before the store's onChange re-render
-    store.deleteEdge(edge);
+    (storeOfEdge(edge) ?? store).deleteEdge(edge);
     refreshInspector();
   }
   if (e.key === "+" || e.key === "=") {

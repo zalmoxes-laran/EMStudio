@@ -421,8 +421,13 @@ const EN: Dict = {
   // DAG · the corpus is drawn, not edited: every authoring path on this canvas
   // writes to the STUDY graph, so a node made here would land where nobody was
   // looking. The lots and the chains are authored in the panel that owns them.
-  "dtc.readOnly":
-    "The documentation DAG is read-only: publish a lot or declare a derivation in the Documentation panel, and it appears here.",
+  // DAG · the canvas of the corpus is EDITABLE, and what it refuses it says: the
+  // corpus is acquisitions, transformations and files — a stratigraphic unit
+  // would be a unit in a document with no epochs and no matrix to hold it.
+  "dtc.corpusCreated": "{name} created in the documentation",
+  "dtc.corpusRefusesType":
+    "{type} does not belong in the documentation: this graph holds acquisitions, transformations and the files they are about. Create it in Analysis.",
+  "dtc.corpusEdge": "connected in the documentation",
   // the four provenance lanes of the DTC projection
   "dtc.laneAcquisition": "Acquisitions",
   "dtc.laneInput": "Inputs",
@@ -899,8 +904,10 @@ const IT: Dict = {
     "DTC — questo grafo non ha ancora una catena di gemello digitale (nessuna relazione dtc_, nessuna risorsa collegata).",
   "dtc.corpusEmpty":
     "Nessuna documentazione, ancora. Trascina dei file nel tab Documentazione (arrivano come lotto, con la loro acquisizione), o dichiara una derivazione — quel che compare qui è il corpus: acquisizioni, trasformazioni e i file di cui parlano.",
-  "dtc.readOnly":
-    "Il DAG della documentazione è in lettura: pubblica un lotto o dichiara una derivazione nel pannello Documentazione, e comparirà qui.",
+  "dtc.corpusCreated": "{name} creato nella documentazione",
+  "dtc.corpusRefusesType":
+    "{type} non appartiene alla documentazione: questo grafo tiene acquisizioni, trasformazioni e i file di cui parlano. Crealo in Analisi.",
+  "dtc.corpusEdge": "collegato nella documentazione",
   "dtc.laneAcquisition": "Acquisizioni",
   "dtc.laneInput": "Ingressi",
   "dtc.laneProcess": "Processi",
