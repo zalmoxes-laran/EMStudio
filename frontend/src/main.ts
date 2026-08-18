@@ -3155,6 +3155,17 @@ function connectToHub(url: string, room: string, token: string | null): void {
       // tab went on saying "standalone: there is no store to publish to" after
       // the room was joined, until something else happened to redraw it.
       renderStorage();
+      // …and READ the register: what this instance already documents about the
+      // files this study cites belongs on the DAG the moment the room is open,
+      // not after somebody thinks to ask for it.
+      void pullResidentCorpus().then((got) => {
+        if (got && (got.nodes || got.edges)) {
+          ingestLog(t("assets.registerRead", {
+            n: String(got.nodes), e: String(got.edges),
+          }));
+          renderStorage();
+        }
+      });
       // STEP 4 · and only NOW the work that was not confirmed before the
       // re-sync. The order is the fix: the snapshot the room sends was built
       // BEFORE it received these operations, so re-sending them without
@@ -10355,6 +10366,13 @@ async function publishQueue(): Promise<void> {
       n: String(lot.count),
       lot: corpus.node(lot.acquisitionId)?.name ?? lot.acquisitionId,
     }));
+    // …AND IN THE REGISTER em-server enforces from. Writing the licence only into
+    // the file corpus is exactly what was measured coming back as
+    // `x-em-license: null`: the statement existed and the server could not see
+    // it. Best-effort and awaited-but-not-blocking the UI: the file corpus keeps
+    // the statement either way, and a step that did not travel is logged.
+    void pushLotToRegister(published, ingestDraft.lot || undefined)
+      .then(() => renderStorage());
     // the selection stays on the STUDY's side (the asset), because that is the
     // node the inspector can show rights and usages for
     select(published[0]);
@@ -10363,6 +10381,186 @@ async function publishQueue(): Promise<void> {
     refreshInspector();
   }
   renderStorage();
+}
+
+// ── THE RESIDENT REGISTER · the corpus em-server can enforce from ────────────
+//
+// Two corpora, one shape, and the difference is who can READ them:
+//
+// * the **file** corpus (`container.corpus`) travels inside the project. It is
+//   the truth offline, and it is what standalone has always used;
+// * the **resident** corpus lives in the room's instance (`GET /v1/corpus`,
+//   `POST /v1/corpus/append`). It is the one em-server reads when it serves an
+//   asset — which is why a licence declared only in the file was measured coming
+//   back as `x-em-license: null`: the server had no way to see it.
+//
+// So in a room the two are kept in step: what this client documents is ALSO
+// declared in the register (`pushLotToRegister`), and what the register knows
+// about this study's files is folded back in (`pullResidentCorpus`). Additively
+// in both directions — the register is shared, and nothing here may quietly
+// overwrite what a colleague said about a file.
+
+/** The room's em-server base URL, or null when this session is not in a room. */
+function registerBase(): string | null {
+  const base = getSettings().sync.hubUrl?.replace(/\/+$/, "") ?? "";
+  if (!base || !sync.room) return null;
+  return base;
+}
+
+/** One act on the resident register. Never throws: a register that is not there
+ *  must not break an ingestion that has already put the bytes in the store — the
+ *  file corpus still has the statement, and the note says what did not travel. */
+async function registerAppend(act: string, body: Record<string, unknown>):
+    Promise<{ ok: boolean; report?: Record<string, unknown>; detail?: string }> {
+  const base = registerBase();
+  if (!base) return { ok: false, detail: "standalone" };
+  try {
+    const answer = await fetch(`${base}/v1/corpus/append`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(hubToken ? { Authorization: `Bearer ${hubToken}` } : {}),
+      },
+      body: JSON.stringify({ act, ...body }),
+    });
+    if (!answer.ok) {
+      return { ok: false, detail: `${answer.status} ${(await answer.text()).slice(0, 140)}` };
+    }
+    const parsed = await answer.json() as { report?: Record<string, unknown> };
+    return { ok: true, report: parsed.report };
+  } catch (err) {
+    return { ok: false, detail: String(err instanceof Error ? err.message : err) };
+  }
+}
+
+/**
+ * Declare a published lot in the RESIDENT register: the files, the lot, the rights.
+ *
+ * The order is the dependency and not a preference: a file has to be registered
+ * before anything can be said about it (`enrich_asset_dtc` refuses to invent a
+ * resource), and the lot has to exist before it can be attributed. Best-effort
+ * and LOUD: every step that did not travel is logged, because the licence that
+ * silently stayed at home is exactly the failure this whole arc is about.
+ */
+async function pushLotToRegister(published: string[], lotName?: string):
+    Promise<void> {
+  if (!registerBase()) return;
+  const doc = store;
+  const corpus = documentationCorpus({ create: false });
+  if (!doc || !corpus) return;
+
+  const digests: string[] = [];
+  for (const id of published) {
+    const node = doc.node(id) ?? corpus.node(id);
+    const data = (node?.data ?? {}) as Record<string, unknown>;
+    const digest = String(data.checksum ?? "");
+    if (!digest) continue;
+    // only a RESIDENT file: a reference lives outside this instance's store, and
+    // the register refuses to describe bytes it does not hold as resident
+    const residency = String(data.residency ?? "resident");
+    const answer = await registerAppend("resource", {
+      checksum: digest,
+      name: node?.name ?? id,
+      media_type: data.media_type ?? undefined,
+      residency,
+      url: residency === "reference" ? data.url ?? undefined : undefined,
+    });
+    if (!answer.ok) {
+      ingestLog(t("assets.registerFailed", { detail: answer.detail ?? "" }), "warn");
+      continue;
+    }
+    digests.push(digest);
+  }
+  if (!digests.length) return;
+
+  const lot = await registerAppend("acquisition", {
+    resources: digests, name: lotName || undefined,
+    metadata: { ingested_at: new Date().toISOString(), source: "EMStudio" },
+  });
+  if (!lot.ok) {
+    ingestLog(t("assets.registerFailed", { detail: lot.detail ?? "" }), "warn");
+    return;
+  }
+  // …and the rights, per file, because the register attributes an ASSET by its
+  // digest (the lot-level attribution is the library's `attribute_batch`, which
+  // this endpoint does not expose yet — declared, not silently skipped)
+  let signed = 0;
+  if (ingestDraft.license || ingestDraft.authorOrcid || ingestDraft.authorName) {
+    for (const digest of digests) {
+      const answer = await registerAppend("attribution", {
+        checksum: digest,
+        license: ingestDraft.license || undefined,
+        author: ingestDraft.authorOrcid || ingestDraft.authorName || undefined,
+        author_name: ingestDraft.authorName || undefined,
+      });
+      if (answer.ok) signed += 1;
+      else ingestLog(t("assets.registerFailed", { detail: answer.detail ?? "" }), "warn");
+    }
+  }
+  ingestLog(t("assets.registered", {
+    n: String(digests.length), signed: String(signed),
+  }));
+}
+
+/**
+ * Fold what the register knows about THIS study's files into the local corpus.
+ *
+ * The slice, not the whole register: a study cites a handful of assets out of a
+ * documentation that may hold thousands. Additive — a node already here keeps
+ * what it says, and only fields it left empty are filled in — because the local
+ * corpus may be mid-edit and a fetch must not undo somebody's typing.
+ *
+ * Returns how many nodes and edges arrived, so the caller can say so rather than
+ * claim it worked.
+ */
+async function pullResidentCorpus(): Promise<{ nodes: number; edges: number } | null> {
+  const base = registerBase();
+  if (!base) return null;
+  const doc = store;
+  if (!doc) return null;
+  const digests = [...new Set(doc.liveNodes()
+    .map((n) => String(((n.data ?? {}) as Record<string, unknown>).checksum ?? ""))
+    .filter(Boolean))];
+  if (!digests.length) return { nodes: 0, edges: 0 };
+  try {
+    const url = `${base}/v1/corpus?sha256=${encodeURIComponent(digests.join(","))}`;
+    const answer = await fetch(url, {
+      headers: hubToken ? { Authorization: `Bearer ${hubToken}` } : {},
+    });
+    if (!answer.ok) {
+      ingestLog(t("assets.registerFailed", {
+        detail: `${answer.status} ${(await answer.text()).slice(0, 140)}`,
+      }), "warn");
+      return null;
+    }
+    const body = await answer.json() as {
+      graph?: { nodes?: EmNode[]; edges?: EmEdge[] };
+    };
+    const corpus = documentationCorpus()!;
+    let nodes = 0;
+    let edges = 0;
+    for (const node of body.graph?.nodes ?? []) {
+      if (!node?.id) continue;
+      // the graph-scope node of a member is bookkeeping, not documentation
+      if (node.node_type === "geo_position") continue;
+      if (corpus.node(node.id)) continue;
+      corpus.addNode(node);
+      nodes += 1;
+    }
+    for (const edge of body.graph?.edges ?? []) {
+      if (!edge?.source || !edge?.target) continue;
+      if (!corpus.node(edge.source) || !corpus.node(edge.target)) continue;
+      if (corpus.hasEdge(edge.source, edge.target, String(edge.edge_type ?? ""))) continue;
+      corpus.addEdge(edge.source, edge.target, String(edge.edge_type ?? ""));
+      edges += 1;
+    }
+    return { nodes, edges };
+  } catch (err) {
+    ingestLog(t("assets.registerFailed", {
+      detail: String(err instanceof Error ? err.message : err),
+    }), "warn");
+    return null;
+  }
 }
 
 /**
@@ -10482,6 +10680,28 @@ function ingestLots(): HTMLElement {
   see.title = t("assets.seeDagHint");
   see.addEventListener("click", () => openCorpusDag());
   seeBar.appendChild(see);
+  // …and, in a room, the REGISTER: the documentation the instance holds about
+  // the files this study cites. Offered rather than done silently on every
+  // repaint, because it is a network call and a fetch nobody asked for is a
+  // fetch nobody can explain.
+  if (registerBase()) {
+    const pull = ing("button", "insp-btn", t("assets.readRegister")) as HTMLButtonElement;
+    pull.title = t("assets.readRegisterHint");
+    pull.addEventListener("click", () => {
+      pull.disabled = true;
+      void pullResidentCorpus().then((got) => {
+        pull.disabled = false;
+        if (!got) return;
+        ingestLog(t("assets.registerRead", {
+          n: String(got.nodes), e: String(got.edges),
+        }));
+        renderStorage();
+        buildScenes();
+        draw();
+      });
+    });
+    seeBar.appendChild(pull);
+  }
   box.appendChild(seeBar);
   for (const lot of lots) {
     const row = document.createElement("div");
@@ -11909,6 +12129,17 @@ function openCorpusDag(): void {
   framedViews.delete(viewportKey(win.id, "dtc"));
   setMode("dtc");
   renderAreaHeaders();
+  // AND AGAIN NEXT FRAME. Measured: a graph window created and magnified in the
+  // same tick has not been LAID OUT yet when `setMode` frames it, so `fit` sized
+  // the picture for a canvas ~80px wide and left the scale at its floor (0.02) —
+  // twelve nodes drawn 2px tall on a canvas that was 1278px wide by the time
+  // anybody looked. The DOM has to have happened first; one frame is what that
+  // costs. (It went unnoticed before because a DAG window that already existed
+  // was already the right size.)
+  requestAnimationFrame(() => {
+    framedViews.delete(viewportKey(win.id, "dtc"));
+    setMode("dtc");
+  });
 }
 
 /** Transform a SPECIFIC window in place (its own bar's type dropdown). */

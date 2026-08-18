@@ -424,6 +424,14 @@ const EN: Dict = {
   // DAG · the canvas of the corpus is EDITABLE, and what it refuses it says: the
   // corpus is acquisitions, transformations and files — a stratigraphic unit
   // would be a unit in a document with no epochs and no matrix to hold it.
+  // the RESIDENT register: the corpus em-server reads when it serves an asset
+  "assets.registered":
+    "declared in the room's register: {n} file(s), {signed} with their rights",
+  "assets.registerFailed": "the register did not take it: {detail}",
+  "assets.registerRead": "read from the register: {n} node(s), {e} relation(s)",
+  "assets.readRegister": "Read the register",
+  "assets.readRegisterHint":
+    "The documentation this room's server holds about the files this study cites — the corpus it reads a licence and an embargo out of when it serves an asset. Additive: nothing you wrote here is overwritten.",
   "dtc.corpusCreated": "{name} created in the documentation",
   "dtc.corpusRefusesType":
     "{type} does not belong in the documentation: this graph holds acquisitions, transformations and the files they are about. Create it in Analysis.",
@@ -904,6 +912,13 @@ const IT: Dict = {
     "DTC — questo grafo non ha ancora una catena di gemello digitale (nessuna relazione dtc_, nessuna risorsa collegata).",
   "dtc.corpusEmpty":
     "Nessuna documentazione, ancora. Trascina dei file nel tab Documentazione (arrivano come lotto, con la loro acquisizione), o dichiara una derivazione — quel che compare qui è il corpus: acquisizioni, trasformazioni e i file di cui parlano.",
+  "assets.registered":
+    "dichiarato nel registro della stanza: {n} file, {signed} con i loro diritti",
+  "assets.registerFailed": "il registro non l'ha preso: {detail}",
+  "assets.registerRead": "letto dal registro: {n} nodi, {e} relazioni",
+  "assets.readRegister": "Leggi il registro",
+  "assets.readRegisterHint":
+    "La documentazione che il server di questa stanza tiene sui file citati da questo studio — il corpus da cui legge licenza ed embargo quando serve un asset. Additivo: niente di quel che hai scritto qui viene sovrascritto.",
   "dtc.corpusCreated": "{name} creato nella documentazione",
   "dtc.corpusRefusesType":
     "{type} non appartiene alla documentazione: questo grafo tiene acquisizioni, trasformazioni e i file di cui parlano. Crealo in Analisi.",
