@@ -56,7 +56,7 @@ function nothingYet(b: HTMLElement, what: string): HTMLElement {
   return b;
 }
 
-const nameOf = (n: EmNode | undefined): string =>
+export const nameOf = (n: EmNode | undefined): string =>
   n ? String(n.name || n.id) : "";
 
 /** "1 rapporto" / "3 rapporti". A story that says "1 rapporti" reads as a fault
@@ -290,7 +290,7 @@ function epochOf(unit: EmNode, doc: EmDocument | null): string | null {
   return any.length ? any[0] : null;
 }
 
-function epochStart(e: EmNode): number {
+export function epochStart(e: EmNode): number {
   const d = (e.data ?? {}) as Record<string, unknown>;
   const raw = d["start_time"] ?? d["start"] ?? (e as Record<string, unknown>)["start_time"];
   const n = typeof raw === "number" ? raw : Number(raw);
@@ -494,39 +494,65 @@ export function certaintyLadder(c: Certainty): HTMLElement {
  * at the end, marked — because a study in progress has plenty of them and
  * dropping them would make the axis a lie by omission.
  */
-export function timelineEmbed(node: EmNode, doc: EmDocument | null): HTMLElement {
-  const b = box("timeline", nameOf(node), "nv-timeline");
-  const scope = scopeOf(node, doc);
-  b.appendChild(el("div", "nv-embed-note", `asse temporale · ${scope.what}`));
+/** Where an epoch ENDS — its own `end_time`, else where it starts (a moment). */
+export function epochEnd(e: EmNode): number {
+  const d = (e.data ?? {}) as Record<string, unknown>;
+  const raw = d["end_time"] ?? d["end"];
+  const n = typeof raw === "number" ? raw : Number(raw);
+  return Number.isFinite(n) ? n : epochStart(e);
+}
 
+export interface TimelineSpans {
+  /** the epochs in scope that CAN sit on an axis, oldest first */
+  dated: EmNode[];
+  /** …and the ones that cannot: named, never dropped */
+  undated: EmNode[];
+  min: number;
+  max: number;
+  span: number;
+  what: string;
+}
+
+/**
+ * The epochs of a scope, as an axis — the ONE computation behind both the
+ * in-app timeline and its exported figure.
+ *
+ * Extracted rather than copied: a figure that placed the epochs differently
+ * from the embed above it would be a picture of another study. What it does is
+ * what the embed always did — the epochs the scope's units touch, else the
+ * scope's own epochs; the undated ones set aside by name.
+ */
+export function timelineSpans(node: EmNode,
+                              doc: EmDocument | null): TimelineSpans {
+  const scope = scopeOf(node, doc);
   const index = indexOf(doc);
   const touched = new Map<string, EmNode>();
-  if (scope.units.length) {
-    for (const u of scope.units) {
-      const eid = epochOf(u, doc);
-      const e = eid ? index.get(eid) : undefined;
-      if (e) touched.set(e.id, e);
-    }
+  for (const u of scope.units) {
+    const eid = epochOf(u, doc);
+    const e = eid ? index.get(eid) : undefined;
+    if (e) touched.set(e.id, e);
   }
   const epochs = touched.size ? [...touched.values()] : scope.epochs;
-  if (!epochs.length) {
+  const dated = epochs.filter((e) => Number.isFinite(epochStart(e)))
+    .sort((a, c) => epochStart(a) - epochStart(c));
+  const undated = epochs.filter((e) => !Number.isFinite(epochStart(e)));
+  const min = dated.length ? epochStart(dated[0]) : 0;
+  const max = dated.length ? Math.max(...dated.map(epochEnd)) : 1;
+  return { dated, undated, min, max, span: (max - min) || 1, what: scope.what };
+}
+
+export function timelineEmbed(node: EmNode, doc: EmDocument | null): HTMLElement {
+  const b = box("timeline", nameOf(node), "nv-timeline");
+  const spans = timelineSpans(node, doc);
+  b.appendChild(el("div", "nv-embed-note", `asse temporale · ${spans.what}`));
+
+  const { dated, undated, min, span } = spans;
+  if (!dated.length && !undated.length) {
     return nothingYet(b, "nessuna epoca in questo ambito");
   }
 
-  const dated = epochs.filter((e) => Number.isFinite(epochStart(e)));
-  const undated = epochs.filter((e) => !Number.isFinite(epochStart(e)));
-  dated.sort((a, c) => epochStart(a) - epochStart(c));
-
   const axis = el("div", "nv-timeline-axis");
-  const ends = (e: EmNode): number => {
-    const d = (e.data ?? {}) as Record<string, unknown>;
-    const raw = d["end_time"] ?? d["end"];
-    const n = typeof raw === "number" ? raw : Number(raw);
-    return Number.isFinite(n) ? n : epochStart(e);
-  };
-  const min = dated.length ? epochStart(dated[0]) : 0;
-  const max = dated.length ? Math.max(...dated.map(ends)) : 1;
-  const span = max - min || 1;
+  const ends = epochEnd;
 
   for (const e of dated) {
     const bar = el("div", "nv-timeline-bar");

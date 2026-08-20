@@ -881,4 +881,128 @@ eq(doc.graph.nodes.filter(
      "figure · e il rapporto stratigrafico è tracciato");
 }
 
+{
+  // ── LA MAPPA E LA TIMELINE COME FIGURE ────────────────────────────────────
+  //
+  // Le due che restavano segnaposto, e per due ragioni diverse:
+  //
+  // * la **mappa** in app è un canvas con TILE cross-origin, quindi è tainted e
+  //   `toDataURL` si rifiuta. La figura è perciò il **solo livello vettoriale**:
+  //   il punto, l'impronta quando la posa è nota, il nord, le coordinate. Niente
+  //   basemap — non per pigrizia: i tile sono cartografia di altri, con una
+  //   licenza e un'attribuzione che una figura in un PDF non porta;
+  // * la **timeline** è DOM (chip), non una scena: serviva un renderer, e legge
+  //   `timelineSpans`, la STESSA computazione dell'embed a schermo, così la
+  //   figura non può collocare un'epoca dove la tela non la mette.
+  //
+  // I due renderer stanno in `svg-export.ts` — il modulo del disegno stampabile,
+  // dove i neutri della figura sono già decisi (`INK`) — e non in
+  // `narrative-embeds.ts`, che per regola non contiene UN colore scritto a mano.
+  // Il dato invece resta lì: `timelineSpans`, letto da entrambi.
+  const N = await load("svg-export.ts");
+  const D = await load("narrative-embeds.ts");
+
+  // — la mappa: solo il punto (nessuna posa dal bridge)
+  const bare = N.mapToSvg({ lat: 40.7489, lon: 14.4839, epsg: 4326,
+                            label: "Saggio 3" });
+  ok(bare && bare.startsWith("<svg") && bare.includes("</svg>"),
+     "map-figura · un punto posizionato si rende in SVG");
+  ok(bare.includes("40.748900") && bare.includes("14.483900"),
+     "map-figura · e scrive le coordinate, che sono il dato");
+  ok(bare.includes("EPSG:4326"),
+     "map-figura · col suo sistema di riferimento");
+  ok(bare.includes("Saggio 3"), "map-figura · e l'etichetta del nodo");
+  ok(/<circle\b/.test(bare), "map-figura · il marcatore è DISEGNATO");
+  ok(/<polygon\b/.test(bare), "map-figura · e la freccia del nord c'è");
+  // nessun RIFERIMENTO esterno: né un <image>, né un href, né un host di tile.
+  // (La parola «tile» nel commento del file c'è, ed è giusto che ci sia: dice
+  // perché non ci sono — misurato, questo check la contava come una violazione.)
+  const external = bare.replace('xmlns="http://www.w3.org/2000/svg"', "");
+  ok(!/<image\b|href=|https?:\/\//i.test(external),
+     "map-figura · nessun tile, nessuna immagine esterna: niente taint, "
+     + "nessuna cartografia di altri dentro un export");
+  ok(!/\bm<\/text>|\d+ m</.test(bare),
+     "map-figura · e SENZA impronta non c'è scala: una barra sotto un punto "
+     + "misurerebbe il nulla");
+
+  // — la mappa con l'impronta: allora sì la scala, e la rotazione sul nord
+  const placed = N.mapToSvg({
+    lat: 40.7489, lon: 14.4839, epsg: 4326, label: "Saggio 3", rotation: 12,
+    // ~40 m di lato attorno al punto
+    corners: [[14.48366, 40.74872], [14.48414, 40.74872],
+              [14.48414, 40.74908], [14.48366, 40.74908]],
+  });
+  ok(/<polygon[^>]*points="[^"]{40,}"/.test(placed),
+     "map-figura · l'impronta è un poligono con i suoi vertici");
+  ok(/\d+ m<\/text>/.test(placed),
+     "map-figura · con l'impronta arriva la barra di scala metrica");
+  ok(placed.includes("rotate(-12"),
+     "map-figura · e il nord è girato dell'azimut della scena");
+  ok(placed.includes("rotazione 12"),
+     "map-figura · detto anche a parole, non solo disegnato");
+  // riproiettata: i gradi sono WGS84, e il frame di PARTENZA è detto — non il
+  // codice proiettato appiccicato a dei gradi (misurato su un'ancora UTM vera)
+  const utm = N.mapToSvg({ lat: 40.7489, lon: 14.4839, epsg: 4326,
+                           epsgFrom: 32633, label: "Saggio 3" });
+  ok(utm.includes("WGS84, da EPSG:32633"),
+     "map-figura · dei gradi riproiettati dicono da dove vengono");
+  ok(!utm.includes("(EPSG:32633)"),
+     "map-figura · …e non si spacciano per coordinate proiettate");
+
+  eq(N.mapToSvg({ lat: NaN, lon: 14.4839 }), null,
+     "map-figura · senza coordinate NESSUNA figura (→ segnaposto onesto)");
+
+  // — la timeline: le epoche sull'asse, dallo stesso calcolo dell'embed
+  const withEpochs = {
+    graph: {
+      nodes: [
+        // anni a quattro cifre di proposito: è il caso che ha tagliato
+        // «1450 → 1520» sul PDF compilato — l'etichetta più lunga è quella
+        // dell'ULTIMA epoca, cioè quella incollata al bordo destro
+        { id: "EP1", name: "Fase repubblicana", node_type: "epoch",
+          data: { start_time: 1200, end_time: 1450 } },
+        { id: "EP2", name: "Fase imperiale", node_type: "epoch",
+          data: { start_time: 1450, end_time: 1520 } },
+        { id: "EPX", name: "Fase non datata", node_type: "epoch", data: {} },
+        { id: "GRAPH", name: "Porta Marina", node_type: "graph", data: {} },
+      ],
+      edges: [],
+    },
+  };
+  const graphSelf = withEpochs.graph.nodes.find((n) => n.id === "GRAPH");
+  const tl = N.timelineToSvg(graphSelf, withEpochs);
+  ok(tl && tl.startsWith("<svg"), "timeline-figura · si rende in SVG");
+  ok(tl.includes("Fase repubblicana") && tl.includes("Fase imperiale"),
+     "timeline-figura · nomina le epoche in ambito");
+  ok(tl.includes("1200") && tl.includes("1520"),
+     "timeline-figura · e le loro date, che sono l'asse");
+  const bars = (tl.match(/<rect\b/g) || []).length;
+  ok(bars >= 1 + 2,
+     `timeline-figura · una barra per epoca datata oltre al fondo `
+     + `(rect=${bars})`);
+  ok(tl.includes("Fase non datata") && /fuori dall'asse/.test(tl),
+     "timeline-figura · l'epoca senza datazione è NOMINATA fuori dall'asse, "
+     + "non lasciata cadere");
+  // la parità: le stesse epoche, nello stesso ordine, del calcolo dell'embed
+  const spans = D.timelineSpans(graphSelf, withEpochs);
+  eq(spans.dated.map((e) => e.id), ["EP1", "EP2"],
+     "timeline-figura · la figura e l'embed leggono UN solo calcolo");
+  const order = tl.indexOf("Fase repubblicana") < tl.indexOf("Fase imperiale");
+  ok(order, "timeline-figura · dal più antico, come l'embed");
+  // nessuna etichetta oltre il bordo: sul PDF compilato «1450 → 1520» perdeva
+  // l'anno finale. Le date stanno DENTRO la cornice, dovunque cada la barra.
+  const overflow = [...tl.matchAll(/<text x="([\d.]+)"[^>]*>([^<]*→[^<]*)</g)]
+    .filter(([, x, t]) => Number(x) + t.length * 6.6 > 520);
+  eq(overflow.map((m) => m[2]), [],
+     "timeline-figura · nessuna data tagliata dal bordo della figura");
+
+  // — il degrado: nessuna epoca in ambito, nessuna figura
+  const empty = { graph: { nodes: [{ id: "G", name: "vuoto",
+                                     node_type: "graph", data: {} }],
+                           edges: [] } };
+  eq(N.timelineToSvg(empty.graph.nodes[0], empty), null,
+     "timeline-figura · senza epoche NESSUNA figura (→ resta il blocco di "
+     + "prima, che dice perché)");
+}
+
 console.log(`narrative: ${checks} checks passed`);

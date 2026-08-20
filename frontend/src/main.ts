@@ -1,6 +1,7 @@
 import "./style.css";
 import { applyFolding, buildMembership, MEMBERSHIP_EDGES } from "./folding";
-import { setBridgeResolver } from "./geo";
+import { geoOf, georeferenceScene, reprojectPoint, setBridgeResolver } from "./geo";
+import type { PlacedScene } from "./geo";
 import {
   buildContainer,
   corpusAcceptsNodeType,
@@ -43,6 +44,7 @@ import {
 } from "./identity";
 import { renderInspector } from "./inspector";
 import { narrativesIn, renderNarrativeView, VIEW_TYPE_MIME } from "./narrative";
+
 import {
   addEpochChapter,
   scaffoldNarrativeFromGraph,
@@ -116,7 +118,7 @@ import {
   // (the datamodel version exports are read by `versions.ts` for the footer's
   // breakdown popover — MENU-AUDIT removed this module's second, hardcoded copy)
 } from "./rules";
-import { sceneToSvg } from "./svg-export";
+import { mapToSvg, sceneToSvg, timelineToSvg } from "./svg-export";
 import {
   isTauri,
   openEmJson,
@@ -993,10 +995,14 @@ window.__EM_SCENE__ = () => {
 // out and check what the exporters do with them (the pictures are the point of
 // the whole path, and reading them out of a download inside a browser is not a
 // measurement anybody can repeat).
-(window as unknown as { __EM_FIGURES__?: () => Record<string, string> })
-  .__EM_FIGURES__ = () => {
+//
+// A PROMISE, since the map figure may have to ask the bridge for the scene's
+// placement: awaited by whoever measures, exactly as the export awaits it.
+(window as unknown as
+  { __EM_FIGURES__?: () => Promise<Record<string, string>> })
+  .__EM_FIGURES__ = async () => {
     const narrative = store ? narrativesIn(store.doc)[0] : null;
-    return narrative ? narrativeFigures(narrative.id) : {};
+    return narrative ? await narrativeFigures(narrative.id) : {};
   };
 
 window.__EM_DOCS__ = () => {
@@ -5102,19 +5108,27 @@ const NARRATIVE_FORMATS: Record<string, { mime: string; ext: string; label: stri
  * relations among them. Not a re-layout — a re-layout could disagree.
  *
  * Keyed `"<view_type>:<ref>"`, the key `s3dgraphy.narrative.bake.figure_key`
- * builds on the other side. Only `matrix` for now; every other visual type is
- * declared, not silently skipped (see `FIGURABLE`).
+ * builds on the other side. Three kinds travel: `matrix` (a slice of the
+ * canvas), `map` (the VECTOR layer only — see `mapToSvg` for why no basemap)
+ * and `timeline` (`timelineToSvg`, off the same spans the embed shows).
+ * `scene3d` stays a link on purpose: 3D is navigated, not printed. Anything
+ * else is declared here rather than silently skipped (see `FIGURABLE`).
  */
-const FIGURABLE = new Set(["matrix"]);
+const FIGURABLE = new Set(["matrix", "map", "timeline"]);
 
-function narrativeFigures(narrativeId: string): Record<string, string> {
+async function narrativeFigures(
+  narrativeId: string,
+): Promise<Record<string, string>> {
   const out: Record<string, string> = {};
   if (!store) return out;
   const narrative = narrativesIn(store.doc).find((n) => n.id === narrativeId);
   if (!narrative) return out;
-  const matrix = scenes.matrix;
-  if (!matrix) return out;   // nothing laid out: nothing to photograph
+  const doc = store.doc;
 
+  // what is asked for, once, before anything is drawn: the placement below is a
+  // bridge round-trip and it is worth making only if a map is actually embedded
+  const wanted: Array<{ view: string; ref: string }> = [];
+  const seen = new Set<string>();
   for (const chapter of narrative.chapters as Array<{
     blocks?: Array<{ block_type?: string; ref?: string; view_type?: string }>;
   }>) {
@@ -5124,21 +5138,102 @@ function narrativeFigures(narrativeId: string): Record<string, string> {
       const ref = String(block.ref ?? "");
       if (!ref || !FIGURABLE.has(view)) continue;
       const key = `${view}:${ref}`;
-      if (out[key]) continue;                 // one plate per (view, subject)
-      const slice = epochSliceOf(matrix, ref);
-      if (!slice) continue;
-      try {
-        out[key] = sceneToSvg(slice, edgeVisible,
-                              store.node(ref)?.name ?? ref);
-      } catch (err) {
-        // a figure that will not render is left out: the exporter falls back to
-        // the placeholder for that block, and the export still happens
-        logInfo(`figura non resa per ${key}: ${
-          err instanceof Error ? err.message : String(err)}`);
+      if (seen.has(key)) continue;            // one plate per (view, subject)
+      seen.add(key);
+      wanted.push({ view, ref });
+    }
+  }
+  if (!wanted.length) return out;
+
+  // The scene's FOOTPRINT, asked once for the whole export. It is what turns a
+  // marker into a plan: an extent, an orientation, and therefore a scale bar.
+  // Best-effort by construction — the reprojection lives in the bridge (PROJ is
+  // on the Python side, G1), so without the `[geo]` extra, or offline, the map
+  // figure keeps its marker and coordinates and drops the footprint. It never
+  // invents one: a bounding box nobody measured, drawn at metre precision,
+  // would be a fabrication (the rule `georeferenceScene` already states).
+  let placed: PlacedScene | null = null;
+  if (wanted.some((w) => w.view === "map")) {
+    const answer = await georeferenceScene(doc);
+    if (answer && "error" in answer)
+      logInfo(`figura mappa senza impronta (${answer.error}): resta il punto`);
+    else placed = answer;
+  }
+
+  for (const { view, ref } of wanted) {
+    const key = `${view}:${ref}`;
+    const node = store.node(ref) ?? null;
+    try {
+      let svg: string | null = null;
+      if (view === "matrix") {
+        const matrix = scenes.matrix;          // nothing laid out: nothing to
+        if (!matrix) continue;                 // photograph
+        const slice = epochSliceOf(matrix, ref);
+        if (!slice) continue;
+        svg = sceneToSvg(slice, edgeVisible, node?.name ?? ref);
+      } else if (view === "timeline") {
+        if (!node) continue;
+        svg = timelineToSvg(node, doc);
+      } else if (view === "map") {
+        svg = node ? await mapFigure(node, placed) : null;
       }
+      if (!svg) continue;                      // degrades to the placeholder
+      out[key] = svg;
+    } catch (err) {
+      // a figure that will not render is left out: the exporter falls back to
+      // the placeholder for that block, and the export still happens
+      logInfo(`figura non resa per ${key}: ${
+        err instanceof Error ? err.message : String(err)}`);
     }
   }
   return out;
+}
+
+/**
+ * The map figure of one embed: resolve WHERE, then draw only what is known.
+ *
+ * Reads the position exactly as the on-screen card does — `site_position` for
+ * the graph-self node (the symbolic site position, not the 3D shift), `geoOf`
+ * otherwise, and the bridge for a projected frame — so the picture in the PDF
+ * and the map in the app cannot point at different places. `null` when there are
+ * no coordinates, which is the honest case the card words as "sito non
+ * posizionato": the export then keeps the placeholder for that block.
+ */
+async function mapFigure(node: { node_type?: string; name?: string; id?: string;
+                                 data?: Record<string, unknown> },
+                         placed: PlacedScene | null): Promise<string | null> {
+  const data = (node.data ?? {}) as Record<string, unknown>;
+  const label = String(node.name || node.id || "");
+  const footprint = placed
+    ? { corners: placed.corners, rotation: placed.rotation }
+    : { corners: undefined, rotation: 0 };
+
+  if (node.node_type === "graph") {
+    const sp = (data.site_position ?? null) as
+      | { lon?: unknown; lat?: unknown } | null;
+    const lat = sp ? Number(sp.lat) : NaN;
+    const lon = sp ? Number(sp.lon) : NaN;
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+    return mapToSvg({ lat, lon, epsg: 4326, label, ...footprint });
+  }
+
+  const geo = geoOf(data);
+  if (geo.ok)
+    return mapToSvg({ lat: geo.lat, lon: geo.lon, epsg: geo.epsg,
+                      label, ...footprint,
+                      rotation: geo.rotation || footprint.rotation });
+  if (geo.reason === "needs-reprojection") {
+    const point = await reprojectPoint(geo.anchor.x, geo.anchor.y,
+                                       geo.anchor.epsg);
+    if ("error" in point) {
+      logInfo(`figura mappa non resa per ${label}: ${point.error}`);
+      return null;                            // no guessed coordinates
+    }
+    return mapToSvg({ lat: point.lat, lon: point.lon, epsg: 4326,
+                      epsgFrom: geo.anchor.epsg, label, ...footprint,
+                      rotation: geo.anchor.rotation || footprint.rotation });
+  }
+  return null;
 }
 
 /**
@@ -5201,7 +5296,7 @@ async function exportNarrative(format: string): Promise<void> {
     // …with the figures this process rendered (see `narrativeFigures`): the
     // exporter cannot draw a matrix, and a caption without its matrix is what
     // the four exports used to produce.
-    const figures = narrativeFigures(chosen);
+    const figures = await narrativeFigures(chosen);
     const res = await fetch(
       `${await bridgeUrl()}/export-narrative?format=${encodeURIComponent(format)}`,
       {
