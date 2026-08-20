@@ -132,6 +132,31 @@ export interface Scope {
 }
 
 const EPOCH_LINKS = ["has_first_epoch", "survive_in_epoch", "is_in_epoch"] as const;
+
+/** Every phase under this epoch, transitively (`has_sub_epoch`).
+ *
+ *  A phase is an EpochNode hanging off its parent, and the units of a
+ *  periodised epoch belong to the phases — so "the units of this epoch" has to
+ *  walk down, exactly as the matrix's lane inheritance does. Cycle-safe: a
+ *  hand-edited document that made an epoch its own ancestor gets a finite
+ *  answer, not a hang. */
+function subEpochsOf(doc: EmDocument | null, epochId: string): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>([epochId]);
+  const queue = [epochId];
+  while (queue.length) {
+    const here = queue.shift()!;
+    for (const e of edgesOf(doc)) {
+      if (e.edge_type !== "has_sub_epoch" || e.source !== here) continue;
+      const child = String(e.target ?? "");
+      if (!child || seen.has(child)) continue;
+      seen.add(child);
+      out.push(child);
+      queue.push(child);
+    }
+  }
+  return out;
+}
 const GROUP_LINKS = [
   "is_in_activity", "is_in_paradata_nodegroup", "is_group_of",
   "is_in_location_nodegroup", "is_in_timebranch",
@@ -144,9 +169,48 @@ export function scopeOf(node: EmNode, doc: EmDocument | null): Scope {
     || n.node_type === "EpochNode");
 
   if (type === "epoch" || type === "EpochNode") {
-    const units = incoming(doc, node.id, EPOCH_LINKS)
-      .map((id) => index.get(id))
-      .filter(isStrat) as EmNode[];
+    // PARITY WITH THE CANVAS, FIRST.
+    //
+    // Matrix Mode does not resolve epoch→units by walking edges at all: it reads
+    // `layout.swimlanes` and places each node by its POSITION, because the
+    // layout engine assigned the lanes semantically (`has_first_epoch`, plus the
+    // `is_after` chain and group membership inherited in both directions —
+    // CLAUDE.md invariant 4). So a unit the engine laned through the chain is
+    // drawn in that epoch on the canvas and is invisible to any edge walk.
+    //
+    // That is the gap E.D. measured on 20 Aug: Matrix Mode showed the epoch's
+    // units and the embed of the same epoch said there were none. So the embed
+    // asks the layout the way the canvas does, and only falls back to the edges
+    // when the document carries no layout (a graph nobody has laid out yet, for
+    // which the canvas would have nothing to show either).
+    const laned = unitsFromLayout(node.id, doc, index);
+    if (laned.length)
+      return { units: laned, what: `epoca «${nameOf(node)}»`, epochs: [node] };
+    // AN EPOCH INCLUDES ITS PHASES.
+    //
+    // Measured (2026-08-20): a chapter anchored to an epoch whose units hang off
+    // its PHASES (`has_sub_epoch`, the periodisation of DP-… phases) said
+    // "nessuna unità stratigrafica in questo ambito" while the graph's matrix
+    // drew those very units in that epoch's lane — because the matrix inherits
+    // membership down the phases and this walk stopped at the parent. The
+    // reference was valid, the units were there, and the embed said the chapter
+    // was about nothing.
+    //
+    // So the scope of an epoch is the epoch AND its phases (transitively: a
+    // phase can have phases). Ordering and lane labels are unchanged — a unit
+    // still declares its own lane through `epochOf`, so it appears under the
+    // PHASE it belongs to, which is what the matrix shows too.
+    const lanes = [node.id, ...subEpochsOf(doc, node.id)];
+    const seen = new Set<string>();
+    const units: EmNode[] = [];
+    for (const lane of lanes) {
+      for (const id of incoming(doc, lane, EPOCH_LINKS)) {
+        if (seen.has(id)) continue;
+        seen.add(id);
+        const unit = index.get(id);
+        if (isStrat(unit)) units.push(unit as EmNode);
+      }
+    }
     return { units, what: `epoca «${nameOf(node)}»`, epochs: [node] };
   }
 
@@ -176,6 +240,45 @@ export function scopeOf(node: EmNode, doc: EmDocument | null): Scope {
   }
 
   return { units: [], what: `«${nameOf(node)}»`, epochs };
+}
+
+/**
+ * The units the LAYOUT puts in this epoch's lane — what the canvas actually draws.
+ *
+ * `layout.swimlanes` gives the band (`y`, `height`) for an epoch and
+ * `layout.positions` the rect of every node; a node whose vertical centre falls
+ * in the band is in that lane. Exactly the test `views/matrix.ts` applies
+ * (`laneIdxOfY`), so the story and the canvas cannot disagree about which units
+ * an epoch has.
+ *
+ * A PHASE's band sits inside its parent's, so a periodised epoch collects its
+ * phases' units here too, by geometry, without a second rule.
+ *
+ * Empty when the document has no layout, no lane for this epoch, or no node in
+ * the band — the caller then walks the edges instead.
+ */
+function unitsFromLayout(epochId: string, doc: EmDocument | null,
+                         index: Map<string, EmNode>): EmNode[] {
+  const layout = (doc as { layout?: {
+    swimlanes?: Array<{ epoch_id?: string; y?: number; height?: number }>;
+    positions?: Record<string, { y?: number; h?: number }>;
+  } } | null)?.layout;
+  const lane = (layout?.swimlanes ?? []).find((l) => l?.epoch_id === epochId);
+  const positions = layout?.positions;
+  if (!lane || !positions || typeof lane.y !== "number") return [];
+  const top = lane.y;
+  const bottom = lane.y + (typeof lane.height === "number" ? lane.height : 0);
+  if (!(bottom > top)) return [];
+  const out: EmNode[] = [];
+  for (const [id, rect] of Object.entries(positions)) {
+    const y = typeof rect?.y === "number" ? rect.y : NaN;
+    if (!Number.isFinite(y)) continue;
+    const centre = y + (typeof rect?.h === "number" ? rect.h / 2 : 0);
+    if (centre < top || centre >= bottom) continue;
+    const unit = index.get(id);
+    if (isStrat(unit)) out.push(unit as EmNode);
+  }
+  return out;
 }
 
 /** Which epoch a unit belongs to — its FIRST one, which is the lane the matrix
@@ -215,8 +318,22 @@ export function matrixEmbed(node: EmNode, doc: EmDocument | null): HTMLElement {
   const scope = scopeOf(node, doc);
   b.appendChild(el("div", "nv-embed-note", `matrice · ${scope.what}`));
   if (!scope.units.length) {
-    return nothingYet(b, "nessuna unità stratigrafica in questo ambito — "
-      + "il riferimento è valido, il contenuto non c'è ancora");
+    // SAY WHICH QUESTION CAME UP EMPTY. "nessuna unità in questo ambito" was
+    // true and useless: on 20 Aug it appeared for an epoch whose units the
+    // canvas was drawing, and there was no way to tell from the message whether
+    // the reference was wrong, the graph empty, or the resolution broken. So the
+    // empty state names what was asked — a reader can check the same thing.
+    const isEpoch = String(node.node_type ?? "") === "EpochNode"
+      || String(node.node_type ?? "") === "epoch";
+    const laid = !!(doc as { layout?: { swimlanes?: unknown[] } } | null)
+      ?.layout?.swimlanes?.length;
+    return nothingYet(b, isEpoch
+      ? "nessuna unità in questa epoca: né la corsia del layout"
+        + (laid ? "" : " (questo grafo non è ancora stato disposto)")
+        + ", né gli archi has_first_epoch / survive_in_epoch / is_in_epoch, né "
+        + "le sue fasi ne portano una: il riferimento è valido, l'epoca è vuota."
+      : "nessuna unità stratigrafica in questo ambito — "
+        + "il riferimento è valido, il contenuto non c'è ancora");
   }
 
   const index = indexOf(doc);

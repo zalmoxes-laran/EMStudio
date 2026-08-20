@@ -989,6 +989,16 @@ window.__EM_SCENE__ = () => {
   };
 };
 
+// …and the FIGURES this process renders for an export, so a test can carry them
+// out and check what the exporters do with them (the pictures are the point of
+// the whole path, and reading them out of a download inside a browser is not a
+// measurement anybody can repeat).
+(window as unknown as { __EM_FIGURES__?: () => Record<string, string> })
+  .__EM_FIGURES__ = () => {
+    const narrative = store ? narrativesIn(store.doc)[0] : null;
+    return narrative ? narrativeFigures(narrative.id) : {};
+  };
+
 window.__EM_DOCS__ = () => {
   const corpus = documentationCorpus({ create: false });
   const undoTo = undoStore();
@@ -5077,6 +5087,92 @@ const NARRATIVE_FORMATS: Record<string, { mime: string; ext: string; label: stri
   ipynb: { mime: "application/x-ipynb+json", ext: "ipynb", label: "Jupyter" },
 };
 
+/**
+ * The figures of a narrative's visual embeds, rendered HERE, for an export.
+ *
+ * Why here and not in the exporter: **a matrix is drawn by the layout engine,
+ * and the engine is in this process.** Its lanes are semantic (`has_first_epoch`
+ * plus the `is_after` chain and inherited membership — invariant 4), so a second
+ * implementation in Python would drift from what the author is looking at, which
+ * is exactly how the narrative embeds came to disagree with Matrix Mode. So the
+ * canvas hands its picture to the export.
+ *
+ * The picture is a SLICE of the SAME `scenes.matrix` the canvas draws: the epoch's
+ * lane, the nodes whose centre falls in that band (the canvas's own test) and the
+ * relations among them. Not a re-layout — a re-layout could disagree.
+ *
+ * Keyed `"<view_type>:<ref>"`, the key `s3dgraphy.narrative.bake.figure_key`
+ * builds on the other side. Only `matrix` for now; every other visual type is
+ * declared, not silently skipped (see `FIGURABLE`).
+ */
+const FIGURABLE = new Set(["matrix"]);
+
+function narrativeFigures(narrativeId: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!store) return out;
+  const narrative = narrativesIn(store.doc).find((n) => n.id === narrativeId);
+  if (!narrative) return out;
+  const matrix = scenes.matrix;
+  if (!matrix) return out;   // nothing laid out: nothing to photograph
+
+  for (const chapter of narrative.chapters as Array<{
+    blocks?: Array<{ block_type?: string; ref?: string; view_type?: string }>;
+  }>) {
+    for (const block of chapter.blocks ?? []) {
+      if (block.block_type !== "embed") continue;
+      const view = String(block.view_type ?? "");
+      const ref = String(block.ref ?? "");
+      if (!ref || !FIGURABLE.has(view)) continue;
+      const key = `${view}:${ref}`;
+      if (out[key]) continue;                 // one plate per (view, subject)
+      const slice = epochSliceOf(matrix, ref);
+      if (!slice) continue;
+      try {
+        out[key] = sceneToSvg(slice, edgeVisible,
+                              store.node(ref)?.name ?? ref);
+      } catch (err) {
+        // a figure that will not render is left out: the exporter falls back to
+        // the placeholder for that block, and the export still happens
+        logInfo(`figura non resa per ${key}: ${
+          err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * One epoch's band of a matrix scene, as a scene of its own.
+ *
+ * The membership test is the canvas's (`views/matrix.ts` places by position, and
+ * `narrative-embeds.ts` reads the same bands), so the figure shows the units the
+ * reader sees in that lane — including the ones the engine laned through the
+ * chain, which no edge walk would find.
+ *
+ * Returns null when the scene has no lane for this epoch (a graph that was never
+ * laid out, or a ref that is not an epoch): the caller then supplies no figure.
+ */
+function epochSliceOf(scene: Scene, epochId: string): Scene | null {
+  const lane = scene.lanes.find((l) => l.id === epochId);
+  if (!lane) return null;
+  const top = lane.y;
+  const bottom = lane.y + lane.height;
+  const nodes = scene.nodes.filter((n) => {
+    const centre = n.y + n.h / 2;
+    return centre >= top && centre < bottom;
+  });
+  if (!nodes.length) return null;
+  const keep = new Set(nodes.map((n) => n.id));
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  return {
+    ...scene,
+    nodes,
+    byId,
+    edges: scene.edges.filter((e) => keep.has(e.source) && keep.has(e.target)),
+    lanes: [lane],
+  };
+}
+
 async function exportNarrative(format: string): Promise<void> {
   if (!store) {
     toast("Apri prima un documento");
@@ -5102,13 +5198,18 @@ async function exportNarrative(format: string): Promise<void> {
   }
   toast(`Esporto la narrativa in ${spec.label}…`);
   try {
+    // …with the figures this process rendered (see `narrativeFigures`): the
+    // exporter cannot draw a matrix, and a caption without its matrix is what
+    // the four exports used to produce.
+    const figures = narrativeFigures(chosen);
     const res = await fetch(
       `${await bridgeUrl()}/export-narrative?format=${encodeURIComponent(format)}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ doc: JSON.parse(store.toJSON()),
-                               narrative_id: chosen }),
+                               narrative_id: chosen,
+                               figures }),
       });
     if (!res.ok) {
       let msg = `bridge error ${res.status}`;
@@ -5122,7 +5223,18 @@ async function exportNarrative(format: string): Promise<void> {
     const blob = await res.blob();
     const base = String(store.doc.graph["name"] ?? chosen)
       .replace(/[^\w.-]+/g, "_");
-    downloadBlob(blob, `${base}.${spec.ext}`, spec.mime);
+    // THE ONE FORMAT THAT ARRIVES AS AN ARCHIVE. A `.tex` references its
+    // figures, so with figures the bridge answers a ZIP (main.tex + main.bib +
+    // fig/*.pdf). The server says which it sent; naming the file `.tex` when it
+    // is a zip is how somebody ends up with an unreadable download.
+    const asZip = (res.headers.get("Content-Type") || "").includes("zip");
+    downloadBlob(blob, `${base}.${asZip ? "zip" : spec.ext}`,
+                 asZip ? "application/zip" : spec.mime);
+    if (asZip) {
+      toast(`Narrativa esportata in ${spec.label} + figure (.zip: main.tex, `
+            + `main.bib, fig/)`);
+      return;
+    }
     // LaTeX comes with its bibliography: a .bib the author has to fetch
     // separately is a .bib the author forgets to fetch.
     const bib = res.headers.get("X-EM-Bib");
@@ -7391,6 +7503,27 @@ function revealSignerPicker(): void {
 const generating = new Set<number>();
 
 /**
+ * Show, in the chapter, that a draft is being written.
+ *
+ * Written straight into the DOM rather than through the view's props: the mark
+ * is a fact about THIS SECOND (a request in flight), not about the document, and
+ * the next repaint is exactly when it should disappear. One class and one line,
+ * so there is nothing to clean up if a render happens meanwhile.
+ */
+function markChapterGenerating(chapterIndex: number, title: string): void {
+  const section = document.querySelectorAll(
+    "#narrative-view .nv-chapter")[chapterIndex] as HTMLElement | undefined;
+  if (!section) return;
+  section.classList.add("nv-generating");
+  const line = document.createElement("div");
+  line.className = "nv-generating-line";
+  line.innerHTML = '<span class="nv-spinner"></span>';
+  line.appendChild(document.createTextNode(
+    ` genero la bozza di «${title}» — il modello sta scrivendo…`));
+  section.appendChild(line);
+}
+
+/**
  * Ask the bridge for a draft of one chapter, and file the answer.
  *
  * The key is NEVER here. It lives in em-bridge's environment (N5); this side
@@ -7418,6 +7551,11 @@ async function generateChapterDraft(narrativeId: string,
   refreshNarrativeView();
   refreshAiKeyStateIfOpen();   // Settings may be open: lock the key controls
   toast(`Genero la bozza di «${chapter?.title ?? activityId}»…`);
+  // …AND IN THE CHAPTER ITSELF. A model takes seconds; a toast that has faded
+  // leaves somebody staring at an unchanged paragraph wondering whether they
+  // actually clicked. The mark sits where the prose will appear, and it is
+  // removed by the repaint in `finally` whatever the outcome was.
+  markChapterGenerating(chapterIndex, chapter?.title ?? activityId);
   try {
     const res = await fetch(`${await bridgeUrl()}/generate-narrative-draft`, {
       method: "POST",
@@ -7445,8 +7583,14 @@ async function generateChapterDraft(narrativeId: string,
       // 501 = the seam is not configured (no ANTHROPIC_API_KEY, or a build
       // without the LLM adapter). Different problem from a model that failed,
       // and the user can only fix the first one — so say which it is.
+      // 501 is fixable BY THE USER, and only if they are told where: the key
+      // lives in em-bridge's memory and is put there from the AI panel (⌁ /
+      // Impostazioni ▸ Avanzate). A message that only says "not configured"
+      // leaves somebody hunting for a setting they have never seen.
       toast(res.status === 501
-        ? `Generazione non configurata: ${msg}`
+        ? `Generazione non configurata: ${msg} — mettila in ⌁ (Impostazioni ▸ `
+          + `Avanzate ▸ Fornitore AI): resta nella memoria di em-bridge, mai nel `
+          + `documento.`
         : `Generazione fallita: ${msg}`);
       return;
     }
@@ -7592,6 +7736,9 @@ function refreshNarrativeView(): void {
       set: (i) => setCurrentChapterIndex(i),
     },
   );
+  // …and the window has something current to act on (see `ensureCurrentChapter`).
+  // After the render, so the chapters it counts are the ones just drawn.
+  ensureCurrentChapter();
   renderResourcePanels(); // the story changed: its blocks panel repaints
 }
 
@@ -8260,9 +8407,30 @@ function currentChapterIndex(): number | null {
   return typeof v === "number" ? v : null;
 }
 function setCurrentChapterIndex(i: number | null): void {
+  if (currentChapterIndex() === i) return;      // nothing to change, nothing to do
   setWinCurrent(activeWin(), "chapter", i);
-  refreshNarrativeView();
+  // NO RE-RENDER HERE, and this is a BUG FIX, not an optimisation.
+  //
+  // The narrative view sets the current chapter on `mousedown` (picking the
+  // chapter you are reading is navigation). Re-rendering there rebuilt the whole
+  // view *between mousedown and mouseup*, so every control inside a chapter —
+  // `+ prose`, `▲ ▼ ✕`, the author picker — was REMOVED FROM THE DOM mid-gesture,
+  // and a `click` event only fires when the down and the up land on the same
+  // element. Measured with a real mouse: the button logged `pointerdown`,
+  // `mousedown`, and then nothing at all, with `document.contains(button)` false.
+  // That is the whole of "I press and nothing happens", and it hit every
+  // narrative control at once.
+  //
+  // Marking a chapter is a class and a header, so that is all it does.
+  markCurrentChapter(i);
   updateWindowHeader(); // the menus enable/disable with it
+}
+
+/** Move the `nv-current` marker in the DOM, without rebuilding anything. */
+function markCurrentChapter(i: number | null): void {
+  const sections = document.querySelectorAll("#narrative-view .nv-chapter");
+  sections.forEach((section, index) =>
+    section.classList.toggle("nv-current", index === i));
 }
 function currentRowId(): string | null {
   const v = winCurrent(activeWin(), "row");
@@ -8318,6 +8486,32 @@ function validCurrentChapter(): number | null {
   const i = currentChapterIndex();
   if (!narr || i == null) return null;
   return i >= 0 && i < narr.chapters.length ? i : null;
+}
+
+/**
+ * NO-DEAD-END · a narrative window ARRIVES with a chapter to work on.
+ *
+ * Measured: with nothing current, EVERY item of Capitolo/Inserisci/IA is
+ * unavailable for one reason — "click a chapter to make it current" — so the
+ * whole window reads as broken until you happen to click a chapter first. The
+ * requirement itself is right (a menu that said "the current chapter" while
+ * guessing which one would be worse); what was wrong is starting from nowhere.
+ *
+ * So the first chapter becomes current on arrival. It is a DEFAULT, not a
+ * decision: clicking any chapter changes it, and nothing is written to the
+ * document — the current element lives on the window (workspace.ts).
+ */
+function ensureCurrentChapter(): void {
+  const narr = activeNarrative();
+  if (!narr || !narr.chapters.length) return;
+  if (validCurrentChapter() != null) return;
+  // `setWinCurrent` and not `setCurrentChapterIndex`: the latter re-renders the
+  // view, which calls this again — one default must not cost a render loop. The
+  // marker and the menus are brought up to date by hand, right here, which is
+  // all the re-render would have done anyway.
+  setWinCurrent(activeWin(), "chapter", 0);
+  markCurrentChapter(0);
+  updateWindowHeader();
 }
 
 // WIN2b · the window header's transform dropdown. It changes the ACTIVE WINDOW's
@@ -11960,8 +12154,25 @@ function buildAreaHeader(win: Win, active: boolean): DocumentFragment {
         const reason = item.disabledReason?.() ?? null;
         b.textContent = (item.checked?.() ? "✓ " : "") + item.label;
         if (reason) {
-          b.disabled = true;
+          // NO MUTE NO-OP. A `disabled` button was the whole of "most of the
+          // buttons don't work": it swallows the click (so the menu does not
+          // even close), the reason lives in a `title` nobody hovers, and the
+          // user is left with a menu that opens and does nothing. Measured on
+          // the narrative window, where EVERY item of Capitolo/Inserisci/IA was
+          // disabled by one condition — "click a chapter to make it current" —
+          // that the UI never said out loud.
+          //
+          // So it stays visibly unavailable (`.dd-disabled`, aria) but remains
+          // CLICKABLE, and the click SAYS WHY and closes the menu. The reason is
+          // information the user needs to get unstuck, which makes it the one
+          // thing a refusal must not keep to itself.
+          b.classList.add("dd-disabled");
+          b.setAttribute("aria-disabled", "true");
           b.title = reason;
+          b.addEventListener("click", () => {
+            toast(reason);
+            list.classList.add("hidden");
+          });
         } else {
           b.addEventListener("click", item.run);
         }
@@ -12581,6 +12792,26 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
             : ci == null
               ? "Clicca un capitolo per renderlo corrente."
               : null;
+        // WHAT a view embeds, when this window has no canvas to select on.
+        //
+        // Measured: in the Output workspace there IS no graph window, so
+        // `selectedId` is null and every type but the map was permanently
+        // unavailable — a menu that cannot ever be used, next to a palette drag
+        // that works. But a chapter of a site-story is ANCHORED (to its epoch,
+        // or to an activity), and that anchor is exactly what the chapter is
+        // about: embedding it is the obvious meaning of "insert a matrix here".
+        //
+        // So: the canvas selection when there is one (you pointed at something),
+        // else the chapter's anchor (what this chapter is about). Only a chapter
+        // with neither has nothing to embed, and then the item says so.
+        const refFor = (): { id: string; from: string } | null => {
+          if (selectedId) return { id: selectedId, from: "selezione" };
+          const anchor = narr && ci != null
+            ? (narrativesIn(store!.doc).find((n) => n.id === narr.id)
+                ?.chapters[ci] as { anchor?: string } | undefined)?.anchor
+            : undefined;
+          return anchor ? { id: anchor, from: "ancoraggio del capitolo" } : null;
+        };
         return [
           {
             label: "Mappa del sito",
@@ -12591,15 +12822,45 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
             .filter((vt) => vt !== "map")
             .map((vt) => ({
               label: vt,
-              run: () => selectedId && insert(vt, selectedId),
+              run: () => {
+                const ref = refFor();
+                if (!ref) return;
+                insert(vt, ref.id);
+                toast(`${vt} inserito (${ref.from}: ${
+                  store?.node(ref.id)?.name ?? ref.id})`);
+              },
               disabledReason: () =>
                 needChapter() ??
-                (selectedId
+                (refFor()
                   ? null
-                  : "Seleziona sul canvas il nodo da incorporare."),
+                  : "Niente da incorporare: seleziona un nodo sul canvas, "
+                    + "oppure ancora il capitolo a un'epoca o a un'attività."),
             })),
         ];
       },
+    },
+    {
+      // WHERE THE WRITING IS. The four exporters worked and were reachable only
+      // from `File ▸ Esporta` — two menus away from the panel where somebody is
+      // writing the thing they want to export. Same call, same bake, offered
+      // where the story is (the File entry stays: a project-level export belongs
+      // in the project menu too).
+      label: "Esporta",
+      items: () =>
+        Object.entries(NARRATIVE_FORMATS).map(([format, spec]) => ({
+          // LaTeX says it comes as an archive: with figures a `.tex` cannot be
+          // one file, and a download that changes kind without warning is one
+          // somebody double-clicks and gets nothing.
+          label: spec.label + (format === "ipynb" ? " (vivo)"
+            : format === "latex" ? " + figure (.zip)" : ""),
+          run: () => void exportNarrative(format),
+          disabledReason: () =>
+            !store
+              ? "Nessun grafo aperto."
+              : activeNarrative()
+                ? null
+                : "Questo grafo non contiene narrative da esportare.",
+        })),
     },
     {
       label: "IA",
@@ -12619,6 +12880,13 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
                 : ci == null
                   ? "Clicca un capitolo per renderlo corrente."
                   : null,
+          },
+          {
+            // The one thing a failed generation needs next: where the key goes.
+            // In the menu rather than only in the error, so it can be found
+            // BEFORE the first refusal.
+            label: "Fornitore AI e key di sessione…",
+            run: () => openSettings("settings-sect-ai"),
           },
         ];
       },

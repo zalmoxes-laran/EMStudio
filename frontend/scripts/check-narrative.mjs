@@ -38,9 +38,28 @@ globalThis.document = document;
 globalThis.HTMLElement = window.HTMLElement;
 
 const SRC = new URL("../src/", import.meta.url).pathname;
+//: `./icons` uses `import.meta.glob` (Vite-only), so a module whose chain
+//: reaches it is stubbed the way `check-shape-geom` does it: the names it
+//: exports, empty. Nothing under test here draws an icon.
+const STUB_ICONS = {
+  name: "stub-icons",
+  setup(build) {
+    build.onResolve({ filter: /\.\/icons$/ }, () => ({
+      path: "icons-stub", namespace: "stub" }));
+    build.onLoad({ filter: /.*/, namespace: "stub" }, () => ({
+      contents: `export const ICON_NODE_TYPES = new Set();
+export const imageFor = () => null;
+export const imageForUrl = () => null;
+export const dtcGlyphUrl = () => null;
+export const iconUrl = () => null;`,
+      loader: "ts" }));
+  },
+};
+
 const load = async (entry) => {
   const b = await esbuild.build({ entryPoints: [`${SRC}${entry}`], bundle: true,
-                                  format: "esm", write: false });
+                                  format: "esm", write: false,
+                                  plugins: [STUB_ICONS] });
   return import("data:text/javascript;base64," +
     Buffer.from(b.outputFiles[0].text).toString("base64"));
 };
@@ -67,6 +86,9 @@ const doc = { header: raw.header, graph: raw.graphs.portico };
 const byId = (id) => doc.graph.nodes.find((n) => n.id === id);
 const text = (el) => (el.textContent ?? "").replace(/\s+/g, " ").trim();
 const all = (el, sel) => [...el.querySelectorAll(sel)].map(text);
+/** `scopeOf` of one node of a doc built inline (the laid-out variants below). */
+const scopeIn = (doc, id) =>
+  E.scopeOf(doc.graph.nodes.find((n) => n.id === id), doc);
 
 // ── the fixture is what we think it is ──────────────────────────────────────
 // The counts are asserted so a fixture edited for one test cannot silently
@@ -529,6 +551,334 @@ eq(doc.graph.nodes.filter(
     ok(shell.length < 100_000,
        `reader · the shell stays a shell (${shell.length} bytes)`);
   }
+}
+
+{
+  // ── PHASES · an epoch's scope includes its sub-epochs ─────────────────────
+  //
+  // Measured in the browser (2026-08-20): a chapter anchored to a PERIODISED
+  // epoch — one whose units hang off its phases (`has_sub_epoch`) — rendered
+  // "nessuna unità stratigrafica in questo ambito" while the graph's matrix drew
+  // those units in that epoch's lane. The reference was valid and the embed said
+  // the chapter was about nothing, which is the worst kind of wrong: it reads as
+  // a study with a hole in it.
+  const phased = {
+    header: { format: "em.json", version: "1.0" },
+    graph: {
+      graph_id: "fasi", name: "Saggio a fasi",
+      nodes: [
+        { id: "EP1", name: "Fase I", node_type: "EpochNode", description: "",
+          data: { start_time: -200, end_time: -50 } },
+        { id: "EP1a", name: "Fase Ia", node_type: "EpochNode", description: "",
+          data: { start_time: -200, end_time: -120 } },
+        { id: "EP1b", name: "Fase Ib", node_type: "EpochNode", description: "",
+          data: { start_time: -120, end_time: -50 } },
+        { id: "EP2", name: "Fase II", node_type: "EpochNode", description: "",
+          data: { start_time: -50, end_time: 200 } },
+        { id: "US1", name: "US1", node_type: "US", description: "", data: {} },
+        { id: "US2", name: "US2", node_type: "US", description: "", data: {} },
+        { id: "US4", name: "US4", node_type: "US", description: "", data: {} },
+      ],
+      edges: [
+        { id: "p1", source: "EP1", target: "EP1a", edge_type: "has_sub_epoch" },
+        { id: "p2", source: "EP1", target: "EP1b", edge_type: "has_sub_epoch" },
+        { id: "a1", source: "US1", target: "EP1a", edge_type: "has_first_epoch" },
+        { id: "a2", source: "US2", target: "EP1b", edge_type: "has_first_epoch" },
+        { id: "a3", source: "US4", target: "EP2", edge_type: "has_first_epoch" },
+      ],
+    },
+  };
+  const node = (id) => phased.graph.nodes.find((n) => n.id === id);
+
+  const parent = E.scopeOf(node("EP1"), phased);
+  eq(parent.units.map((u) => u.id).sort(), ["US1", "US2"],
+     "phases · an epoch's scope includes the units of its PHASES");
+  const leaf = E.scopeOf(node("EP1a"), phased);
+  eq(leaf.units.map((u) => u.id), ["US1"],
+     "phases · a phase itself still scopes only its own units");
+  const other = E.scopeOf(node("EP2"), phased);
+  eq(other.units.map((u) => u.id), ["US4"],
+     "phases · an epoch with no phases is unchanged");
+
+  // …and the embed says so, rather than "nothing here yet"
+  const drawn = text(E.matrixEmbed(node("EP1"), phased));
+  ok(!drawn.includes("nessuna unità stratigrafica"),
+     `phases · the embed of a periodised epoch is not empty — «${drawn.slice(0, 80)}»`);
+  ok(drawn.includes("US1") && drawn.includes("US2"),
+     "phases · …it names the units");
+  ok(drawn.includes("Fase Ia") && drawn.includes("Fase Ib"),
+     "phases · …under their own phase lanes, as the matrix draws them");
+
+  // a cycle in a hand-edited document must not hang the reader
+  const cyclic = JSON.parse(JSON.stringify(phased));
+  cyclic.graph.edges.push({ id: "loop", source: "EP1a", target: "EP1",
+                            edge_type: "has_sub_epoch" });
+  const survived = E.scopeOf(node("EP1"), cyclic);
+  ok(survived.units.length >= 2,
+     "phases · a cyclic periodisation is answered, not hung");
+}
+
+{
+  // ── EPOCA PIATTA · le US attaccate direttamente all'epoca ─────────────────
+  //
+  // Il caso di E.D. (20 ago): epoche piatte, US legate con `has_first_epoch`,
+  // Matrix Mode le disegna e l'embed diceva «nessuna unità in questo ambito».
+  // Due risoluzioni, entrambe difese qui: gli ARCHI (un grafo appena importato,
+  // senza layout) e la CORSIA DEL LAYOUT (quel che la tela disegna davvero —
+  // `views/matrix.ts` piazza per posizione, quindi un'unità incorsiata dalla
+  // catena `is_after` è invisibile a qualunque cammino sugli archi).
+  const flat = {
+    header: { format: "em.json", version: "1.0" },
+    graph: {
+      graph_id: "pm", name: "PortaMarina piatta",
+      nodes: [
+        { id: "EP1", name: "Fase repubblicana", node_type: "EpochNode",
+          description: "", data: { start_time: -200, end_time: -50 } },
+        { id: "EP2", name: "Fase imperiale", node_type: "EpochNode",
+          description: "", data: { start_time: -50, end_time: 200 } },
+        { id: "US1", name: "US1", node_type: "US", description: "", data: {} },
+        { id: "US2", name: "US2", node_type: "US", description: "", data: {} },
+        { id: "US3", name: "US3", node_type: "US", description: "", data: {} },
+        { id: "US4", name: "US4", node_type: "US", description: "", data: {} },
+        { id: "USV1", name: "USV1", node_type: "USVs", description: "", data: {} },
+        { id: "USV2", name: "USV2", node_type: "USVn", description: "", data: {} },
+      ],
+      edges: [
+        { id: "e1", source: "US1", target: "EP1", edge_type: "has_first_epoch" },
+        { id: "e2", source: "US2", target: "EP1", edge_type: "has_first_epoch" },
+        { id: "e3", source: "US3", target: "EP1", edge_type: "has_first_epoch" },
+        { id: "e4", source: "US4", target: "EP2", edge_type: "has_first_epoch" },
+        { id: "e5", source: "USV1", target: "EP2", edge_type: "has_first_epoch" },
+        { id: "e6", source: "USV2", target: "EP2", edge_type: "has_first_epoch" },
+      ],
+    },
+  };
+  const at = (id) => flat.graph.nodes.find((n) => n.id === id);
+
+  eq(E.scopeOf(at("EP1"), flat).units.map((u) => u.id).sort(),
+     ["US1", "US2", "US3"],
+     "epoca piatta · gli archi bastano quando il grafo non è disposto (EP1)");
+  eq(E.scopeOf(at("EP2"), flat).units.map((u) => u.id).sort(),
+     ["US4", "USV1", "USV2"],
+     "epoca piatta · …e per EP2");
+  const drawn = text(E.matrixEmbed(at("EP1"), flat));
+  ok(!drawn.includes("nessuna unità"),
+     `epoca piatta · l'embed non è vuoto — «${drawn.slice(0, 70)}»`);
+  for (const id of ["US1", "US2", "US3"])
+    ok(drawn.includes(id), `epoca piatta · l'embed nomina ${id}`);
+
+  // …e la PARITÀ con la tela: un'unità SENZA arco d'epoca, incorsiata dal
+  // layout (è così che l'engine assegna le corsie: catena + membership), deve
+  // comparire nell'embed come compare sul canvas.
+  const laid = JSON.parse(JSON.stringify(flat));
+  laid.graph.nodes.push({ id: "US9", name: "US9", node_type: "US",
+                          description: "", data: {} });
+  laid.layout = {
+    swimlanes: [{ epoch_id: "EP1", y: 0, height: 100 },
+                { epoch_id: "EP2", y: 100, height: 100 }],
+    positions: {
+      US1: { x: 0, y: 10, w: 90, h: 30 }, US2: { x: 100, y: 10, w: 90, h: 30 },
+      US3: { x: 200, y: 10, w: 90, h: 30 }, US9: { x: 300, y: 40, w: 90, h: 30 },
+      US4: { x: 0, y: 110, w: 90, h: 30 }, USV1: { x: 100, y: 110, w: 90, h: 30 },
+      USV2: { x: 200, y: 110, w: 90, h: 30 },
+    },
+  };
+  eq(scopeIn(laid, "EP1").units.map((u) => u.id).sort(),
+     ["US1", "US2", "US3", "US9"],
+     "parità · la corsia del layout porta anche l'unità senza arco d'epoca");
+  eq(scopeIn(laid, "EP2").units.map((u) => u.id).sort(),
+     ["US4", "USV1", "USV2"],
+     "parità · e non sconfina nella corsia accanto");
+
+  // un'epoca davvero vuota lo dice, e dice COSA ha chiesto
+  const empty = JSON.parse(JSON.stringify(flat));
+  empty.graph.nodes.push({ id: "EP0", name: "Fase 0", node_type: "EpochNode",
+                           description: "", data: {} });
+  const said = text(E.matrixEmbed(
+    empty.graph.nodes.find((n) => n.id === "EP0"), empty));
+  ok(said.includes("has_first_epoch") && said.includes("corsia del layout"),
+     `epoca vuota · dice quali risoluzioni ha provato — «${said.slice(0, 90)}»`);
+  ok(said.includes("il riferimento è valido"),
+     "epoca vuota · …e che il riferimento non è il problema");
+}
+
+{
+  // ── I CONTROLLI RISPONDONO A UN CLICK VERO ────────────────────────────────
+  //
+  // Il difetto, misurato col mouse vero il 20 ago: premere «+ prose» non faceva
+  // niente. Non un overlay e non un rilevatore custom — i controlli sono legati
+  // al `click` nativo. Quel che li uccideva è che il capitolo imposta il
+  // «capitolo corrente» su `mousedown`, e impostarlo RICOSTRUIVA la vista: il
+  // bottone veniva rimosso dal DOM *fra mousedown e mouseup*, e un `click`
+  // esiste solo se down e up cadono sullo stesso elemento. Nel log del bottone:
+  // `pointerdown`, `mousedown`, poi niente, con `document.contains(button)` a
+  // false.
+  //
+  // Quindi due proprietà, e sono quelle che rompendosi hanno spento mezza UI:
+  //   1. il solo evento `click` fa scattare l'azione (mouse, trackpad, touch e
+  //      strumenti di accessibilità lo emettono; una coppia pointer no);
+  //   2. un `mousedown` su un capitolo NON rifà il DOM.
+  const V = await load("narrative.ts");
+  const acts = [];
+  const editor = {
+    narrativeId: "narr-1",
+    addChapter() {}, renameChapter() {}, moveChapter() {},
+    deleteChapter: (c) => acts.push(["deleteChapter", c]),
+    toggleCanonical() {}, setAnchor() {},
+    addProse: (c) => acts.push(["addProse", c]),
+    setProse() {}, addEmbed() {}, setViewType() {},
+    moveBlock: (c, b, d) => acts.push(["moveBlock", c, b, d]),
+    deleteBlock: (c, b) => acts.push(["deleteBlock", c, b]),
+    lanes: () => [], authors: () => [], humanAuthors: () => [], addAuthor() {},
+    removeAuthor() {}, setChapterAuthor() {}, signer: () => null, setSigner() {},
+    endorse() {}, endorseChapter() {}, pendingIn: () => 0,
+    canGenerate: () => false, canRegenerate: () => false,
+    undescribedEpochs: () => [], generateDraft() {}, promptOf: () => null,
+  };
+  const sets = [];
+  const host = document.createElement("div");
+  V.renderNarrativeView(host, doc, "narr-1", () => {}, undefined, editor,
+                        { index: () => 0, set: (i) => sets.push(i) });
+
+  // il fixture ha un capitolo scrivibile (l'altra sezione è il piede del
+  // pannello): l'indice che conta è quello del capitolo del bottone
+  const chapters = [...host.querySelectorAll(".nv-chapter")];
+  const second = chapters.find(
+    (c) => c.querySelector(".nv-add-row button"));
+  ok(second, "click · c'è un capitolo con i suoi controlli");
+  const chapterIndex = chapters.indexOf(second);
+  const addProse = [...second.querySelectorAll(".nv-add-row button")]
+    .find((b) => /prose/.test(b.textContent || ""));
+  ok(addProse, "click · il capitolo ha il suo «+ prose»");
+
+  // 1 · IL SOLO `click`
+  // linkedom has no MouseEvent constructor; a bubbling `Event` of the right type
+  // is what a listener registered with `addEventListener("click", …)` receives,
+  // which is exactly the binding under test.
+  const fire = (element, type) => element.dispatchEvent(
+    new host.ownerDocument.defaultView.Event(type,
+      { bubbles: true, cancelable: true }));
+  fire(addProse, "click");
+  eq(acts, [["addProse", chapterIndex]],
+     "click · il solo evento `click` aggiunge la prosa AL SUO capitolo");
+
+  // 2 · un click con un MICRO-MOVIMENTO: down, spostamento, up, click — che è
+  //     quel che manda un trackpad. L'azione parte una volta, non zero.
+  acts.length = 0;
+  for (const type of ["pointerdown", "mousedown", "pointermove", "mousemove",
+                      "pointerup", "mouseup", "click"])
+    fire(addProse, type);
+  eq(acts, [["addProse", chapterIndex]],
+     "click · un click con un micro-movimento conta come UN click");
+
+  // 3 · e il mousedown sul capitolo non deve rifare il DOM: se lo rifà, il
+  //     bottone su cui stai premendo scompare prima dell'up
+  const beforeNodes = [...second.querySelectorAll("button")];
+  fire(second, "mousedown");
+  // ogni mousedown DENTRO quel capitolo (anche quello del bottone, che risale)
+  // chiede lo stesso capitolo — «scrivi dove hai cliccato», e ora è innocuo
+  // perché impostarlo non ricostruisce più niente
+  ok(sets.length > 0 && sets.every((v) => v === chapterIndex),
+     `click · il mousedown nel capitolo lo rende corrente (${JSON.stringify(sets)})`);
+  const afterNodes = [...second.querySelectorAll("button")];
+  eq(afterNodes.length, beforeNodes.length,
+     "click · …e non cambia il numero di controlli");
+  ok(beforeNodes.every((b, i) => b === afterNodes[i]),
+     "click · …NÉ li sostituisce: gli stessi oggetti DOM sono ancora lì "
+     + "(sostituirli è ciò che impediva al click di esistere)");
+  ok(host.contains(addProse),
+     "click · …e il bottone premuto è ancora nel documento");
+
+  // 4 · gli altri controlli `nv-mini` dello stesso capitolo rispondono al solo
+  //     `click` (erano rotti dallo stesso meccanismo, tutti insieme)
+  acts.length = 0;
+  const tools = second.querySelector(".nv-block-tools");
+  if (tools) {
+    for (const glyph of ["▲", "▼", "✕"]) {
+      const button = [...tools.querySelectorAll("button")]
+        .find((b) => (b.textContent || "").trim() === glyph);
+      if (button) fire(button, "click");
+    }
+    ok(acts.length >= 1,
+       `click · anche ▲ ▼ ✕ rispondono al solo click (${JSON.stringify(acts)})`);
+  }
+}
+
+{
+  // ── LE FIGURE DEGLI EMBED FINISCONO NEGLI EXPORT ──────────────────────────
+  //
+  // Il difetto (20 ago): ogni embed visuale usciva come SEGNAPOSTO — in LaTeX un
+  // `\includegraphics` commentato accanto a una didascalia vera — quindi il PDF
+  // aveva le didascalie e nessuna matrice. Il render non può stare
+  // nell'esportatore: la matrice la disegna il motore di layout, e il motore sta
+  // QUI. Quindi il client rende e nomina, e la libreria colloca.
+  //
+  // Questo check difende la metà che vive nel frontend: la FETTA di scena che
+  // diventa la figura. Le quattro rese (html/docx/latex/ipynb) sono difese in
+  // `s3Dgraphy/tests/test_narrative_figures.py`, dove vivono gli esportatori.
+  // `views/matrix.ts` is not loadable here (its chain uses Vite's import.meta
+  // glob); the SCENE it produces is what matters, and that is plain data, so the
+  // slice is checked against a scene of exactly that shape.
+  const S = await load("svg-export.ts");
+
+  // una scena matrice con due corsie e le loro unità, come la disegna la tela
+  const scene = {
+    nodes: [
+      { id: "US1", x: 0, y: 10, w: 90, h: 30, node: { id: "US1", name: "US1", node_type: "US" } },
+      { id: "US2", x: 100, y: 10, w: 90, h: 30, node: { id: "US2", name: "US2", node_type: "US" } },
+      { id: "US4", x: 0, y: 110, w: 90, h: 30, node: { id: "US4", name: "US4", node_type: "US" } },
+    ],
+    byId: new Map(),
+    edges: [{ source: "US2", target: "US1", edge: { edge_type: "is_after" } }],
+    lanes: [{ id: "EP1", label: "Fase repubblicana", y: 0, height: 100 },
+            { id: "EP2", label: "Fase imperiale", y: 100, height: 100 }],
+  };
+  scene.byId = new Map(scene.nodes.map((n) => [n.id, n]));
+
+  // la fetta: la corsia dell'epoca, i nodi il cui centro cade in quella banda
+  // (il test della tela), e le relazioni fra loro
+  const slice = (epochId) => {
+    const lane = scene.lanes.find((l) => l.id === epochId);
+    if (!lane) return null;
+    const nodes = scene.nodes.filter((n) => {
+      const centre = n.y + n.h / 2;
+      return centre >= lane.y && centre < lane.y + lane.height;
+    });
+    if (!nodes.length) return null;
+    const keep = new Set(nodes.map((n) => n.id));
+    return { ...scene, nodes, byId: new Map(nodes.map((n) => [n.id, n])),
+             edges: scene.edges.filter((e) => keep.has(e.source) && keep.has(e.target)),
+             lanes: [lane] };
+  };
+
+  const ep1 = slice("EP1");
+  eq(ep1.nodes.map((n) => n.id), ["US1", "US2"],
+     "figure · la fetta di EP1 sono le sue unità");
+  eq(slice("EP2").nodes.map((n) => n.id), ["US4"],
+     "figure · …e quella di EP2 le sue");
+  eq(slice("EP9"), null,
+     "figure · un'epoca senza corsia non produce figura (→ segnaposto)");
+
+  const svg = S.sceneToSvg(ep1, () => true, "Fase repubblicana");
+  ok(svg.startsWith("<svg") && svg.includes("</svg>"),
+     "figure · la fetta si rende in SVG");
+  ok(svg.includes("US1") && svg.includes("US2"),
+     "figure · l'SVG nomina le unità di quell'epoca");
+  ok(!svg.includes("US4"),
+     "figure · …e non quelle dell'epoca accanto");
+  ok(svg.includes("Fase repubblicana"),
+     "figure · e porta l'etichetta della corsia, come la tela");
+  ok(svg.length > 400,
+     `figure · un'immagine vera, non un guscio (${svg.length} byte)`);
+  // DISEGNATA, non solo etichettata: i nomi da soli sarebbero una lista, non una
+  // matrice. Un rettangolo per il fondo, uno per la corsia, e UNO PER UNITÀ —
+  // così togliendo le forme dei nodi (misurato: rect 4 → 2) il check cade.
+  const rects = (svg.match(/<rect\b/g) || []).length;
+  ok(rects >= 2 + ep1.nodes.length,
+     `figure · un rettangolo per unità oltre a fondo e corsia (rect=${rects}, `
+     + `unità=${ep1.nodes.length})`);
+  ok(/<path[^>]*stroke=/.test(svg),
+     "figure · e il rapporto stratigrafico è tracciato");
 }
 
 console.log(`narrative: ${checks} checks passed`);

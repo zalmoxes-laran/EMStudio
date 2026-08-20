@@ -1188,8 +1188,22 @@ export function renderNarrativeView(
 
     if (editor) {
       const add = el("div", "nv-add-row");
-      add.appendChild(iconButton("+ prose", "Add a paragraph",
-        () => editor.addProse(ci)));
+      // `+ prose` adds to THIS chapter (the one the button sits under — `ci` is
+      // this iteration's index, not the window's current chapter), makes that
+      // chapter current, and asks the next render to put the cursor in the new
+      // paragraph.
+      //
+      // The last part is what was missing, and it is the whole of "+ prose does
+      // nothing": the block WAS created (measured: 1 → 2 in the right chapter),
+      // as a faint "(paragrafo vuoto — clicca per scrivere)" that could be
+      // below the fold. A creation nobody can see is indistinguishable from a
+      // dead button.
+      add.appendChild(iconButton("+ prose", "Aggiungi un paragrafo qui",
+        () => {
+          currentChapter?.set(ci);          // you write where you clicked
+          focusProseAfterRender = ci;
+          editor.addProse(ci);
+        }));
       const hint = el("span", "nv-drop-hint",
         "…or drag a node from the Nodes tab into this chapter");
       add.appendChild(hint);
@@ -1246,6 +1260,38 @@ export function renderNarrativeView(
     }
     container.appendChild(foot);
   }
+  // …and if a paragraph was just added, the cursor goes there (see
+  // `focusProseAfterRender`). Last, so the DOM it looks for is complete.
+  focusNewProse(container);
+}
+
+/** Chapter index whose LAST prose block should take the cursor after the next
+ *  render, or null. Set by `+ prose`, consumed by `focusNewProse` — the mutation
+ *  re-renders the whole view, so "focus the thing I just made" cannot be done in
+ *  the click handler that made it. */
+let focusProseAfterRender: number | null = null;
+
+/**
+ * Put the cursor in the paragraph that was just added, and bring it into view.
+ *
+ * `editableProse` opens its textarea on click, so this clicks it: one behaviour
+ * for "start writing here", whether a person or a button asks for it.
+ */
+function focusNewProse(container: HTMLElement): void {
+  const ci = focusProseAfterRender;
+  focusProseAfterRender = null;
+  if (ci == null) return;
+  const section = container.querySelectorAll(".nv-chapter")[ci];
+  if (!section) return;
+  const blocks = section.querySelectorAll(".nv-prose-edit");
+  const last = blocks[blocks.length - 1] as HTMLElement | undefined;
+  if (!last) return;
+  last.scrollIntoView({ behavior: "smooth", block: "center" });
+  last.classList.add("nv-just-added");
+  window.setTimeout(() => last.classList.remove("nv-just-added"), 1600);
+  (last as HTMLElement).click();                       // → its textarea
+  const ta = last.querySelector("textarea") as HTMLTextAreaElement | null;
+  ta?.focus();
 }
 
 /** A paragraph that becomes a textarea when you click it. Editing prose should

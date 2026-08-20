@@ -147,6 +147,7 @@ from __future__ import annotations
 import argparse
 import base64
 import errno
+import io
 import json
 import os
 import pathlib
@@ -154,6 +155,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
@@ -2004,6 +2006,91 @@ def make_handler(api):
             "ipynb": ("application/x-ipynb+json", "ipynb"),
         }
 
+        # ── the figures a CLIENT rendered, converted for the format ──────
+        #
+        # The client renders SVG (its layout engine drew the matrix; ours would be
+        # a second engine that drifts — see s3dgraphy.narrative.bake.figure_key).
+        # What each format can EMBED differs, so the conversion happens here, in
+        # the transport, and s3Dgraphy stays pure:
+        #
+        #   html   · SVG as-is (a data URI in one file)
+        #   ipynb  · SVG as-is (inline in a markdown cell)
+        #   docx   · PNG — python-docx embeds raster only
+        #   latex  · PDF — `\includegraphics` under pdflatex takes PDF/PNG/JPG
+        #
+        # Rasterising needs a library, and this one is OPTIONAL by the same rule
+        # as rdflib/pyproj: `cairosvg` when it is there, the `inkscape`/
+        # `rsvg-convert` binary when it is not, and otherwise the figure is simply
+        # not supplied — which the exporters already degrade to a placeholder,
+        # per figure. An export never fails over a picture.
+        def _convert_svg(self, svg, target):
+            """SVG text → bytes in `target` ("svg" | "png" | "pdf"), or None."""
+            data = svg.encode("utf-8") if isinstance(svg, str) else bytes(svg)
+            if target == "svg":
+                return data
+            try:
+                import cairosvg  # type: ignore
+                if target == "png":
+                    return cairosvg.svg2png(bytestring=data)
+                return cairosvg.svg2pdf(bytestring=data)
+            except ImportError:
+                pass
+            except Exception as exc:              # a figure that will not convert
+                sys.stderr.write(f"  [bridge] cairosvg failed on a figure: {exc}\n")
+                return None
+            # no cairosvg: a system converter, if the machine has one
+            import shutil
+            import subprocess
+            import tempfile
+            for tool in ("rsvg-convert", "inkscape"):
+                binary = shutil.which(tool)
+                if not binary:
+                    continue
+                with tempfile.TemporaryDirectory() as tmp:
+                    src = os.path.join(tmp, "figure.svg")
+                    out = os.path.join(tmp, f"figure.{target}")
+                    with open(src, "wb") as fh:
+                        fh.write(data)
+                    argv = ([binary, "-f", target, "-o", out, src]
+                            if tool == "rsvg-convert"
+                            else [binary, src, f"--export-filename={out}"])
+                    try:
+                        subprocess.run(argv, check=True, capture_output=True,
+                                       timeout=60)
+                        with open(out, "rb") as fh:
+                            return fh.read()
+                    except Exception as exc:
+                        sys.stderr.write(
+                            f"  [bridge] {tool} failed on a figure: {exc}\n")
+                        return None
+            sys.stderr.write(
+                "  [bridge] no SVG converter (pip install cairosvg, or install "
+                "rsvg-convert/inkscape): the figures stay placeholders\n")
+            return None
+
+        def _figures_for(self, body, target):
+            """`{key: bytes}` in `target`'s format, from the client's SVGs.
+
+            A figure that will not convert is DROPPED rather than faked: the
+            exporters fall back to the placeholder for that block, so the reader
+            sees a caption and a note instead of a broken image.
+            """
+            raw = (body.get("figures") if isinstance(body, dict) else None) or {}
+            if not isinstance(raw, dict):
+                return {}
+            out = {}
+            for key, svg in raw.items():
+                if not isinstance(svg, str) or not svg.strip():
+                    continue
+                converted = self._convert_svg(svg, target)
+                if converted:
+                    out[str(key)] = converted
+            if raw and not out:
+                sys.stderr.write(
+                    f"  [bridge] {len(raw)} figure(s) offered, none converted to "
+                    f"{target}: exporting with placeholders\n")
+            return out
+
         def _export_narrative(self, raw, query):
             fmt = (query.get("format") or ["html"])[0].lower()
             if fmt not in self.FORMATS:
@@ -2038,12 +2125,54 @@ def make_handler(api):
                         self._fail(400, "this graph holds several narratives — "
                                         "say which one (narrative_id)")
                         return
+                # A format normally answers with its own mime/suffix; LaTeX
+                # WITH figures answers with a ZIP instead (see below), so the two
+                # are variables rather than a lookup at the end.
+                mime_override = ""
+                suffix_override = ""
                 if fmt == "latex":
-                    parts = api.export_narrative_latex(graph, narrative_id)
-                    payload = parts.get("tex", "").encode("utf-8")
+                    # `?fragment=1` asks for the BODY, to \input{} into one's own
+                    # preamble. The default is a COMPLETE document, because the
+                    # default has to compile: a .tex that opens as "Missing
+                    # \begin{document}" is not an export of anything (measured on
+                    # 20 Aug 2026, next to an HTML export that opened fine).
+                    fragment = (query.get("fragment") or ["0"])[0].lower() in (
+                        "1", "true", "yes", "on")
+                    figures = self._figures_for(body, "pdf")
+                    parts = api.export_narrative_latex(
+                        graph, narrative_id, fragment=fragment, figures=figures,
+                        figure_suffix=".pdf")
+                    tex = parts.get("tex", "")
                     bib = parts.get("bib", "")
+                    if figures:
+                        # THE ONE FORMAT THAT CANNOT BE A SINGLE FILE. A `.tex`
+                        # references its images, so with figures the answer is a
+                        # ZIP: main.tex + main.bib + fig/*.pdf, laid out exactly
+                        # as the `\includegraphics{fig/…}` paths expect. Said in
+                        # the UI too ("LaTeX + figure (.zip)"), because a
+                        # download that changes kind without saying so is a
+                        # download somebody unzips by accident.
+                        from s3dgraphy.exporter.latex_exporter import figure_file
+                        buffer = io.BytesIO()
+                        with zipfile.ZipFile(buffer, "w",
+                                             zipfile.ZIP_DEFLATED) as zf:
+                            zf.writestr("main.tex", tex)
+                            if bib:
+                                zf.writestr("main.bib", bib)
+                            for key, data in figures.items():
+                                view, _, ref = str(key).partition(":")
+                                zf.writestr(figure_file(view, ref, ".pdf"), data)
+                        payload = buffer.getvalue()
+                        mime_override = "application/zip"
+                        suffix_override = "zip"
+                        bib = ""            # it is in the archive
+                    else:
+                        payload = tex.encode("utf-8")
                 elif fmt == "docx":
-                    payload = api.export_narrative_docx(graph, narrative_id)
+                    payload = api.export_narrative_docx(
+                        graph, narrative_id,
+                        figures=self._figures_for(body, "png"),
+                        figure_suffix=".png")
                     bib = ""
                 elif fmt == "ipynb":
                     # `emjson_url` goes into the loader cell so the notebook can
@@ -2054,11 +2183,18 @@ def make_handler(api):
                         graph, narrative_id,
                         emjson_url=(body.get("emjson_url")
                                     if isinstance(body, dict) else None),
+                        # SVG as-is: a notebook is one file, and an .ipynb whose
+                        # figures live in a sibling folder arrives broken the
+                        # first time somebody emails it
+                        figures=self._figures_for(body, "svg"),
+                        figure_suffix=".svg",
                     ).encode("utf-8")
                     bib = ""
                 else:
                     payload = api.export_narrative_html(
-                        graph, narrative_id).encode("utf-8")
+                        graph, narrative_id,
+                        figures=self._figures_for(body, "svg"),
+                        figure_suffix=".svg").encode("utf-8")
                     bib = ""
             except KeyError:
                 self._fail(404, f"no narrative {narrative_id!r} in this graph")
@@ -2075,6 +2211,8 @@ def make_handler(api):
                 return
 
             mime, suffix = self.FORMATS[fmt]
+            mime = mime_override or mime
+            suffix = suffix_override or suffix
             safe = "".join(c if c.isalnum() or c in "-_" else "_"
                            for c in (narrative_id or "narrative"))
             self.send_response(200)

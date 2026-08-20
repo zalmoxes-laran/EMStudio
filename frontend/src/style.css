@@ -1090,6 +1090,19 @@ body.sync-active #mode-indicator::before {
   color: var(--text-faint);
   cursor: default;
 }
+/* NO-MUTE · an item that is UNAVAILABLE BUT WILL SAY WHY. It reads as
+   unavailable (faint, and a cursor that promises an explanation rather than an
+   action) and stays clickable, because the reason is the thing the user needs.
+   A real `:disabled` here would swallow the click and keep the reason in a
+   tooltip — which is exactly how a wired menu came to look broken. */
+.dd-menu button.dd-disabled {
+  color: var(--text-faint);
+  cursor: help;
+}
+.dd-menu button.dd-disabled:hover {
+  background: var(--bg-accent-soft);
+  color: var(--text-muted);
+}
 /* MENU1 · section separator + label inside a dropdown menu */
 .dd-menu .dd-sep {
   height: 1px;
@@ -6562,3 +6575,49 @@ body.nv-standalone main.nv-standalone-main {
 /* …and when the room is tight the SEARCH gives way first: a crumb and the
    window's verbs matter more than an input nobody is typing in */
 .win-header .win-search { flex: 0 1 12ch; min-width: 0; }
+
+/* ── narrative · a draft being written ─────────────────────────────────────────
+   The AI call takes seconds. A toast fades; this stays where the prose will
+   land, so nobody has to wonder whether the click registered. Removed by the
+   repaint that files the answer (or the error). */
+.nv-chapter.nv-generating {
+  outline: 1px dashed var(--accent);
+  outline-offset: 4px;
+}
+.nv-generating-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 2px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.nv-spinner {
+  width: 11px;
+  height: 11px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: nv-spin 0.8s linear infinite;
+  flex: 0 0 auto;
+}
+@keyframes nv-spin { to { transform: rotate(360deg); } }
+
+/* NO-INVISIBLE-CREATION · the paragraph `+ prose` just made.
+   The block itself is a faint placeholder by design (an empty paragraph should
+   not shout), which is exactly why the ACT of creating one has to be visible:
+   a creation nobody can see is indistinguishable from a dead button. */
+.nv-prose-edit.nv-just-added {
+  animation: nv-just-added 1.6s ease-out;
+  border-radius: 4px;
+}
+@keyframes nv-just-added {
+  0%   { background: var(--bg-accent-soft); box-shadow: 0 0 0 3px var(--bg-accent-soft); }
+  100% { background: transparent; box-shadow: none; }
+}
+/* …and an empty paragraph in write mode says what to do with it, rather than
+   being a grey line somebody has to guess is clickable. */
+.nv-prose-edit .nv-todo {
+  color: var(--text-muted);
+  font-style: italic;
+}
