@@ -2028,17 +2028,34 @@ def make_handler(api):
             data = svg.encode("utf-8") if isinstance(svg, str) else bytes(svg)
             if target == "svg":
                 return data
+            # cairosvg first, and EVERY way it can be unusable is the same answer:
+            # try the next converter. Measured on this machine — the import itself
+            # raises `OSError: no library called "cairo-2" was found` when the
+            # wheel is installed and the native libcairo is not on the loader's
+            # path (Homebrew's cairo present, a non-Homebrew python looking
+            # elsewhere). Treating that as fatal skipped the fallback and lost the
+            # figures on a machine that had inkscape sitting right there.
             try:
                 import cairosvg  # type: ignore
-                if target == "png":
-                    return cairosvg.svg2png(bytestring=data)
-                return cairosvg.svg2pdf(bytestring=data)
-            except ImportError:
-                pass
-            except Exception as exc:              # a figure that will not convert
-                sys.stderr.write(f"  [bridge] cairosvg failed on a figure: {exc}\n")
-                return None
-            # no cairosvg: a system converter, if the machine has one
+            except Exception as exc:              # ImportError, OSError, anything
+                if not getattr(self.server, "_cairo_noted", False):
+                    why = f"{type(exc).__name__}: {str(exc).splitlines()[0]}"
+                    sys.stderr.write(f"  [bridge] cairosvg unusable ({why}) — "
+                                     f"trying a system converter\n")
+                    try:
+                        self.server._cairo_noted = True
+                    except Exception:
+                        pass
+            else:
+                try:
+                    if target == "png":
+                        return cairosvg.svg2png(bytestring=data)
+                    return cairosvg.svg2pdf(bytestring=data)
+                except Exception as exc:
+                    sys.stderr.write(
+                        f"  [bridge] cairosvg failed on a figure ({exc}) — "
+                        f"trying a system converter\n")
+            # cairosvg absent or unusable: a system converter, if there is one
             import shutil
             import subprocess
             import tempfile

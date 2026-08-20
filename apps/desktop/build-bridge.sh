@@ -9,12 +9,20 @@
 #
 # Needs s3Dgraphy importable (its venv has pyinstaller + pandas + lxml):
 #   (cd ../../s3Dgraphy && python3 -m venv .venv \
-#      && .venv/bin/pip install -e '.[sync,minio,geo]' pandas lxml pyinstaller)
+#      && .venv/bin/pip install -e '.[sync,minio,geo,docx]' pandas lxml pyinstaller)
 # The [minio] extra enables the /ingest-minio + /presign endpoints in the
 # sidecar; without it those endpoints 501 gracefully (like TTL without rdflib).
 # The [geo] extra (pyproj) enables /reproject + /georeference-scene, i.e. the map
-# for projected coordinates. For image previews add, optionally:
-#   .venv/bin/pip install Pillow
+# for projected coordinates. The [docx] extra (python-docx) enables the Word
+# export — pure Python, so there is nothing native to find and no reason to leave
+# it out of a packaged app. For image previews and the narrative FIGURES add,
+# optionally:
+#   .venv/bin/pip install Pillow cairosvg
+# cairosvg turns the client-rendered SVG of a matrix into the PNG a .docx needs
+# and the PDF a .tex needs. It binds the NATIVE libcairo, which a wheel does not
+# carry (macOS: `brew install cairo`; Debian/Ubuntu: `apt-get install
+# libcairo2`), so it is bundled only when the build machine has it and the
+# figures fall back to placeholders when it does not.
 # pyproj and Pillow are bundled if present in the build venv; PyMuPDF is
 # EXCLUDED on purpose (22 MB for a PDF cover — dev-only, see below). Each of them
 # degrades to the previous behaviour when absent.
@@ -95,6 +103,59 @@ if "$PY" -c "import PIL" 2>/dev/null; then
 else
   echo "  · 'Pillow' not in build venv — big images get no thumbnail"
 fi
+# Word export. python-docx is PURE PYTHON, so PyInstaller's analysis finds it
+# wherever it is installed — but not its DATA: the package ships
+# `docx/templates/default.docx`, the empty document every `Document()` starts
+# from, and without it the frozen sidecar raises `PackageNotFoundError` on the
+# first export. That file is exactly the kind of thing the analysis cannot infer,
+# which is what `--collect-data` is for.
+DOCX_ARGS=()
+if "$PY" -c "import docx" 2>/dev/null; then
+  DOCX_ARGS=(--collect-data docx --copy-metadata python-docx)
+  echo "  · bundling 'python-docx' (Esporta ▸ Word works in the packaged app)"
+else
+  echo "  · 'python-docx' not in build venv — Word export will 501 (install the"
+  echo "    [docx] extra: it is pure Python, there is no reason to ship without it)"
+fi
+
+# The narrative FIGURES (a matrix drawn by the client, arriving as SVG). cairosvg
+# converts it to the PNG a .docx embeds and the PDF a .tex includes. It binds the
+# native libcairo through cffi, and a wheel does NOT carry that library — so this
+# is a bundle-if-present, degrade-if-absent dependency, exactly like pyproj's PROJ
+# data and Pillow:
+#
+#   present  → figures land in the exports as images
+#   absent   → the bridge tries `rsvg-convert`/`inkscape` on the user's machine,
+#              and failing that leaves the placeholder it always had. The export
+#              still happens; only the picture is missing, per figure.
+#
+# `--collect-binaries cairocffi` is the part that matters and the part that can
+# quietly not work: it copies the dylib/so cffi resolved AT BUILD TIME. If the
+# packaged app is run on a machine without libcairo and the copy did not happen,
+# the import fails and the fallback above takes over — which is why nothing here
+# is fatal.
+FIGURE_ARGS=()
+if "$PY" -c "import cairosvg" 2>/dev/null; then
+  FIGURE_ARGS=(--collect-submodules cairosvg --copy-metadata cairosvg
+               --collect-submodules cairocffi --copy-metadata cairocffi
+               --collect-binaries cairocffi)
+  echo "  · bundling 'cairosvg' (+ libcairo, if cffi resolved it) — figures in exports"
+elif "$PY" -c "import importlib.util as u, sys; sys.exit(0 if u.find_spec('cairosvg') else 1)" 2>/dev/null; then
+  # INSTALLED BUT NOT USABLE, and the difference matters to whoever reads this
+  # log: `import cairosvg` raises OSError when the wheel is there and the native
+  # libcairo is not on the loader's path. Measured on this machine — Homebrew's
+  # cairo installed, a non-Homebrew python looking elsewhere. Saying "not in the
+  # venv" would send somebody to re-install a package they already have.
+  echo "  · 'cairosvg' IS installed but cannot load libcairo — not bundled."
+  echo "    Exports fall back to rsvg-convert/inkscape on the user's machine, or"
+  echo "    to figure placeholders. Fix: install libcairo where this python looks"
+  echo "    (macOS: brew install cairo, then run the bridge from a Homebrew python"
+  echo "    or set DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib)."
+else
+  echo "  · 'cairosvg' not in build venv — the exports keep their figure"
+  echo "    placeholders (needs libcairo: brew install cairo / apt install libcairo2)"
+fi
+
 # PyMuPDF is deliberately NOT bundled (C2): 22 MB for a PDF cover page, on a
 # binary that is otherwise ~15 MB. `/resource-preview` then falls back to the
 # typed document icon, which is what it did before G2.
@@ -116,6 +177,8 @@ fi
   ${MINIO_ARGS[@]+"${MINIO_ARGS[@]}"} \
   ${GEO_ARGS[@]+"${GEO_ARGS[@]}"} \
   ${PREVIEW_ARGS[@]+"${PREVIEW_ARGS[@]}"} \
+  ${DOCX_ARGS[@]+"${DOCX_ARGS[@]}"} \
+  ${FIGURE_ARGS[@]+"${FIGURE_ARGS[@]}"} \
   --exclude-module pandas --exclude-module numpy --exclude-module openpyxl \
   --exclude-module fitz --exclude-module pymupdf --exclude-module pymupdf.mupdf \
   --distpath "$WORK/dist" --workpath "$WORK/build" --specpath "$WORK" \

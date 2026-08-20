@@ -47,3 +47,30 @@ sqlalchemy>=2.0
 # figures stay the placeholders they were — the export still happens, per figure.
 # HTML and Jupyter need none of this: they take the SVG directly.
 cairosvg>=2.7
+
+# Word (.docx) export. The PyPI package is `python-docx` and the import is
+# `docx` — there is an unrelated `docx` on PyPI, and installing that one is the
+# classic way to get "no module named docx" while pip says it is installed.
+#
+# s3Dgraphy declares it as the OPTIONAL `[docx]` extra and degrades without it
+# (MissingDependency → the bridge answers 501, honestly). That is right for a
+# library; it is not right for THIS bridge, which is the thing the app's
+# «Esporta ▸ Word» button talks to. Measured 20 Aug 2026: the button answered
+# "docx export unavailable in this build" because the interpreter running the
+# bridge had cairosvg (listed here) and not python-docx (not listed) — an
+# asymmetry, not a decision.
+#
+# Pure Python, no native library, nothing to bundle by hand: unlike cairosvg
+# there is no reason for this one to be conditional anywhere.
+python-docx>=1.1
+
+# ── installing these in a CHECKOUT venv ──────────────────────────────────────
+# `pip install -r tools/requirements.txt` inside `../s3Dgraphy/.venv` would also
+# install the PINNED `s3dgraphy==…dev12` from PyPI, shadowing the editable
+# checkout that venv exists for — i.e. the bridge would stop seeing the library
+# you are editing. In that venv install the deps WITHOUT the pin:
+#
+#     ../s3Dgraphy/.venv/bin/pip install python-docx cairosvg
+#
+# and leave the `-e .` install alone. The pinned line above is for a venv that
+# has no checkout (a packager, a CI runner).

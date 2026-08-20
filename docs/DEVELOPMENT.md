@@ -30,7 +30,11 @@ side by side under one parent directory:
 #    are needed by the importer, sqlalchemy only for its own test suite)
 cd s3Dgraphy
 python3 -m venv .venv
-.venv/bin/pip install -e '.[sync]' pandas lxml
+.venv/bin/pip install -e '.[sync,docx]' pandas lxml
+#   …and, for the narrative exports: python-docx comes with [docx] above;
+#   `pip install cairosvg` adds the figures (needs libcairo — see § Packaging).
+#   NB: do NOT `pip install -r ../EMStudio/tools/requirements.txt` in THIS venv:
+#   it pins s3dgraphy from PyPI and would shadow the `-e .` checkout.
 
 # 2. EMStudio frontend deps
 cd ../EMStudio/frontend
@@ -99,8 +103,9 @@ export, resource previews and coordinate reprojection. Build the sidecar FIRST �
 # 1. build venv for the sidecar (once per machine)
 cd s3Dgraphy
 python3 -m venv .venv
-.venv/bin/pip install -e '.[sync,minio,geo]' pandas lxml pyinstaller
+.venv/bin/pip install -e '.[sync,minio,geo,docx]' pandas lxml pyinstaller
 .venv/bin/pip install Pillow                     # image thumbnails (recommended)
+.venv/bin/pip install cairosvg                   # figures in the exports (see below)
 
 # 2. the sidecar, for THIS machine's target triple
 cd ../EMStudio/apps/desktop
@@ -126,7 +131,8 @@ Measured on an M-series Mac, same code, only the flags differing:
 | bundle | size | note |
 |---|---|---|
 | none of the three | 18 MB | reprojection 501s, no image thumbnails, PDF icon |
-| **shipped: + pyproj + Pillow** | **26 MB** | what `build-bridge.sh` produces |
+| + pyproj + Pillow | 26 MB | what the earlier builds produced |
+| **shipped: + python-docx** | **27.6 MB** | measured 20 Aug 2026 — Word export included |
 | + PyMuPDF as well | 47 MB | **not shipped** — 21 MB for a PDF cover page |
 
 - **pyproj** (`s3dgraphy[geo]`) — needed by `/reproject` and
@@ -141,6 +147,37 @@ Measured on an M-series Mac, same code, only the flags differing:
   `./dev.sh` runs from the venv, nothing is frozen) — the packaged app shows the
   typed document icon, which is the pre-existing behaviour.
 - **minio** (`s3dgraphy[minio]`) — `/ingest-minio` + `/presign`; 501 without it.
+- **python-docx** (`s3dgraphy[docx]`) — the **Word export**, i.e. the app's
+  `Esporta ▸ Word`. Pure Python, nothing native, ~500 kB: there is no reason to
+  ship without it, and `build-bridge.sh` says so when it is missing. It needs
+  `--collect-data docx` because the package ships
+  `docx/templates/default.docx` — the empty document every `Document()` starts
+  from — which PyInstaller's analysis cannot infer; without that file the frozen
+  sidecar raises on the first export. Measured 20 Aug 2026: the button answered
+  *"docx export unavailable in this build"* because the interpreter running the
+  bridge simply did not have the package.
+- **cairosvg** — the **figures** in the narrative exports. The client renders a
+  matrix as SVG (the layout engine lives there); this turns it into the PNG a
+  `.docx` embeds and the PDF a `.tex` includes. It binds the **native libcairo**,
+  which the wheel does NOT carry: `brew install cairo` (macOS),
+  `apt-get install libcairo2` (Debian/Ubuntu), and on Windows the GTK runtime.
+  Bundled only when the build machine can actually load it, and the export never
+  depends on it:
+
+  1. cairosvg → the figure;
+  2. else `rsvg-convert` / `inkscape` on the **user's** machine, if present;
+  3. else the figure stays the placeholder it always was, per figure, and the
+     bridge logs which package would fix it.
+
+  A trap worth knowing, measured on a dev Mac: `pip install cairosvg` succeeds
+  and `import cairosvg` then raises `OSError: no library called "cairo-2" was
+  found`, because Homebrew's cairo is in `/opt/homebrew/lib` and a
+  non-Homebrew python does not look there. The package is installed and unusable
+  — `build-bridge.sh` distinguishes the two cases in its log rather than telling
+  you to install what you already have. Fixes: run the bridge from a Homebrew
+  python, or `export DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib`. Or do
+  nothing: step 2 above covers a machine with inkscape, which is how the .docx in
+  that measurement got its images anyway.
 
 A caveat that is easy to get wrong: **these `--collect-submodules` flags do not
 control whether a library is bundled.** PyInstaller's analysis follows imports
