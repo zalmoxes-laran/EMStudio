@@ -12,6 +12,7 @@
 // `source` (the envelope's) lets a peer ignore its own echo; nothing inside
 // `payload` can ever collide with it.
 
+import type { ConnectorDescriptor } from "./connectors";
 import type { GraphOp } from "./model";
 import type { EmDocument } from "./types";
 import { roomUrl } from "./hub";
@@ -55,6 +56,17 @@ export interface HostInfo {
    */
   role?: string;
   can_write?: boolean;
+  /**
+   * CONNECTOR · the host's DESCRIPTOR — what it is, what it can do, and what it
+   * speaks (`connectors.ts`; the contract itself is `s3dgraphy.contract`).
+   *
+   * It rides on `host_info` because that is already the frame where a host says
+   * what it is: `tool` and `accepts_commands` were the first two answers to the
+   * same question, asked one capability at a time. A host that sends no descriptor
+   * is not refused — it is a peer from before this existed, and it keeps working
+   * with what it does declare.
+   */
+  connector?: ConnectorDescriptor;
 }
 
 /** The BODY of each message type. The envelope (`v`, `type`, `source`) is

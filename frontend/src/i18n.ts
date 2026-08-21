@@ -333,6 +333,11 @@ const EN: Dict = {
   "palette.views": "Views (drag onto an embed)",
   "palette.dragViewHint": "Drag this view onto an embed to change how it is shown.",
   "palette.dragNodeHint": "Drag a node from the list onto a chapter to cite it.",
+  // CONNECTORS · what announced itself, and how it went
+  "conn.accepted": "Connector «{name}» accepted — {caps}",
+  "conn.refused": "«{name}» refused: {why}",
+  "conn.malformed": "A host announced something that is not a connector descriptor — ignored, and said here rather than guessed at.",
+  "conn.unknownCaps": "«{name}» declares capabilities this build does not know ({caps}) — it is newer than us on that point.",
   // toolbar
   "toolbar.file": "File",
   "toolbar.new": "New",
@@ -1120,6 +1125,10 @@ const IT: Dict = {
   "palette.views": "Viste (trascina su un embed)",
   "palette.dragViewHint": "Trascina questa vista su un embed per cambiarne la resa.",
   "palette.dragNodeHint": "Trascina un nodo dall'elenco su un capitolo per citarlo.",
+  "conn.accepted": "Connettore «{name}» accettato — {caps}",
+  "conn.refused": "«{name}» rifiutato: {why}",
+  "conn.malformed": "Un host ha annunciato qualcosa che non è un descriptor di connettore — ignorato, e detto qui invece di indovinato.",
+  "conn.unknownCaps": "«{name}» dichiara capacità che questo build non conosce ({caps}) — su quel punto è più nuovo di noi.",
   "ws.documentation": "Documentazione",
   "ws.documentationHint": "Dove entra il materiale: il disco e l'object store della stanza affiancati, con l'Ispettore per quel che è appena arrivato.",
   "ws.graph": "Grafo",

@@ -60,6 +60,13 @@ import {
   surfacePlace,
   surfaceScroll,
 } from "./surface-scroll";
+import {
+  CONNECTOR_API_VERSION,
+  ConnectorRegistry,
+  EMJSON_SCHEMA_VERSION,
+  unknownCapabilities,
+} from "./connectors";
+import type { ConnectorVersions } from "./connectors";
 import { narrativesIn, renderNarrativeView, VIEW_TYPE_MIME } from "./narrative";
 
 import {
@@ -119,6 +126,7 @@ import {
 import {
   allowedEdgeTypes,
   classOf,
+  CONNECTIONS_VERSION,
   connectValidity,
   edgeTypeLabel,
   EM_VERSION,
@@ -618,6 +626,51 @@ const sidecarDetail = document.getElementById("sidecar-detail")!;
 // + endpoint are known locally from settings; file/database arrive from the
 // host's `host_info` (or a snapshot's `host`). Reset when we disconnect.
 let hostInfo: HostInfo = {};
+
+/**
+ * CONNECTORS · what has announced itself to this session, and how it went.
+ *
+ * The contract is s3Dgraphy's (`s3dgraphy.contract`): the four refusals, the
+ * DTC-attributed delta and the write seam live where writes enter a graph. This
+ * registry is the client's half — who is here, whether we understand them
+ * (the version handshake), and what the session therefore IS.
+ */
+const connectors = new ConnectorRegistry();
+
+/** What THIS build speaks. Read from the vendored datamodel, never restated. */
+function ourConnectorVersions(): ConnectorVersions {
+  return { emjson: EMJSON_SCHEMA_VERSION, datamodel: CONNECTIONS_VERSION,
+           connector_api: CONNECTOR_API_VERSION };
+}
+
+/**
+ * A host announced a connector descriptor (on `host_info` or a snapshot's
+ * `host`). Accepted or refused with its reason — and a refusal is SAID, because
+ * a peer that connects and then cannot write has already shown a lie.
+ */
+function announceConnector(info: HostInfo,
+                           transport: "direct" | "lan" | "cloud"): void {
+  if (!info.connector) return;
+  const state = connectors.announce(info.connector, {
+    ours: ourConnectorVersions(), transport,
+    role: info.role ?? null, canWrite: info.can_write,
+  });
+  if (!state) {
+    logWarn(t("conn.malformed"));
+    return;
+  }
+  const name = state.descriptor.description || state.descriptor.name;
+  if (state.status === "refused") {
+    logWarn(`${name}: ${state.reason}`);
+    toast(t("conn.refused", { name, why: state.reason ?? "" }));
+    return;
+  }
+  logInfo(t("conn.accepted", { name,
+                               caps: state.descriptor.capabilities.join(", ") }));
+  const unknown = unknownCapabilities(state.descriptor);
+  if (unknown.length)
+    logWarn(t("conn.unknownCaps", { name, caps: unknown.join(", ") }));
+}
 function renderSidecarDetail(): void {
   const segs: { k: string; v: string }[] = [];
   const tool = hostInfo.tool || syncToolLabel();
@@ -676,6 +729,7 @@ function setModeIndicator(mode: SessionMode | boolean): void {
   if (connected) renderSidecarDetail();
   else {
     hostInfo = {};
+    connectors.clear();     // nothing is announced when nothing is connected
     sidecarDetail.innerHTML = "";
   }
   // MENU1 · reflect the active session mode in the Mode menu (a leading ✓).
@@ -1028,6 +1082,22 @@ window.__EM_SCENE__ = () => {
     const narrative = store ? narrativesIn(store.doc)[0] : null;
     return narrative ? await narrativeFigures(narrative.id) : {};
   };
+
+// …and the CONNECTORS this session has accepted or refused, so the handshake and
+// the role gate can be measured over a real socket instead of argued about.
+(window as unknown as { __EM_CONNECTORS__?: () => unknown })
+  .__EM_CONNECTORS__ = () => ({
+    mode: connectors.mode(),
+    ours: ourConnectorVersions(),
+    list: connectors.list().map((s) => ({
+      name: s.descriptor.name, status: s.status, reason: s.reason,
+      transport: s.transport, role: s.role, can_write: s.can_write,
+      capabilities: s.descriptor.capabilities,
+      versions: s.descriptor.versions,
+    })),
+    canWriteGraph: connectors.can("write-graph"),
+    canMaterialize: connectors.can("materialize-3D"),
+  });
 
 window.__EM_DOCS__ = () => {
   const corpus = documentationCorpus({ create: false });
@@ -3214,6 +3284,7 @@ function connectToHub(url: string, room: string, token: string | null): void {
     },
     onHostInfo: (info2) => {
       hostInfo = { ...hostInfo, ...info2 };
+      announceConnector(hostInfo, "cloud");   // a room: the connector is remote
       renderSidecarDetail();
       // …and if it refuses something later, say so out loud (see onDenied).
       // P5 · the room said what this client may do. Believe it now, before the
@@ -5524,6 +5595,9 @@ btnSync.addEventListener("click", () => {
     onHostInfo: (info2) => {
       // the host told us what it is editing (tool / file / database) → show it
       hostInfo = { ...hostInfo, ...info2 };
+      // CONNECTOR · and, when it sent one, its descriptor: accepted, or refused
+      // with the reason. A pairing on this machine is the `direct` transport.
+      announceConnector(hostInfo, "direct");
       renderSidecarDetail();
       // CMD1 · consent can be toggled while connected; the affordance follows it
       refreshInspector();
