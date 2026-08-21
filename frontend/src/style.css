@@ -3115,12 +3115,22 @@ body.sync-active #footer-brand #em-version {
    An overlay over the canvas: the graph read as a story. Deliberately a
    reading column, not a dashboard — the point is that it is prose with the
    evidence beside it, so it is set like a page. */
+/* SURFACE-STABLE · the PAGE of a story: its ground and the air around it.
+   On `.nv-view`, which BOTH mounts carry, and not on the id — the secondary
+   area's box had neither, so the same story started 28 px higher there than in
+   the focused window (measured: the first chapter at y 123 against y 151). One
+   definition, both mounts, same page. */
+.nv-view {
+  background: var(--bg-subtle);
+  padding: 28px 0 64px;
+}
+
+/* …and what is true only of the FOCUSED mount: it is an overlay over the canvas.
+   Position and stacking, nothing that decides the column. */
 #narrative-view {
   position: absolute;
   inset: var(--winbar-h, 0px) 0 0 var(--palette-w, 0px); /* WIN4 · below the docked bar; STEP A · beside the resources panel */
   overflow-y: auto;
-  background: var(--bg-subtle);
-  padding: 28px 0 64px;
   z-index: 5;
 }
 
@@ -3731,6 +3741,13 @@ body.sync-active #footer-brand #em-version {
   margin-left: auto;
 }
 
+/* SURFACE-STABLE · the chapter head's lane keeps its height whether or not the
+   controls are in it: reading and writing give the same head, so a chapter does
+   not sit three pixels lower for having a pen in it. */
+.nv-chapter-tools {
+  min-height: var(--nv-chrome-line);
+}
+
 .nv-mini {
   border: 1px solid var(--border);
   background: var(--bg-panel);
@@ -3764,22 +3781,67 @@ body.sync-active #footer-brand #em-version {
   border-radius: 3px;
 }
 
-.nv-block-row {
+/* SURFACE-STABLE · ONE definition of the story's column, and one width for the
+   lane the editing controls live in.
+ 
+   The lane used to be laid out by content — `margin-left: auto` on a flex row —
+   so it was 86 px next to a paragraph and 165 px next to an embed, and 0 in
+   read-only mode where it did not exist at all. Measured at equal area widths:
+   the prose went 576 → 482 and the matrix embed 576 → 403 on entering edit, and
+   the embeds did not even agree with the prose. A story that re-flows when you
+   pick up a pen (or when the pointer leaves the window, since a secondary area is
+   read-only) is a story you have to find your place in again.
+ 
+   So the row is a GRID with a reserved second track, in both modes: the content
+   column is the same interval in all four states — focused or not, writing or
+   reading — and turning on edit only fills a space that was already there. The
+   price is stated: the reading column is narrower by this lane's width than it
+   was before. The alternative was floating the controls over the right-hand edge
+   of the embeds, which trades a stable layout for hidden content. */
+:root {
+  --nv-tools-w: 168px;
+  /* One line of editing chrome. MEASURED, not guessed: a row of `.nv-mini`
+     buttons and a small select is 21 px tall, so a reserve of 27 made READ mode
+     the taller of the two and the story moved the other way (−4 px). */
+  --nv-chrome-line: 21px;
+}
+
+/* the byline's editing chrome: its own line, always the same height, and never
+   wrapping (the selects shrink instead — a second line here would move the whole
+   story down, which is the thing this is for) */
+.nv-authors-tools {
+  flex: 0 0 100%;
+  min-height: var(--nv-chrome-line);
   display: flex;
-  align-items: flex-start;
+  align-items: center;
+  flex-wrap: nowrap;
+  overflow: hidden;
+  gap: 6px;
+}
+.nv-authors-tools .nv-author-select,
+.nv-authors-tools .nv-signing select {
+  min-width: 0;
+}
+
+.nv-block-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--nv-tools-w);
+  align-items: start;
   gap: 8px;
 }
 
 .nv-block-body {
-  flex: 1 1 auto;
   min-width: 0;
 }
 
 .nv-block-row .nv-block-tools {
-  flex: 0 0 auto;
   margin-top: 2px;
   opacity: 0.35;
   transition: opacity 0.12s;
+  /* the lane is right-aligned inside its track, and does not stretch it: an
+     empty lane (read-only) is exactly as wide as a full one */
+  justify-content: flex-end;
+  margin-left: 0;
 }
 
 .nv-block-row:hover .nv-block-tools,
@@ -3812,6 +3874,9 @@ body.sync-active #footer-brand #em-version {
   align-items: center;
   gap: 10px;
   margin: 10px 0 4px;
+  /* reserved in read mode too (see `--nv-chrome-line`): the chapter below must
+     not move down when the "+ prose" of the chapter above appears */
+  min-height: var(--nv-chrome-line);
 }
 
 .nv-drop-hint {
@@ -4982,6 +5047,33 @@ body.sync-active #footer-brand #em-version {
    too, so their metrics come from the one rule set above. Nothing type-specific
    is left here. */
 /* (the Doc surface is styled once, above: `.doc-list` / `.doc-detail`.) */
+/* SURFACE-AUDIT · the secondary surfaces that used to be a note: the story, the
+   shelf and the picture. Each takes the metrics of its focused counterpart
+   (`.nv-view`, `.shelf-body`, `.viewer-view` are on the elements too), and adds
+   only what an AREA needs: fill the box, scroll inside it, never the page. */
+.tile-narrative,
+.tile-shelfbody,
+.tile-viewer {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.tile-viewer {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.tile-viewer > .viewer-stage {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+.tile-annot-image {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
 /* a secondary area that is not a canvas: say what it is, do not draw a wrong one */
 .tile-note {
   flex: 1;

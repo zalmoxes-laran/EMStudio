@@ -333,6 +333,9 @@ const EN: Dict = {
   "annotator.tools": "Tracing tools",
   "annotator.toolsNote": "Regions are recorded in normalised coordinates, so they follow the picture at any size.",
   "annotator.noImage": "Select a document or a resource with an image to annotate it.",
+  // SURFACE-AUDIT · the caption of an annotator window that is not the focused
+  // one: the picture it is on, and what has been traced on it so far.
+  "annotator.regions": "{n} regions traced · trace in the focused window",
   "annotator.hintView": "View Mode — the picture only. Switch to Annotate to trace.",
   "annotator.hintDraw": "Drag to trace a rectangle; with the polygon tool, click each vertex (Esc clears).",
   "annotator.whatAreYouExtracting": "What are you extracting?",
@@ -396,7 +399,9 @@ const EN: Dict = {
   "tile.corner": "Drag inside to split this area, onto a neighbour to join it",
   "tile.tableNote": "Table — click to work here",
   "tile.docNote": "Documents — click to work here",
-  "tile.narrativeNote": "Narrative — step in to read and write here",
+  // SURFACE-AUDIT · kept for the WRITING affordance only: the secondary
+  // narrative area now RENDERS the story (read-only), and this line is its hint.
+  "tile.narrativeNote": "Narrative — step in to write here",
   "tile.enterNote": "{name} — step in to work here",
   "tab.elsewhere": "This panel is open in a window — work on it there",
   "tile.panelTaken": "This panel is open in another area — step in to bring it here",
@@ -829,6 +834,7 @@ const IT: Dict = {
   "annotator.tools": "Strumenti di tracciamento",
   "annotator.toolsNote": "Le regioni sono registrate in coordinate normalizzate, quindi seguono l'immagine a qualsiasi dimensione.",
   "annotator.noImage": "Seleziona un documento o una risorsa con un'immagine per annotarla.",
+  "annotator.regions": "{n} regioni tracciate · si traccia nella finestra attiva",
   "annotator.hintView": "Modo Vista — solo l'immagine. Passa ad Annota per tracciare.",
   "annotator.hintDraw": "Trascina per tracciare un rettangolo; con il poligono clicca ogni vertice (Esc annulla).",
   "annotator.whatAreYouExtracting": "Cosa stai estraendo?",
@@ -892,7 +898,7 @@ const IT: Dict = {
   "tile.corner": "Trascina dentro per dividere l'area, su una vicina per unirle",
   "tile.tableNote": "Tabella — clicca per lavorare qui",
   "tile.docNote": "Documenti — clicca per lavorare qui",
-  "tile.narrativeNote": "Narrativa — entra per leggere e scrivere qui",
+  "tile.narrativeNote": "Narrativa — entra per scrivere qui",
   "tile.enterNote": "{name} — entra per lavorare qui",
   "tab.elsewhere": "Questo pannello è aperto in una finestra — lavoraci lì",
   "tile.panelTaken": "Questo pannello è aperto in un'altra area — entra qui per portarcelo",

@@ -909,13 +909,21 @@ export function renderNarrativeView(
       chip.appendChild(chipRemove(a, () => editor.removeAuthor(a.id)));
     byline.appendChild(chip);
   }
+  // SURFACE-STABLE · the byline's own chrome gets its own LINE, reserved in both
+  // modes. It used to sit beside the names and wrap when it did not fit — 28 px
+  // of row became 55, so the whole story moved down 27 px on entering edit (and
+  // back up when the window lost the focus, since a secondary area is
+  // read-only). Same rule as the block lane: the affordance's space is spoken
+  // for, and turning on edit fills it instead of making room.
+  const bylineTools = el("div", "nv-authors-tools");
+  byline.appendChild(bylineTools);
   if (editor) {
     const add = authorSelect(
       editor.authors().filter(
         (a) => !a.ai && !responsible.some((x) => x.id === a.id)),
       null, "+ autore", "Aggiungi una persona fra gli autori di questa narrativa",
       (id) => { if (id) editor.addAuthor(id); });
-    byline.appendChild(add);
+    bylineTools.appendChild(add);
 
     // "Signing as" lives once, at the top: an endorsement is the same act
     // whichever paragraph it lands on, and asking who you are on every click
@@ -929,7 +937,7 @@ export function renderNarrativeView(
       "Chi mette il proprio nome quando premi Valida. Solo persone: " +
       "un modello non può avallare.",
       (id) => editor.setSigner(id)));
-    byline.appendChild(signing);
+    bylineTools.appendChild(signing);
   }
   head.appendChild(byline);
 
@@ -998,8 +1006,13 @@ export function renderNarrativeView(
       if (!anchorNode) chip.classList.add("nv-anchor-missing");
       h.appendChild(chip);
     }
+    // SURFACE-STABLE · the chapter's toolbar lane exists in both modes, and its
+    // reserved height is what keeps the head the same height either way. Without
+    // it the head was 29 px reading and 31 px writing — three pixels per chapter,
+    // so the fourth chapter sat a line lower than where you left it.
+    const tools = el("div", "nv-chapter-tools");
+    h.appendChild(tools);
     if (editor) {
-      const tools = el("div", "nv-chapter-tools");
       // The chapter toolbar already carries an author select; without a label
       // the two reads as one, and the user looks for "firmo come" here.
       tools.appendChild(el("span", "nv-tool-label", "autore cap."));
@@ -1080,7 +1093,6 @@ export function renderNarrativeView(
         });
         tools.appendChild(all);
       }
-      h.appendChild(tools);
 
       const titleEl = h.querySelector(".nv-chapter-title") as HTMLElement;
       titleEl.contentEditable = "true";
@@ -1145,14 +1157,28 @@ export function renderNarrativeView(
         wrap.appendChild(strip);
         body = wrap;
       }
-      if (!editor) {
-        section.appendChild(body);
-        return;
-      }
+      // SURFACE-STABLE · the row and its TOOLS LANE exist in both modes, and the
+      // lane is RESERVED whether or not anything is in it.
+      //
+      // Measured on 21 Aug 2026, at equal area widths: entering edit narrowed the
+      // prose from 576 to 482 px and the matrix embed from 576 to 403 — because
+      // the lane was in flow and was a DIFFERENT width per block type (three
+      // buttons for a paragraph, a select plus three for an embed). So the story
+      // re-paginated on entering edit, the embeds did not even agree with the
+      // prose inside edit mode, and — since a secondary area is read-only — a
+      // window in edit mode re-paginated again the moment it lost the focus.
+      // That last one is what read as "the layout changes with the focus".
+      //
+      // One lane, one width (`--nv-tools-w`, defined once in the stylesheet),
+      // always there: the prose and the embeds keep their column in all four
+      // states, and edit mode only fills a space that was already spoken for.
       const row = el("div", "nv-block-row");
       body.classList.add("nv-block-body");
       row.appendChild(body);
       const tools = el("div", "nv-block-tools");
+      row.appendChild(tools);
+      section.appendChild(row);
+      if (!editor) return;                  // read-only: the lane stays empty
       if (block.block_type === "embed") {
         const current = canonicalViewType(block.view_type);
         const sel = document.createElement("select");
@@ -1182,12 +1208,14 @@ export function renderNarrativeView(
         () => editor.moveBlock(ci, bi, 1)));
       tools.appendChild(iconButton("✕", "Remove this block",
         () => editor.deleteBlock(ci, bi)));
-      row.appendChild(tools);
-      section.appendChild(row);
     });
 
+    // SURFACE-STABLE · and the "+ prose" row too: it is one per chapter, so
+    // without a reserved band every chapter after the first sat 27 px lower in
+    // edit mode than in read mode. Present in both, filled in one.
+    const add = el("div", "nv-add-row");
+    section.appendChild(add);
     if (editor) {
-      const add = el("div", "nv-add-row");
       // `+ prose` adds to THIS chapter (the one the button sits under — `ci` is
       // this iteration's index, not the window's current chapter), makes that
       // chapter current, and asks the next render to put the cursor in the new
@@ -1207,7 +1235,6 @@ export function renderNarrativeView(
       const hint = el("span", "nv-drop-hint",
         "…or drag a node from the Nodes tab into this chapter");
       add.appendChild(hint);
-      section.appendChild(add);
 
       // Drag-to-embed. The drop target is the whole chapter, so the gesture is
       // "put this in that chapter" rather than a hunt for a 4-pixel line.

@@ -61,6 +61,17 @@ export interface EmDataHost {
   actions?: HTMLElement | null;
   /** false while the host is hidden (a collapsed dock, a window not shown) */
   enabled: () => boolean;
+  /**
+   * Where this mount's reading position is kept, when it outlives the element.
+   *
+   * SURFACE-AUDIT · keeping `scrollTop` inside the body (below) carries a row
+   * across a rebuild, and cannot carry it across a MIGRATION: the focused
+   * Tabular window's body and the same window's secondary body are two different
+   * elements, so the row you were on was lost every time the focus crossed a
+   * divider. This module does not know about windows — the owner that does hands
+   * it a place to keep the number.
+   */
+  place?: { recall: () => number; remember: (at: number) => void };
 }
 
 const hosts: EmDataHost[] = [];
@@ -167,13 +178,15 @@ function renderEmDataInto(host: EmDataHost): void {
   // HDR2 · the table is rebuilt on every render (including a focus change) and
   // this body is the scroller: a row somebody had scrolled down to must not jump
   // back to the top because the pointer crossed a divider.
-  const wasAt = body.scrollTop;
+  const wasAt = body.scrollTop || host.place?.recall() || 0;
+  if (body.scrollTop) host.place?.remember(body.scrollTop);
   const keepScroll = (): void => {
     if (!wasAt) return;
     body.scrollTop = wasAt;
     if (body.scrollTop !== wasAt) {
       requestAnimationFrame(() => { body.scrollTop = wasAt; });
     }
+    host.place?.remember(wasAt);
   };
   const countEl = host.count;
   const actions = host.actions;

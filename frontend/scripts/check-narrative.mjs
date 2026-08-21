@@ -1005,4 +1005,115 @@ eq(doc.graph.nodes.filter(
      + "prima, che dice perché)");
 }
 
+{
+  // ── LA STORIA NON SI RI-IMPAGINA · lo stesso layout nei quattro stati ─────
+  //
+  // Il sintomo (E.D., 4 screenshot): la finestra Narrativa ha una forma diversa
+  // a seconda del focus e di edit on/off — la colonna cambia larghezza, gli
+  // embed si stringono, la storia si sposta.
+  //
+  // MISURATO in browser, a pari larghezza d'area (635 px), l'ipotesi «due
+  // renderer» era FALSA — i due mount usano la stessa `renderNarrativeView` da
+  // prima di stanotte, e focus/defocus davano numeri identici. La causa era
+  // un'altra, in due pezzi:
+  //   1. la corsia dei controlli era IN FLUSSO e larga a seconda del contenuto
+  //      (86 px accanto a un paragrafo, 165 accanto a un embed, 0 in lettura):
+  //      entrando in edit la prosa passava 576 → 482 e la matrice 576 → 403;
+  //   2. le regole di PAGINA (il padding di 28 px, il fondo) stavano sull'ID
+  //      `#narrative-view`, non sulla classe che i due mount condividono: la
+  //      stessa storia cominciava 28 px più in alto nell'area secondaria.
+  // Siccome l'area secondaria è in sola lettura, una finestra in edit-mode si
+  // ri-impaginava anche perdendo il focus: da qui «cambia col focus».
+  //
+  // Qui non ci sono pixel (nessun layout headless): si asserisce il CABLAGGIO —
+  // che le corsie esistano nei due modi, che siano una sola definizione, e che
+  // la pagina sia sulla classe condivisa. I pixel sono gli screenshot.
+  const V = await load("narrative.ts");
+  const chrome = {
+    narrativeId: "narr-1",
+    addChapter() {}, renameChapter() {}, moveChapter() {}, deleteChapter() {},
+    toggleCanonical() {}, setAnchor() {}, addProse() {}, setProse() {},
+    addEmbed() {}, setViewType() {}, moveBlock() {}, deleteBlock() {},
+    lanes: () => [], authors: () => [], humanAuthors: () => [],
+    addAuthor() {}, removeAuthor() {}, setChapterAuthor() {},
+    signer: () => null, setSigner() {}, endorse() {}, retract() {},
+    endorseChapter() {}, pendingIn: () => 0, canGenerate: () => false,
+    canRegenerate: () => false, undescribedEpochs: () => [],
+    generateDraft() {}, promptOf: () => null,
+  };
+  const render = (editor) => {
+    const host = document.createElement("div");
+    V.renderNarrativeView(host, doc, "narr-1", () => {}, undefined, editor,
+                          editor ? { index: () => 0, set: () => {} } : undefined);
+    return host;
+  };
+  const reading = render(undefined);
+  const writing = render(chrome);
+
+  const count = (host, sel) => host.querySelectorAll(sel).length;
+  // 1 · ogni blocco è nella stessa impalcatura nei due modi: riga + corsia
+  const rowsR = count(reading, ".nv-block-row");
+  const rowsW = count(writing, ".nv-block-row");
+  ok(rowsR > 0, `stabile · in lettura i blocchi sono in una riga (${rowsR})`);
+  eq(rowsR, rowsW, "stabile · e sono le STESSE righe scrivendo");
+  eq(count(reading, ".nv-block-body"), count(writing, ".nv-block-body"),
+     "stabile · lo stesso numero di corpi-blocco");
+  eq(count(reading, ".nv-block-tools"), rowsR,
+     "stabile · una corsia RISERVATA per ogni riga anche in lettura");
+  eq(count(writing, ".nv-block-tools"), rowsW,
+     "stabile · …e la stessa in scrittura, dove viene riempita");
+  eq([...reading.querySelectorAll(".nv-block-tools")]
+       .every((t) => t.children.length === 0), true,
+     "stabile · in lettura la corsia è VUOTA (nessun controllo fuori focus)");
+  ok([...writing.querySelectorAll(".nv-block-tools")]
+       .some((t) => t.querySelector("button")),
+     "stabile · in scrittura i controlli stanno DENTRO quella corsia");
+
+  // 2 · le altre tre corsie di chrome esistono nei due modi
+  for (const sel of [".nv-chapter-tools", ".nv-add-row", ".nv-authors-tools"]) {
+    ok(count(reading, sel) > 0, `stabile · ${sel} è riservata anche in lettura`);
+    eq(count(reading, sel), count(writing, sel),
+       `stabile · ${sel}: stesso numero nei due modi`);
+  }
+  // …e in lettura sono vuote: è la VISIBILITÀ dei controlli a cambiare
+  eq([...reading.querySelectorAll(".nv-chapter-tools, .nv-add-row, .nv-authors-tools")]
+       .every((t) => t.children.length === 0), true,
+     "stabile · in lettura le corsie di chrome sono vuote, non assenti");
+
+  // 3 · la colonna e le corsie sono definite UNA volta, nel foglio di stile
+  const css = readFileSync(new URL("../src/style.css", import.meta.url), "utf8");
+  // counted by splitting on the DECLARATION (`--name:`), which `var(--name)`
+  // does not match: one definition of the column, or it is two columns
+  const declared = (name) => css.split("--" + name + ":").length - 1;
+  eq(declared("nv-tools-w"), 1,
+     "stabile · la larghezza della corsia è dichiarata UNA sola volta");
+  eq(declared("nv-chrome-line"), 1,
+     "stabile · e così l'altezza di una riga di chrome");
+  const rule = (sel) => {
+    const at = css.indexOf(sel + " {");
+    return at < 0 ? "" : css.slice(at, css.indexOf("}", at));
+  };
+  ok(rule(".nv-block-row").includes("grid-template-columns")
+     && rule(".nv-block-row").includes("var(--nv-tools-w)"),
+     "stabile · la riga è una griglia con la corsia come TRACCIA riservata");
+  for (const sel of [".nv-chapter-tools", ".nv-add-row", ".nv-authors-tools"])
+    ok(rule(sel).includes("min-height: var(--nv-chrome-line)"),
+       `stabile · ${sel} riserva l'altezza di una riga`);
+
+  // 4 · la PAGINA (fondo e aria) è sulla classe che i due mount condividono,
+  // non sull'id del mount attivo: è l'altra metà del difetto misurato
+  const page = css.slice(css.indexOf(".nv-view {"), css.indexOf(".nv-view {") + 220);
+  ok(/padding:/.test(page) && /background:/.test(page),
+     "stabile · `.nv-view` porta il fondo e il padding della pagina");
+  const idRule = css.slice(css.indexOf("#narrative-view {"),
+                           css.indexOf("#narrative-view {") + 320);
+  ok(!/padding:/.test(idRule),
+     "stabile · e l'id NON li ridichiara (il secondario ne resterebbe fuori)");
+  ok(/position:\s*absolute/.test(idRule),
+     "stabile · all'id resta solo ciò che è vero del mount attivo: è un overlay");
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  ok(/id="narrative-view"[^>]*class="[^"]*nv-view/.test(html),
+     "stabile · …e il mount attivo porta davvero quella classe");
+}
+
 console.log(`narrative: ${checks} checks passed`);

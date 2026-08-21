@@ -43,6 +43,23 @@ import {
   type IdentityProvider,
 } from "./identity";
 import { renderInspector } from "./inspector";
+import type { BoxLookup } from "./surface-scroll";
+import {
+  paintSurface,
+  rememberFocusedBoxes,
+  restoreFocusedBoxes,
+  preservingScroll,
+  rememberPanelScroll,
+  rememberScrollsIn,
+  rememberSurfaceScroll,
+  restorePanelScroll,
+  restoreScrollsIn,
+  restoreSurfaceScroll,
+  scrollerOf,
+  surfaceKey,
+  surfacePlace,
+  surfaceScroll,
+} from "./surface-scroll";
 import { narrativesIn, renderNarrativeView, VIEW_TYPE_MIME } from "./narrative";
 
 import {
@@ -975,6 +992,15 @@ window.__EM_SCENE__ = () => {
         w: n.w * vp.scale,
         h: n.h * vp.scale,
       }));
+    })(),
+    // SURFACE-AUDIT · the CAMERA. For a canvas window, pan and zoom are what a
+    // scroll position is for a surface: the content is redrawn from the state, so
+    // it never goes blank, but a camera reset by a focus change loses the reader's
+    // place just as completely. Exposed so that can be measured.
+    vp: (() => {
+      const vp = viewport();
+      return { x: Math.round(vp.x), y: Math.round(vp.y),
+               scale: Number(vp.scale.toFixed(4)) };
     })(),
     // is the whole picture on screen? (the DAG must OPEN fitted, and a camera
     // left over from another picture is the way it opens at 300% on a corner)
@@ -7806,6 +7832,15 @@ function narrativeEditor(narrativeId: string): NarrativeEditor {
 
 function refreshNarrativeView(): void {
   if (centralMode !== "narrative") return;
+  // SURFACE-AUDIT · keyed to the WINDOW, not to `#narrative-view`, because this
+  // surface MIGRATES: the same story is the overlay while the window has the
+  // focus and a secondary area's box when it does not. One key, so the place you
+  // were reading survives the crossing in both directions — and, on the way,
+  // survives this rebuild too (the view is rebuilt on every document change).
+  paintSurface(activeWin(), narrativeViewEl, () => renderNarrativeViewNow());
+}
+
+function renderNarrativeViewNow(): void {
   const narratives = narrativesIn(store?.doc ?? null);
   const current = narratives.find((n) => n.id === selectedNarrativeId)
     ?? narratives[0];
@@ -8456,11 +8491,36 @@ function buildPane(pane: Pane, activeId: string): HTMLElement {
 
 /** Lay the workspace's tree out. Cheap and idempotent: called on any change to
  *  the arrangement (split, close, activate, ratio) and after a workspace switch. */
+/**
+ * The window whose surfaces are mounted in `#canvas-wrap` right now.
+ *
+ * NOT `activeWin()`, and that distinction is the whole of it: a focus change
+ * sets the new active window and THEN rebuilds the tree, so by the time the
+ * teardown reads it the answer is the INCOMING window — and the outgoing
+ * window's position was being filed under the incoming one's name (measured: the
+ * story stayed at 900 for the window arriving, and the one leaving got 0).
+ */
+let wrapWin: Win = activeWin();
+
+/** The two halves of the migrating-surface handoff, over THIS document. The
+ *  loops live in `surface-scroll.ts` — one place, and a checker can run them. */
+const byId: BoxLookup = (id) => document.getElementById(id);
+const rememberFocusedSurfaceScroll = (): void =>
+  rememberFocusedBoxes(wrapWin, byId);
+const restoreFocusedSurfaceScroll = (): void =>
+  restoreFocusedBoxes(activeWin(), byId);
+
 function renderTiles(): void {
   // Any menu open right now belongs to a bar that is about to move — leaving it
   // up would float it over the new arrangement, detached from anything.
   closeAllDropdowns();
   closeAllSubmenus();
+  // SURFACE-AUDIT · where every reader was, on BOTH sides of the crossing:
+  // the focused window's own surface, and each secondary box that is about to
+  // be discarded with its area.
+  rememberFocusedSurfaceScroll();
+  for (const s of tileSurfaceBoxes) rememberSurfaceScroll(s.win, s.box, s.slot);
+  tileSurfaceBoxes.length = 0;
   tileCanvases.clear();
   tileSurfaces.length = 0;
   paletteUis.length = 0;
@@ -8475,6 +8535,9 @@ function renderTiles(): void {
   // same reason `#canvas-wrap` is detached rather than left to be cleared.
   releaseTilePanels();
   // detach the live area before rebuilding, so it survives the innerHTML reset
+  // …and remember where its surfaces were: a detach zeroes every scrollTop
+  // inside (see `rememberScrollsIn`).
+  const wrapScrolls = rememberScrollsIn(canvasWrapEl);
   canvasWrapEl.remove();
   tileRoot.innerHTML = "";
   tileRoot.appendChild(buildPane(layoutOf(), activeWin().id));
@@ -8488,6 +8551,9 @@ function renderTiles(): void {
   refreshTileSurfaces();
   resizeCanvas(); // the live area changed size
   drawTiles();
+  restoreScrollsIn(wrapScrolls); // …the reader is where they were, in every type
+  wrapWin = activeWin();         // whose surfaces the wrap now holds
+  restoreFocusedSurfaceScroll(); // …and the migrating ones, from their window
 }
 
 // ── CURRENT-ELEMENT · the element the ACTIVE window is working on ───────────
@@ -8692,8 +8758,14 @@ function renderDocView(): void {
   const list = document.getElementById("doc-view-list");
   const detail = document.getElementById("doc-view-detail");
   if (!surface || !list || !detail) return;
+  const win = activeWin();
   reflectDocWidth(surface);
-  renderDocViewInto(activeWin(), list, detail);
+  // the same two slots the secondary Doc surface uses (`FOCUSED_SURFACE_BOXES`)
+  const wasList = rememberSurfaceScroll(win, list, "doc-list");
+  const wasDetail = rememberSurfaceScroll(win, detail, "doc-detail");
+  renderDocViewInto(win, list, detail);
+  restoreSurfaceScroll(win, list, wasList, "doc-list");
+  restoreSurfaceScroll(win, detail, wasDetail, "doc-detail");
 }
 
 /** A Doc surface wide enough for the list and the detail side by side gets the
@@ -8820,25 +8892,38 @@ function renderShelf(): void {
   // (`body.isConnected`): a renderer should ask the screen whether it is on it.
   if (document.getElementById("shelf-view")?.classList.contains("hidden")) return;
 
-  const entries = shelfEntries();
-  count.textContent = t("shelf.count", { n: String(entries.length) });
   if (document.activeElement !== nameInput) nameInput.value = shelfMeta().name;
+  renderShelfInto(activeWin(), body, count);
+}
 
-  body.textContent = "";
-  if (!entries.length) {
-    const empty = document.createElement("div");
-    empty.className = "viewer-empty";
-    const p = document.createElement("p");
-    p.textContent = t("shelf.empty");
-    empty.appendChild(p);
-    body.appendChild(empty);
-    return;
-  }
-
-  const list = document.createElement("div");
-  list.className = "shelf-list";
-  for (const entry of entries) list.appendChild(shelfRow(entry));
-  body.appendChild(list);
+/**
+ * SURFACE-AUDIT · the shelf's LIST, into any body.
+ *
+ * Split out for the same reason `renderDocViewInto` was: a shelf window that
+ * loses the focus becomes a secondary area, and until this existed that area
+ * could only say its own name. One renderer, two mounts — not a second,
+ * divergible rendering of the same list.
+ */
+function renderShelfInto(win: Win, body: HTMLElement,
+                         count: HTMLElement | null): void {
+  const entries = shelfEntries();
+  if (count) count.textContent = t("shelf.count", { n: String(entries.length) });
+  paintSurface(win, body, () => {
+    body.textContent = "";
+    if (!entries.length) {
+      const empty = document.createElement("div");
+      empty.className = "viewer-empty";
+      const p = document.createElement("p");
+      p.textContent = t("shelf.empty");
+      empty.appendChild(p);
+      body.appendChild(empty);
+      return;
+    }
+    const list = document.createElement("div");
+    list.className = "shelf-list";
+    for (const entry of entries) list.appendChild(shelfRow(entry));
+    body.appendChild(list);
+  });
 }
 
 function shelfRow(entry: ShelfEntry): HTMLElement {
@@ -9297,6 +9382,35 @@ function renderAnnotator(): void {
  *  DOCUMENT, not from a list this window keeps: after a commit the region is a
  *  node like any other, and drawing it from the graph is what makes "the
  *  annotation is in the graph" visible instead of merely asserted. */
+/**
+ * SURFACE-AUDIT · the annotator's PICTURE, into a secondary area's boxes.
+ *
+ * What an unfocused annotator window can honestly show: the image it is on, and
+ * how many regions have been traced on it. Not the overlay — the overlay is a
+ * canvas sized to `#annotator-image` with the draft state of a gesture in
+ * progress, and a second one would be a second annotator. This is the picture,
+ * so the window is not blank, plus one line saying where the tracing is.
+ */
+function renderAnnotatorPictureInto(stage: HTMLElement,
+                                    caption: HTMLElement): void {
+  stage.textContent = "";
+  caption.textContent = "";
+  const image = annotatorImage;
+  if (!image) {
+    stage.appendChild(viewerEmpty(shelfEntries().length
+      ? t("annotator.pickFromShelf") : t("annotator.noImage")));
+    return;
+  }
+  const img = new Image();
+  img.className = "tile-annot-image";
+  img.src = image.url;
+  img.alt = image.title;
+  img.loading = "lazy";
+  stage.appendChild(img);
+  const n = annotatorRegions().length;
+  caption.textContent = `${image.title} · ${t("annotator.regions", { n: String(n) })}`;
+}
+
 function annotatorRegions(): EmNode[] {
   const image = annotatorImage;
   if (!image || !store) return [];
@@ -10007,15 +10121,10 @@ function renderStorageInto(host: StorageHost): void {
     up?.classList.add("hidden");
     // the ingestion panel is LONG: keep the place, per window (the body is a new
     // element after a tree rebuild)
-    const at = body.scrollTop || surfaceScroll.get(win.id) || 0;
-    if (body.scrollTop) surfaceScroll.set(win.id, body.scrollTop);
-    body.textContent = "";
-    body.appendChild(minioPanel());
-    if (at) {
-      body.scrollTop = at;
-      if (body.scrollTop !== at) requestAnimationFrame(() => { body.scrollTop = at; });
-      surfaceScroll.set(win.id, at);
-    }
+    paintSurface(win, body, () => {
+      body.textContent = "";
+      body.appendChild(minioPanel());
+    });
     return;
   }
 
@@ -10024,8 +10133,7 @@ function renderStorageInto(host: StorageHost): void {
   // the listing is rebuilt from scratch on every render (including a focus
   // change), and on a focus change the BODY ITSELF is a new element — so the
   // position is remembered per WINDOW and not per element.
-  const wasAt = body.scrollTop || surfaceScroll.get(win.id) || 0;
-  if (body.scrollTop) surfaceScroll.set(win.id, body.scrollTop);
+  const wasAt = rememberSurfaceScroll(win, body);
   body.textContent = "";
   body.appendChild(storageEmpty(t("storage.loading")));
 
@@ -10084,13 +10192,7 @@ function renderStorageInto(host: StorageHost): void {
     body.appendChild(list);
     // …and put it back where it was: a folder you had scrolled through does not
     // jump to the top because the pointer crossed a divider
-    if (wasAt) {
-      body.scrollTop = wasAt;
-      if (body.scrollTop !== wasAt) {
-        requestAnimationFrame(() => { body.scrollTop = wasAt; });
-      }
-      surfaceScroll.set(win.id, wasAt);
-    }
+    restoreSurfaceScroll(win, body, wasAt);
   })();
 }
 
@@ -11207,7 +11309,7 @@ function pinViewerCollection(win: Win, payload: StorageDragPayload): void {
     ref: payload.path,
   });
   setWinCurrent(win, "item", null);
-  viewerCollection = null;
+  viewerCollections.clear();
   // A folder IS a collection, and Gallery is the reading that shows it as one.
   // A single file stays in Single: there is nothing to lay out.
   setWinModeOf(win, payload.type === "dir" ? "gallery" : "single");
@@ -11318,8 +11420,15 @@ function viewerKeyOf(win: Win): { kind: "folder" | "file" | "node"; ref: string 
 
 /** The built collection for the window on screen, keyed so a stale async build
  *  cannot overwrite a newer one. */
-let viewerCollection: { key: string; winId: string; value: Collection } | null = null;
-let viewerBuilding: string | null = null;
+/** The built collection of each viewer WINDOW. A Map and not one slot: with two
+ *  viewer surfaces on screen (one focused, one secondary) a single slot made each
+ *  render evict the other window's collection, so both re-fetched on every
+ *  document change. The cache belongs to the window, like every other WIN state. */
+const viewerCollections = new Map<string, { key: string; value: Collection }>();
+/** The source each viewer window is currently fetching. Per window, and asked
+ *  by window, so a secondary viewer building its own collection does not look
+ *  like the focused one's build already in flight. */
+const viewerBuilding = new Map<string, string>();
 
 function viewerIndex(win: Win): number {
   const v = winCurrent(win, "item");
@@ -11349,6 +11458,13 @@ function renderViewer(): void {
   if (!stage || !caption || !bar) return;
   const win = activeWin();
   if (win.type !== "viewer") return;
+  paintSurface(win, stage, () => renderViewerInto(win, stage, caption, bar));
+}
+
+/** SURFACE-AUDIT · the same preview, into any three boxes — so a viewer window
+ *  that is not the focused one is still showing its picture. */
+function renderViewerInto(win: Win, stage: HTMLElement, caption: HTMLElement,
+                          bar: HTMLElement): void {
   stage.textContent = "";
   caption.textContent = "";
   bar.classList.add("hidden");
@@ -11363,8 +11479,9 @@ function renderViewer(): void {
   // A collection from disk takes a round trip to build; one already built for
   // this exact source is drawn straight away, which is what makes prev/next and
   // the Mode switch instant rather than a re-fetch each time.
-  if (viewerCollection?.key === keyStr && viewerCollection.winId === win.id) {
-    drawViewerCollection(win, viewerCollection.value, stage, caption, bar);
+  const cached = viewerCollections.get(win.id);
+  if (cached?.key === keyStr) {
+    drawViewerCollection(win, cached.value, stage, caption, bar);
     return;
   }
 
@@ -11378,7 +11495,7 @@ function renderViewer(): void {
     }
     if (viewerIsFetchable(src)) {
       const built = collectionFromUrl(key.ref, label, src);
-      viewerCollection = { key: keyStr, winId: win.id, value: built };
+      viewerCollections.set(win.id, { key: keyStr, value: built });
       drawViewerCollection(win, built, stage, caption, bar);
       return;
     }
@@ -11405,15 +11522,16 @@ function buildViewerCollection(
   build: () => Promise<Collection>,
 ): void {
   stage.appendChild(viewerEmpty(t("storage.loading")));
-  if (viewerBuilding === keyStr) return; // one build per source, not one per redraw
-  viewerBuilding = keyStr;
+  // one build per source PER WINDOW, not one per redraw
+  if (viewerBuilding.get(win.id) === keyStr) return;
+  viewerBuilding.set(win.id, keyStr);
   void (async () => {
     let built: Collection;
     try {
       built = await build();
     } catch (err) {
-      viewerBuilding = null;
-      if (activeWin().id !== win.id) return;
+      viewerBuilding.delete(win.id);
+      if (!stage.isConnected) return;   // its area went while the fetch was out
       stage.textContent = "";
       // Three different facts, three different sentences. Flattening them into
       // "could not load" would tell the reader nothing they can act on: start
@@ -11438,9 +11556,9 @@ function buildViewerCollection(
       stage.appendChild(box);
       return;
     }
-    viewerBuilding = null;
-    if (activeWin().id !== win.id) return;
-    viewerCollection = { key: keyStr, winId: win.id, value: built };
+    viewerBuilding.delete(win.id);
+    if (!stage.isConnected) return;     // …same rule on the way in
+    viewerCollections.set(win.id, { key: keyStr, value: built });
     stage.textContent = "";
     drawViewerCollection(win, built, stage, caption, bar);
   })();
@@ -11491,7 +11609,7 @@ function drawViewerCollection(
       if (n == null) return;
       item.pages = n;
       // only if that item is still the one on screen
-      if (viewerCollection?.value === collection && collection.items[
+      if (viewerCollections.get(win.id)?.value === collection && collection.items[
         Math.min(viewerIndex(win), collection.items.length - 1)
       ] === item) {
         caption.textContent = label();
@@ -11692,86 +11810,6 @@ function panelIsMounted(el: HTMLElement): boolean {
 }
 
 /** Ask a panel to redraw itself, whichever window it is living in. */
-/**
- * HDR2 · keep the SCROLL across a rebuild (or a re-parenting).
- *
- * The symptom: scroll a long panel down, move the focus to another window, and
- * the one you left jumps back to the top. Two causes, both real — the panel's
- * body is rebuilt (`innerHTML = ""` and a fresh tree) and the singleton element
- * is MOVED into another area's box, which resets `scrollTop` in every browser.
- *
- * So the position is saved and put back around whatever does that. And it is put
- * back TWICE when it has to be: right after the rebuild the new content can be
- * momentarily shorter than the old, and a `scrollTop` written against a short
- * body clamps to 0 — the frame after, when the layout has settled, it takes.
- * (Measured: without the second write the inspector landed a few hundred pixels
- * above where it had been.)
- */
-/**
- * …and across the WHOLE release→re-home cycle, which is what a focus change is.
- *
- * Measured, and the reason the first fix was not enough: moving the focus runs
- * `renderTiles`, which sends every hosted panel back to `#side` (a move: scroll
- * 0) and then re-homes it into the new tree. By the time the re-home could
- * restore anything the position was already gone — so it is remembered HERE, at
- * the release, and put back when the panel lands. Keyed by panel id, because the
- * element is the same singleton wherever it goes.
- */
-const panelScroll = new Map<string, number>();
-
-/** …and the same for the surfaces that are REBUILT rather than moved (a storage
- *  listing, the ingestion panel): after a tree rebuild the body is a different
- *  element, so the position belongs to the WINDOW. */
-const surfaceScroll = new Map<string, number>();
-
-function rememberPanelScroll(el: HTMLElement | null): void {
-  if (!el?.id) return;
-  const scroller = scrollerOf(el);
-  const at = scroller?.scrollTop ?? 0;
-  if (at) panelScroll.set(el.id, at);
-}
-
-function restorePanelScroll(el: HTMLElement | null): void {
-  if (!el?.id) return;
-  const at = panelScroll.get(el.id);
-  if (!at) return;
-  const scroller = scrollerOf(el);
-  if (!scroller) return;
-  scroller.scrollTop = at;
-  if (scroller.scrollTop !== at) {
-    requestAnimationFrame(() => { scroller.scrollTop = at; });
-  }
-}
-
-function preservingScroll<T>(el: HTMLElement | null | undefined, fn: () => T): T {
-  if (!el) return fn();
-  const top = el.scrollTop;
-  const left = el.scrollLeft;
-  const out = fn();
-  if (!top && !left) return out;
-  el.scrollTop = top;
-  el.scrollLeft = left;
-  if (el.scrollTop !== top) {
-    requestAnimationFrame(() => {
-      el.scrollTop = top;
-      el.scrollLeft = left;
-    });
-  }
-  return out;
-}
-
-/** The element that actually SCROLLS inside a panel — the panel box itself when
- *  it is the scroller, otherwise its `.panel-body`-ish child. Read from the DOM
- *  rather than assumed, because the four panels are built by four modules. */
-function scrollerOf(el: HTMLElement | null): HTMLElement | null {
-  if (!el) return null;
-  if (el.scrollHeight > el.clientHeight + 1) return el;
-  const inner = Array.from(el.querySelectorAll<HTMLElement>("*")).find(
-    (c) => c.scrollHeight > c.clientHeight + 1
-      && getComputedStyle(c).overflowY !== "visible");
-  return inner ?? el;
-}
-
 function refreshPanelById(id: string): void {
   // …and every panel refresh goes through it: the panel a person scrolled is the
   // one they were reading.
@@ -11848,6 +11886,33 @@ function releasePanels(): void {
  *  with the tree; a surface whose area is gone is simply not in the list. */
 const tileSurfaces: Array<() => void> = [];
 
+/** …and WHERE the reader was in each of them. Read once more just before the
+ *  tree is torn down (`renderTiles`), so a position the reader scrolled to by
+ *  hand — with no repaint since — is not lost with the box that held it. */
+const tileSurfaceBoxes: Array<{ win: Win; box: HTMLElement; slot: string }> = [];
+
+/**
+ * Register a live secondary surface: the boxes that hold the reader's place, and
+ * what paints them.
+ *
+ * One call per type, so "repaint it" and "remember where it was" cannot drift
+ * apart — which is how some window types ended up with the fix and others
+ * without it.
+ */
+function registerTileSurface(win: Win,
+                             boxes: Array<{ box: HTMLElement; slot: string }>,
+                             paint: () => void): void {
+  const run = (): void => {
+    if (!boxes.every((b) => b.box.isConnected)) return;
+    const at = boxes.map((b) => rememberSurfaceScroll(win, b.box, b.slot));
+    paint();
+    boxes.forEach((b, i) => restoreSurfaceScroll(win, b.box, at[i], b.slot));
+  };
+  for (const b of boxes) tileSurfaceBoxes.push({ win, ...b });
+  tileSurfaces.push(run);
+  run();
+}
+
 /** The EM-Data hosts THIS module created for secondary areas. Owned explicitly
  *  (WIN-FIX1) so they are unregistered when their area goes, and so nothing has
  *  to guess from the DOM which mounts are still alive. */
@@ -11890,6 +11955,8 @@ function buildSecondarySurface(area: HTMLElement, win: Win): void {
           ?.querySelector<HTMLElement>(":scope > .tile-bar .win-strip-count") ?? null;
       },
       enabled: () => body.isConnected,
+      // the row this window was on, kept where its focused surface keeps it
+      place: surfacePlace(win),
     };
     tileEmDataHosts.push(host);
     addEmDataHost(host);
@@ -11923,23 +11990,44 @@ function buildSecondarySurface(area: HTMLElement, win: Win): void {
     detail.className = "doc-detail";
     surface.append(list, detail);
     area.appendChild(surface);
-    const paint = (): void => {
-      if (!list.isConnected) return;
-      reflectDocWidth(surface);
-      renderDocViewInto(win, list, detail);
-    };
-    tileSurfaces.push(paint);
-    paint();
+    // two scrollers, two slots: the list you had scrolled and the source you
+    // were reading are both positions worth keeping
+    registerTileSurface(win,
+      [{ box: list, slot: "doc-list" }, { box: detail, slot: "doc-detail" }],
+      () => {
+        reflectDocWidth(surface);
+        renderDocViewInto(win, list, detail);
+      });
     return;
   }
   if (win.type === "narrative") {
-    // NARRATIVE stays a note on purpose. The story is an OVERLAY over the canvas
-    // (`#narrative-view`): one element with the authoring editors bound to it.
-    // Re-homing that would move the EDITOR, not a view of it — so this area says
-    // what it holds, and a step into it brings the real thing. (A read-only
-    // rendering of the prose beside the editor is a second renderer for the same
-    // document, which is the thing WIN5-7 have been avoiding throughout.)
-    tileNote(area, t("tile.narrativeNote"));
+    // SURFACE-AUDIT · the story, READ-ONLY, in its own area.
+    //
+    // This was a note ("step in to read and write here"), and the note was the
+    // bug: a narrative window that lost the focus went blank — the longest
+    // surface in the app, emptied by the pointer crossing a divider. Measured
+    // side by side before touching anything.
+    //
+    // What made the note look necessary was the worry about "a second renderer
+    // for the same document". There is no second renderer: `renderNarrativeView`
+    // takes its host as its first argument, and called WITHOUT an editor it is
+    // the same function producing the reading. The authoring editors stay bound
+    // to `#narrative-view`, which is still the one and only writing surface —
+    // and this area, the moment the pointer enters it, becomes that surface.
+    const host = document.createElement("div");
+    host.className = "tile-narrative nv-view";
+    area.appendChild(host);
+    registerTileSurface(win, [{ box: host, slot: "" }], () => {
+      const narratives = narrativesIn(store?.doc ?? null);
+      const chosen = (winCurrent(win, "narrative") as string | null)
+        ?? selectedNarrativeId ?? narratives[0]?.id ?? null;
+      renderNarrativeView(
+        host, store?.doc ?? null, chosen,
+        (id) => { setWinCurrent(win, "narrative", id); refreshTileSurfaces(); },
+        revealFromNarrative,
+        undefined,                         // no editor: this is the reading
+      );
+    });
     return;
   }
   if (win.type === "storage") {
@@ -11963,6 +12051,45 @@ function buildSecondarySurface(area: HTMLElement, win: Win): void {
     tileStorageHosts.push(host);
     // painted by `renderTiles` once the tree is attached — rendering into a
     // detached box now would throw the listing away
+    return;
+  }
+  if (win.type === "shelf") {
+    // SURFACE-AUDIT · the wide list, in its own area. Same bar-less shape as the
+    // other secondary surfaces (the count lives in this area's window header),
+    // and the same renderer as the focused window (`renderShelfInto`).
+    const body = document.createElement("div");
+    body.className = "tile-shelfbody shelf-body";
+    area.appendChild(body);
+    registerTileSurface(win, [{ box: body, slot: "" }], () => {
+      const count = body.parentElement
+        ?.querySelector<HTMLElement>(":scope > .tile-bar .win-strip-count") ?? null;
+      renderShelfInto(win, body, count);
+    });
+    return;
+  }
+  if (win.type === "viewer" || win.type === "annotator") {
+    // SURFACE-AUDIT · the PICTURE, in its own area.
+    //
+    // A viewer window gets its own preview, drawn by the same renderer as the
+    // focused one. An ANNOTATOR window gets the picture too, and only the
+    // picture: tracing needs the single `#annotator-image` + its overlay canvas
+    // and the module's draft state, so a second live *annotator* would be a
+    // second annotator, not a second view of one. Its regions are drawn where
+    // the tracing happens — one step into the area, which is one pointer move.
+    const view = document.createElement("div");
+    view.className = "tile-viewer viewer-view";
+    const stage = document.createElement("div");
+    stage.className = "viewer-stage";
+    const caption = document.createElement("div");
+    caption.className = "viewer-caption";
+    const bar = document.createElement("div");
+    bar.className = "viewer-bar hidden";
+    view.append(bar, stage, caption);
+    area.appendChild(view);
+    registerTileSurface(win, [{ box: stage, slot: "" }], () => {
+      if (win.type === "viewer") renderViewerInto(win, stage, caption, bar);
+      else renderAnnotatorPictureInto(stage, caption);
+    });
     return;
   }
   // W1 · every OTHER type without a secondary surface says its own name. This
@@ -13056,7 +13183,7 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
             run: () => {
               setWinCurrent(win, "collection", null);
               setWinCurrent(win, "item", null);
-              viewerCollection = null;
+              viewerCollections.clear();
               renderViewer();
             },
           },
@@ -14625,6 +14752,12 @@ document.getElementById("annotator-mirador")
       actions: document.getElementById("table-view-actions"),
       enabled: () =>
         !document.getElementById("table-view")?.classList.contains("hidden"),
+      // read at call time: this mount always belongs to whichever Tabular window
+      // currently has the focus
+      place: {
+        recall: () => surfaceScroll.get(surfaceKey(activeWin(), "")) ?? 0,
+        remember: (at) => surfaceScroll.set(surfaceKey(activeWin(), ""), at),
+      },
     });
 }
 
