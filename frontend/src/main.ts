@@ -7889,14 +7889,14 @@ function renderNarrativePalette(host: HTMLElement): void {
     host.appendChild(b);
   };
 
-  section("Narrativa");
+  section(t("palette.narrative"));
   if (!narr || !store) {
-    item("Nessuna narrativa", "Entra in modo narrativa su un grafo per iniziare", null);
+    item(t("palette.noNarrative"), t("palette.noNarrativeHint"), null);
     return;
   }
   const nid = narr.id;
   // structure
-  item("＋ Capitolo", "Aggiungi un capitolo alla narrativa", () => {
+  item(t("palette.addChapter"), t("palette.addChapterHint"), () => {
     nedit.addChapter(store!, nid);
     refreshNarrativeView();
   });
@@ -7915,12 +7915,12 @@ function renderNarrativePalette(host: HTMLElement): void {
   // an embed without a reference points at nothing, so a view type alone is not
   // a block anybody wants. Inserting WITH a reference is the other gesture:
   // drag a node from the node list onto a chapter (D2).
-  section("Viste (trascina su un embed)");
+  section(t("palette.views"));
   for (const vt of narrativeViewTypes()) {
     const hint = narrativeViewTypeDescription(vt) || vt;
     const b = document.createElement("button");
     b.className = "np-item np-item-drag";
-    b.title = `${hint}\n\nTrascina questa vista su un embed per cambiarne la resa.`;
+    b.title = `${hint}\n\n${t("palette.dragViewHint")}`;
     b.draggable = true;
     b.innerHTML = `<span class="np-label">${vt}</span><span class="np-hint">${hint}</span>`;
     b.addEventListener("dragstart", (e) => {
@@ -7933,7 +7933,7 @@ function renderNarrativePalette(host: HTMLElement): void {
   const guide = document.createElement("div");
   guide.className = "np-sect np-sect-note";
   guide.textContent =
-    "Trascina un nodo dall'elenco su un capitolo per citarlo.";
+    t("palette.dragNodeHint");
   host.appendChild(guide);
 }
 

@@ -17,6 +17,7 @@
  * palette in this app and this is not a second one.
  */
 
+import { t } from "./i18n";
 import { create3dEmbed, isRef3D, resolve3d } from "./embed3d";
 import { geoOf, georeferenceScene, reprojectPoint } from "./geo";
 import type { GeoRef } from "./geo";
@@ -280,10 +281,8 @@ function mapCard(node: EmNode, options: Record<string, unknown>,
       drawMap(box, node, options, key,
         { ok: true, lat, lon, epsg: 4326, rotation: 0 }, doc);
     } else {
-      box.appendChild(el("div", "nv-embed-title", "sito non posizionato"));
-      box.appendChild(el("div", "nv-embed-note",
-        "posiziona il sito col picker nel pannello Canvas (Ispettore) — la " +
-        "mini-mappa lo mostrerà qui (posizione simbolica, non lo shift 3D)."));
+      box.appendChild(el("div", "nv-embed-title", t("nv.siteUnplaced")));
+      box.appendChild(el("div", "nv-embed-note", t("nv.siteUnplacedHow")));
     }
     return box;
   }
@@ -310,11 +309,8 @@ function mapCard(node: EmNode, options: Record<string, unknown>,
           if ("error" in out) {
             // Never a guess. The numbers and the frame stay on screen, and the
             // note says exactly what is missing.
-            pending.textContent =
-              `Le coordinate sono in EPSG:${anchor.epsg} e la riproiezione non ` +
-              `è disponibile (${out.error}). La posizione qui sopra resta ` +
-              `esatta: il bridge la porta sulla mappa quando c'è pyproj ` +
-              `(extra [geo]).`;
+            pending.textContent = t("nv.noReprojection",
+              { epsg: String(anchor.epsg), why: out.error });
             pending.classList.add("nv-geo-unavailable");
             return;
           }
@@ -332,7 +328,7 @@ function mapCard(node: EmNode, options: Record<string, unknown>,
       return box;
     }
     box.appendChild(
-      el("div", "nv-embed-title", "il nodo di posizione non porta coordinate"),
+      el("div", "nv-embed-title", t("nv.anchorNoCoords")),
     );
     box.appendChild(
       el("div", "nv-embed-note",
@@ -395,13 +391,12 @@ function drawMap(box: HTMLElement, node: EmNode,
       // legitimately sit hundreds of metres from the monument.
       map.setMarker(placed.centroid[1], placed.centroid[0]);
       const size = el("span", "nv-embed-note",
-        `impronta ${placed.width.toFixed(1)} × ${placed.height.toFixed(1)} m` +
-        (placed.rotation ? `, azimut ${placed.rotation}°` : ", nord in alto"));
-      size.title =
-        "Impronta della scena sulla mappa: il rettangolo dell'estensione locale " +
-        "(dai proxy spaziali del grafo) ruotato per l'azimut, spostato " +
-        "sull'origine e riproiettato. Il puntino è sul centroide, non sullo " +
-        "shift — che è l'ancora, e può stare lontano dal monumento.";
+        t("nv.footprint", { w: placed.width.toFixed(1),
+                             h: placed.height.toFixed(1) })
+        + (placed.rotation
+            ? t("nv.footprintAzimuth", { deg: String(placed.rotation) })
+            : t("nv.footprintNorthUp")));
+      size.title = t("nv.footprintTitle");
       caption.appendChild(size);
     })();
   });
@@ -420,7 +415,7 @@ function drawMap(box: HTMLElement, node: EmNode,
     `#map=${Math.round(zoom)}/${geo.lat}/${geo.lon}`;
   a.target = "_blank";
   a.rel = "noreferrer noopener";
-  a.textContent = "apri in OpenStreetMap ↗";
+  a.textContent = t("nv.openOsm");
   a.addEventListener("click", (e) => e.stopPropagation());
   caption.appendChild(a);
   // The azimuth is part of the anchor: a scene rotated 27° from north is a
@@ -568,10 +563,8 @@ function renderEmbed(
     // Those get an explicit way in instead — same gesture, stated.
     if (viewType === "map" || viewType === "scene3d"
         || viewType === "rm") {
-      const go = el("button", "nv-goto", "vai al nodo ↗") as HTMLButtonElement;
-      go.title =
-        `Seleziona «${String(node.name || node.id)}» sul canvas e chiudi la ` +
-        "narrativa.";
+      const go = el("button", "nv-goto", t("nv.goToNode")) as HTMLButtonElement;
+      go.title = t("nv.goToNodeTitle", { name: String(node.name || node.id) });
       go.addEventListener("click", (e) => {
         e.stopPropagation();
         reveal();
@@ -643,7 +636,7 @@ function provenanceStrip(
   if (block.authored_by) {
     const who = el("span", "nv-prov-who",
       model ? String(model.name || model.id) : block.authored_by);
-    who.title = "Il modello che ha scritto questo paragrafo";
+    who.title = t("nv.modelWrote");
     strip.appendChild(who);
   }
   const opts = block.options ?? {};
@@ -662,8 +655,8 @@ function provenanceStrip(
     const prompt = index.get(block.prompt_ref);
     const link = el("button", "nv-prov-link", "prompt") as HTMLButtonElement;
     link.title = prompt?.description
-      ? `Cosa è stato chiesto:\n\n${prompt.description}`
-      : `La fonte-prompt «${block.prompt_ref}» non è in questo grafo`;
+      ? t("nv.whatWasAsked", { text: prompt.description })
+      : t("nv.promptNotInGraph", { id: String(block.prompt_ref) });
     if (!prompt) link.classList.add("nv-prov-missing");
     link.addEventListener("click", (e) => {
       e.stopPropagation();
@@ -672,10 +665,8 @@ function provenanceStrip(
     link.disabled = !prompt || !onReveal;
     strip.appendChild(link);
   } else {
-    const none = el("span", "nv-prov-dim nv-prov-missing", "nessun prompt");
-    none.title =
-      "Questa bozza non registra cosa è stato chiesto al modello: il «come lo " +
-      "so» resta incompleto.";
+    const none = el("span", "nv-prov-dim nv-prov-missing", t("nv.noPrompt"));
+    none.title = t("nv.noPromptTitle");
     strip.appendChild(none);
   }
 
@@ -683,11 +674,11 @@ function provenanceStrip(
     const by = index.get(block.validated_by ?? "");
     const sig = el("span", "nv-prov-signed",
       `✓ ${by ? String(by.name || by.id) : block.validated_by}`);
-    sig.title = "Chi ha messo il proprio nome su questo testo";
+    sig.title = t("nv.whoSigned");
     strip.appendChild(sig);
     if (retract) {
-      const b = el("button", "nv-mini", "ritira") as HTMLButtonElement;
-      b.title = "Ritira l'avallo: il paragrafo torna a leggersi come bozza.";
+      const b = el("button", "nv-mini", t("nv.retract")) as HTMLButtonElement;
+      b.title = t("nv.retractTitle");
       b.addEventListener("click", (e) => { e.stopPropagation(); retract(); });
       strip.appendChild(b);
     }
@@ -695,12 +686,10 @@ function provenanceStrip(
     // Never disabled for lack of a signer. A disabled button with an
     // explanation of where the missing control lives makes the user hunt; this
     // one always acts — it signs, or it brings the picker to them.
-    const b = el("button", "nv-endorse", "Valida") as HTMLButtonElement;
+    const b = el("button", "nv-endorse", t("nv.endorse")) as HTMLButtonElement;
     b.title = signer
-      ? `Metti il nome di ${signer.label} su questo paragrafo. ` +
-        `Solo una persona può avallare: un modello che garantisce per un ` +
-        `modello non è una validazione.`
-      : "Scegli con quale nome firmi — premi e ti porto al selettore.";
+      ? t("nv.endorseTitle", { who: signer.label })
+      : t("nv.pickSigner");
     b.classList.toggle("nv-endorse-unsigned", !signer);
     b.addEventListener("click", (e) => { e.stopPropagation(); endorse(); });
     strip.appendChild(b);
@@ -791,7 +780,7 @@ function authorChip(a: AuthorRef, ai: boolean): HTMLElement {
 
 function chipRemove(a: AuthorRef, onClick: () => void): HTMLButtonElement {
   const x = el("button", "nv-chip-x", "✕") as HTMLButtonElement;
-  x.title = `Togli ${a.label} dagli autori di questa narrativa`;
+  x.title = t("nv.removeAuthor", { who: a.label });
   x.addEventListener("click", onClick);
   return x;
 }
@@ -899,12 +888,12 @@ export function renderNarrativeView(
   byline.appendChild(el("span", "nv-authors-label", "a cura di"));
   if (!responsible.length)
     byline.appendChild(el("span", "nv-prov-dim nv-prov-missing",
-      "nessuna persona responsabile"));
+      t("nv.noResponsible")));
   for (const a of responsible) {
     const chip = authorChip(a, false);
     chip.title = declared.some((d) => d.id === a.id)
-      ? "Autore umano: risponde di questo racconto"
-      : "Ha avallato del testo generato — e quindi ne risponde";
+      ? t("nv.humanAuthor")
+      : t("nv.endorsedGenerated");
     if (editor && declared.some((d) => d.id === a.id))
       chip.appendChild(chipRemove(a, () => editor.removeAuthor(a.id)));
     byline.appendChild(chip);
@@ -921,7 +910,7 @@ export function renderNarrativeView(
     const add = authorSelect(
       editor.authors().filter(
         (a) => !a.ai && !responsible.some((x) => x.id === a.id)),
-      null, "+ autore", "Aggiungi una persona fra gli autori di questa narrativa",
+      null, t("nv.addAuthor"), t("nv.addAuthorTitle"),
       (id) => { if (id) editor.addAuthor(id); });
     bylineTools.appendChild(add);
 
@@ -929,11 +918,11 @@ export function renderNarrativeView(
     // whichever paragraph it lands on, and asking who you are on every click
     // would turn a signature into a form.
     const signing = el("span", "nv-signing");
-    signing.appendChild(el("span", "nv-authors-label", "firmo come"));
+    signing.appendChild(el("span", "nv-authors-label", t("nv.signingAs")));
     const humans = editor.humanAuthors();
     signing.appendChild(authorSelect(
       humans, editor.signer()?.id ?? null,
-      humans.length ? "(nessuno)" : "(nessun autore umano nel grafo)",
+      humans.length ? t("nv.nobody") : t("nv.noHumanAuthor"),
       "Chi mette il proprio nome quando premi Valida. Solo persone: " +
       "un modello non può avallare.",
       (id) => editor.setSigner(id)));
@@ -945,7 +934,7 @@ export function renderNarrativeView(
   // never a co-author here: nothing it wrote counts until a person endorses it.
   if (assisted.length) {
     const help = el("div", "nv-authors nv-assist");
-    help.appendChild(el("span", "nv-authors-label", "con l'assistenza di"));
+    help.appendChild(el("span", "nv-authors-label", t("nv.assistedBy")));
     for (const a of assisted) {
       const chip = authorChip(a, true);
       chip.title =
@@ -987,7 +976,7 @@ export function renderNarrativeView(
       chip.style.background = style.fill;
       chip.style.borderColor = style.border;
       chip.style.color = style.textColor;
-      chip.title = "Chi firma questo capitolo";
+      chip.title = t("nv.whoSignsChapter");
       h.appendChild(chip);
     }
     if (chapter.anchor) {
@@ -1014,8 +1003,8 @@ export function renderNarrativeView(
     h.appendChild(tools);
     if (editor) {
       // The chapter toolbar already carries an author select; without a label
-      // the two reads as one, and the user looks for "firmo come" here.
-      tools.appendChild(el("span", "nv-tool-label", "autore cap."));
+      // the two read as one, and the user looks for the signer here.
+      tools.appendChild(el("span", "nv-tool-label", t("nv.chapterAuthor")));
       const canon = iconButton(
         chapter.canonical ? "★" : "☆",
         chapter.canonical
@@ -1048,8 +1037,8 @@ export function renderNarrativeView(
       tools.appendChild(iconButton("✕", "Delete this chapter",
         () => editor.deleteChapter(ci)));
       tools.appendChild(authorSelect(
-        editor.authors(), chapter.authored_by ?? null, "(nessun autore)",
-        "Chi firma questo capitolo",
+        editor.authors(), chapter.authored_by ?? null, t("nv.noAuthor"),
+        t("nv.whoSignsChapter"),
         (id) => editor.setChapterAuthor(ci, id)));
       // Generation is anchored to an ACTIVITY: that is where the actions are,
       // and a briefing built from anything else would be empty. The button is
@@ -1058,14 +1047,9 @@ export function renderNarrativeView(
       if (editor.canGenerate(ci)) {
         const busy = editor.generating(ci);
         const gen = el("button", "nv-generate",
-          busy ? "genero…" : "Genera bozza (AI)") as HTMLButtonElement;
+          busy ? t("nv.generating") : t("nv.generateDraft")) as HTMLButtonElement;
         gen.disabled = busy;
-        gen.title =
-          "Manda al modello un briefing di QUESTA attività — le sue azioni in " +
-          "ordine stratigrafico, le epoche e le evidenze già registrate — e " +
-          "inserisce la prosa come bozza non avallata, attribuita al modello, " +
-          "col prompt registrato come fonte. Nient'altro del grafo viene " +
-          "inviato.";
+        gen.title = t("nv.generateTitle");
         gen.addEventListener("click", (e) => {
           e.stopPropagation();
           editor.generate(ci);
@@ -1079,14 +1063,13 @@ export function renderNarrativeView(
       if (pending > 0) {
         const signer = editor.signer();
         const all = el("button", "nv-endorse nv-endorse-all",
-          `Valida capitolo (${pending})`) as HTMLButtonElement;
+          t("nv.endorseChapter", { n: String(pending) })) as HTMLButtonElement;
         all.classList.toggle("nv-endorse-unsigned", !signer);
         all.title = signer
-          ? `Metti il nome di ${signer.label} su ${pending} ` +
-            `paragraf${pending === 1 ? "o" : "i"} di questo capitolo. ` +
-            `Resta un atto per paragrafo: nel grafo si vedrà a quali frasi ` +
-            `ha messo la firma, non solo che ha firmato il capitolo.`
-          : "Scegli con quale nome firmi — premi e ti porto al selettore.";
+          ? t(pending === 1 ? "nv.endorseChapterTitleOne"
+                            : "nv.endorseChapterTitle",
+              { who: signer.label, n: String(pending) })
+          : t("nv.pickSigner");
         all.addEventListener("click", (e) => {
           e.stopPropagation();
           editor.endorseChapter(ci);
@@ -1259,7 +1242,7 @@ export function renderNarrativeView(
 
   if (editor) {
     const foot = el("div", "nv-chapter");
-    foot.appendChild(iconButton("+ capitolo", "Add a chapter at the end",
+    foot.appendChild(iconButton(t("nv.addChapter"), t("nv.addChapterTitle"),
       () => editor.addChapter()));
     // NARR1 · reintroduce an epoch you deleted (or never described): one chip per
     // top-level epoch without a chapter. Deleting a chapter (the ✕ above) is the
@@ -1267,7 +1250,7 @@ export function renderNarrativeView(
     const undescribed = editor.undescribedEpochs?.() ?? [];
     if (undescribed.length) {
       const bar = el("div", "nv-undescribed");
-      bar.appendChild(el("span", "nv-tool-label", "epoche non descritte:"));
+      bar.appendChild(el("span", "nv-tool-label", t("nv.undescribedEpochs")));
       for (const ep of undescribed)
         bar.appendChild(iconButton(`+ ${ep.name}`,
           `Add a chapter for the epoch “${ep.name}”`,
@@ -1277,7 +1260,7 @@ export function renderNarrativeView(
     // Seam · "regenerate the full draft" via the rich s3Dgraphy site_story
     // (build_narrative) over the bridge — a follow-up when the endpoint exists.
     if (editor.regenerateViaBridge) {
-      const regen = iconButton("Rigenera bozza completa",
+      const regen = iconButton(t("nv.regenerate"),
         editor.canRegenerate?.()
           ? "Rebuild the draft from s3Dgraphy site_story via the bridge"
           : "Needs the bridge and an s3Dgraphy build_narrative endpoint (follow-up)",
@@ -1328,7 +1311,7 @@ function editableProse(text: string,
   const wrap = el("div", "nv-prose-edit");
   const view = renderProse(text || "");
   if (!text.trim())
-    view.appendChild(el("p", "nv-todo", "(paragrafo vuoto — clicca per scrivere)"));
+    view.appendChild(el("p", "nv-todo", t("nv.emptyParagraph")));
   wrap.appendChild(view);
   wrap.title = "Click to edit";
   wrap.addEventListener("click", () => {

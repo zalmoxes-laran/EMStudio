@@ -118,14 +118,14 @@ eq(doc.graph.nodes.filter(
   eq(all(box, ".nv-matrix-lane-label").map((l) => l.split(" ·")[0]),
      ["Fase 2", "Fase 1"],
      "matrix · NEWEST epoch first (invariant 4)");
-  has(box, "1 rapporto stratigrafico", "matrix · singular is singular");
+  has(box, "1 stratigraphic relation", "matrix · singular is singular");
   ok(!text(box).includes("1 rapporti"), "matrix · no '1 rapporti'");
   ok(!text(box).includes("not rendered yet"), "matrix · not a placeholder");
 
   // an empty scope is an honest placeholder, not an error
   const empty = E.matrixEmbed(byId("ep-0"), doc);
   ok(empty.querySelector(".nv-empty"), "matrix · empty scope says so");
-  has(empty, "il riferimento è valido", "matrix · and says the ref is fine");
+  has(empty, "the reference is valid", "matrix · and says the ref is fine");
 }
 
 // ── timeline ────────────────────────────────────────────────────────────────
@@ -151,17 +151,17 @@ eq(doc.graph.nodes.filter(
   const box = E.tableEmbed(byId("act-1"), doc, {});
   const rows = [...box.querySelectorAll("tr")];
   eq(rows.length, 4, "table · header + one row per unit");
-  eq(all(rows[0], "th"), ["unità", "tipo", "epoca", "datazione", "certezza"],
+  eq(all(rows[0], "th"), ["unit", "type", "epoch", "dating", "certainty"],
      "table · the columns of the design's example query");
   const first = all(rows[1], "td");
   ok(first.includes("US"), "table · the type is read from the node");
   ok(first.some((c) => c.includes("1200") || c.includes("→")),
      `table · the dating comes from the epoch (${first})`);
-  has(box, "calcolate adesso", "table · says it is computed now");
+  has(box, "just now, from the document", "table · says it is computed now");
 
   // the author can narrow the columns
   const narrow = E.tableEmbed(byId("act-1"), doc, { columns: ["name"] });
-  eq(all([...narrow.querySelectorAll("tr")][0], "th"), ["unità"],
+  eq(all([...narrow.querySelectorAll("tr")][0], "th"), ["unit"],
      "table · options.columns narrows it");
 }
 
@@ -170,7 +170,7 @@ eq(doc.graph.nodes.filter(
   const box = E.paradataEmbed(byId("us1"), doc);
   const roles = all(box, ".nv-chain-role");
   const names = all(box, ".nv-chain-name");
-  eq(roles, ["fonte", "extractor", "proprietà", "unità"],
+  eq(roles, ["source", "extractor", "property", "unit"],
      "paradata · source → extractor → property → unit, in that order");
   eq(names[0], "Rossi 1987, tav. XII", "paradata · the source is named");
   eq(names[3], "US 1 · muro", "paradata · the chain lands on the unit");
@@ -186,17 +186,17 @@ eq(doc.graph.nodes.filter(
   const broken = E.paradataEmbed(byId("us1"), retracted);
   ok(broken.querySelector(".nv-chain-broken"),
      "paradata · a retracted source breaks the chain visibly");
-  has(broken, "non cita nessuna fonte", "paradata · and says why, in words");
+  has(broken, "cites no source", "paradata · and says why, in words");
 
   // a property with no extraction at all
   const orphan = structuredClone(doc);
   orphan.graph.edges = orphan.graph.edges.filter(
     (e) => e.edge_type !== "has_data_provenance");
-  has(E.paradataEmbed(byId("us1"), orphan), "nessuna estrazione",
+  has(E.paradataEmbed(byId("us1"), orphan), "no extraction says",
       "paradata · a value with no provenance says so");
 
   // a unit that carries no properties at all: honest, not empty
-  has(E.paradataEmbed(byId("us2"), doc), "non porta proprietà documentate",
+  has(E.paradataEmbed(byId("us2"), doc), "carries no documented property",
       "paradata · nothing to show is said, not shown blank");
 }
 
@@ -228,7 +228,7 @@ eq(doc.graph.nodes.filter(
 {
   const box = E.unSceneEmbed(byId("scene1"), doc);
   has(box, "DP-29", "un_scene · names the design project it waits for");
-  has(box, "non porta ancora", "un_scene · declares the gap");
+  has(box, "does not carry the composition relations yet", "un_scene · declares the gap");
   ok(!text(box).includes("not rendered yet"), "un_scene · not a placeholder");
 }
 
@@ -314,8 +314,8 @@ eq(doc.graph.nodes.filter(
 
   const card = N.rmDocEmbed(rmdoc, doc, "");
   has(card, "documento spazializzato", "rmdoc · says what it is");
-  has(card, "autorità della collocazione", "rmdoc · grades the PLACEMENT");
-  has(card, "non l'esistenza", "rmdoc · …and says it is not the existence");
+  has(card, "authority of the placement", "rmdoc · grades the PLACEMENT");
+  has(card, "not the existence", "rmdoc · …and says it is not the existence");
   eq(all(card, ".nv-rung-on"), ["observable"], "rmdoc · the declared rung is lit");
   // the ladder comes from the visual rules, not from a list in the module
   eq(N.spatialisationRungs(),
@@ -325,7 +325,7 @@ eq(doc.graph.nodes.filter(
   // an RMDoc nobody placed: said, not guessed
   const unplaced = N.rmDocEmbed({ ...rmdoc, data: {} }, doc, "");
   eq(all(unplaced, ".nv-rung-on"), [], "rmdoc · no rung lit when none declared");
-  has(unplaced, "nessuno ha ancora dichiarato",
+  has(unplaced, "nobody has declared",
       "rmdoc · and it says nobody declared it");
 
   // the dispatcher routes an RMDoc away from the 3D stage
@@ -357,7 +357,7 @@ eq(doc.graph.nodes.filter(
   ok(img.getAttribute("src").startsWith(BASE), "iiif · served by the service");
   ok(/!240,240|240,/.test(img.getAttribute("src")),
      `iiif · the thumbnail is a SIZE REQUEST, not a second copy (${img.getAttribute("src")})`);
-  has(fig, "2 regioni annotate", "iiif · the annotated regions are named");
+  has(fig, "2 annotated regions", "iiif · the annotated regions are named");
 
   // found by edge AND by the resource_id a region carries: the annotator writes
   // one, older graphs carry the other, and a reader should not have to know
@@ -602,7 +602,7 @@ eq(doc.graph.nodes.filter(
 
   // …and the embed says so, rather than "nothing here yet"
   const drawn = text(E.matrixEmbed(node("EP1"), phased));
-  ok(!drawn.includes("nessuna unità stratigrafica"),
+  ok(!drawn.includes("no stratigraphic unit"),
      `phases · the embed of a periodised epoch is not empty — «${drawn.slice(0, 80)}»`);
   ok(drawn.includes("US1") && drawn.includes("US2"),
      "phases · …it names the units");
@@ -662,7 +662,7 @@ eq(doc.graph.nodes.filter(
      ["US4", "USV1", "USV2"],
      "epoca piatta · …e per EP2");
   const drawn = text(E.matrixEmbed(at("EP1"), flat));
-  ok(!drawn.includes("nessuna unità"),
+  ok(!drawn.includes("no unit in this epoch"),
      `epoca piatta · l'embed non è vuoto — «${drawn.slice(0, 70)}»`);
   for (const id of ["US1", "US2", "US3"])
     ok(drawn.includes(id), `epoca piatta · l'embed nomina ${id}`);
@@ -696,9 +696,9 @@ eq(doc.graph.nodes.filter(
                            description: "", data: {} });
   const said = text(E.matrixEmbed(
     empty.graph.nodes.find((n) => n.id === "EP0"), empty));
-  ok(said.includes("has_first_epoch") && said.includes("corsia del layout"),
+  ok(said.includes("has_first_epoch") && said.includes("layout's lane"),
      `epoca vuota · dice quali risoluzioni ha provato — «${said.slice(0, 90)}»`);
-  ok(said.includes("il riferimento è valido"),
+  ok(said.includes("the reference is valid"),
      "epoca vuota · …e che il riferimento non è il problema");
 }
 

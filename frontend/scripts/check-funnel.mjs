@@ -131,8 +131,9 @@ function withGraphScope(nodes, edges, ornType, ornName) {
 
 // ── 7 · sourceLabel / readScopeValue canvas branch (graph-scope PDG) ──────────
 {
-  eq(F.sourceLabel("epoch"), "da Epoca", "source label for epoch");
-  eq(F.sourceLabel("node"), "proprio", "source label for the node itself");
+  // the labels come from the dictionary; the default locale is English
+  eq(F.sourceLabel("epoch"), "from Epoch", "source label for epoch");
+  eq(F.sourceLabel("node"), "its own", "source label for the node itself");
   const nodes = [N("u1", "US", "US_1")];
   const edges = [];
   withGraphScope(nodes, edges, "author", "Canvas Author");

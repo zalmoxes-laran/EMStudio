@@ -1,3 +1,4 @@
+import { t } from "./i18n";
 import type { DocumentStore, HdtoFields } from "./model";
 import { edgeStyle, nodeStyle } from "./palette";
 import { classOf, isGroupType, isStratigraphicType } from "./rules";
@@ -1090,15 +1091,9 @@ export function renderInspector(
     const rights = store.readNodeRights(nodeId);
     const panel = el("div", "insp-canvas");
     panel.appendChild(el("h3", "insp-sect",
-      isLot ? "Diritti di questo lotto (DTC)" : "Diritti di questa risorsa (DTC)"));
+      isLot ? t("insp.lotRights") : t("insp.resourceRights")));
     panel.appendChild(el("div", "insp-hint",
-      isLot
-        ? "Vale per TUTTI i file del lotto: ognuno legge questa licenza "
-          + "risalendo la catena, e chi ne ha una propria vince (la frase più "
-          + "specifica è quella detta su quell'oggetto). Vuoto = non dichiarato."
-        : "Vale per i BYTE: finché l'embargo corre il server serve il file solo a "
-          + "chi lavora allo studio (editor in su), e la licenza viaggia con il "
-          + "download. Vuoto = non dichiarato (allora vale il default del grafo)."));
+      isLot ? t("insp.lotRightsHint") : t("insp.resourceRightsHint")));
 
     const field = (
       label: string, value: string, placeholder: string,
@@ -1115,14 +1110,12 @@ export function renderInspector(
       return input;
     };
 
-    field("Licenza", rights.license, "CC-BY-SA-4.0",
+    field(t("insp.licence"), rights.license, "CC-BY-SA-4.0",
           (v) => store.setNodeRights(nodeId, { license: v }));
     if (!rights.license) {
       const suggest = el("button", "insp-btn",
-                         "Apponi CC-BY-SA-4.0") as HTMLButtonElement;
-      suggest.title = "Il default StratiGraph. Finché non lo apponi, la licenza "
-        + "resta NON dichiarata: il server la espone come default, che è una "
-        + "cosa diversa da una licenza concessa.";
+                         t("insp.applyDefaultLicence")) as HTMLButtonElement;
+      suggest.title = t("insp.applyDefaultLicenceTitle");
       suggest.addEventListener("click", () =>
         store.setNodeRights(nodeId, { license: "CC-BY-SA-4.0" }));
       panel.appendChild(suggest);
@@ -1142,11 +1135,11 @@ export function renderInspector(
     // Bruno, e lo affermo io» — che è la frase normale per tutto ciò che si
     // cataloga dopo. Protocollo: `s3Dgraphy/docs/asset-dtc-protocol.md`.
     const me = currentIdentity();
-    panel.appendChild(el("label", "insp-field-label", "Autore (chi l'ha fatto)"));
+    panel.appendChild(el("label", "insp-field-label", t("insp.author")));
     const authorName = document.createElement("input");
     authorName.className = "insp-name-input";
     authorName.value = rights.author;
-    authorName.placeholder = "nome e cognome";
+    authorName.placeholder = t("insp.authorPlaceholder");
     const authorOrcid = document.createElement("input");
     authorOrcid.className = "insp-name-input";
     authorOrcid.value = rights.orcid;
@@ -1157,7 +1150,7 @@ export function renderInspector(
       if (problem) {
         // Said, not swallowed: an iD with a typo is not an identity, and
         // writing it anyway would put a person in the graph who does not exist.
-        authorOrcid.title = `ORCID non valido (${problem}) — non l'ho scritto.`;
+        authorOrcid.title = t("insp.badOrcid", { why: problem });
         authorOrcid.classList.add("insp-input-bad");
         return;
       }
@@ -1192,25 +1185,18 @@ export function renderInspector(
     if (!isLot && cb.onAddToShelf) {
       const already = cb.isOnShelf?.(nodeId) ?? false;
       const shelve = el("button", "insp-btn",
-                        already ? "✓ Sullo scaffale" : "Aggiungi allo scaffale",
+                        already ? t("insp.onShelf") : t("insp.addToShelf"),
                        ) as HTMLButtonElement;
       shelve.disabled = already;
-      shelve.title = already
-        ? "Questa risorsa è già nella selezione che viaggia con l'em.json."
-        : "Mette questa risorsa nella SELEZIONE del progetto (lo scaffale): la "
-          + "documentazione tiene tutto, lo scaffale tiene quello con cui stai "
-          + "lavorando — e viaggia con l'em.json.";
+      shelve.title = already ? t("insp.onShelfTitle") : t("insp.addToShelfTitle");
       shelve.addEventListener("click", () => cb.onAddToShelf!(nodeId));
       actions.appendChild(shelve);
     }
     const claim = el("button", "insp-btn",
-                     "Sono io l'autore") as HTMLButtonElement;
+                     t("insp.iAmTheAuthor")) as HTMLButtonElement;
     claim.disabled = !me;
-    claim.title = me
-      ? `Appone ${me.orcid} come autore — e come attributore, perché in questo `
-        + "caso sono la stessa persona."
-      : "Nessuna identità dichiarata in questa sessione: dichiara il tuo ORCID "
-        + "in Impostazioni ▸ Identità.";
+    claim.title = me ? t("insp.iAmTheAuthorTitle", { orcid: me.orcid })
+                     : t("insp.noIdentity");
     claim.addEventListener("click", () => {
       if (!me) return;
       store.setNodeRights(nodeId, {
@@ -1220,9 +1206,9 @@ export function renderInspector(
     });
     actions.appendChild(claim);
     if (rights.author || rights.license || rights.embargo) {
-      const clear = el("button", "insp-btn", "Rimuovi i diritti") as HTMLButtonElement;
-      clear.title = "Toglie licenza, embargo e autore da questa risorsa. Il "
-        + "file torna a valere quel che dice il grafo intorno.";
+      const clear = el("button", "insp-btn",
+                        t("insp.clearRights")) as HTMLButtonElement;
+      clear.title = t("insp.clearRightsTitle");
       clear.addEventListener("click", () =>
         store.setNodeRights(nodeId, { author: "", license: "", embargo: "" }));
       actions.appendChild(clear);
@@ -1247,16 +1233,15 @@ export function renderInspector(
     const chain = derivationChain(store, nodeId);
     if (usages.length || chain.madeBy.length || chain.usedBy.length) {
       const panel = el("div", "insp-canvas");
-      panel.appendChild(el("h3", "insp-sect", "Usata da…"));
+      panel.appendChild(el("h3", "insp-sect", t("insp.usedBy")));
 
       if (chain.madeBy.length) {
-        panel.appendChild(el("div", "insp-hint", "Prodotta da:"));
+        panel.appendChild(el("div", "insp-hint", t("insp.producedBy")));
         for (const event of chain.madeBy) {
           const b = el("button", "insp-btn",
             `${event.tool ? `${event.name} · ${event.tool}` : event.name}`) as HTMLButtonElement;
           b.title = event.type === "dtc_acquisition"
-            ? "L'acquisizione che ha portato dentro questo file"
-            : "L'evento DTC che ha prodotto questo file";
+            ? t("insp.theAcquisition") : t("insp.theDtcEvent");
           b.addEventListener("click", () => cb.onJump(event.id));
           panel.appendChild(b);
         }
@@ -1273,14 +1258,11 @@ export function renderInspector(
           panel.appendChild(b);
         }
       } else {
-        panel.appendChild(el("div", "insp-hint",
-          "Nessun nodo la cita. Non è un difetto: un archivio può contenere ciò "
-          + "che nessuno ha ancora usato — ma è anche il file che si può "
-          + "sostituire senza rompere niente."));
+        panel.appendChild(el("div", "insp-hint", t("insp.nobodyCitesIt")));
       }
 
       if (chain.usedBy.length) {
-        panel.appendChild(el("div", "insp-hint", "Usata come ingresso da:"));
+        panel.appendChild(el("div", "insp-hint", t("insp.usedAsInputBy")));
         for (const event of chain.usedBy) {
           const b = el("button", "insp-btn",
             `${event.tool ? `${event.name} · ${event.tool}` : event.name}`) as HTMLButtonElement;
@@ -1301,11 +1283,9 @@ export function renderInspector(
   if (nodeId && node.node_type === "dtc_acquisition") {
     const members = acquisitionMembers(store, nodeId);
     const panel = el("div", "insp-canvas");
-    panel.appendChild(el("h3", "insp-sect", "Lotto di acquisizione"));
+    panel.appendChild(el("h3", "insp-sect", t("insp.acquisitionLot")));
     panel.appendChild(el("div", "insp-hint",
-      `${members.length} file. La licenza e l'autore dichiarati QUI valgono per `
-      + "tutto il lotto: ogni membro li legge risalendo la catena, senza averne "
-      + "una copia (una copia è una cosa che può discordare)."));
+      t("insp.acquisitionLotHint", { n: String(members.length) })));
     for (const member of members.slice(0, 12)) {
       const m = store.node(member);
       const b = el("button", "insp-btn", m?.name ?? member) as HTMLButtonElement;
@@ -1314,7 +1294,7 @@ export function renderInspector(
     }
     if (members.length > 12) {
       panel.appendChild(el("div", "insp-hint",
-        `…e altri ${members.length - 12}. L'elenco completo è nella tabella.`));
+        t("insp.andMore", { n: String(members.length - 12) })));
     }
     root.appendChild(panel);
   }
@@ -1346,10 +1326,10 @@ export function renderInspector(
         row.appendChild(el("span", "insp-prop-rule", r.rule));
         row.appendChild(el("span", "insp-prop-value", r.value));
         // provenance: "proprio" when declared on the node, else "da Epoca …"
-        const from = el("span", "insp-prop-source", r.own ? "proprio" : r.src);
-        from.title = r.own
-          ? "Dichiarato su questo nodo"
-          : `Ereditato (${r.src}) — override dichiarandolo sul nodo`;
+        const from = el("span", "insp-prop-source",
+                        r.own ? t("insp.own") : r.src);
+        from.title = r.own ? t("insp.ownTitle")
+                           : t("insp.inheritedTitle", { src: r.src });
         row.appendChild(from);
         details.appendChild(row);
       }
