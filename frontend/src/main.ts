@@ -264,15 +264,13 @@ import {
   removeWorkspace,
   renameWorkspace,
   workspaceLabel,
-  workspacePreset,
   isTiled,
   activeWin,
   activeWorkspace,
   activeWindowType,
   closeWindow,
   GRAPH_MODES,
-  applyAssetsLayout,
-  applyDefaultLayout,
+  applyArrangement,
   canJoin,
   joinWindow,
   siblingIdsOf,
@@ -1725,9 +1723,7 @@ function requestFold(groupId: string): void {
       (e) => e.edge_type === "has_paradata_nodegroup" && e.target === groupId,
     );
     if (!hasReferent) {
-      toast(
-        "Il gruppo paradati non è collegato a nessun nodo: non può essere compattato.",
-      );
+      toast(t("toast.pdgNotLinked"));
       return;
     }
   }
@@ -2068,7 +2064,7 @@ function updateChronoBanner(): void {
     const sort = document.createElement("button");
     sort.className = "cb-sort";
     sort.textContent = "Ordina lane per data";
-    sort.title = "Riordina le epoche newest-first per start_time";
+    sort.title = t("epoch.sortTitle");
     sort.addEventListener("click", () => {
       store!.sortLanesByDate();
       void runLayout(false).then(() => {
@@ -3868,7 +3864,7 @@ function renderResourcePanels(): void {
 function togglePalette(): void {
   const win = activeWin();
   if (!hasResources(win)) {
-    toast("Questa finestra non ha un pannello risorse.");
+    toast(t("toast.noResourcePanel"));
     return;
   }
   setResourcesOpen(win, !resourcesOpen(win));
@@ -3941,8 +3937,8 @@ function addEpochEmMode(index = 0, start?: number, end?: number): void {
   if (start == null && end == null) centerOn(node.id);
   toast(
     start != null || end != null
-      ? "Nuova epoca inserita — controlla start/end"
-      : "Nuova epoca — imposta start/end nell'inspector",
+      ? t("toast.epochInserted")
+      : t("toast.epochAdded"),
   );
 }
 
@@ -5182,7 +5178,7 @@ async function narrativeFigures(
   if (wanted.some((w) => w.view === "map")) {
     const answer = await georeferenceScene(doc);
     if (answer && "error" in answer)
-      logInfo(`figura mappa senza impronta (${answer.error}): resta il punto`);
+      logInfo(t("log.mapNoFootprint", { why: answer.error }));
     else placed = answer;
   }
 
@@ -5296,7 +5292,7 @@ function epochSliceOf(scene: Scene, epochId: string): Scene | null {
 
 async function exportNarrative(format: string): Promise<void> {
   if (!store) {
-    toast("Apri prima un documento");
+    toast(t("toast.openADocument"));
     return;
   }
   const spec = NARRATIVE_FORMATS[format];
@@ -5304,7 +5300,7 @@ async function exportNarrative(format: string): Promise<void> {
     (n) => n.node_type === "narrative");
   if (!narratives.length) {
     // Not an error: a graph without a narrative is an ordinary graph.
-    toast("Questo grafo non contiene narrative da esportare");
+    toast(t("menu.nothingToExport"));
     return;
   }
   // Which one: the open one when the narrative view is showing it, else the
@@ -5314,10 +5310,10 @@ async function exportNarrative(format: string): Promise<void> {
     ? selectedNarrativeId
     : (narratives.length === 1 ? narratives[0].id : null);
   if (!chosen) {
-    toast("Ci sono più narrative: aprine una e riprova");
+    toast(t("toast.manyNarratives"));
     return;
   }
-  toast(`Esporto la narrativa in ${spec.label}…`);
+  toast(t("toast.exporting", { fmt: spec.label }));
   try {
     // …with the figures this process rendered (see `narrativeFigures`): the
     // exporter cannot draw a matrix, and a caption without its matrix is what
@@ -5338,7 +5334,7 @@ async function exportNarrative(format: string): Promise<void> {
         const j = await res.json();
         if (j?.error) msg = j.error;
       } catch { /* non-JSON error body */ }
-      toast(`Esportazione ${spec.label} fallita: ${msg}`);
+      toast(t("toast.exportFailed", { fmt: spec.label, why: msg }));
       return;
     }
     const blob = await res.blob();
@@ -5352,8 +5348,7 @@ async function exportNarrative(format: string): Promise<void> {
     downloadBlob(blob, `${base}.${asZip ? "zip" : spec.ext}`,
                  asZip ? "application/zip" : spec.mime);
     if (asZip) {
-      toast(`Narrativa esportata in ${spec.label} + figure (.zip: main.tex, `
-            + `main.bib, fig/)`);
+      toast(t("toast.exportedZip", { fmt: spec.label }));
       return;
     }
     // LaTeX comes with its bibliography: a .bib the author has to fetch
@@ -5363,9 +5358,9 @@ async function exportNarrative(format: string): Promise<void> {
       const text = decodeURIComponent(escape(atob(bib)));
       downloadBlob(new Blob([text], { type: "text/plain" }), `${base}.bib`,
                    "text/plain");
-      toast(`Narrativa esportata in ${spec.label} (+ .bib)`);
+      toast(t("toast.exportedBib", { fmt: spec.label }));
     } else {
-      toast(`Narrativa esportata in ${spec.label}`);
+      toast(t("toast.exported", { fmt: spec.label }));
     }
   } catch {
     toast(BRIDGE_UNREACHABLE);
@@ -5624,7 +5619,7 @@ document.getElementById("btn-help-about")?.addEventListener("click", () => {
 });
 document.getElementById("btn-help-updates")?.addEventListener("click", () => {
   // No in-app updater yet — point at the releases page (stub, declared).
-  toast("Nessun updater in-app: apri le release su GitHub.");
+  toast(t("toast.noUpdater"));
   window.open(RELEASES_URL, "_blank", "noopener,noreferrer");
 });
 // MENU-AUDIT · the Help ▸ "Ontology models…" item is gone: the version button in
@@ -5715,9 +5710,7 @@ async function readAiKeyState(): Promise<AiKeyState> {
     return {
       mode: "unavailable",
       set: false,
-      detail:
-        "em-bridge non raggiungibile: è lì che vive la key in modalità " +
-        "sviluppo. Avvialo con ./dev.sh, poi riapri questa finestra.",
+      detail: t("ai.bridgeDown"),
     };
   }
 }
@@ -5737,8 +5730,8 @@ async function refreshAiKeyState(): Promise<void> {
 
   if (!usable) setAiKeyState.textContent = isTauri()
     ? "portachiavi non disponibile"
-    : "bridge non raggiungibile";
-  else if (!set) setAiKeyState.textContent = "nessuna key impostata";
+    : t("bridge.unreachable");
+  else if (!set) setAiKeyState.textContent = t("ai.noKey");
   else if (mode === "keychain") setAiKeyState.textContent = "✓ key impostata";
   else setAiKeyState.textContent = source === "env"
     ? "✓ key dall'ambiente"
@@ -5756,9 +5749,7 @@ async function refreshAiKeyState(): Promise<void> {
     : "Incolla qui la key";
 
   if (busy) {
-    setAiKeyHint.textContent =
-      "Generazione in corso: salvare la key riavvia em-bridge e la " +
-      "interromperebbe. Attendi il termine.";
+    setAiKeyHint.textContent = t("ai.busySaving");
     return;
   }
   if (!usable) {
@@ -5766,25 +5757,12 @@ async function refreshAiKeyState(): Promise<void> {
     return;
   }
   if (mode === "keychain") {
-    setAiKeyHint.textContent = set
-      ? "Salvata nel portachiavi di sistema. Non è leggibile da qui: puoi " +
-        "sostituirla o rimuoverla."
-      : "Incolla la key e premi Salva. Finisce nel portachiavi di sistema e " +
-        "viene passata a em-bridge, che riparte per riceverla.";
+    setAiKeyHint.textContent = set ? t("ai.inKeychain") : t("ai.pasteKeychain");
     return;
   }
   // dev / session
-  setAiKeyHint.textContent = source === "env"
-    ? "Presa da ANTHROPIC_API_KEY nell'ambiente di em-bridge. Puoi incollarne " +
-      "un'altra qui: varrà per questa sessione e avrà la precedenza."
-    : set
-      ? "Vive nella memoria di em-bridge — non è salvata da nessuna parte e " +
-        "sparisce quando fermi il bridge. In modalità sviluppo non c'è un " +
-        "portachiavi in cui metterla al sicuro; per una key persistente usa " +
-        "l'app desktop."
-      : "Incolla la key: vale solo per questa sessione, non viene salvata. " +
-        "Vive nella memoria di em-bridge finché il bridge è acceso. In " +
-        "alternativa esportala prima di avviarlo:  export ANTHROPIC_API_KEY=…";
+  setAiKeyHint.textContent = source === "env" ? t("ai.fromEnv")
+    : set ? t("ai.inMemory") : t("ai.pasteSession");
 }
 
 /** Settings may be open while a generation starts or finishes — keep the guard
@@ -5813,7 +5791,7 @@ async function postSessionKey(key: string | null): Promise<string | null> {
 
 setAiKeySave.addEventListener("click", async () => {
   if (generating.size > 0 && isTauri()) {
-    toast("Generazione in corso — attendi il termine prima di salvare la key");
+    toast(t("ai.waitBeforeSave"));
     return;
   }
   const key = setAiKey.value.trim();
@@ -5829,13 +5807,13 @@ setAiKeySave.addEventListener("click", async () => {
   }
   toast(isTauri()
     ? "Key salvata nel portachiavi — bridge riavviato"
-    : "Key attiva per questa sessione — non salvata");
+    : t("ai.sessionKeySet"));
   await refreshAiKeyState();
 });
 
 setAiKeyClear.addEventListener("click", async () => {
   if (generating.size > 0 && isTauri()) {
-    toast("Generazione in corso — attendi il termine prima di rimuovere la key");
+    toast(t("ai.waitBeforeRemove"));
     return;
   }
   const err = isTauri() ? await clearLlmKey() : await postSessionKey(null);
@@ -5872,7 +5850,7 @@ function refreshAtonUrlPreview(): void {
     || "a/heriverse";
   setAtonSceneUrl.textContent = root
     ? `${root}/${app}/?scene=<id>`
-    : "— nessun server: i blocchi 3D lo diranno";
+    : t("ai.noAtonServer");
 }
 
 /**
@@ -5917,7 +5895,7 @@ function identityProvider(): IdentityProvider {
     null;
   if (forced) return new MockIdentityProvider({ orcid: forced });
   return new MockIdentityProvider(
-    declared ? { orcid: declared.orcid } : new Error("nessuna identità dichiarata"),
+    declared ? { orcid: declared.orcid } : new Error(t("id.none")),
   );
 }
 
@@ -7459,8 +7437,7 @@ const smHandlers: StratiMinerHandlers = {
     // refused. In the second case the text is the deliverable, so hand it over
     // in a field rather than apologising for losing it.
     const runIt =
-      `Eseguilo in una sessione Cowork che possa leggere la cartella, poi ` +
-      `indica qui sotto l'em_data.xlsx che ne esce.`;
+      t("sm.runItHint");
     try {
       await navigator.clipboard.writeText(prompt);
       smSet({
@@ -7502,7 +7479,7 @@ const smHandlers: StratiMinerHandlers = {
       // graph it just made is behind it. Anything it still had to say (the
       // import report, the warnings) is in the Log, which is a panel that stays.
       closeFloatingTool();
-      toast("Grafo creato da em_data.xlsx");
+      toast(t("sm.graphCreated"));
     } catch {
       smSet({ busy: "", report: BRIDGE_UNREACHABLE });
       logError(`StratiMiner import: ${BRIDGE_UNREACHABLE}`);
@@ -7610,14 +7587,14 @@ function revealSignerPicker(): void {
   const sel = document.querySelector(
     "#narrative-view .nv-signing select") as HTMLSelectElement | null;
   if (!sel) {
-    toast("Nessun autore umano nel grafo: aggiungine uno per poter avallare");
+    toast(t("toast.noHumanAuthor"));
     return;
   }
   sel.scrollIntoView({ behavior: "smooth", block: "center" });
   sel.focus();
   sel.classList.add("nv-wants-attention");
   window.setTimeout(() => sel.classList.remove("nv-wants-attention"), 2400);
-  toast("Scegli con quale nome firmi");
+  toast(t("toast.pickSigner"));
 }
 /** Chapters with a generation request in flight, so the button can say so and
  *  a double click cannot send two. */
@@ -7662,8 +7639,7 @@ async function generateChapterDraft(narrativeId: string,
   // with NO anchor at all (e.g. the free intro) cannot be generated.
   const activityId = chapter?.anchor;
   if (!activityId) {
-    toast("Questo capitolo non è ancorato (a un'attività o un'epoca): " +
-          "ancoralo per generare la bozza.");
+    toast(t("toast.chapterUnanchored"));
     return;
   }
   const ai = getSettings().ai;
@@ -7709,10 +7685,8 @@ async function generateChapterDraft(narrativeId: string,
       // Impostazioni ▸ Avanzate). A message that only says "not configured"
       // leaves somebody hunting for a setting they have never seen.
       toast(res.status === 501
-        ? `Generazione non configurata: ${msg} — mettila in ⌁ (Impostazioni ▸ `
-          + `Avanzate ▸ Fornitore AI): resta nella memoria di em-bridge, mai nel `
-          + `documento.`
-        : `Generazione fallita: ${msg}`);
+        ? t("toast.genUnconfigured", { why: msg })
+        : t("toast.genFailed", { why: msg }));
       return;
     }
     const result = (await res.json()) as DraftResult;
@@ -7728,7 +7702,8 @@ async function generateChapterDraft(narrativeId: string,
       ? "em-bridge non raggiungibile: la generazione passa da lì (è anche " +
         "dove sta la key, mai nel frontend). Avvialo con ./dev.sh, oppure " +
         "punta EM_TRANSFORMER_URL a un server."
-      : `Generazione fallita: ${e instanceof Error ? e.message : String(e)}`);
+      : t("toast.genFailed",
+            { why: e instanceof Error ? e.message : String(e) }));
   } finally {
     generating.delete(chapterIndex);
     refreshNarrativeView();
@@ -8624,7 +8599,7 @@ function revealFromTable(nodeId: string): void {
   const previous = activeWin().id;
   setActiveWin(graphWin.id);
   if (scene()?.byId.has(nodeId)) centerOn(nodeId);
-  else toast("selezionato — non visibile in questa proiezione (ripiegato o filtrato)");
+  else toast(t("toast.selectedNotVisible"));
   // the focus goes back to the table: you were reading a list, and the pick was
   // a question about one row, not a decision to leave
   setActiveWin(previous);
@@ -12901,7 +12876,7 @@ const click = (id: string): void => document.getElementById(id)?.click();
 //    Mode selector two centimetres to the left (a state offered twice reads as
 //    two different states), "Adatta" is now an icon button, and the filters are
 //    the funnel at the top-right of the canvas, which was there all along.
-//  · Table ▸ "Esporta" REMOVED: it was File ▸ Esporta verbatim (same three
+//  · Table ▸ t("menu.export") REMOVED: it was File ▸ Esporta verbatim (same three
 //    handlers), and exporting is a document command, not a table command.
 //  · The window TYPE dropdown stays even though the leader also switches
 //    workspaces: they are different scopes (leader = which arrangement, header =
@@ -12924,18 +12899,18 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
             checked: () => graphAlgorithm === a,
             disabledReason: () =>
               mode === "matrix"
-                ? "L'algoritmo vale per le proiezioni a grafo; Matrix usa le corsie di em-core."
+                ? t("menu.algoGraphOnly")
                 : null,
           }),
         );
         return [
           {
-            label: "Ricalcola layout",
+            label: t("menu.relayout"),
             run: () => click("btn-layout"),
             disabledReason: () =>
               mode === "matrix"
                 ? null
-                : "In questa proiezione il layout si rigenera cambiando algoritmo.",
+                : t("menu.relayoutByAlgo"),
           },
           ...algoItems,
         ];
@@ -12946,22 +12921,22 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
     {
       // MENU-AUDIT · "Aggiungi capitolo" left this menu, and the menu is better
       // for it: every item here now acts on the CURRENT chapter, which is what
-      // "Capitolo" means. Adding one is not an operation on the current chapter,
+      // t("menu.chapter") means. Adding one is not an operation on the current chapter,
       // and it has two homes that suit it — the narrative palette (always) and
       // the "+ capitolo" at the end of the story (while writing).
-      label: "Capitolo",
+      label: t("menu.chapter"),
       items: () => {
         const narr = activeNarrative();
         const ci = validCurrentChapter();
         const noChapter = (): string | null =>
           !narr
-            ? "Nessuna narrativa in questo grafo."
+            ? t("menu.noNarrative")
             : ci == null
-              ? "Clicca un capitolo per renderlo corrente."
+              ? t("menu.pickChapter")
               : null;
         return [
           {
-            label: "Elimina capitolo corrente",
+            label: t("menu.deleteChapter"),
             run: () => {
               if (!store || !narr || ci == null) return;
               nedit.deleteChapter(store, narr.id, ci);
@@ -12971,16 +12946,16 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
             disabledReason: noChapter,
           },
           {
-            label: "Sposta su",
+            label: t("menu.moveUp"),
             run: () => {
               if (!store || !narr || ci == null) return;
               nedit.moveChapter(store, narr.id, ci, -1);
               setCurrentChapterIndex(Math.max(0, ci - 1));
             },
-            disabledReason: () => noChapter() ?? (ci === 0 ? "È già il primo." : null),
+            disabledReason: () => noChapter() ?? (ci === 0 ? t("menu.alreadyFirst") : null),
           },
           {
-            label: "Sposta giù",
+            label: t("menu.moveDown"),
             run: () => {
               if (!store || !narr || ci == null) return;
               nedit.moveChapter(store, narr.id, ci, 1);
@@ -12988,13 +12963,13 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
             },
             disabledReason: () =>
               noChapter() ??
-              (narr && ci === narr.chapters.length - 1 ? "È già l'ultimo." : null),
+              (narr && ci === narr.chapters.length - 1 ? t("menu.alreadyLast") : null),
           },
         ];
       },
     },
     {
-      label: "Inserisci",
+      label: t("menu.insert"),
       items: () => {
         const narr = activeNarrative();
         const ci = validCurrentChapter();
@@ -13010,9 +12985,9 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
         };
         const needChapter = (): string | null =>
           !narr
-            ? "Nessuna narrativa in questo grafo."
+            ? t("menu.noNarrative")
             : ci == null
-              ? "Clicca un capitolo per renderlo corrente."
+              ? t("menu.pickChapter")
               : null;
         // WHAT a view embeds, when this window has no canvas to select on.
         //
@@ -13027,16 +13002,16 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
         // else the chapter's anchor (what this chapter is about). Only a chapter
         // with neither has nothing to embed, and then the item says so.
         const refFor = (): { id: string; from: string } | null => {
-          if (selectedId) return { id: selectedId, from: "selezione" };
+          if (selectedId) return { id: selectedId, from: t("menu.fromSelection") };
           const anchor = narr && ci != null
             ? (narrativesIn(store!.doc).find((n) => n.id === narr.id)
                 ?.chapters[ci] as { anchor?: string } | undefined)?.anchor
             : undefined;
-          return anchor ? { id: anchor, from: "ancoraggio del capitolo" } : null;
+          return anchor ? { id: anchor, from: t("menu.fromAnchor") } : null;
         };
         return [
           {
-            label: "Mappa del sito",
+            label: t("menu.siteMap"),
             run: () => store && insert("map", store.ensureGraphRootId()),
             disabledReason: needChapter,
           },
@@ -13055,8 +13030,7 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
                 needChapter() ??
                 (refFor()
                   ? null
-                  : "Niente da incorporare: seleziona un nodo sul canvas, "
-                    + "oppure ancora il capitolo a un'epoca o a un'attività."),
+                  : t("menu.nothingToEmbed")),
             })),
         ];
       },
@@ -13067,7 +13041,7 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
       // writing the thing they want to export. Same call, same bake, offered
       // where the story is (the File entry stays: a project-level export belongs
       // in the project menu too).
-      label: "Esporta",
+      label: t("menu.export"),
       items: () =>
         Object.entries(NARRATIVE_FORMATS).map(([format, spec]) => ({
           // LaTeX says it comes as an archive: with figures a `.tex` cannot be
@@ -13078,10 +13052,10 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
           run: () => void exportNarrative(format),
           disabledReason: () =>
             !store
-              ? "Nessun grafo aperto."
+              ? t("menu.noGraph")
               : activeNarrative()
                 ? null
-                : "Questo grafo non contiene narrative da esportare.",
+                : t("menu.nothingToExport"),
         })),
     },
     {
@@ -13091,23 +13065,23 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
         const ci = validCurrentChapter();
         return [
           {
-            label: "Rigenera bozza del capitolo corrente",
+            label: t("menu.regenChapter"),
             run: () => {
               if (!narr || ci == null) return;
               void generateChapterDraft(narr.id, ci);
             },
             disabledReason: () =>
               !narr
-                ? "Nessuna narrativa in questo grafo."
+                ? t("menu.noNarrative")
                 : ci == null
-                  ? "Clicca un capitolo per renderlo corrente."
+                  ? t("menu.pickChapter")
                   : null,
           },
           {
             // The one thing a failed generation needs next: where the key goes.
             // In the menu rather than only in the error, so it can be found
             // BEFORE the first refusal.
-            label: "Fornitore AI e key di sessione…",
+            label: t("menu.aiProvider"),
             run: () => openSettings("settings-sect-ai"),
           },
         ];
@@ -13120,7 +13094,7 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
   // the reason WIN4 dissolved the "Vista" menu next to the Mode selector.
   table: [
     {
-      label: "Righe",
+      label: t("menu.rows"),
       items: () => [
         {
           // FOCUS-NOJITTER · calls the mutator directly. It used to click a
@@ -13128,13 +13102,13 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
           // the FOCUSED window's head, which is what made the head change size
           // on every focus change. The head has no buttons now; this menu is
           // where a command on this window lives.
-          label: "Aggiungi riga",
+          label: t("menu.addRow"),
           run: () => {
             if (!store) return;
             if (!addEmDataRow(store))
-              toast("Questo foglio non accetta righe nuove.");
+              toast(t("menu.sheetNoNewRows"));
           },
-          disabledReason: () => (store ? null : "Nessun grafo aperto."),
+          disabledReason: () => (store ? null : t("menu.noGraph")),
         },
         {
           label: "Aggiungi claim",
@@ -13144,10 +13118,10 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
           disabledReason: () =>
             currentSheetKey() === "Claims"
               ? null
-              : "I claim si aggiungono dal foglio Claims.",
+              : t("menu.claimsFromSheet"),
         },
         {
-          label: "Elimina riga corrente",
+          label: t("menu.deleteRow"),
           run: () => {
             const id = currentRowId();
             if (!store || !id) return;
@@ -13156,7 +13130,7 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
             renderEmData();
           },
           disabledReason: () =>
-            currentRowId() ? null : "Clicca una riga per renderla corrente.",
+            currentRowId() ? null : t("menu.pickRow"),
         },
       ],
     },
@@ -13172,14 +13146,14 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
   // selection again — is here because there is no other way back.
   viewer: [
     {
-      label: "Collezione",
+      label: t("menu.collection"),
       items: () => {
         const win = activeWin();
         const pinned = !!winCurrent(win, "collection");
         return [
           {
             label: "Segui la selezione",
-            disabled: pinned ? undefined : "questa finestra segue già la selezione",
+            disabled: pinned ? undefined : t("menu.alreadyFollows"),
             run: () => {
               setWinCurrent(win, "collection", null);
               setWinCurrent(win, "item", null);
@@ -13202,7 +13176,7 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
       items: () => [
         {
           label: "Svuota lo shelf",
-          disabled: shelfEntries().length ? undefined : "lo shelf è già vuoto",
+          disabled: shelfEntries().length ? undefined : t("menu.shelfEmpty"),
           run: () => {
             clearShelf();
             renderShelf();
@@ -13215,11 +13189,11 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
   // only thing left to command is the region being traced.
   annotator: [
     {
-      label: "Regione",
+      label: t("menu.region"),
       items: () => [
         {
-          label: "Annulla la regione",
-          disabled: annotatorDraft ? undefined : "nessuna regione in corso",
+          label: t("menu.cancelRegion"),
+          disabled: annotatorDraft ? undefined : t("menu.noRegionInProgress"),
           run: () => {
             annotatorDraft = null;
             const panel = document.getElementById("annotator-panel");
@@ -13234,7 +13208,7 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
             annotatorDraft?.shape_kind === "polygon" &&
             (annotatorDraft.points?.length ?? 0) >= 3
               ? undefined
-              : "serve un poligono con almeno 3 punti",
+              : t("menu.polygonNeeds3"),
           run: () => renderAnnotatorPanel(),
         },
       ],
@@ -13252,7 +13226,7 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
             if (id) setWinCurrent(activeWin(), "doc", id);
             renderDocView();
           },
-          disabledReason: () => (store ? null : "Nessun grafo aperto."),
+          disabledReason: () => (store ? null : t("menu.noGraph")),
         },
         {
           label: "Elimina documento corrente",
@@ -13264,7 +13238,7 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
             renderDocView();
           },
           disabledReason: () =>
-            currentDocId() ? null : "Seleziona un documento nell'elenco.",
+            currentDocId() ? null : t("menu.pickDocument"),
         },
       ],
     },
@@ -13312,7 +13286,7 @@ function placeBarMenu(toggle: HTMLElement, menu: HTMLElement): void {
  */
 function revealSitePosition(): void {
   if (!store) {
-    toast("Apri prima un grafo: la posizione è un dato del grafo.");
+    toast(t("toast.openGraphForPosition"));
     return;
   }
   select(null); // the graph card is the Inspector's no-selection state
@@ -13327,7 +13301,7 @@ function revealSitePosition(): void {
   refreshInspector();
   const anchor = document.getElementById("insp-site-position");
   if (!anchor) {
-    toast("Pannello posizione non disponibile: apri una finestra Ispettore su questo grafo.");
+    toast(t("toast.noPositionPanel"));
     return;
   }
   revealBlock(anchor);
@@ -13372,9 +13346,7 @@ function setWorkspace(id: WorkspaceId): void {
   // applied the first time you open it and never again: after that the
   // arrangement is yours, and a preset that re-asserted itself on every visit
   // would throw away the split you made the last time you were there.
-  const preset = workspacePreset(id);
-  if (preset.arrangement === "ide" && !isTiled(id)) applyDefaultLayout(id);
-  if (preset.arrangement === "assets" && !isTiled(id)) applyAssetsLayout(id);
+  if (!isTiled(id)) applyArrangement(id);
   renderTiles(); // WIN5 · each workspace has its own arrangement
   // the tab follows the WORKSPACE and nothing else — mounting an editor never
   // moves it (that is what made a transformed window possible).
@@ -13394,30 +13366,20 @@ function setWorkspace(id: WorkspaceId): void {
  */
 function renderWorkspaceBar(): void {
   workspaceBar.innerHTML = "";
-  let separated = false;
+  // ONE SPECIES, so no hairline and no grouping: every tab is an arrangement of
+  // windows (E.D., 2026-08-21). The separator that used to divide the four
+  // "phases" from the two "views" was the visible half of a bar that answered two
+  // questions — and the invisible half was a `⌗ IDE` tab that named a layout and
+  // a `▤ Table` tab that named a window.
   for (const w of WORKSPACES) {
-    // PHASES first, then a hairline, then the VIEWS and whatever the user made.
-    // The line is the whole point of the reframe being visible: Documentation →
-    // Analysis → Comparisons → Output is a sequence of work, and IDE/Table are
-    // arrangements of the same material — a bar that mixed them read as six
-    // equal choices.
-    if (!separated && !w.phase) {
-      const rule = document.createElement("span");
-      rule.className = "ws-sep";
-      rule.title = t("ws.viewNote");
-      workspaceBar.appendChild(rule);
-      separated = true;
-    }
     const b = document.createElement("button");
     b.dataset.ws = w.id;
     const isActive = w.id === activeWorkspace();
-    b.className = "ws-tab" + (isActive ? " active" : "")
-      + (w.phase ? " ws-phase" : "");
+    b.className = "ws-tab" + (isActive ? " active" : "");
     const label = workspaceLabel(w, t);
-    // the tooltip says WHAT THE PHASE IS FOR; a label alone answers "where am I"
-    // and not "what am I supposed to be doing here"
-    b.title = w.hintKey ? `${label} — ${t(w.hintKey)}`
-      : w.view ? `${label} — ${t("ws.viewNote")}` : label;
+    // the tooltip says what the arrangement is FOR; a label alone answers "where
+    // am I" and not "what am I supposed to be doing here"
+    b.title = w.hintKey ? `${label} — ${t(w.hintKey)}` : label;
     b.innerHTML =
       `<span class="ws-ic">${w.icon}</span><span class="ws-lb">${escapeHtml(label)}</span>`;
     b.addEventListener("click", () => setWorkspace(w.id));

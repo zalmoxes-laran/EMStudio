@@ -31,6 +31,7 @@
  * black rectangle.
  */
 
+import { t } from "./i18n";
 import { onFirstVisible } from "./lazy";
 
 /** Loaded once per session, on the first 3D embed a reader actually looks at. */
@@ -87,7 +88,7 @@ export function mount3dViewer(host: HTMLElement, url: string,
       try {
         ({ THREE, GLTFLoader, OrbitControls } = await engine());
       } catch {
-        fail("questo build non ha il visualizzatore 3D");
+        fail(t("em3d.noEngine"));
         return;
       }
       if (disposed) return;
@@ -145,7 +146,7 @@ export function mount3dViewer(host: HTMLElement, url: string,
           host.appendChild(renderer.domElement);
           const hint = document.createElement("div");
           hint.className = "nv-embed-note";
-          hint.textContent = "trascina per ruotare · rotella per lo zoom";
+          hint.textContent = t("em3d.dragHint");
           host.appendChild(hint);
           tick();
         },

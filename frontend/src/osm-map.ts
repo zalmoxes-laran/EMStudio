@@ -22,6 +22,8 @@
  * it is part of the widget and not removable from outside.
  */
 
+import { t } from "./i18n";
+
 const TILE = 256;
 const MIN_ZOOM = 2;
 const MAX_ZOOM = 19;
@@ -143,18 +145,14 @@ export function createOsmMap(opts: OsmMapOptions): OsmMap {
   // ornament and not something that has to be kept in sync with anything.
   const northMark = el("div", "osm-north");
   northMark.innerHTML = "<span>↑</span>N";
-  northMark.title =
-    "Nord geografico. La mappa è in Web Mercator, quindi il nord è in alto: " +
-    "l'impronta è disegnata dai vertici già riproiettati, e la sua inclinazione " +
-    "comprende sia l'azimut della scena sia la convergenza della griglia.";
+  northMark.title = t("osm.northTitle");
   const controls = el("div", "osm-zoom");
   const attr = el("div", "osm-attr");
-  const hint = el("div", "osm-hint", "⌘ / Ctrl + rotella per lo zoom");
+  const hint = el("div", "osm-hint", t("osm.zoomHint"));
   const offline = el("div", "osm-offline");
-  offline.appendChild(el("div", undefined, "tile OSM non raggiungibili"));
+  offline.appendChild(el("div", undefined, t("osm.offline")));
   offline.appendChild(
-    el("div", "osm-offline-note",
-      "la posizione qui sotto resta esatta; la mappa torna appena c'è rete"),
+    el("div", "osm-offline-note", t("osm.offlineNote")),
   );
 
   const link = document.createElement("a");
@@ -306,7 +304,7 @@ export function createOsmMap(opts: OsmMapOptions): OsmMap {
   }
   const home = el("button", "osm-btn osm-home", "◎") as HTMLButtonElement;
   home.type = "button";
-  home.title = "Torna sulla posizione";
+  home.title = t("osm.home");
   home.addEventListener("click", (e) => {
     e.stopPropagation();
     cx = lonToX(markerLon, zoom);

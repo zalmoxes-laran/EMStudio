@@ -938,13 +938,14 @@ eq(doc.graph.nodes.filter(
      "map-figura · con l'impronta arriva la barra di scala metrica");
   ok(placed.includes("rotate(-12"),
      "map-figura · e il nord è girato dell'azimut della scena");
-  ok(placed.includes("rotazione 12"),
+  // the wording comes from the dictionary now, and the default is ENGLISH
+  ok(placed.includes("rotation 12"),
      "map-figura · detto anche a parole, non solo disegnato");
   // riproiettata: i gradi sono WGS84, e il frame di PARTENZA è detto — non il
   // codice proiettato appiccicato a dei gradi (misurato su un'ancora UTM vera)
   const utm = N.mapToSvg({ lat: 40.7489, lon: 14.4839, epsg: 4326,
                            epsgFrom: 32633, label: "Saggio 3" });
-  ok(utm.includes("WGS84, da EPSG:32633"),
+  ok(utm.includes("WGS84, from EPSG:32633"),
      "map-figura · dei gradi riproiettati dicono da dove vengono");
   ok(!utm.includes("(EPSG:32633)"),
      "map-figura · …e non si spacciano per coordinate proiettate");
@@ -980,7 +981,7 @@ eq(doc.graph.nodes.filter(
   ok(bars >= 1 + 2,
      `timeline-figura · una barra per epoca datata oltre al fondo `
      + `(rect=${bars})`);
-  ok(tl.includes("Fase non datata") && /fuori dall'asse/.test(tl),
+  ok(tl.includes("Fase non datata") && /off the axis/.test(tl),
      "timeline-figura · l'epoca senza datazione è NOMINATA fuori dall'asse, "
      + "non lasciata cadere");
   // la parità: le stesse epoche, nello stesso ordine, del calcolo dell'embed

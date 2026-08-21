@@ -358,8 +358,9 @@ let overviewMode = false;
  * OVR1 · the overview dashboard: one card per open graph, its high-level data
  * read from the GRAPH-SCOPE NODES (MIG1-A: author/licence/embargo + EM-ID on the
  * GraphNode) and the SITE POSITION (GEO1: `readSitePosition`). One source — the
- * nodes — never `graph.data`. Missing values read honestly ("senza EM-ID" / "non
- * posizionato"), never a fabricated default. Clicking a card activates that slot.
+ * nodes — never `graph.data`. Missing values read honestly (no EM-ID / not
+ * positioned — from the dictionary), never a fabricated default. Clicking a card
+ * activates that slot.
  */
 function overviewSection(tree: EMTree, labels: (key: string) => string): string {
   if (!tree.slots.length)
@@ -395,14 +396,15 @@ function overviewSection(tree: EMTree, labels: (key: string) => string): string 
           <div class="ov-head">
             <span class="ov-name">${esc(name)}${slot.store.dirty ? " •" : ""}</span>
             <span class="ov-emid${gs.em_id ? "" : " ov-missing"}">${
-              esc(gs.em_id || "senza EM-ID")
+              esc(gs.em_id || labels("emtree.noEmId"))
             }</span>
           </div>
           <dl class="ov-fields">
-            ${field("Autore", author, "—")}
-            ${field("Licenza", gs.license, "—")}
-            ${field("Embargo", gs.embargo, "—")}
-            ${field("Posizione", siteText, "non posizionato")}
+            ${field(labels("emtree.ovAuthor"), author, "—")}
+            ${field(labels("emtree.ovLicence"), gs.license, "—")}
+            ${field(labels("emtree.ovEmbargo"), gs.embargo, "—")}
+            ${field(labels("emtree.ovPosition"), siteText,
+                    labels("emtree.ovUnplaced"))}
           </dl>
           <div class="ov-meta">${nodes} ${labels("emtree.nodes")} · ${edges} ${labels("emtree.edges")}</div>
         </button>

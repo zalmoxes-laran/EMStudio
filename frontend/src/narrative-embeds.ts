@@ -28,6 +28,7 @@
  * graph being built; a red box would be a lie about a mistake nobody made.
  */
 
+import { t } from "./i18n";
 import { fetchImageInfo, fittedUrl, imageUrl, isImageResource, regionUrl,
          thumbnailUrl } from "./iiif";
 import { nodeStyle } from "./palette";
@@ -62,8 +63,8 @@ export const nameOf = (n: EmNode | undefined): string =>
 /** "1 rapporto" / "3 rapporti". A story that says "1 rapporti" reads as a fault
  *  in the study rather than in the viewer, which is the wrong place to spend a
  *  reader's trust. */
-const plural = (n: number, one: string, many: string): string =>
-  `${n} ${n === 1 ? one : many}`;
+const plural = (n: number, oneKey: string, manyKey: string): string =>
+  `${n} ${t(n === 1 ? oneKey : manyKey)}`;
 
 // ── the graph, read ──────────────────────────────────────────────────────────
 //
@@ -185,7 +186,8 @@ export function scopeOf(node: EmNode, doc: EmDocument | null): Scope {
     // which the canvas would have nothing to show either).
     const laned = unitsFromLayout(node.id, doc, index);
     if (laned.length)
-      return { units: laned, what: `epoca «${nameOf(node)}»`, epochs: [node] };
+      return { units: laned, what: t("nv.scopeEpoch", { name: nameOf(node) }),
+               epochs: [node] };
     // AN EPOCH INCLUDES ITS PHASES.
     //
     // Measured (2026-08-20): a chapter anchored to an epoch whose units hang off
@@ -211,12 +213,13 @@ export function scopeOf(node: EmNode, doc: EmDocument | null): Scope {
         if (isStrat(unit)) units.push(unit as EmNode);
       }
     }
-    return { units, what: `epoca «${nameOf(node)}»`, epochs: [node] };
+    return { units, what: t("nv.scopeEpoch", { name: nameOf(node) }),
+             epochs: [node] };
   }
 
   if (type === "graph") {
     const units = nodesOf(doc).filter(isStrat);
-    return { units, what: "l'intero grafo", epochs };
+    return { units, what: t("nv.scopeWholeGraph"), epochs };
   }
 
   // a group of any family — activity, location, time branch, paradata
@@ -328,12 +331,9 @@ export function matrixEmbed(node: EmNode, doc: EmDocument | null): HTMLElement {
     const laid = !!(doc as { layout?: { swimlanes?: unknown[] } } | null)
       ?.layout?.swimlanes?.length;
     return nothingYet(b, isEpoch
-      ? "nessuna unità in questa epoca: né la corsia del layout"
-        + (laid ? "" : " (questo grafo non è ancora stato disposto)")
-        + ", né gli archi has_first_epoch / survive_in_epoch / is_in_epoch, né "
-        + "le sue fasi ne portano una: il riferimento è valido, l'epoca è vuota."
-      : "nessuna unità stratigrafica in questo ambito — "
-        + "il riferimento è valido, il contenuto non c'è ancora");
+      ? t("nv.emptyEpoch") + (laid ? "" : " " + t("nv.notLaidOut"))
+        + t("nv.emptyEpochRest")
+      : t("nv.emptyScope"));
   }
 
   const index = indexOf(doc);
@@ -355,7 +355,7 @@ export function matrixEmbed(node: EmNode, doc: EmDocument | null): HTMLElement {
     const lane = el("div", "nv-matrix-lane");
     const epoch = index.get(key);
     const label = el("div", "nv-matrix-lane-label",
-      epoch ? nameOf(epoch) : "senza epoca");
+      epoch ? nameOf(epoch) : t("nv.noEpoch"));
     if (epoch) {
       const style = nodeStyle(String(epoch.node_type ?? "epoch"));
       label.style.borderLeftColor = style.border;
@@ -376,9 +376,10 @@ export function matrixEmbed(node: EmNode, doc: EmDocument | null): HTMLElement {
     && String(e.edge_type ?? "").startsWith("is_"));
   b.appendChild(el("div", "nv-embed-note",
     rel.length
-      ? `${plural(scope.units.length, "unità", "unità")} · `
-        + `${plural(rel.length, "rapporto stratigrafico", "rapporti stratigrafici")}`
-      : `${plural(scope.units.length, "unità", "unità")} · nessun rapporto fra loro`));
+      ? `${plural(scope.units.length, "nv.unit", "nv.units")} · `
+        + `${plural(rel.length, "nv.relation", "nv.relations")}`
+      : `${plural(scope.units.length, "nv.unit", "nv.units")} · `
+        + t("nv.noRelations")));
   return b;
 }
 
@@ -475,9 +476,9 @@ export function certaintyLadder(c: Certainty): HTMLElement {
     row.appendChild(dot);
   }
   wrap.appendChild(row);
-  const why = c.source === "qualia" ? (c.detail ?? "da una qualia dichiarata")
-    : c.source === "field" ? "dal campo del nodo"
-    : "implicita dal tipo di unità — nessuno l'ha dichiarata";
+  const why = c.source === "qualia" ? (c.detail ?? t("nv.fromQualia"))
+    : c.source === "field" ? t("nv.fromField")
+    : t("nv.impliedByType");
   const note = el("span", "nv-certainty-why", why);
   if (c.source === "implied") note.classList.add("nv-implied");
   wrap.appendChild(note);
@@ -548,7 +549,7 @@ export function timelineEmbed(node: EmNode, doc: EmDocument | null): HTMLElement
 
   const { dated, undated, min, span } = spans;
   if (!dated.length && !undated.length) {
-    return nothingYet(b, "nessuna epoca in questo ambito");
+    return nothingYet(b, t("nv.noEpochsHere"));
   }
 
   const axis = el("div", "nv-timeline-axis");
@@ -573,7 +574,7 @@ export function timelineEmbed(node: EmNode, doc: EmDocument | null): HTMLElement
   if (undated.length) {
     const list = undated.map(nameOf).join(", ");
     b.appendChild(el("div", "nv-embed-note nv-implied",
-      `senza datazione, quindi fuori dall'asse: ${list}`));
+      t("nv.undatedOffAxis", { list })));
   }
   return b;
 }
@@ -591,12 +592,12 @@ export function timelineEmbed(node: EmNode, doc: EmDocument | null): HTMLElement
  *
  * `options.columns` narrows the columns when the author wants fewer.
  */
-const COLUMNS: { key: string; label: string;
+const COLUMNS: { key: string; labelKey: string;
                  read: (u: EmNode, doc: EmDocument | null) => string }[] = [
-  { key: "name", label: "unità", read: (u) => nameOf(u) },
-  { key: "type", label: "tipo", read: (u) => String(u.node_type ?? "") },
+  { key: "name", labelKey: "nv.colUnit", read: (u) => nameOf(u) },
+  { key: "type", labelKey: "nv.colType", read: (u) => String(u.node_type ?? "") },
   {
-    key: "epoch", label: "epoca",
+    key: "epoch", labelKey: "nv.colEpoch",
     read: (u, doc) => {
       const id = epochOf(u, doc);
       const e = id ? indexOf(doc).get(id) : undefined;
@@ -604,7 +605,7 @@ const COLUMNS: { key: string; label: string;
     },
   },
   {
-    key: "dating", label: "datazione",
+    key: "dating", labelKey: "nv.colDating",
     read: (u, doc) => {
       const id = epochOf(u, doc);
       const e = id ? indexOf(doc).get(id) : undefined;
@@ -616,7 +617,7 @@ const COLUMNS: { key: string; label: string;
     },
   },
   {
-    key: "certainty", label: "certezza",
+    key: "certainty", labelKey: "nv.colCertainty",
     read: (u, doc) => {
       const c = existenceCertainty(u, doc);
       if (!c) return "—";
@@ -633,7 +634,7 @@ export function tableEmbed(node: EmNode, doc: EmDocument | null,
   const scope = scopeOf(node, doc);
   b.appendChild(el("div", "nv-embed-note", `interrogazione viva · ${scope.what}`));
   if (!scope.units.length) {
-    return nothingYet(b, "l'interrogazione non trova unità in questo ambito");
+    return nothingYet(b, t("nv.queryFindsNothing"));
   }
 
   const wanted = Array.isArray(options["columns"])
@@ -643,7 +644,7 @@ export function tableEmbed(node: EmNode, doc: EmDocument | null,
 
   const table = el("table", "nv-table-grid");
   const head = el("tr");
-  for (const c of cols) head.appendChild(el("th", undefined, c.label));
+  for (const c of cols) head.appendChild(el("th", undefined, t(c.labelKey)));
   table.appendChild(head);
   for (const u of scope.units) {
     const tr = el("tr");
@@ -659,8 +660,8 @@ export function tableEmbed(node: EmNode, doc: EmDocument | null,
   }
   b.appendChild(table);
   b.appendChild(el("div", "nv-embed-note",
-    `${plural(scope.units.length, "riga calcolata", "righe calcolate")} `
-    + "adesso dal documento in memoria"));
+    `${plural(scope.units.length, "nv.rowComputed", "nv.rowsComputed")} `
+    + t("nv.fromMemory")));
   return b;
 }
 
@@ -723,8 +724,8 @@ export function paradataEmbed(node: EmNode, doc: EmDocument | null): HTMLElement
   if (!properties.length) {
     return nothingYet(b,
       type === "document" || type === "source"
-        ? "questa fonte non è ancora usata da nessuna estrazione"
-        : "questo nodo non porta proprietà documentate — la catena non parte");
+        ? t("nv.sourceUnused")
+        : t("nv.noDocumentedProps"));
   }
 
   const chains = el("div", "nv-chains");
@@ -740,10 +741,10 @@ export function paradataEmbed(node: EmNode, doc: EmDocument | null): HTMLElement
       .map((id) => index.get(id)).filter(Boolean) as EmNode[];
 
     if (!args.length) {
-      chain.appendChild(link(prop, "proprietà"));
-      chain.appendChild(broken(
-        "nessuna estrazione dichiara da dove viene questo valore"));
-      if (unit) { chain.appendChild(arrow()); chain.appendChild(link(unit, "unità")); }
+      chain.appendChild(link(prop, t("nv.roleProperty")));
+      chain.appendChild(broken(t("nv.noExtraction")));
+      if (unit) { chain.appendChild(arrow());
+                  chain.appendChild(link(unit, t("nv.roleUnit"))); }
       chains.appendChild(chain);
       continue;
     }
@@ -753,21 +754,21 @@ export function paradataEmbed(node: EmNode, doc: EmDocument | null): HTMLElement
         .map((id) => index.get(id)).filter(Boolean) as EmNode[];
       if (sources.length) {
         for (const s of sources) {
-          chain.appendChild(link(s, "fonte"));
+          chain.appendChild(link(s, t("nv.roleSource")));
           chain.appendChild(arrow());
         }
       } else {
         chain.appendChild(broken(
-          `«${nameOf(arg)}» non cita nessuna fonte`));
+          t("nv.citesNoSource", { name: nameOf(arg) })));
         chain.appendChild(arrow());
       }
       chain.appendChild(link(arg, String(arg.node_type ?? "extractor")));
       chain.appendChild(arrow());
     }
-    chain.appendChild(link(prop, "proprietà"));
+    chain.appendChild(link(prop, t("nv.roleProperty")));
     if (unit) {
       chain.appendChild(arrow());
-      chain.appendChild(link(unit, "unità"));
+      chain.appendChild(link(unit, t("nv.roleUnit")));
     }
     chains.appendChild(chain);
   }
@@ -824,14 +825,14 @@ export function documentEmbed(node: EmNode, base: string,
   // A thumbnail that 404s must not leave a broken-image glyph in a story.
   img.addEventListener("error", () => {
     fig.replaceChildren(el("figcaption", "nv-embed-note nv-implied",
-      "il servizio immagini non risponde per questa risorsa"));
+      t("nv.imageServiceSilent")));
   });
 
   // DP-79 P5 · the image, LIVE: click the thumbnail and it opens at reading
   // size. A size request on the same IIIF service — no second copy of the
   // pixels, which is the whole reason IIIF was adopted.
   img.style.cursor = "zoom-in";
-  img.title = "apri l'immagine a grandezza di lettura";
+  img.title = t("nv.openReadingSize");
   img.addEventListener("click", (event) => {
     event.stopPropagation();
     openImage(node, base, doc ?? null);
@@ -844,7 +845,7 @@ export function documentEmbed(node: EmNode, base: string,
   const regions = annotationsOn(node, doc ?? null);
   if (regions.length) {
     const list = el("div", "nv-embed-note",
-      plural(regions.length, "regione annotata", "regioni annotate") + ": "
+      plural(regions.length, "nv.region", "nv.regions") + ": "
       + regions.map(nameOf).join(", "));
     fig.appendChild(list);
   }
@@ -937,7 +938,7 @@ export function openImage(node: EmNode, base: string,
 
   picture.addEventListener("error", () => {
     picture.replaceWith(el("div", "nv-embed-note nv-implied",
-      "il servizio immagini non ha potuto servire questa immagine"));
+      t("nv.imageServiceFailed")));
   });
   frame.appendChild(picture);
 
@@ -950,7 +951,7 @@ export function openImage(node: EmNode, base: string,
   for (const region of regions) {
     const rect = rectOf(region);
     const line = el("div", "nv-lightbox-region");
-    line.appendChild(el("span", "nv-chain-role", "regione"));
+    line.appendChild(el("span", "nv-chain-role", t("nv.roleRegion")));
     line.appendChild(el("span", undefined, nameOf(region)));
     const url = rect ? regionUrl(node, base, rect, "!600,600") : null;
     if (url) {
@@ -966,7 +967,7 @@ export function openImage(node: EmNode, base: string,
   }
   if (!regions.length)
     caption.appendChild(el("div", "nv-embed-note nv-implied",
-      "nessuna regione annotata su questa immagine"));
+      t("nv.noRegions")));
 
   const dismiss = el("button", "nv-lightbox-close", "✕") as HTMLButtonElement;
   dismiss.title = "Chiudi (Esc)";
@@ -997,8 +998,7 @@ export function unSceneEmbed(node: EmNode, doc: EmDocument | null): HTMLElement 
     b.appendChild(el("div", "nv-embed-note", String(node.description)));
   if (!parts.length) {
     b.appendChild(el("div", "nv-embed-note nv-implied",
-      "scena componibile (DP-29): il modello di dati non porta ancora le "
-      + "relazioni di composizione, quindi questa è la scheda del riferimento"));
+      t("nv.composableScene")));
     return b;
   }
   const index = indexOf(doc);
@@ -1079,7 +1079,7 @@ export function rmDocEmbed(node: EmNode, doc: EmDocument | null,
   const rungs = spatialisationRungs();
   const current = QUALIA_TO_RUNG[raw.toLowerCase()] ?? raw;
   const wrap = el("div", "nv-certainty");
-  wrap.appendChild(el("span", "nv-certainty-label", "autorità della collocazione"));
+  wrap.appendChild(el("span", "nv-certainty-label", t("nv.placementAuthority")));
   const row = el("span", "nv-certainty-rungs");
   for (const rung of rungs) {
     const dot = el("span", "nv-rung", rung.replace("_", " "));
@@ -1089,8 +1089,8 @@ export function rmDocEmbed(node: EmNode, doc: EmDocument | null,
   wrap.appendChild(row);
   const note = el("span", "nv-certainty-why",
     rungs.includes(current)
-      ? "quanto vale la collocazione — non l'esistenza: il documento esiste"
-      : "nessuno ha ancora dichiarato con quale autorità è stato collocato");
+      ? t("nv.placementWhy")
+      : t("nv.placementUndeclared"));
   if (!rungs.includes(current)) note.classList.add("nv-implied");
   wrap.appendChild(note);
   b.appendChild(wrap);

@@ -1,6 +1,7 @@
 // SVG export of the current scene (phase 5): lanes, orthogonally routed
 // edges with bridges and arrowheads, node shapes and labels. The output is
 // a plain standalone SVG — printable to PDF from any viewer.
+import { t } from "./i18n";
 import { epochEnd, epochStart, nameOf, timelineSpans } from "./narrative-embeds";
 import { edgeStyle, nodeStyle } from "./palette";
 import { routeScene, SYMMETRIC_EDGES, type EdgeRoute } from "./routing";
@@ -282,7 +283,7 @@ export function mapToSvg(input: MapFigureInput): string | null {
   const epsg = input.epsg ?? 4326;
   const parts: string[] = [];
   parts.push(`${SVG_HEAD} viewBox="0 0 ${W} ${H}">`);
-  parts.push(`<title>${esc(label || "posizione")}</title>`);
+  parts.push(`<title>${esc(label || t("fig.position"))}</title>`);
   parts.push(`<rect width="${W}" height="${H}" fill="${INK.ground}" stroke="${INK.frame}"/>`);
 
   // the footprint, fitted with a margin — and the metres it spans, for the bar
@@ -340,10 +341,10 @@ export function mapToSvg(input: MapFigureInput): string | null {
 
   // the coordinates, written out: a figure of a place has to say which place
   const frame = input.epsgFrom && input.epsgFrom !== epsg
-    ? `WGS84, da EPSG:${input.epsgFrom}`
+    ? t("fig.fromEpsg", { epsg: String(input.epsgFrom) })
     : `EPSG:${epsg}`;
   const coords = `${lat.toFixed(6)}, ${lon.toFixed(6)} (${frame})`
-    + (rotation ? ` · rotazione ${rotation.toFixed(1)}°` : "");
+    + (rotation ? ` · ${t("fig.rotation", { deg: rotation.toFixed(1) })}` : "");
   parts.push(`<text x="12" y="${H - 12}" font-size="11" fill="${INK.faint}">`
     + `${esc(coords)}</text>`);
 
@@ -364,9 +365,9 @@ export function mapToSvg(input: MapFigureInput): string | null {
       + `fill="${INK.text}">${metres} m</text>`);
   } else {
     parts.push(`<text x="12" y="${H - 30}" font-size="10" fill="${INK.fainter}">`
-      + `posizione senza estensione nota — nessuna scala</text>`);
+      + `${esc(t("fig.noExtent"))}</text>`);
   }
-  parts.push("<!-- nessun basemap: i tile sono di altri, e hanno una licenza -->");
+  parts.push("<!-- no basemap: the tiles belong to somebody else, and they carry a licence -->");
   parts.push("</svg>");
   return parts.join("\n");
 }
@@ -394,7 +395,7 @@ export function timelineToSvg(node: EmNode, doc: EmDocument | null): string | nu
   parts.push(`<title>${esc(what)}</title>`);
   parts.push(`<rect width="${W}" height="${H}" fill="${INK.ground}" stroke="${INK.frame}"/>`);
   parts.push(`<text x="${leftPad}" y="20" font-size="12" fill="${INK.label}">`
-    + `${esc(`asse temporale · ${what}`)}</text>`);
+    + `${esc(t("fig.timeAxis", { what }))}</text>`);
 
   dated.forEach((epoch, i) => {
     const from = epochStart(epoch);
@@ -438,8 +439,8 @@ export function timelineToSvg(node: EmNode, doc: EmDocument | null): string | nu
 
   if (undated.length)
     parts.push(`<text x="${leftPad}" y="${H - 10}" font-size="10" fill="${INK.fainter}">`
-      + esc(`senza datazione, fuori dall'asse: `
-        + undated.map(nameOf).join(", ")) + `</text>`);
+      + esc(t("fig.undated", { list: undated.map(nameOf).join(", ") }))
+      + `</text>`);
   parts.push("</svg>");
   return parts.join("\n");
 }

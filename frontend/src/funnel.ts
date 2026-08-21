@@ -15,6 +15,7 @@
 // The funnel RESOLVES; it never MATERIALISES — em.json is untouched, no
 // inherited value is ever written onto a node (E.D. / the manual).
 import type { EmDocument } from "./types";
+import { t } from "./i18n";
 
 /** Rule ids, kept general so the two temporal properties (already propagative in
  *  the manual) drop in without touching the resolver. Primary set for badges =
@@ -164,13 +165,13 @@ export const BADGE_RULES: RuleId[] = ["author", "license", "embargo"];
 export function sourceLabel(source: Scope | null): string {
   switch (source) {
     case "node":
-      return "proprio";
+      return t("funnel.ownSource");
     case "activity":
-      return "da Attività";
+      return t("funnel.fromActivity");
     case "epoch":
-      return "da Epoca";
+      return t("funnel.fromEpoch");
     case "canvas":
-      return "da Canvas";
+      return t("funnel.fromCanvas");
     default:
       return "";
   }

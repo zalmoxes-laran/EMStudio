@@ -23,6 +23,7 @@
  * act by a person; pressing "generate" is not one.
  */
 
+import { t } from "./i18n";
 import type { DocumentStore } from "./model";
 import { editChapters } from "./narrative-edit";
 import type { EditableBlock, EditableChapter } from "./narrative-edit";
@@ -143,18 +144,14 @@ export function endorseBlock(store: DocumentStore, narrativeId: string,
                              chapterIndex: number, blockIndex: number,
                              humanAuthorId: string): void {
   if (!humanAuthorId)
-    throw new Error("un avallo deve portare il nome di chi lo fa");
+    throw new Error(t("endorse.needsName"));
   const node = store.node(humanAuthorId);
   if (!node)
-    throw new Error(
-      `il grafo non conosce «${humanAuthorId}»: un avallo deve nominare ` +
-      `qualcuno che c'è`);
+    throw new Error(t("endorse.unknownAuthor", { id: humanAuthorId }));
   if (node.node_type === AI_AUTHOR_TYPE)
-    throw new Error(
-      `«${label(node)}» è un autore AI: solo una persona può avallare. ` +
-      `Un modello che garantisce per un modello non è una validazione.`);
+    throw new Error(t("endorse.aiAuthor", { name: label(node) }));
   if (node.node_type !== AUTHOR_TYPE)
-    throw new Error(`«${label(node)}» non è un autore`);
+    throw new Error(t("endorse.notAnAuthor", { name: label(node) }));
   editChapters(store, narrativeId, (cs) => {
     const b = cs[chapterIndex]?.blocks?.[blockIndex] as
       (EditableBlock & { validated_by?: string; ai_generated?: boolean })
@@ -211,14 +208,12 @@ export function applyGeneratedDraft(store: DocumentStore, result: DraftResult,
   const incoming = result.doc?.graph?.nodes ?? [];
   const narrative = incoming.find((n) => n.id === result.narrative_id);
   if (!narrative)
-    throw new Error(
-      "la risposta del bridge non contiene la narrativa: bozza non applicata");
+    throw new Error(t("draft.noNarrative"));
   const written = ((((narrative.data ?? {}) as Record<string, unknown>)
     .chapters ?? []) as EditableChapter[])
     .find((c) => c.anchor === anchor);
   if (!written)
-    throw new Error(
-      `la risposta del bridge non contiene il capitolo ancorato a «${anchor}»`);
+    throw new Error(t("draft.noChapter", { anchor }));
 
   store.batch(() => {
     for (const id of [result.author_id, result.prompt_id]) {

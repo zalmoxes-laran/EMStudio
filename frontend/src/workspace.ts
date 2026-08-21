@@ -126,79 +126,168 @@ export interface WorkspacePreset {
   graphMode?: GraphMode;
   /** built-ins cannot be deleted or renamed. */
   builtin?: boolean;
-  /** which PHASE of the work this tab is (1..4). Absent = not a phase but a
-   *  view (an arrangement of the same material), which the bar says out loud. */
-  phase?: number;
-  /** a view rather than a phase: IDE, Table. Declared so the bar can group them
-   *  and nobody reads "Table" as a step in the work. */
-  view?: boolean;
-  /** i18n key of the one-line "what this phase is for", shown in the tooltip. */
+  /** i18n key of the one-line "what this arrangement is for" (tooltip). */
   hintKey?: string;
-  /** seed this workspace with a declared arrangement the first time it is
-   *  opened. `ide` = editor + Tabular + EMtree/Inspector column; `assets` =
-   *  the two storages side by side with the Inspector/Log column. */
-  arrangement?: "ide" | "assets";
+  /** The windows this tab opens with, and how they are arranged — applied the
+   *  first time the tab is opened and never again (after that the arrangement is
+   *  the user's). Absent = a single window of `windowType`. */
+  arrangement?: Arrangement;
 }
 
 /**
- * WIN3 · leader = WORKSPACE (which set of windows), header = THIS WINDOW (its
- * type and its menus). The DTC preset used to sit here too, and that was the one
- * real duplicate: DTC is a MODE of a graph window, offered in the header's Mode
- * dropdown, so a chip that also switched to it made the same choice reachable at
- * two levels with different meanings.
+ * ARRANGEMENTS · a tab IS a set of windows in a shape.
  *
- * HDR1 · **the IDE arrangement is a WORKSPACE, not a button.** It was a `⌗` in
- * the window bar, which put "which arrangement am I in" one level below where
- * every other arrangement choice lives — and made it an action you performed
- * rather than a place you were. As a tab it is what it always was: a workspace,
- * next to the others, with its own remembered layout.
+ * Declared as data rather than written as a function per tab, because there are
+ * six of them now and they differ only in which existing window types they place
+ * and in what ratio. One builder reads this (`applyArrangement`), so a new tab is
+ * an entry here — not a seventh layout function that can drift from the others.
  *
- * `canvas` keeps its id (now labelled "Graph editing") because the persisted
- * arrangements and the tiling checks are keyed by it.
+ * `win` names are LOCAL to the arrangement: the builder turns them into window
+ * ids prefixed with the workspace, and reuses the workspace's first existing
+ * window as the anchor so a tab that is re-seeded keeps its identity.
  */
+export interface Arrangement {
+  wins: Array<{
+    name: string;
+    type: WindowType;
+    /** per-instance state, e.g. `{ "mode.graph": "dtc" }` */
+    state?: Record<string, unknown>;
+  }>;
+  /** which window has the focus when the tab opens (default: the first) */
+  active?: string;
+  layout: ArrangementNode;
+}
+
+export type ArrangementNode =
+  | { win: string }
+  | { dir: "row" | "col"; ratio: number; a: ArrangementNode; b: ArrangementNode };
+
 /**
- * THE TABS ARE THE PHASES OF THE WORK, in the order the work happens:
+ * THE TABS ARE ARRANGEMENTS. All six of them, one species.
  *
- *   Documentation → Analysis → Comparisons → Output
+ * They used to be two species — four PHASES (`Documentation · Analysis ·
+ * Comparisons · Output`) and two VIEWS (`IDE`, `Table`) with a hairline between
+ * them — and the hairline was the tell: a bar that has to explain why two of its
+ * items are different kinds of thing is answering two questions at once. E.D.'s
+ * decision (2026-08-21): every tab is an arrangement of windows, the way a
+ * Blender workspace is. So:
  *
- * The reframe (E.D., 2026-08-17) is not cosmetic. The tabs used to name
- * SURFACES — "Graph editing", "Table", "Narrative" — so the leader bar answered
- * "which editor am I in" and the phase you were actually in (ingesting?
- * interpreting? comparing? publishing?) was nowhere. A projection is not a
- * phase: the matrix, the graph and the table are three ways of looking at the
- * same interpretation, and they belong INSIDE Analysis as window types and
- * modes, not beside it as peers.
+ * * **IDE** stops being a tab of its own — it WAS the Graph arrangement, and it
+ *   is now what the Graph tab opens: canvas, table underneath, panels beside;
+ * * **Table** stops being a tab — a table is a WINDOW, and it lives in that
+ *   arrangement (and in any other you put it in);
+ * * **DTC** and **Annotator** become tabs, because both are places you work in
+ *   for a while with a particular set of windows around you — which is exactly
+ *   what a tab is now, and neither was reachable without rebuilding the layout
+ *   by hand.
  *
- * `Documentation` keeps the id `assets`: the persisted arrangements, the
- * `arrangement: "assets"` seed and the tiling checks are keyed by it, and
- * renaming an id to match a label would reset every saved layout for a word
- * nobody sees. The label is the part that had to change.
- *
- * IDE and Table stay at the end as **views**, not phases — declared as such
- * (`view: true`) rather than removed: they are arrangements people have in their
- * hands, and taking them away to make a diagram tidier is the kind of change
- * that costs somebody a morning.
+ * The ids of the four that existed are UNCHANGED (`assets`, `canvas`,
+ * `comparisons`, `narrative`): every saved arrangement, every persisted active
+ * window and the tiling checks are keyed by them, and renaming an id to match a
+ * label would reset the user's layouts for a word nobody sees. Labels are the
+ * part that changed — and they are English by default now (see `i18n.ts`).
  */
 const BUILTIN_WORKSPACES: WorkspacePreset[] = [
-  // PHASE 1 · the material comes in: the disk, the room's store, the ingestion
-  // of a lot and the provenance of what was ingested.
-  { id: "assets", labelKey: "ws.documentation", hintKey: "ws.documentationHint",
-    icon: "⬗", windowType: "storage", builtin: true, arrangement: "assets", phase: 1 },
-  // PHASE 2 · the interpretation. Matrix, graph, DTC and the table are its
-  // WINDOWS and its modes — the projections of one study, not four phases.
-  { id: "canvas", labelKey: "ws.analysis", hintKey: "ws.analysisHint",
-    icon: "▦", windowType: "graph", graphMode: "matrix", builtin: true, phase: 2 },
-  // PHASE 3 · comparing with what is not yours: the shelf's three fences
-  // (own-study / own-HDT / other-HDT). The external search that fills it is
-  // deliberately NOT here yet — see the report's follow-up list.
-  { id: "comparisons", labelKey: "ws.comparisons", hintKey: "ws.comparisonsHint",
-    icon: "⇄", windowType: "shelf", builtin: true, phase: 3 },
-  // PHASE 4 · what leaves the study: the narrative, and (later) the exports.
-  { id: "narrative", labelKey: "ws.output", hintKey: "ws.outputHint",
-    icon: "❧", windowType: "narrative", builtin: true, phase: 4 },
-  // …and the two ARRANGEMENTS people already use, kept as views.
-  { id: "ide", labelKey: "ws.ide", icon: "⌗", windowType: "graph", graphMode: "matrix", builtin: true, arrangement: "ide", view: true },
-  { id: "table", labelKey: "ws.table", icon: "▤", windowType: "table", builtin: true, view: true },
+  // 1 · DOCUMENTATION — the material comes in: the disk, the room's store, and
+  // what was just said about what arrived.
+  {
+    id: "assets", labelKey: "ws.documentation", hintKey: "ws.documentationHint",
+    icon: "⬗", windowType: "storage", builtin: true,
+    arrangement: {
+      wins: [
+        { name: "disk", type: "storage", state: { "mode.storage": "filesystem" } },
+        { name: "store", type: "storage", state: { "mode.storage": "minio" } },
+        { name: "inspector", type: "inspector" },
+      ],
+      // the STORE is where the act happens: the tab opens on it
+      active: "store",
+      layout: { dir: "row", ratio: 0.28, a: { win: "disk" },
+                b: { dir: "row", ratio: 0.62, a: { win: "store" },
+                     b: { win: "inspector" } } },
+    },
+  },
+  // 2 · GRAPH — the cockpit of interpretation, and the old IDE arrangement made
+  // concrete: the canvas (matrix/graph are its MODES, not other tabs), the table
+  // across the bottom, and the panels in a column — Outliner is the EMtree
+  // window's second tab, Log the Inspector window's.
+  {
+    id: "canvas", labelKey: "ws.graph", hintKey: "ws.graphHint",
+    icon: "▦", windowType: "graph", graphMode: "matrix", builtin: true,
+    arrangement: {
+      wins: [
+        { name: "canvas", type: "graph", state: { "mode.graph": "matrix" } },
+        { name: "table", type: "table" },
+        { name: "emtree", type: "emtree" },
+        { name: "inspector", type: "inspector" },
+      ],
+      layout: { dir: "row", ratio: 0.72,
+                a: { dir: "col", ratio: 0.68, a: { win: "canvas" },
+                     b: { win: "table" } },
+                b: { dir: "col", ratio: 0.42, a: { win: "emtree" },
+                     b: { win: "inspector" } } },
+    },
+  },
+  // 3 · DTC — provenance: the corpus DAG (acquisitions → derivations →
+  // attributions) is a MODE of a graph window, and this is the arrangement that
+  // gives it the room a DAG needs, with the Inspector beside it.
+  {
+    id: "dtc", labelKey: "ws.dtc", hintKey: "ws.dtcHint",
+    icon: "⌗", windowType: "graph", graphMode: "dtc", builtin: true,
+    arrangement: {
+      wins: [
+        { name: "dag", type: "graph", state: { "mode.graph": "dtc" } },
+        { name: "inspector", type: "inspector" },
+      ],
+      layout: { dir: "row", ratio: 0.74, a: { win: "dag" },
+                b: { win: "inspector" } },
+    },
+  },
+  // 4 · COMPARISONS — what is NOT yours: the shelf's three fences (own-study /
+  // own-HDT / other-HDT), what you are looking at, and what it is.
+  {
+    id: "comparisons", labelKey: "ws.comparisons", hintKey: "ws.comparisonsHint",
+    icon: "⇄", windowType: "shelf", builtin: true,
+    arrangement: {
+      wins: [
+        { name: "shelf", type: "shelf" },
+        { name: "viewer", type: "viewer" },
+        { name: "inspector", type: "inspector" },
+      ],
+      layout: { dir: "row", ratio: 0.46, a: { win: "shelf" },
+                b: { dir: "col", ratio: 0.6, a: { win: "viewer" },
+                     b: { win: "inspector" } } },
+    },
+  },
+  // 5 · NARRATIVE — the telling, and what comes out of it. The story wide, with
+  // a preview beside it for the pictures it points at.
+  {
+    id: "narrative", labelKey: "ws.narrative", hintKey: "ws.narrativeHint",
+    icon: "❧", windowType: "narrative", builtin: true,
+    arrangement: {
+      wins: [
+        { name: "story", type: "narrative" },
+        { name: "viewer", type: "viewer" },
+      ],
+      layout: { dir: "row", ratio: 0.68, a: { win: "story" },
+                b: { win: "viewer" } },
+    },
+  },
+  // 6 · ANNOTATOR — annotating images: the picture with its regions, a preview
+  // to pick the next one from, and the Inspector for what a region became.
+  {
+    id: "annotator", labelKey: "ws.annotator", hintKey: "ws.annotatorHint",
+    icon: "✎", windowType: "annotator", builtin: true,
+    arrangement: {
+      wins: [
+        { name: "annotator", type: "annotator" },
+        { name: "viewer", type: "viewer" },
+        { name: "inspector", type: "inspector" },
+      ],
+      layout: { dir: "row", ratio: 0.62, a: { win: "annotator" },
+                b: { dir: "col", ratio: 0.5, a: { win: "viewer" },
+                     b: { win: "inspector" } } },
+    },
+  },
 ];
 
 const CUSTOM_KEY = "emstudio.workspaces.custom";
@@ -727,92 +816,56 @@ function endMagnification(ws: WorkspaceId): void {
 }
 
 /**
- * WIN6 · the IDE arrangement, built on demand.
+ * Apply a tab's ARRANGEMENT — the one builder, reading the one declaration.
  *
- * Editor in the middle, a column on the right with **EMtree above the
- * Inspector**, and the **Tabular** band cutting across from the left up to that
- * column. It is a PRESET, not a cage: every area is then splittable, joinable
- * and resizable like any other, and the arrangement is persisted as it is left.
+ * There were two of these functions (an "IDE" one and an "assets" one) and the
+ * six tabs would have needed six; they differ only in which existing window
+ * types they place and in what ratio, so the difference is DATA
+ * (`WorkspacePreset.arrangement`) and this is the code.
  *
- * Applied only on request (a menu action or a first run with no saved
- * arrangement), never on top of one the user has already shaped.
+ * A preset, not a cage: every area stays splittable, joinable and resizable, and
+ * the arrangement persists as the user leaves it. Applied only when the tab has
+ * no arrangement of its own yet — never on top of one somebody shaped.
+ *
+ * The workspace's existing first window is REUSED as the anchor (its id and its
+ * remembered state survive), which is what makes re-seeding a tab keep its
+ * identity instead of orphaning the window the rest of the shell is pointing at.
  */
-export function applyDefaultLayout(ws: WorkspaceId = active): void {
+export function applyArrangement(ws: WorkspaceId = active): boolean {
+  const preset = workspacePreset(ws);
+  const spec = preset.arrangement;
+  if (!spec || !spec.wins.length) return false;
   const entry = registry[ws];
-  entry.maxOf = undefined; // the preset IS an arrangement: nothing to come back to
+  entry.maxOf = undefined;   // the arrangement IS the shape: nothing to return to
   entry.saved = undefined;
-  const editor = entry.wins[0] ?? seedWindows(workspacePreset(ws)).wins[0];
-  editor.type = "graph";
-  const tabular: Win = { id: `${ws}:tabular`, type: "table", state: {} };
-  const tree: Win = { id: `${ws}:emtree`, type: "emtree", state: {} };
-  const insp: Win = { id: `${ws}:inspector`, type: "inspector", state: {} };
-  entry.wins = [editor, tabular, tree, insp];
-  entry.activeId = editor.id;
-  entry.layout = {
-    kind: "split",
-    dir: "row",
-    ratio: 0.72,
-    // left: the editor with the Tabular band under it
-    a: {
-      kind: "split",
-      dir: "col",
-      ratio: 0.68,
-      a: { kind: "leaf", winId: editor.id },
-      b: { kind: "leaf", winId: tabular.id },
-    },
-    // right: EMtree above the Inspector
-    b: {
-      kind: "split",
-      dir: "col",
-      ratio: 0.42,
-      a: { kind: "leaf", winId: tree.id },
-      b: { kind: "leaf", winId: insp.id },
-    },
-  };
-  persistWindows();
-}
 
-/**
- * ASSETS · the ingestion arrangement, built on demand.
- *
- * The disk on the left, the room's object store in the middle, and the
- * Inspector/Log column on the right — the three things the act needs in view at
- * once: where the file IS, where it GOES, and what was just said about it.
- *
- * Both left panes are STORAGE windows in different modes, which is the point of
- * that window having modes at all: nothing is rebuilt here, the file browser and
- * the object store are the two backends the window already speaks.
- *
- * A preset, not a cage: every area is splittable, joinable and resizable
- * afterwards, and the arrangement persists as it is left.
- */
-export function applyAssetsLayout(ws: WorkspaceId = active): void {
-  const entry = registry[ws];
-  entry.maxOf = undefined;
-  entry.saved = undefined;
-  const disk = entry.wins[0] ?? seedWindows(workspacePreset(ws)).wins[0];
-  disk.type = "storage";
-  disk.state = { ...disk.state, "mode.storage": "filesystem" };
-  const store: Win = { id: `${ws}:store`, type: "storage",
-                       state: { "mode.storage": "minio" } };
-  const insp: Win = { id: `${ws}:inspector`, type: "inspector", state: {} };
-  entry.wins = [disk, store, insp];
-  // the STORE is the active area: the tab opens on the thing you came to do
-  entry.activeId = store.id;
-  entry.layout = {
-    kind: "split",
-    dir: "row",
-    ratio: 0.28,
-    a: { kind: "leaf", winId: disk.id },
-    b: {
-      kind: "split",
-      dir: "row",
-      ratio: 0.62,
-      a: { kind: "leaf", winId: store.id },
-      b: { kind: "leaf", winId: insp.id },
-    },
+  const anchor = entry.wins[0] ?? seedWindows(preset).wins[0];
+  const byName = new Map<string, Win>();
+  const wins: Win[] = [];
+  spec.wins.forEach((w, i) => {
+    const win: Win = i === 0
+      ? anchor
+      : { id: `${ws}:${w.name}`, type: w.type, state: {} };
+    win.type = w.type;
+    if (w.state) win.state = { ...win.state, ...w.state };
+    byName.set(w.name, win);
+    wins.push(win);
+  });
+  entry.wins = wins;
+  entry.activeId = (spec.active && byName.get(spec.active)?.id) ?? wins[0].id;
+
+  const build = (node: ArrangementNode): Pane => {
+    if ("win" in node) {
+      const win = byName.get(node.win);
+      if (!win) throw new Error(`arrangement names a window it does not declare: ${node.win}`);
+      return { kind: "leaf", winId: win.id };
+    }
+    return { kind: "split", dir: node.dir, ratio: node.ratio,
+             a: build(node.a), b: build(node.b) };
   };
+  entry.layout = build(spec.layout);
   persistWindows();
+  return true;
 }
 
 /** Every window of a workspace, in creation order. */

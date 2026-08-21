@@ -27,6 +27,8 @@
 /** Injected once by `main.ts`, which owns the endpoint precedence. */
 let resolveBridge: (() => Promise<string>) | null = null;
 
+import { t } from "./i18n";
+
 export function setBridgeResolver(fn: () => Promise<string>): void {
   resolveBridge = fn;
 }
@@ -153,7 +155,7 @@ export async function reprojectToWgs84(
   points: [number, number][],
   epsgSource: number,
 ): Promise<{ points: [number, number][] } | { error: string }> {
-  if (!resolveBridge) return { error: "nessun bridge configurato" };
+  if (!resolveBridge) return { error: t("geo.noBridge") };
   try {
     const base = await resolveBridge();
     const res = await fetch(`${base}/reproject`, {
@@ -176,10 +178,10 @@ export async function reprojectToWgs84(
       return { error: detail };
     }
     const j = (await res.json()) as { points?: [number, number][] };
-    if (!j.points?.length) return { error: "risposta senza punti" };
+    if (!j.points?.length) return { error: t("geo.noPoints") };
     return { points: j.points };
   } catch {
-    return { error: "bridge non raggiungibile" };
+    return { error: t("bridge.unreachable") };
   }
 }
 
@@ -221,7 +223,7 @@ export interface PlacedScene {
 export async function georeferenceScene(
   doc: unknown,
 ): Promise<PlacedScene | null | { error: string }> {
-  if (!resolveBridge) return { error: "nessun bridge configurato" };
+  if (!resolveBridge) return { error: t("geo.noBridge") };
   try {
     const base = await resolveBridge();
     const res = await fetch(`${base}/georeference-scene`, {
@@ -258,6 +260,6 @@ export async function georeferenceScene(
       epsgSource: j.epsg_source ?? 4326,
     };
   } catch {
-    return { error: "bridge non raggiungibile" };
+    return { error: t("bridge.unreachable") };
   }
 }

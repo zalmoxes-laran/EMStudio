@@ -11,6 +11,7 @@
 
 import type { DocumentStore } from "./model";
 import { narrativesIn } from "./narrative";
+import { t } from "./i18n";
 import {
   addChapter,
   addEmbed,
@@ -35,7 +36,8 @@ function introText(store: DocumentStore): string {
   // The shift (geo_position) is the 3D anchor and may sit far from the site;
   // it is not "where the site is". Absent = say nothing (no fabricated point).
   const sp = store.readSitePosition();
-  if (sp) bits.push(`(posizione: ${sp.lat.toFixed(4)}, ${sp.lon.toFixed(4)})`);
+  if (sp) bits.push(t("scaffold.position",
+                      { lat: sp.lat.toFixed(4), lon: sp.lon.toFixed(4) }));
   return bits.join(" ");
 }
 

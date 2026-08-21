@@ -21,6 +21,7 @@
  * rebuilds — otherwise editing a paragraph would reload every scene on screen.
  */
 
+import { t } from "./i18n";
 import { onFirstVisible } from "./lazy";
 import { is3dResourceType, resourceTypeOfLocator } from "./rules";
 import { atonBase, atonPreviewUrl, heriverseSceneUrl } from "./settings";
@@ -83,31 +84,21 @@ function fromLocator(locator: string): Resolved3D {
     if (!url)
       return {
         reason: "unconfigured",
-        hint:
-          "la risorsa 3D c'è, ma manca il server ATON: impostalo in " +
-          "Impostazioni → Visualizzatore 3D.",
+        hint: t("em3d.noServer"),
       };
     return { url, via: "aton-preview", label: fileLabel(locator) };
   }
   if (is3d)
     return {
       reason: "not-addressable",
-      hint:
-        `«${fileLabel(locator)}» è un file locale: un visualizzatore web non ` +
-        "può leggerlo dal disco. Portalo nello store condiviso (Risorse → " +
-        "Promote to MinIO) o pubblicalo nella collection ATON.",
+      hint: t("em3d.localFile", { name: fileLabel(locator) }),
     };
   if (locator.startsWith("s3://"))
     return {
       reason: "not-addressable",
-      hint:
-        "la risorsa vive in MinIO: serve un URL firmato per mostrarla in un " +
-        "visualizzatore (Risorse → anteprima).",
+      hint: t("em3d.needsSignedUrl"),
     };
-  return {
-    reason: "no-reference",
-    hint: "questo nodo non porta né una scena né una risorsa 3D.",
-  };
+  return { reason: "no-reference", hint: t("em3d.noReference") };
 }
 
 /**
@@ -151,9 +142,7 @@ function fromNode(node: EmNode): Resolved3D {
     if (!url)
       return {
         reason: "unconfigured",
-        hint:
-          `la scena «${sid}» è dichiarata nel grafo, ma manca il server ATON: ` +
-          "impostalo in Impostazioni → Visualizzatore 3D.",
+        hint: t("em3d.sceneNoServer", { name: sid }),
       };
     return { url, via: "heriverse-scene", label: sid };
   }
@@ -163,10 +152,7 @@ function fromNode(node: EmNode): Resolved3D {
     const hit = fromLocator(locator);
     if (isRef3D(hit) || hit.reason !== "no-reference") return hit;
   }
-  return {
-    reason: "no-reference",
-    hint: "questo nodo non porta né una scena né una risorsa 3D.",
-  };
+  return { reason: "no-reference", hint: t("em3d.noReference") };
 }
 
 // ── the embed ────────────────────────────────────────────────────────────────
@@ -225,13 +211,13 @@ export function create3dEmbed(ref: Ref3D, opts: Embed3DOptions): HTMLElement {
   open.href = ref.url;
   open.target = "_blank";
   open.rel = "noreferrer noopener";
-  open.textContent = "apri a schermo intero ↗";
+  open.textContent = t("em3d.openFull");
   bar.appendChild(open);
   const unload = document.createElement("button");
   unload.type = "button";
   unload.className = "em3d-unload hidden";
-  unload.textContent = "scarica";
-  unload.title = "Libera la memoria del 3D; ricarica quando serve.";
+  unload.textContent = t("em3d.unload");
+  unload.title = t("em3d.unloadTitle");
   bar.appendChild(unload);
   box.appendChild(bar);
   if (opts.note) {
@@ -252,11 +238,9 @@ export function create3dEmbed(ref: Ref3D, opts: Embed3DOptions): HTMLElement {
     p.appendChild(play);
     const label = document.createElement("span");
     label.className = "em3d-poster-label";
-    label.textContent = `Carica il 3D — ${VIA_LABEL[ref.via]}`;
+    label.textContent = t("em3d.load", { via: VIA_LABEL[ref.via] });
     p.appendChild(label);
-    p.title =
-      "Il 3D non è ancora caricato: si scarica solo quando serve, per non " +
-      "aprire un visualizzatore intero per ogni riferimento.";
+    p.title = t("em3d.posterTitle");
     p.addEventListener("click", (e) => {
       e.stopPropagation();
       mount();

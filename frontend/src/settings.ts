@@ -127,7 +127,7 @@ const DEFAULTS: Settings = {
  *  whole generate → attribute → validate path without a network call. */
 export const AI_PROVIDERS: { value: string; label: string }[] = [
   { value: "claude", label: "Claude (Anthropic)" },
-  { value: "echo", label: "Echo — prova locale, senza key" },
+  { value: "echo", label: "Echo — local trial, no key" },   // ALLOW-IT: a provider id/label pair, listed once and shown as-is
 ];
 
 /** Sync targets. `enabled:false` entries render disabled — the host role is a

@@ -24,6 +24,7 @@
  * own row, and leave the other three hundred alone.
  */
 
+import { t } from "./i18n";
 import { create3dEmbed, isRef3D } from "./embed3d";
 import { thumbnailUrl } from "./iiif";
 import { iiifBase } from "./settings";
@@ -97,7 +98,7 @@ export async function fetchPreview(
     }
     return (await res.json()) as PreviewAnswer;
   } catch {
-    return { unresolved: true, error: "bridge non raggiungibile" };
+    return { unresolved: true, error: t("bridge.unreachable") };
   }
 }
 
@@ -244,8 +245,8 @@ function fill(box: HTMLElement, a: PreviewAnswer, opts: ThumbOptions): void {
       // Two characters, because the chip is 52 px wide: the sentence goes in the
       // tooltip, where there is room for it.
       open.textContent = "▶";
-      open.title = `Apri «${ref.label}» nell'anteprima ATON, qui nella riga.`;
-      open.setAttribute("aria-label", `Anteprima 3D di ${ref.label}`);
+      open.title = t("rp.open3dTitle", { name: ref.label });
+      open.setAttribute("aria-label", t("rp.open3dLabel", { name: ref.label }));
       open.addEventListener("click", (e) => {
         e.stopPropagation();
         box.textContent = "";
@@ -261,12 +262,9 @@ function fill(box: HTMLElement, a: PreviewAnswer, opts: ThumbOptions): void {
       if (isRef3D(ref)) box.title = ref.label;
       return;
     }
-    box.appendChild(typedMark(type, a.needs_presign ? "3D · MinIO" : "3D locale"));
-    box.title = a.needs_presign
-      ? "La risorsa è nello store condiviso ma il bridge non può firmare un URL " +
-        "(extra [minio] assente o store non raggiungibile)."
-      : "Un visualizzatore web non legge un file dal disco: promuovi la risorsa " +
-        "in MinIO, oppure pubblicala nella collection ATON.";
+    box.appendChild(typedMark(type,
+      a.needs_presign ? "3D · MinIO" : t("rp.localThreeD")));
+    box.title = a.needs_presign ? t("rp.cannotSign") : t("rp.notAddressable");
     return;
   }
 
@@ -288,9 +286,10 @@ function fill(box: HTMLElement, a: PreviewAnswer, opts: ThumbOptions): void {
     // instead of a broken-image icon.
     img.addEventListener("error", () => {
       box.textContent = "";
-      box.appendChild(typedMark(type, a.media_type?.split("/")[1] ?? "immagine"));
-      box.title = `${label} — il browser non decodifica questo formato ` +
-        `(${a.media_type ?? "?"})`;
+      box.appendChild(typedMark(type,
+        a.media_type?.split("/")[1] ?? t("rp.image")));
+      box.title = t("rp.undecodable",
+                    { label, type: a.media_type ?? "?" });
     });
     img.src = src;
     box.appendChild(img);
@@ -301,15 +300,13 @@ function fill(box: HTMLElement, a: PreviewAnswer, opts: ThumbOptions): void {
   // ── everything else: say what it is ───────────────────────────────────────
   if (a.too_large) {
     box.appendChild(typedMark(type, humanBytes(a.bytes)));
-    box.title =
-      `${label}: oltre il limite per l'anteprima inline (${humanBytes(a.bytes)}). ` +
-      "Serve un ridimensionatore lato bridge (Pillow) per una vera miniatura.";
+    box.title = t("rp.tooLarge", { label, size: humanBytes(a.bytes) });
     return;
   }
   if (a.unresolved) {
     box.classList.add("rp-missing");
-    box.appendChild(typedMark(type, "assente"));
-    box.title = a.hint ?? a.error ?? "questa risorsa non risolve";
+    box.appendChild(typedMark(type, t("rp.absent")));
+    box.title = a.hint ?? a.error ?? t("rp.unresolved");
     return;
   }
   box.appendChild(typedMark(type, a.media_type?.split("/")[1] ?? type));

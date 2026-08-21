@@ -16,6 +16,7 @@
 import type { DocumentStore } from "./model";
 import { narrativeViewTypes } from "./rules";
 import type { EmNode } from "./types";
+import { t } from "./i18n";
 
 export interface EditableBlock {
   block_type: "prose" | "embed";
@@ -112,7 +113,7 @@ export function editChapters(
 // ── chapters ──────────────────────────────────────────────────────────────────
 
 export function addChapter(store: DocumentStore, narrativeId: string,
-                           title = "Nuovo capitolo"): void {
+                           title = t("narr.newChapter")): void {
   editChapters(store, narrativeId, (cs) =>
     cs.push({ title, canonical: false, blocks: [] }));
 }

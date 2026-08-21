@@ -31,6 +31,7 @@
  * would be a second one.
  */
 
+import { t } from "./i18n";
 import { renderNarrativeView } from "./narrative";
 import { mount3dViewer } from "./embed3d-native";
 import { applyTheme, storedMode } from "./theme";
@@ -82,15 +83,11 @@ function documentUrl(): string | null {
 async function load(): Promise<void> {
   const url = documentUrl();
   if (!url) {
-    problem(
-      "Nessuno studio da leggere",
-      "Questa pagina si apre con un link che dice quale studio mostrare.",
-      "Attesi: ?emjson=<url> oppure ?study=<id>&catalog=<url>.",
-    );
+    problem(t("read.noStudy"), t("read.noStudyWhy"), t("read.noStudyHow"));
     return;
   }
 
-  container.appendChild(el("p", "nv-embed-note", "carico lo studio…"));
+  container.appendChild(el("p", "nv-embed-note", t("read.loading")));
 
   const token = params.get("token");
   let res: Response;
@@ -99,8 +96,7 @@ async function load(): Promise<void> {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
   } catch (exc) {
-    problem("Studio irraggiungibile",
-            `Non sono riuscito a scaricare ${url}.`,
+    problem(t("read.unreachable"), t("read.couldNotFetch", { url }),
             String(exc));
     return;
   }
@@ -109,15 +105,13 @@ async function load(): Promise<void> {
     // The visibility rule, from the reader's side: a restricted study is not
     // "broken", it is not published. Saying so is the difference between a
     // reader who logs in and a reader who reports a bug.
-    problem("Studio riservato",
-            "Questo studio non è pubblico: serve un accesso per leggerlo.",
-            "Se hai un token, aggiungilo al link come ?token=…");
+    problem(t("read.restricted"), t("read.restrictedWhy"),
+            t("read.restrictedHow"));
     return;
   }
   if (!res.ok) {
-    problem("Studio non trovato",
-            `Il catalogo ha risposto ${res.status}.`,
-            url);
+    problem(t("read.notFound"),
+            t("read.catalogAnswered", { status: String(res.status) }), url);
     return;
   }
 
@@ -126,9 +120,7 @@ async function load(): Promise<void> {
     const raw = await res.json();
     doc = asDocument(raw);
   } catch (exc) {
-    problem("Documento illeggibile",
-            "Il file scaricato non è un em.json che io sappia leggere.",
-            String(exc));
+    problem(t("read.unreadable"), t("read.unreadableWhy"), String(exc));
     return;
   }
 
@@ -152,11 +144,11 @@ function asDocument(raw: unknown): EmDocument {
     const id = (wanted && wanted in graphs) ? wanted
       : (active && active in graphs) ? active
       : Object.keys(graphs)[0];
-    if (!id) throw new Error("il container non contiene grafi");
+    if (!id) throw new Error(t("read.emptyContainer"));
     return { header: doc["header"] as EmDocument["header"],
              graph: graphs[id] as EmDocument["graph"] };
   }
-  if (!doc["graph"]) throw new Error("nessun grafo nel documento");
+  if (!doc["graph"]) throw new Error(t("read.noGraph"));
   return raw as EmDocument;
 }
 
@@ -183,17 +175,15 @@ function render(doc: EmDocument): void {
                       });
 
   if (!container.textContent?.trim()) {
-    problem("Questo studio non ha una narrativa",
-            "Il documento è stato caricato, ma non contiene capitoli da leggere.");
+    problem(t("read.noNarrative"), t("read.noNarrativeWhy"));
     return;
   }
 
   const footer = el("footer", "nv-standalone-footer");
-  footer.appendChild(el("span", undefined, "StratiGraph · lettura"));
+  footer.appendChild(el("span", undefined, t("read.footer")));
   // The claim this page can make and the export cannot, said out loud: a reader
   // deserves to know whether what they see is current or a frozen copy.
-  footer.appendChild(el("span", "nv-embed-note",
-    "vista viva: i riferimenti sono risolti adesso, sul documento pubblicato"));
+  footer.appendChild(el("span", "nv-embed-note", t("read.liveNote")));
   container.appendChild(footer);
 }
 
