@@ -38,8 +38,12 @@ export const CAPABILITY_LAYERS = {
   document: ["read-graph", "write-graph", "subscribe"],
   /** INTERACTION: the radius of a USER — ephemeral, never in the document */
   interaction: ["link-selection", "presence"],
-  /** ASSETS: bytes in a content-addressed store; the graph points at them */
-  asset: ["attach-asset", "resolve-asset", "materialize-3D", "publish-3D"],
+  /** ASSETS: bytes in a content-addressed store; the graph points at them.
+   *  `resolve-preview` is the thumbnail of the same bytes — its own capability
+   *  because showing a contact sheet without handing over originals is a real
+   *  arrangement, and NOT a weaker gate: an embargo covers the derivative. */
+  asset: ["attach-asset", "resolve-asset", "resolve-preview",
+          "materialize-3D", "publish-3D"],
   /** INGEST: one-shot, and a PROPOSAL (volatile until baked) */
   ingest: ["ingest-batch"],
   /** SEMANTICS: resolve an identifier against an authority */
@@ -58,6 +62,30 @@ export const CONNECTOR_API_VERSION = "1.0.0";
  *  place that knew it was a header field on whatever document happened to be
  *  open. */
 export const EMJSON_SCHEMA_VERSION = "2";
+
+/**
+ * CONSUMERS · the read-only half of the same contract.
+ *
+ * A consumer disseminates: a Heriverse viewer, an ATON scene, a catalogue page.
+ * It reads a published study and shows it, and it writes nothing — which makes
+ * it the other half of the connector idea rather than a special case of it. The
+ * serving rules (rights, tombstones, proposals, the role gate) live in
+ * `s3dgraphy.contract.consumer`, where the study is; what a client owns is
+ * saying WHO is a consumer and what it has actually been granted.
+ *
+ * Subsets of the one closed table, never a second list — `resolve-preview` is
+ * the thumbnail of the same bytes and it is NOT a weaker gate: an embargo covers
+ * a derivative, because a thumbnail of an embargoed photograph is the photograph.
+ */
+export const READ_CAPABILITIES: readonly string[] =
+  ["read-graph", "subscribe", "resolve-asset", "resolve-preview", "resolve-uri"];
+
+/** Everything a consumer may declare: the reads plus the ephemeral pair. A
+ *  cursor and a roster are not reads of the document — they are the radius of a
+ *  person, which is why they are their own layer and why they travel on the
+ *  ephemeral channel rather than through the document one. */
+export const CONSUMER_CAPABILITIES: readonly string[] =
+  [...READ_CAPABILITIES, "link-selection", "presence"];
 
 export type CapabilityLayer = keyof typeof CAPABILITY_LAYERS;
 export type Capability = typeof CAPABILITY_LAYERS[CapabilityLayer][number];
@@ -94,6 +122,11 @@ export interface ConnectorDescriptor {
   versions: ConnectorVersions;
   /** how it attributes what it writes, in one phrase */
   provenance?: string;
+  /** False for a connector that only ever reads. The contract's own word for
+   *  read-only (`Descriptor.writes`), and it was there before consumers were:
+   *  a consumer needs no exemption from the no-author refusal, the refusal
+   *  simply never applies. */
+  writes?: boolean;
   /** the partner's own metadata (an addon version, a build id) */
   vendor?: Record<string, unknown>;
 }
@@ -131,6 +164,39 @@ export function isConnectorDescriptor(value: unknown): value is ConnectorDescrip
  *  for, and swallowing it would turn a version problem into a dead button. */
 export function unknownCapabilities(d: ConnectorDescriptor): string[] {
   return d.capabilities.filter((c) => !CAPABILITIES.includes(c));
+}
+
+/**
+ * Does this connector only ever read?
+ *
+ * Declared, not inferred from a name: `heriverse` is a consumer because of what
+ * it asks for, and a viewer that grows an annotation write-back tomorrow stops
+ * being one the moment it says so. Same predicate as
+ * `s3dgraphy.contract.consumer.is_consumer`, so a peer is the same kind of thing
+ * on both sides of the socket.
+ */
+export function isConsumer(d: ConnectorDescriptor): boolean {
+  return d.capabilities.length > 0
+    && !d.capabilities.some((c) => WRITING_CAPABILITIES.includes(c));
+}
+
+/**
+ * A descriptor that contradicts itself, in one sentence — or null.
+ *
+ * The one contradiction that matters: `writes: false` beside a capability that
+ * writes. The Python constructor RAISES on it (a descriptor is validated where it
+ * is built), and this is the same refusal on the wire, where a partner's build
+ * can send what our dataclass would never construct. Refused rather than
+ * repaired: guessing which half the partner meant would either silence a real
+ * write or offer an affordance that fails at the seam.
+ */
+export function descriptorContradiction(d: ConnectorDescriptor): string | null {
+  const writing = d.capabilities.filter((c) => WRITING_CAPABILITIES.includes(c));
+  if (d.writes === false && writing.length)
+    return `«${d.name}» declares ${writing.join(", ")} and writes:false — one of `
+      + `the two is wrong, and with writes:false the author refusal would never `
+      + `fire`;
+  return null;
 }
 
 /** capabilities grouped by layer — what the UI lists. */
@@ -257,7 +323,12 @@ export class ConnectorRegistry {
     at?: number;
   }): ConnectorState | null {
     if (!isConnectorDescriptor(descriptor)) return null;
-    const verdict = handshake(descriptor, options.ours);
+    // A self-contradiction is answered BEFORE the version question: telling a
+    // partner their datamodel is stale when the real problem is that their
+    // descriptor cannot mean anything sends them to read the wrong table.
+    const wrong = descriptorContradiction(descriptor);
+    const verdict = wrong ? { ok: false, reason: wrong, report: {} }
+                          : handshake(descriptor, options.ours);
     const state: ConnectorState = {
       descriptor,
       transport: options.transport ?? descriptor.transport[0] ?? "direct",
@@ -308,6 +379,41 @@ export class ConnectorRegistry {
 
   can(capability: string): boolean {
     return this.providers(capability).length > 0;
+  }
+
+  /**
+   * What this connector has actually been GRANTED here — declared ∩ allowed.
+   *
+   * What the registry SHOWS, and the reason it is not a field on the descriptor:
+   * what a connector declared is a promise it made, what it may do is a decision
+   * somebody else took. A viewer's connector that declared `write-graph` is
+   * listed with the reads and without the write — no drama at the door, and no
+   * write. Mirrors `s3dgraphy.contract.consumer.granted`.
+   */
+  granted(name: string): string[] {
+    const state = this.byName.get(name);
+    if (!state || state.status !== "accepted") return [];
+    return state.descriptor.capabilities.filter(
+      (c) => !WRITING_CAPABILITIES.includes(c) || state.can_write !== false);
+  }
+
+  /** The accepted connectors that only ever read — who this session is SERVING
+   *  rather than collaborating with. */
+  consumers(): ConnectorState[] {
+    return this.list().filter((s) => s.status === "accepted"
+                                     && isConsumer(s.descriptor));
+  }
+
+  /**
+   * Who asked to be told when the study changes.
+   *
+   * The list that makes `subscribe` more than a word: the changes travel on the
+   * EXISTING channel (`sync.ts`'s op frames, rebroadcast by the host or the
+   * room), so a subscriber is not a new transport — it is somebody whose
+   * presence means the op stream must actually leave this client.
+   */
+  subscribers(): ConnectorState[] {
+    return this.providers("subscribe");
   }
 
   /** The session's mode, derived. */

@@ -64,6 +64,7 @@ import {
   CONNECTOR_API_VERSION,
   ConnectorRegistry,
   EMJSON_SCHEMA_VERSION,
+  isConsumer,
   unknownCapabilities,
 } from "./connectors";
 import type { ConnectorVersions } from "./connectors";
@@ -665,11 +666,36 @@ function announceConnector(info: HostInfo,
     toast(t("conn.refused", { name, why: state.reason ?? "" }));
     return;
   }
-  logInfo(t("conn.accepted", { name,
-                               caps: state.descriptor.capabilities.join(", ") }));
+  // A CONSUMER is said differently, because it is a different relationship: a
+  // Heriverse viewer is being SERVED a published study, not collaborating on
+  // one. And what is listed is what it was GRANTED — a connector that declared
+  // more than the role allows is shown with what it actually has.
+  const caps = connectors.granted(state.descriptor.name).join(", ");
+  logInfo(t(isConsumer(state.descriptor) ? "conn.consumer" : "conn.accepted",
+            { name, caps }));
   const unknown = unknownCapabilities(state.descriptor);
   if (unknown.length)
     logWarn(t("conn.unknownCaps", { name, caps: unknown.join(", ") }));
+  warnStarvedSubscribers();
+}
+
+/**
+ * Somebody subscribed, and nothing is leaving. Said, not swallowed.
+ *
+ * `subscribe` rides the EXISTING op channel — no new transport was built for it
+ * (`connectors.ts`) — which means the sync direction governs it: in `off` or
+ * `receive` the ops do not leave this client, and a subscribed viewer would show
+ * a study that never moves. That looks exactly like a broken viewer, so the one
+ * thing this client owes is the sentence.
+ */
+function warnStarvedSubscribers(): void {
+  const dir = sync.syncDirection;
+  if (dir === "send" || dir === "both") return;
+  for (const state of connectors.subscribers())
+    logWarn(t("conn.starved", {
+      name: state.descriptor.description || state.descriptor.name,
+      dir: t(`sync.dir.${dir}`),
+    }));
 }
 function renderSidecarDetail(): void {
   const segs: { k: string; v: string }[] = [];
@@ -759,6 +785,9 @@ function setSyncDirection(direction: SyncDirection): void {
   sync.setDirection(direction);
   renderSyncControl();
   logInfo(t("sync.dirLogged", { dir: t(`sync.dir.${direction}`) }));
+  // …and if a consumer is subscribed, turning the stream off is exactly the
+  // moment to say what it means for them
+  warnStarvedSubscribers();
 }
 
 const SYNC_GLYPHS: Record<SyncDirection, string> = {
@@ -1097,6 +1126,15 @@ window.__EM_SCENE__ = () => {
     })),
     canWriteGraph: connectors.can("write-graph"),
     canMaterialize: connectors.can("materialize-3D"),
+    // the outgoing half: who is being SERVED, what they were granted, and
+    // whether the changes they subscribed to are actually leaving
+    consumers: connectors.consumers().map((s) => ({
+      name: s.descriptor.name, transport: s.transport, role: s.role,
+      granted: connectors.granted(s.descriptor.name),
+      declared: s.descriptor.capabilities,
+    })),
+    subscribers: connectors.subscribers().map((s) => s.descriptor.name),
+    syncDirection: sync.syncDirection,
   });
 
 window.__EM_DOCS__ = () => {

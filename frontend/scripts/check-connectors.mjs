@@ -242,4 +242,174 @@ print(json.dumps(m.descriptor(accepts_commands=True)))
   }
 }
 
+// ── 7 · the capability table IS the library's table ────────────────────────
+//
+// Vendored on purpose (ADR-001's rule for the datamodels) — which is only safe if
+// somebody notices when the copy drifts. So it is compared, not trusted: the
+// Python table is the source, and this asks it.
+{
+  const s3d = new URL("../../../s3Dgraphy/src", import.meta.url).pathname;
+  if (!existsSync(s3d)) {
+    console.log("connectors: s3Dgraphy not in this checkout — "
+                + "the capability-parity case was SKIPPED (declared)");
+  } else {
+    let table = null;
+    try {
+      table = JSON.parse(execFileSync("python3", ["-c", `
+import json, sys
+sys.path.insert(0, "${s3d}")
+from s3dgraphy.contract import CAPABILITY_LAYERS, CONSUMER_CAPABILITIES, \
+    READ_CAPABILITIES, WRITING_CAPABILITIES
+print(json.dumps({"layers": {k: list(v) for k, v in CAPABILITY_LAYERS.items()},
+                  "consumer": list(CONSUMER_CAPABILITIES),
+                  "read": list(READ_CAPABILITIES),
+                  "writing": list(WRITING_CAPABILITIES)}))
+`], { encoding: "utf8" }));
+    } catch (err) {
+      console.log("connectors: could not ask the library — the capability-parity "
+                  + "case was SKIPPED (declared): " + String(err).split("\n")[0]);
+    }
+    if (table) {
+      eq(Object.fromEntries(Object.entries(C.CAPABILITY_LAYERS)
+           .map(([k, v]) => [k, [...v]])),
+         table.layers,
+         "parity · the capability table is the library's, layer for layer");
+      eq([...C.CONSUMER_CAPABILITIES], table.consumer,
+         "parity · …and so is what a consumer may declare");
+      eq([...C.READ_CAPABILITIES], table.read, "parity · …and the reads");
+      eq([...C.WRITING_CAPABILITIES].sort(), [...table.writing].sort(),
+         "parity · …and the ones a role has to allow");
+    }
+  }
+}
+
+// ── 8 · a CONSUMER: served, listed with what it was granted, never a writer ──
+{
+  const s3d = new URL("../../../s3Dgraphy/src", import.meta.url).pathname;
+  /** The Heriverse reference descriptor — read from the library, which is where
+   *  the spec 3DR implements against lives. Hand-typing it here would let this
+   *  check keep passing after the spec moved. */
+  let heriverse = null;
+  if (existsSync(s3d)) {
+    try {
+      heriverse = JSON.parse(execFileSync("python3", ["-c", `
+import json, sys
+sys.path.insert(0, "${s3d}")
+from s3dgraphy.contract import heriverse_wire
+print(json.dumps(heriverse_wire()))
+`], { encoding: "utf8" }));
+    } catch (err) {
+      console.log("connectors: could not read the reference descriptor — the "
+                  + "consumer cases run on the local copy instead (declared): "
+                  + String(err).split("\n")[0]);
+    }
+  }
+  // The local stand-in, used when the library is not in this checkout. Same
+  // shape, and the parity case above is what keeps it honest.
+  heriverse = heriverse ?? {
+    name: "heriverse", description: "Heriverse · web viewer (3D-ResearchLab)",
+    host: "app-side", transport: ["cloud", "lan"],
+    capabilities: ["read-graph", "subscribe", "resolve-asset", "resolve-preview",
+                   "resolve-uri", "link-selection", "presence"],
+    versions: { ...OURS }, provenance: "none", writes: false,
+  };
+  const viewer = { ...heriverse, versions: { ...OURS } };
+
+  ok(C.isConnectorDescriptor(viewer),
+     "consumer · the reference descriptor is one this client can read");
+  eq(C.unknownCapabilities(viewer), [],
+     "consumer · every capability it declares is in this build's set");
+  eq(C.isConsumer(viewer), true, "consumer · …and every one of them is a read");
+  eq(Object.keys(C.layersOf(viewer)).sort(),
+     ["asset", "document", "interaction", "semantic"],
+     "consumer · the four layers a viewer acts on");
+
+  const reg = new C.ConnectorRegistry();
+  const state = reg.announce(viewer, { ours: OURS, transport: "cloud",
+                                       role: "viewer", canWrite: false });
+  eq(state.status, "accepted", "consumer · it is accepted, not merely tolerated");
+  eq(reg.mode(), "hub", "mode · a consumer arrives through a room");
+  eq(reg.consumers().map((s) => s.descriptor.name), ["heriverse"],
+     "registry · who is being SERVED");
+  eq(reg.subscribers().map((s) => s.descriptor.name), ["heriverse"],
+     "registry · …and who asked to be told when the study changes");
+  eq(reg.granted("heriverse"), viewer.capabilities,
+     "registry · a consumer is granted exactly what it declared");
+  eq(reg.providers("write-graph"), [],
+     "registry · and it is nobody's provider for a write");
+
+  // the GREEDY one: it declared a write. The room said viewer, so the write is
+  // not granted — no refusal, no drama, and no write
+  const greedy = { ...viewer, writes: true,
+                   capabilities: [...viewer.capabilities, "write-graph"] };
+  const reg2 = new C.ConnectorRegistry();
+  reg2.announce(greedy, { ours: OURS, transport: "cloud", role: "viewer",
+                          canWrite: false });
+  eq(reg2.list()[0].status, "accepted",
+     "consumer · an ambitious descriptor is not a refusal");
+  eq(reg2.granted("heriverse").includes("write-graph"), false,
+     "consumer · …but the write it declared is NOT granted");
+  eq(reg2.granted("heriverse").includes("read-graph"), true,
+     "consumer · …and the reads still are");
+  eq(reg2.providers("write-graph"), [],
+     "consumer · a viewer does not write, whatever it declared");
+  eq(C.isConsumer(greedy), false,
+     "consumer · it stopped being one the moment it said so");
+
+  // …and the one contradiction that IS refused, in the same words the Python
+  // constructor raises: writes:false beside a capability that writes
+  const impossible = { ...viewer, capabilities: [...viewer.capabilities,
+                                                 "write-graph"] };
+  ok(C.descriptorContradiction(impossible),
+     "consumer · writes:false beside write-graph is a contradiction");
+  const reg3 = new C.ConnectorRegistry();
+  const refused = reg3.announce(impossible, { ours: OURS, transport: "cloud" });
+  eq(refused.status, "refused",
+     "consumer · …and it is refused rather than repaired");
+  ok(/writes:false/.test(refused.reason) && /never fire/.test(refused.reason),
+     "consumer · …with the reason a partner can act on");
+  eq(reg3.providers("read-graph"), [],
+     "consumer · a refused peer provides nothing, not even its reads");
+  eq(C.descriptorContradiction(viewer), null,
+     "consumer · and the honest descriptor contradicts nothing");
+}
+
+// ── 9 · the app SAYS it, at both moments ───────────────────────────────────
+//
+// `subscribe` rides the existing op channel, which means the sync direction
+// governs it: in `off` or `receive` nothing leaves this client and a subscribed
+// viewer shows a study that never moves — indistinguishable, from over there,
+// from a broken viewer. So the sentence is owed at two moments, and a source
+// check is the only thing that can hold a caller (the logic lives in `main.ts`,
+// which does not load outside a browser).
+{
+  const main = readFileSync(new URL("../src/main.ts", import.meta.url).pathname,
+                            "utf8");
+  ok(/function warnStarvedSubscribers\(\)/.test(main),
+     "app · the warning exists");
+  // …when a connector announces itself
+  const announce = main.slice(main.indexOf("function announceConnector"),
+                              main.indexOf("function warnStarvedSubscribers"));
+  ok(/warnStarvedSubscribers\(\);/.test(announce),
+     "app · …said when a subscriber arrives");
+  // …and when somebody turns the stream off, which is the other half: the
+  // subscriber was already there and nothing announces itself twice
+  const direction = main.slice(main.indexOf("function setSyncDirection"),
+                               main.indexOf("const SYNC_GLYPHS"));
+  ok(/warnStarvedSubscribers\(\);/.test(direction),
+     "app · …and when the direction changes under one");
+  // a consumer is SAID differently from a collaborator, and what is listed is
+  // what it was GRANTED rather than what it declared
+  ok(/isConsumer\(state\.descriptor\) \? "conn\.consumer"/.test(main),
+     "app · a consumer is announced as a consumer");
+  ok(/connectors\.granted\(state\.descriptor\.name\)/.test(main),
+     "app · …and listed with what it was granted");
+  // the two sentences exist in both languages (parity itself is check-i18n's)
+  const i18n = readFileSync(new URL("../src/i18n.ts", import.meta.url).pathname,
+                            "utf8");
+  for (const key of ["conn.consumer", "conn.starved"])
+    eq((i18n.match(new RegExp(`"${key.replace(".", "\\.")}":`, "g")) || []).length,
+       2, `app · «${key}» is written in both languages`);
+}
+
 console.log(`connectors: ${checks} checks passed`);
