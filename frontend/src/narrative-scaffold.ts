@@ -21,9 +21,18 @@ import {
   toggleCanonical,
 } from "./narrative-edit";
 
-/** Prose the scaffolder writes — reads as "not written yet", exactly as the
- *  s3Dgraphy scaffolder's placeholders do. */
-const PLACEHOLDER = "«da scrivere»";
+/**
+ * Prose the scaffolder writes — it reads as "not written yet", exactly as the
+ * s3Dgraphy scaffolder's placeholders do.
+ *
+ * A FUNCTION and not a constant, and that is the distinction this whole module
+ * turns on: what the scaffolder writes becomes **content in the em.json**, so it
+ * is generated in the language of the moment and then belongs to the author. A
+ * constant evaluated at module load would freeze whatever the locale was when the
+ * bundle started, which is how "Introduzione" survived an app that had otherwise
+ * gone English.
+ */
+const placeholder = (): string => t("scaffold.placeholder");
 
 function siteName(store: DocumentStore): string {
   const g = store.doc.graph as Record<string, unknown>;
@@ -31,7 +40,7 @@ function siteName(store: DocumentStore): string {
 }
 
 function introText(store: DocumentStore): string {
-  const bits = [`${siteName(store)} — ${PLACEHOLDER}`];
+  const bits = [`${siteName(store)} — ${placeholder()}`];
   // GEO1: the SITE POSITION (symbolic lon/lat, graph-scope) — NOT the shift.
   // The shift (geo_position) is the 3D anchor and may sit far from the site;
   // it is not "where the site is". Absent = say nothing (no fabricated point).
@@ -63,7 +72,12 @@ export function scaffoldNarrativeFromGraph(store: DocumentStore): string | null 
       data: { chapters: [], template_id: "ts_scaffold" },
     });
     // 0 · intro, marked canonical (settled) so a future regeneration leaves it.
-    addChapter(store, nid, "Introduzione");
+    //
+    // The title is CONTENT: generated now, in the current language, and after
+    // that it is the author's — renaming it is an edit, and switching locale
+    // later does NOT rewrite it (rewriting somebody's chapter title because they
+    // changed the UI language would be an edit nobody asked for).
+    addChapter(store, nid, t("scaffold.intro"));
     toggleCanonical(store, nid, 0); // false → true
     addProse(store, nid, 0, introText(store));
     // 1..n · one chapter per epoch, oldest first, anchored + default embed.
@@ -116,5 +130,5 @@ function addEpochChapterAt(
   setChapterAnchor(store, narrativeId, index, epochId);
   // default embed = the epoch's matrix slice (defaultViewType(EpochNode) → "matrix").
   addEmbed(store, narrativeId, index, epochId, defaultViewType(ep));
-  addProse(store, narrativeId, index, PLACEHOLDER);
+  addProse(store, narrativeId, index, placeholder());
 }

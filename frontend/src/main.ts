@@ -7691,7 +7691,7 @@ function markChapterGenerating(chapterIndex: number, title: string): void {
   line.className = "nv-generating-line";
   line.innerHTML = '<span class="nv-spinner"></span>';
   line.appendChild(document.createTextNode(
-    ` genero la bozza di «${title}» — il modello sta scrivendo…`));
+    " " + t("ai.generatingLine", { title })));
   section.appendChild(line);
 }
 
@@ -7721,7 +7721,8 @@ async function generateChapterDraft(narrativeId: string,
   let reached = false;   // did we get an answer at all, or never leave the room?
   refreshNarrativeView();
   refreshAiKeyStateIfOpen();   // Settings may be open: lock the key controls
-  toast(`Genero la bozza di «${chapter?.title ?? activityId}»…`);
+  toast(t("ai.generatingToast",
+          { title: chapter?.title ?? activityId }));
   // …AND IN THE CHAPTER ITSELF. A model takes seconds; a toast that has faded
   // leaves somebody staring at an unchanged paragraph wondering whether they
   // actually clicked. The mark sits where the prose will appear, and it is
@@ -7765,8 +7766,9 @@ async function generateChapterDraft(narrativeId: string,
     }
     const result = (await res.json()) as DraftResult;
     nauth.applyGeneratedDraft(store, result, activityId);
-    toast(`Bozza di ${result.model || result.provider} inserita — ` +
-          `non avallata (${result.pending_validation} in attesa)`);
+    toast(t("ai.draftInserted",
+                { by: result.model || result.provider,
+                  n: String(result.pending_validation) }));
   } catch (e) {
     // A fetch that never reached the bridge says "Failed to fetch", which tells
     // the user nothing they can act on. The actionable fact is that the bridge
@@ -7802,7 +7804,7 @@ function narrativeEditor(narrativeId: string): NarrativeEditor {
     // follow-up, button stays disabled until it exists.
     canRegenerate: () => false,
     regenerateViaBridge: () =>
-      toast("Rigenera bozza completa: endpoint bridge site_story non ancora disponibile (follow-up)"),
+      toast(t("ai.regenerateUnavailable")),
     renameChapter: (i, t) => nedit.renameChapter(s, narrativeId, i, t),
     moveChapter: (i, d) => nedit.moveChapter(s, narrativeId, i, d),
     deleteChapter: (i) => nedit.deleteChapter(s, narrativeId, i),
@@ -12414,7 +12416,12 @@ function buildAreaHeader(win: Win, active: boolean): DocumentFragment {
     dd.className = "dropdown win-menu";
     const toggle = document.createElement("button");
     toggle.className = "dd-toggle win-menu-toggle";
-    toggle.innerHTML = `${menu.label} <span class="win-type-caret">▾</span>`;
+    // the label is a KEY, resolved HERE — so rebuilding the bar (which a locale
+    // change does) re-reads the dictionary. Resolved in the registry instead, it
+    // froze the language the bundle started in: measured after a live switch, the
+    // tabs and the master header moved and this bar still said Chapter · Insert.
+    toggle.innerHTML = `${escapeHtml(t(menu.label))} `
+      + `<span class="win-type-caret">▾</span>`;
     const list = document.createElement("div");
     list.className = "dd-menu hidden";
     // built on OPEN, so ✓ and disabled reasons are current every time
@@ -12423,7 +12430,7 @@ function buildAreaHeader(win: Win, active: boolean): DocumentFragment {
       for (const item of menu.items()) {
         const b = document.createElement("button");
         const reason = item.disabledReason?.() ?? null;
-        b.textContent = (item.checked?.() ? "✓ " : "") + item.label;
+        b.textContent = (item.checked?.() ? "✓ " : "") + t(item.label);
         if (reason) {
           // NO MUTE NO-OP. A `disabled` button was the whole of "most of the
           // buttons don't work": it swallows the click (so the menu does not
@@ -12979,7 +12986,7 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
         );
         return [
           {
-            label: t("menu.relayout"),
+            label: "menu.relayout",
             run: () => click("btn-layout"),
             disabledReason: () =>
               mode === "matrix"
@@ -12998,7 +13005,7 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
       // t("menu.chapter") means. Adding one is not an operation on the current chapter,
       // and it has two homes that suit it — the narrative palette (always) and
       // the "+ capitolo" at the end of the story (while writing).
-      label: t("menu.chapter"),
+      label: "menu.chapter",
       items: () => {
         const narr = activeNarrative();
         const ci = validCurrentChapter();
@@ -13010,7 +13017,7 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
               : null;
         return [
           {
-            label: t("menu.deleteChapter"),
+            label: "menu.deleteChapter",
             run: () => {
               if (!store || !narr || ci == null) return;
               nedit.deleteChapter(store, narr.id, ci);
@@ -13020,7 +13027,7 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
             disabledReason: noChapter,
           },
           {
-            label: t("menu.moveUp"),
+            label: "menu.moveUp",
             run: () => {
               if (!store || !narr || ci == null) return;
               nedit.moveChapter(store, narr.id, ci, -1);
@@ -13029,7 +13036,7 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
             disabledReason: () => noChapter() ?? (ci === 0 ? t("menu.alreadyFirst") : null),
           },
           {
-            label: t("menu.moveDown"),
+            label: "menu.moveDown",
             run: () => {
               if (!store || !narr || ci == null) return;
               nedit.moveChapter(store, narr.id, ci, 1);
@@ -13043,7 +13050,7 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
       },
     },
     {
-      label: t("menu.insert"),
+      label: "menu.insert",
       items: () => {
         const narr = activeNarrative();
         const ci = validCurrentChapter();
@@ -13085,7 +13092,7 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
         };
         return [
           {
-            label: t("menu.siteMap"),
+            label: "menu.siteMap",
             run: () => store && insert("map", store.ensureGraphRootId()),
             disabledReason: needChapter,
           },
@@ -13115,14 +13122,14 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
       // writing the thing they want to export. Same call, same bake, offered
       // where the story is (the File entry stays: a project-level export belongs
       // in the project menu too).
-      label: t("menu.export"),
+      label: "menu.export",
       items: () =>
         Object.entries(NARRATIVE_FORMATS).map(([format, spec]) => ({
           // LaTeX says it comes as an archive: with figures a `.tex` cannot be
           // one file, and a download that changes kind without warning is one
           // somebody double-clicks and gets nothing.
-          label: spec.label + (format === "ipynb" ? " (vivo)"
-            : format === "latex" ? " + figure (.zip)" : ""),
+          label: spec.label + (format === "ipynb" ? " " + t("menu.exportLive")
+            : format === "latex" ? " " + t("menu.exportZip") : ""),
           run: () => void exportNarrative(format),
           disabledReason: () =>
             !store
@@ -13133,13 +13140,13 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
         })),
     },
     {
-      label: "IA",
+      label: "menu.ai",
       items: () => {
         const narr = activeNarrative();
         const ci = validCurrentChapter();
         return [
           {
-            label: t("menu.regenChapter"),
+            label: "menu.regenChapter",
             run: () => {
               if (!narr || ci == null) return;
               void generateChapterDraft(narr.id, ci);
@@ -13155,7 +13162,7 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
             // The one thing a failed generation needs next: where the key goes.
             // In the menu rather than only in the error, so it can be found
             // BEFORE the first refusal.
-            label: t("menu.aiProvider"),
+            label: "menu.aiProvider",
             run: () => openSettings("settings-sect-ai"),
           },
         ];
@@ -13168,7 +13175,7 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
   // the reason WIN4 dissolved the "Vista" menu next to the Mode selector.
   table: [
     {
-      label: t("menu.rows"),
+      label: "menu.rows",
       items: () => [
         {
           // FOCUS-NOJITTER · calls the mutator directly. It used to click a
@@ -13176,7 +13183,7 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
           // the FOCUSED window's head, which is what made the head change size
           // on every focus change. The head has no buttons now; this menu is
           // where a command on this window lives.
-          label: t("menu.addRow"),
+          label: "menu.addRow",
           run: () => {
             if (!store) return;
             if (!addEmDataRow(store))
@@ -13195,7 +13202,7 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
               : t("menu.claimsFromSheet"),
         },
         {
-          label: t("menu.deleteRow"),
+          label: "menu.deleteRow",
           run: () => {
             const id = currentRowId();
             if (!store || !id) return;
@@ -13220,7 +13227,7 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
   // selection again — is here because there is no other way back.
   viewer: [
     {
-      label: t("menu.collection"),
+      label: "menu.collection",
       items: () => {
         const win = activeWin();
         const pinned = !!winCurrent(win, "collection");
@@ -13263,10 +13270,10 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
   // only thing left to command is the region being traced.
   annotator: [
     {
-      label: t("menu.region"),
+      label: "menu.region",
       items: () => [
         {
-          label: t("menu.cancelRegion"),
+          label: "menu.cancelRegion",
           disabled: annotatorDraft ? undefined : t("menu.noRegionInProgress"),
           run: () => {
             annotatorDraft = null;

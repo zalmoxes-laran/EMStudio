@@ -157,6 +157,24 @@ function el(tag: string, cls?: string, text?: string): HTMLElement {
 /** Minimal markdown: paragraphs, **bold**, *italic*, `code`. Enough for prose
  *  written in a text box, and small enough not to need a dependency or a
  *  sanitiser — the input is escaped first, so no markup can come through. */
+/**
+ * Prose a scaffolder wrote and nobody has replaced yet.
+ *
+ * The Italian in this pattern is NOT text this app shows — it is the shape of
+ * DATA another tool writes: s3Dgraphy's `site_story` template fills prose with
+ * `PLACEHOLDER = "[da scrivere: {what}]"`, and a document scaffolded there arrives
+ * carrying it. Recognising somebody else's marker means matching what they
+ * actually wrote, in the language they wrote it in.
+ *
+ * The client scaffolder's own placeholder goes through `t()` and is therefore in
+ * the reader's language; both are matched, so a story looks unwritten whichever
+ * side laid it out. (Making the Python side language-aware is the declared next
+ * step — see the report; when it lands, its localised marker is one alternative
+ * in this pattern.)
+ */
+const UNWRITTEN_PROSE =
+  /^\s*(?:\[da scrivere:|«da scrivere»|«to be written»)/;  // ALLOW-IT: foreign data
+
 function renderProse(text: string): HTMLElement {
   const wrap = el("div", "nv-prose");
   for (const para of text.split(/\n{2,}/)) {
@@ -171,9 +189,9 @@ function renderProse(text: string): HTMLElement {
       .replace(/\*([^*]+)\*/g, "<em>$1</em>")
       .replace(/`([^`]+)`/g, "<code>$1</code>")
       .replace(/\n/g, "<br>");
-    // Placeholder prose from the scaffolder reads as unwritten, and should
-    // look it: the author needs to see at a glance what is still to do.
-    if (/^\s*\[da scrivere:/.test(para)) p.classList.add("nv-todo");
+    // Placeholder prose from a scaffolder reads as unwritten, and should look
+    // it: the author needs to see at a glance what is still to do.
+    if (UNWRITTEN_PROSE.test(para)) p.classList.add("nv-todo");
     wrap.appendChild(p);
   }
   return wrap;
@@ -331,9 +349,7 @@ function mapCard(node: EmNode, options: Record<string, unknown>,
       el("div", "nv-embed-title", t("nv.anchorNoCoords")),
     );
     box.appendChild(
-      el("div", "nv-embed-note",
-        "un GeoPositionNode con shift_x / shift_y (o lat / lon) mostra qui la " +
-        "mappa e il punto."),
+      el("div", "nv-embed-note", t("nv.geoNodeHint")),
     );
     return box;
   }
@@ -597,10 +613,13 @@ function renderEmbed(
 // node style, the endorsement badge takes AUTH — so the story and the canvas
 // say "author" in the same colour. Nothing here is a second palette.
 
-const STATUS_LABEL: Record<BlockStatus, string> = {
+/** status → the dictionary KEY of its badge. Keys and not words, resolved at
+ *  render time: a badge is rendered chrome, so it follows the current language
+ *  (a constant of words would freeze the locale the bundle started in). */
+const STATUS_LABEL_KEY: Record<BlockStatus, string> = {
   human: "",                     // a person wrote it; nothing to announce
-  ai_draft: "bozza AI",
-  ai_endorsed: "avallata",
+  ai_draft: "nv.statusAiDraft",
+  ai_endorsed: "nv.statusEndorsed",
 };
 
 /**
@@ -625,7 +644,8 @@ function provenanceStrip(
   const human = nodeStyle("author");
   const strip = el("div", "nv-prov");
 
-  const badge = el("span", "nv-prov-badge", STATUS_LABEL[status]);
+  const key = STATUS_LABEL_KEY[status];
+  const badge = el("span", "nv-prov-badge", key ? t(key) : "");
   const style = status === "ai_endorsed" ? human : ai;
   badge.style.background = style.fill;
   badge.style.borderColor = style.border;
@@ -645,8 +665,8 @@ function provenanceStrip(
     if (typeof v === "string" && v) {
       const chip = el("span", "nv-prov-dim", v);
       chip.title = key === "generated_at"
-        ? "Quando è stata generata"
-        : "Versione del modello";
+        ? t("nv.whenGenerated")
+        : t("nv.modelVersion");
       strip.appendChild(chip);
     }
   }
@@ -885,7 +905,7 @@ export function renderNarrativeView(
   const declared = narrativeAuthors(doc, current.id);
 
   const byline = el("div", "nv-authors");
-  byline.appendChild(el("span", "nv-authors-label", "a cura di"));
+  byline.appendChild(el("span", "nv-authors-label", t("nv.curatedBy")));
   if (!responsible.length)
     byline.appendChild(el("span", "nv-prov-dim nv-prov-missing",
       t("nv.noResponsible")));
@@ -937,9 +957,7 @@ export function renderNarrativeView(
     help.appendChild(el("span", "nv-authors-label", t("nv.assistedBy")));
     for (const a of assisted) {
       const chip = authorChip(a, true);
-      chip.title =
-        "Modello che ha scritto del testo. Non può avallarlo: " +
-        "un modello che garantisce per un modello non è una validazione.";
+      chip.title = t("nv.assistingModelTitle");
       if (editor && declared.some((d) => d.id === a.id))
         chip.appendChild(chipRemove(a, () => editor.removeAuthor(a.id)));
       help.appendChild(chip);

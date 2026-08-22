@@ -319,7 +319,8 @@ export function epochStart(e: EmNode): number {
 export function matrixEmbed(node: EmNode, doc: EmDocument | null): HTMLElement {
   const b = box("matrix", nameOf(node), "nv-matrix");
   const scope = scopeOf(node, doc);
-  b.appendChild(el("div", "nv-embed-note", `matrice · ${scope.what}`));
+  b.appendChild(el("div", "nv-embed-note",
+                    t("nv.capMatrix", { what: scope.what })));
   if (!scope.units.length) {
     // SAY WHICH QUESTION CAME UP EMPTY. "nessuna unità in questo ambito" was
     // true and useless: on 20 Aug it appeared for an epoch whose units the
@@ -545,7 +546,8 @@ export function timelineSpans(node: EmNode,
 export function timelineEmbed(node: EmNode, doc: EmDocument | null): HTMLElement {
   const b = box("timeline", nameOf(node), "nv-timeline");
   const spans = timelineSpans(node, doc);
-  b.appendChild(el("div", "nv-embed-note", `asse temporale · ${spans.what}`));
+  b.appendChild(el("div", "nv-embed-note",
+                    t("nv.capTimeline", { what: spans.what })));
 
   const { dated, undated, min, span } = spans;
   if (!dated.length && !undated.length) {
@@ -632,7 +634,8 @@ export function tableEmbed(node: EmNode, doc: EmDocument | null,
                            options: Record<string, unknown>): HTMLElement {
   const b = box("table", nameOf(node), "nv-table");
   const scope = scopeOf(node, doc);
-  b.appendChild(el("div", "nv-embed-note", `interrogazione viva · ${scope.what}`));
+  b.appendChild(el("div", "nv-embed-note",
+                    t("nv.capLiveQuery", { what: scope.what })));
   if (!scope.units.length) {
     return nothingYet(b, t("nv.queryFindsNothing"));
   }
@@ -719,7 +722,8 @@ export function paradataEmbed(node: EmNode, doc: EmDocument | null): HTMLElement
   }
 
   b.appendChild(el("div", "nv-embed-note",
-    anchor ? `catena di evidenza · «${nameOf(anchor)}»` : "catena di evidenza"));
+    anchor ? t("nv.capChainOf", { name: nameOf(anchor) })
+           : t("nv.capChain")));
 
   if (!properties.length) {
     return nothingYet(b,
@@ -1009,7 +1013,7 @@ export function unSceneEmbed(node: EmNode, doc: EmDocument | null): HTMLElement 
   }
   b.appendChild(row);
   b.appendChild(el("div", "nv-embed-note",
-    plural(parts.length, "elemento composto", "elementi composti")));
+    plural(parts.length, "nv.composedPart", "nv.composedParts")));
   return b;
 }
 
@@ -1099,7 +1103,7 @@ export function rmDocEmbed(node: EmNode, doc: EmDocument | null,
   const pov = data["pov"] ?? data["camera"];
   if (pov && typeof pov === "object") {
     b.appendChild(el("div", "nv-embed-note",
-      `punto di vista registrato: ${JSON.stringify(pov)}`));
+      t("nv.recordedPov", { pov: JSON.stringify(pov) })));
   }
   return b;
 }

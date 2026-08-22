@@ -1164,9 +1164,7 @@ export function renderInspector(
     authorOrcid.addEventListener("change", commitAuthor);
     panel.appendChild(authorName);
     panel.appendChild(authorOrcid);
-    panel.appendChild(el("div", "insp-hint",
-      "L'ORCID di chi ha prodotto questi byte — anche di una persona che non è "
-      + "qui. Chi lo dichiara sei tu, e resta scritto qui sotto."));
+    panel.appendChild(el("div", "insp-hint", t("insp.authorOrcidHint")));
 
     // …e la firma dell'atto, in chiaro
     if (rights.attributedBy || rights.attributedAt) {

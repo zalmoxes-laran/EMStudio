@@ -152,7 +152,12 @@ const dicts = (() => {
 //
 // Words that do not occur in English prose. Kept short on purpose: a sweep that
 // cries wolf gets switched off, and this one has to stay on.
-const ITALIAN = new RegExp(String.raw`\b(?:nessun|nessuno|nessuna|questo|questa|quello|quella|della|dello|degli|delle|nella|nelle|senza|perch[eé]|pi[uù]|gi[aà]|apri|trascina|clicca|puoi|serve|sono|salva|scegli|seleziona|impostazioni|posizione|coordinate|epoca|epoche|grafo|narrativa|autore|autori|licenza|risorsa|risorse|verifica|attendi|errore|fallita|fallito|assente|vuoto|vuota|colonna|regione|collezione|riga|righe|foglio|elenco|finestra|finestre|immagine|immagini|cartella|cartelle|stanza|racconto|capitolo|capitoli)\b`, "i");
+const ITALIAN = new RegExp(String.raw`\b(?:nessun|nessuno|nessuna|questo|questa|quello|quella|della|dello|degli|delle|nella|nelle|senza|perch[eé]|pi[uù]|gi[aà]|apri|trascina|clicca|puoi|serve|sono|salva|scegli|seleziona|impostazioni|posizione|coordinate|epoca|epoche|grafo|narrativa|autore|autori|licenza|risorsa|risorse|verifica|attendi|errore|fallita|fallito|assente|vuoto|vuota|colonna|regione|collezione|riga|righe|foglio|elenco|finestra|finestre|immagine|immagini|cartella|cartelle|stanza|racconto|capitolo|capitoli`
+  // …and the words the SCAFFOLD and the EMBEDS used, which the first sweep let
+  // through: they are not chrome, so nothing in the earlier pass looked at them,
+  // and «Introduzione» / «matrice · epoca» / «A CURA DI» / «da scrivere» sat in an
+  // otherwise English app (E.D., measured on Templu Mare, 21 Aug 2026).
+  + String.raw`|introduzione|presentazione|scrivere|scritto|cura|matrice|matrici|interrogazione|catena|evidenza|temporale|composto|composti|elemento|elementi|storia|bozza|didascalia|punto|vista|registrato|generata)\b`, "i");
 
 {
   // No literal-parsing here, on purpose. A template literal can contain `${…}`
