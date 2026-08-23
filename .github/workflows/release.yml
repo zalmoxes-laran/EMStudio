@@ -103,20 +103,30 @@ jobs:
             exit 1
           fi
 
-      - name: s3dgraphy must be on PyPI (the sidecar freezes it)
+      # THE GATE, and it is not a copy of the gate: `./em.sh s3d status --check` is
+      # the same function `devrel` runs on a laptop — same probe, same retries for
+      # a release that was pushed seconds ago, same fail-closed for an index that
+      # will not answer, same words. A second implementation here would be a
+      # second thing to be wrong, and it was: the inline `pip download` this
+      # replaces had no `--no-cache-dir`, no retry, and no way to tell "not
+      # published" from "no network".
+      #
+      # Exit codes, so the log says which refusal this was:
+      #   0 published · 1 not published (after the retries) · 2 cannot verify
+      - name: The pinned s3dgraphy must be published (the same gate devrel runs)
         shell: bash
         run: |
-          PIN="${{ steps.pin.outputs.version }}"
-          # An EXACT pin is the real question: can a packager get these bytes?
-          # (`pip index versions` needs --pre to even see a dev release.)
-          if ! python -m pip download --no-deps --quiet --dest /tmp/probe \
-                 "s3dgraphy==$PIN"; then
-            echo "::error::s3dgraphy==$PIN is not installable from PyPI, so the"
-            echo "::error::sidecar this release ships cannot be rebuilt by anybody."
-            echo "::error::Publish that dev first (s3Dgraphy: ./bump_and_push.sh)."
-            exit 1
-          fi
-          echo "s3dgraphy==$PIN is published — the sidecar is reproducible"
+          rc=0
+          ./em.sh s3d status --check || rc=$?
+          case "$rc" in
+            0) echo "gate passed: the sidecar is reproducible from the pin" ;;
+            1) echo "::error::the pinned s3dgraphy is NOT published, so the sidecar"
+               echo "::error::this release ships cannot be rebuilt by anybody."
+               echo "::error::Publish that dev first (s3Dgraphy: ./bump_and_push.sh)." ;;
+            *) echo "::error::the package index could not be reached, so the pin is"
+               echo "::error::unverified — and a release is not tagged on a maybe." ;;
+          esac
+          exit "$rc"
 
   # ── 2 · the manual still compiles, and carries this version ───────────────
   #

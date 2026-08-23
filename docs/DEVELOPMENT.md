@@ -282,11 +282,38 @@ is *not* what the packaged sidecar will contain. That is a warning and not a
 refusal — releasing on an older published pin is legitimate — but it is how a
 feature ends up working in `./dev.sh` and missing in the installer.
 
-A note on measuring the pin by hand: `pip index versions s3dgraphy` needs
-`--pre` to see a dev release at all (without it the list stops at 1.5.4). The gate
-uses `pip download --no-deps s3dgraphy==<pin>`, which is the real question — can a
-packager get these bytes — and it **fails closed**: an index it cannot reach is
-reported as *unverified*, never as *fine*.
+**One gate, two callers.** `./em.sh s3d status --check` is what the CI workflow
+runs (`release.yml`, the `gate` job) — the same function `devrel` runs on a laptop,
+so a release refused in Actions and the same release refused here read the same
+way. Its exit code carries the verdict: **0** published · **1** not published
+(after the retries) · **2** cannot verify. Anything that could tell those three
+apart differently would be a second gate.
+
+What it asks, and what it survives — all of it measured on 23 Aug 2026, because
+each of these bit for real:
+
+- the question is **the index's**: does `<index>/s3dgraphy/` list a file carrying
+  this exact version, and does a one-byte range request for that file come back?
+  A listing is a promise; one byte is the proof. `PIP_INDEX_URL` is honoured, so a
+  mirror is asked instead of pypi.org;
+- a release **pushed seconds ago** is not consistent on every CDN edge, so a hard
+  "no" is **retried** (3 attempts, 5 s apart, said out loud) before it is believed.
+  That is the false negative that made `s3d pin` accept a version and `devrel`
+  refuse it moments later;
+- an index that **will not answer** is *unverified*, never *fine* — fail-closed,
+  and never retried into a yes;
+- and the whole probe runs under a **wall-clock deadline** (`EM_PROBE_DEADLINE`,
+  15 s), because a timeout that only covers the wait you thought of is not a
+  bound: `urlopen(timeout=10)` bounds one connection ATTEMPT, and urllib walks
+  pypi.org's 16 addresses in order — on a network whose IPv6 half is a black hole
+  that took **over two minutes**. The probe therefore speaks `curl` (happy
+  eyeballs, `--max-time` is a total): **1.6 s** on the same machine, same moment.
+
+`pip` is deliberately NOT in that path any more — measured, it wedged with no
+output at all, for `s3dgraphy` and for `six` alike, while `curl` answered the same
+index in 0.5 s. What the gate now proves is the NECESSARY condition (the file is
+there and its bytes are served); the sufficient one — `pip install` of the pin,
+with its extras — is exercised for real by the sidecar step, on all four runners.
 
 ### CI builds the sidecar from the published wheel
 

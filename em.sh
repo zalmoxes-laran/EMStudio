@@ -28,8 +28,11 @@
 #
 #   ./em.sh version              What version is set, per file.
 #   ./em.sh inc                  Bump the dev counter (1.6.0-dev.2 → -dev.3).
-#   ./em.sh s3d status           The pinned s3dgraphy: is it published? is the
-#                                local checkout ahead of it?
+#   ./em.sh s3d status [--check] The pinned s3dgraphy: is it published? is the
+#                                local checkout ahead of it? `--check` also
+#                                EXITS non-zero on a bad verdict — that is what
+#                                the CI workflow runs, so the gate is one
+#                                function and not two.
 #   ./em.sh s3d pin <version>    Move the pin (refuses one that is not on PyPI).
 #   ./em.sh doc    [path]        Build the manual (EMStudio-doc) as a CHECK: -W,
 #                                with the version aligned to this app.
@@ -52,7 +55,12 @@ REPO_URL="https://github.com/zalmoxes-laran/EMStudio"
 
 log() { printf '\033[1;36m▸ %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m⚠  %s\033[0m\n' "$*" >&2; }
-die() { printf '\033[1;31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
+#: `fail <code> <sentence>` — the red line, with the exit code the caller means.
+#: `die` is `fail 1`, which is what almost everything wants; the s3dgraphy gate is
+#: the exception, because a CI step reading 1 (not published) or 2 (cannot verify)
+#: can say two different things about a refusal that looks the same from outside.
+fail() { local code="$1"; shift; printf '\033[1;31m✗ %s\033[0m\n' "$*" >&2; exit "$code"; }
+die() { fail 1 "$*"; }
 
 usage() {
   # From the header above, so the help cannot drift from the comment a reader
@@ -123,52 +131,309 @@ local_s3dgraphy_version() {
 #: gate that cannot reach the index must not answer "yes" — that is how an
 #: unpublishable release gets tagged on a train with no wifi.
 #: 0 = published · 1 = not published · 2 = could not verify
-s3dgraphy_published() {
-  local version="$1" out
-  local tmp
-  tmp="$(mktemp -d)"
-  # `pip download` with an EXACT pin is the real question ("can a packager get
-  # these bytes?"). `pip index versions` needs `--pre` to even SEE a dev release
-  # — measured: without it the index lists only 1.5.4 and every dev pin looks
-  # unpublished, which would make this gate refuse every release forever.
-  if out="$(python3 -m pip download --no-deps --quiet --dest "$tmp" \
-            "s3dgraphy==$version" 2>&1)"; then
-    rm -rf "$tmp"
-    return 0
+#:
+#: THE FALSE NEGATIVE THIS SURVIVES, measured on 23 Aug 2026 and the reason the
+#: shape below is not the obvious one: `./em.sh s3d pin 1.6.0.dev15` accepted the
+#: pin (it asks this same function) and, seconds later, `./em.sh devrel` refused
+#: with "s3dgraphy==1.6.0.dev15 is NOT on PyPI" — while dev15 was published and
+#: downloadable. Two consecutive calls to ONE function disagreed about a
+#: published package, which means the answer was never about the package:
+#:
+#:   · a release pushed seconds ago is not yet consistent on every CDN edge
+#:     (PyPI is behind Fastly), so one request can see the new file and the next,
+#:     landing on another edge, cannot;
+#:   · and `pip download` WITHOUT `--no-cache-dir` may serve a stale simple index
+#:     out of pip's own HTTP cache — a cache of "this version does not exist",
+#:     which is the worst possible thing to remember for ten minutes.
+#:
+#: This gate runs at exactly the moment a release was just pushed. So: never a
+#: cache, and a hard negative is RETRIED a couple of times before it is believed.
+#: A "cannot verify" is NOT retried into a yes — an unreachable index stays
+#: fail-closed immediately, because retrying a network error until it looks like
+#: an answer is how a fail-closed gate quietly becomes a fail-open one.
+#:
+#: AND THE THING THAT MAKES THE THREE OUTCOMES REAL, measured while fixing the
+#: above: **pip cannot tell you which of them happened.** With the index pointed
+#: at a dead port, and again at a hostname that does not resolve, `pip download`
+#: says exactly what it says for a version that was never published —
+#:
+#:     ERROR: Could not find a version that satisfies the requirement … (from versions: none)
+#:     ERROR: No matching distribution found for …
+#:
+#: — so classifying on those two lines (which is what this did before) reported a
+#: laptop with no network as "publish it first". The verdict stayed a refusal, so
+#: nothing opened up; the SENTENCE was wrong, and it sends somebody to publish a
+#: package that is already published. The transport question therefore has to be
+#: asked separately, of the index itself, and it is asked FIRST: a server that
+#: answers means the "no" is about the version; a server that does not answer
+#: means we do not know.
+
+#: How hard the probe tries before believing a NO. Overridable so a measurement
+#: (or a nightly in a hurry) can tighten it; the worst case is bounded on purpose
+#: — `(attempts - 1) × wait` seconds of waiting, i.e. ~10 s by default, never a hang.
+EM_PROBE_ATTEMPTS="${EM_PROBE_ATTEMPTS:-3}"
+EM_PROBE_WAIT="${EM_PROBE_WAIT:-5}"
+#: The wall-clock deadline for ONE probe. With the defaults the worst case is
+#: `3 × 15 s` of asking plus `2 × 5 s` of waiting — **55 s**, and that is a
+#: ceiling, not an estimate: a probe past its deadline is killed.
+EM_PROBE_DEADLINE="${EM_PROBE_DEADLINE:-15}"
+#: The bound on ONE http request (curl's `--max-time`, which is a total and not a
+#: per-address attempt — see `index_says`). Two requests per probe, so the probe
+#: itself is ~2× this at worst, inside the deadline above.
+EM_PROBE_HTTP="${EM_PROBE_HTTP:-6}"
+
+#: Run a command with a WALL-CLOCK deadline, portably (macOS ships no
+#: `timeout(1)`). Returns the command's status, or 124 when the deadline killed it
+#: — the number `timeout(1)` uses, so a reader recognises it.
+#:
+#: A belt over curl's own `--max-time`, and not a redundant one: a bound that
+#: trusts one tool's idea of a timeout is not a bound, which is exactly how a
+#: ten-second timeout turned into two minutes (see `index_says`).
+bounded() {
+  local limit="$1"; shift
+  "$@" &
+  local job=$!
+  ( sleep "$limit"; kill -TERM "$job" 2>/dev/null ) >/dev/null 2>&1 &
+  local dog=$!
+  local rc=0
+  wait "$job" || rc=$?
+  # The watchdog is killed either way: left alive it would fire into a recycled
+  # pid, a bug that only ever shows up on somebody else's machine.
+  kill "$dog" 2>/dev/null || true
+  wait "$dog" 2>/dev/null || true
+  if [[ "$rc" -eq 143 ]]; then                 # SIGTERM: the deadline, not a crash
+    return 124
   fi
-  rm -rf "$tmp"
-  if printf '%s' "$out" | grep -qiE "no matching distribution|could not find a version"; then
-    return 1
-  fi
-  warn "could not reach PyPI to verify s3dgraphy==$version:"
-  printf '%s\n' "$out" | tail -3 >&2
-  return 2
+  return "$rc"
 }
 
+#: Ask the index whether this exact version is THERE and its bytes are SERVED.
+#:
+#: Prints one word on stdout — `published` · `absent` · `unreachable` — and a
+#: human sentence on stderr. Two bounded requests, both PEP 503:
+#:
+#:   1. the project page (`<index>/s3dgraphy/`) — does it list a file whose name
+#:      carries this exact version?
+#:   2. a one-byte range request for that file — do the bytes actually come? A
+#:      listing is a promise; one byte is the proof.
+#:
+#: THREE WRONG ANSWERS CAME BEFORE THIS ONE, each measured, and the order matters
+#: because each correction killed the previous diagnosis (23 Aug 2026):
+#:
+#:   · `pip download` — what this used to run — wedged with **no output at all**,
+#:     for `s3dgraphy` and for `six` alike. Blamed pip;
+#:   · a bare `urllib` GET of the same page took **40 s**, then over **120 s**,
+#:     where `curl` took **0.5 s**. So not pip;
+#:   · `getaddrinfo('pypi.org')` returned in **0.00 s** — with **16 addresses**.
+#:     So not DNS either.
+#:
+#: What it is: `urlopen(timeout=N)` bounds ONE connection attempt, and urllib tries
+#: those addresses **in order**. On a network where the IPv6 half is a black hole,
+#: the total is `attempts × N` — minutes, through a timeout that looks like ten
+#: seconds. `curl` does happy-eyeballs (dual-stack in parallel) and `--max-time` is
+#: a TOTAL. Hence curl, and hence the outer wall-clock watchdog as well: a bound
+#: that trusts one library's idea of a timeout is not a bound.
+#:
+#: And the question this asks, stated honestly: "the index lists this exact file
+#: and its bytes are served" rather than "pip can resolve and download it". That is
+#: the NECESSARY condition a packager needs, which is what a gate is for; the
+#: sufficient one — `pip install` of the pin with its extras — is exercised for
+#: real in CI, on all four runners, by the step that freezes the sidecar from that
+#: very pin.
+#:
+#: `PIP_INDEX_URL` is honoured: a corporate mirror is exactly the case where "is
+#: PyPI up" would be the wrong question.
+index_says() {
+  local version="$1" base page_url page errs status hrefs stem href file_url
+
+  base="${PIP_INDEX_URL:-https://pypi.org/simple}"
+  base="${base%/}"
+  page_url="$base/s3dgraphy/"
+  page="$(mktemp)"; errs="$(mktemp)"
+
+  # 1 · the project page
+  status="$(curl -sS -o "$page" -w '%{http_code}' \
+            --max-time "$EM_PROBE_HTTP" "$page_url" 2>"$errs")" || status="000"
+  case "$status" in
+    200) : ;;
+    404)
+      # A 404 on the PROJECT is an answer, and the answer is "no": this index
+      # knows nothing about the name.
+      printf 'the index has no project s3dgraphy (%s)\n' "$page_url" >&2
+      printf 'absent\n'; rm -f "$page" "$errs"; return 0 ;;
+    000)
+      printf 'curl could not reach %s — %s\n' "$page_url" \
+        "$(tr '\n' ' ' < "$errs")" >&2
+      printf 'unreachable\n'; rm -f "$page" "$errs"; return 0 ;;
+    *)
+      printf 'the index answered %s for %s\n' "$status" "$page_url" >&2
+      printf 'unreachable\n'; rm -f "$page" "$errs"; return 0 ;;
+  esac
+
+  # 2 · a file whose NAME carries this version. The dots are escaped, and the
+  # character after the version must be `-` or `.`, or `1.6.0.dev15` would happily
+  # match `1.6.0.dev150` the day that exists.
+  stem="s3dgraphy-$(printf '%s' "$version" | sed 's/\./\\./g')"
+  hrefs="$(grep -o 'href="[^"]*"' "$page" | sed 's/^href="//; s/"$//; s/#.*$//')"
+  href="$(printf '%s\n' "$hrefs" \
+          | grep -iE "(^|/)${stem}(-|\.tar\.gz|\.zip)" | head -1)"
+  if [[ -z "$href" ]]; then
+    printf 'the index lists %s file(s) for s3dgraphy, none of them version %s\n' \
+      "$(printf '%s\n' "$hrefs" | grep -c . || true)" "$version" >&2
+    printf 'absent\n'; rm -f "$page" "$errs"; return 0
+  fi
+  case "$href" in
+    http*) file_url="$href" ;;
+    /*)    file_url="${base%/simple}$href" ;;
+    *)     file_url="$page_url$href" ;;
+  esac
+  rm -f "$page"
+
+  # 3 · …and the bytes
+  status="$(curl -sS -o /dev/null -w '%{http_code}' -r 0-0 \
+            --max-time "$EM_PROBE_HTTP" "$file_url" 2>"$errs")" || status="000"
+  case "$status" in
+    200 | 206)
+      printf 'listed and served: %s\n' "${file_url##*/}" >&2
+      printf 'published\n' ;;
+    000)
+      printf 'the file is listed but curl could not fetch it (%s) — %s\n' \
+        "$file_url" "$(tr '\n' ' ' < "$errs")" >&2
+      printf 'unreachable\n' ;;
+    *)
+      printf 'the file is listed but the store answered %s: %s\n' \
+        "$status" "$file_url" >&2
+      printf 'unreachable\n' ;;
+  esac
+  rm -f "$errs"
+}
+
+s3dgraphy_published() {
+  local version="$1" verdict why attempt errs answer rc
+  for (( attempt = 1; attempt <= EM_PROBE_ATTEMPTS; attempt++ )); do
+    # ONE call per attempt, with the two streams kept apart: stdout is the verdict
+    # word, stderr the sentence a refusal quotes. Asking twice to read them
+    # separately would be two round trips — and two chances to disagree, which is
+    # the failure this whole function exists to remove.
+    errs="$(mktemp)"; answer="$(mktemp)"
+    # `|| rc=$?`, and NOT `set +e` / `set -e` around it. Measured, and it cost an
+    # hour: `set -e` inside this function is GLOBAL, so it overrode the caller's
+    # `set +e` and the `return 2` below then tripped errexit and killed the script
+    # mid-probe — the status table never printed. A tested context asks for the
+    # status without touching anybody else's shell options.
+    rc=0
+    bounded "$EM_PROBE_DEADLINE" index_says "$version" >"$answer" 2>"$errs" || rc=$?
+    verdict="$(cat "$answer")"
+    why="$(cat "$errs")"
+    rm -f "$errs" "$answer"
+    if [[ "$rc" -eq 124 ]]; then
+      # Not an answer, and not a "no": we ran out of time. Fail closed.
+      warn "cannot verify s3dgraphy==$version: the probe did not answer within \
+${EM_PROBE_DEADLINE}s and was stopped — the index, the DNS or the CDN is not \
+responding. (A release is not tagged on a maybe.)"
+      return 2
+    fi
+
+    case "$verdict" in
+      published)
+        if [[ "$attempt" -gt 1 ]]; then
+          log "…there on attempt $attempt: it was the CDN, not the package"
+        fi
+        return 0
+        ;;
+      unreachable)
+        # NOT a "no": a "no idea". Fail closed now — retrying a network error
+        # until it looks like an answer is how a fail-closed gate becomes a
+        # fail-open one.
+        warn "cannot verify s3dgraphy==$version: the package index did not answer"
+        warn "  $why"
+        return 2
+        ;;
+      absent) : ;;                             # a real "no" — retry below
+      *)
+        warn "cannot verify s3dgraphy==$version: the probe itself did not answer"
+        warn "  ${why:-no output}"
+        return 2
+        ;;
+    esac
+
+    if (( attempt < EM_PROBE_ATTEMPTS )); then
+      # SAID, not waited out in silence: ten quiet seconds look like a hang, and
+      # the sentence is also the diagnosis if it ends up refusing anyway.
+      warn "the index does not have s3dgraphy==$version yet (attempt $attempt of \
+$EM_PROBE_ATTEMPTS) — a release pushed seconds ago is not consistent on every \
+CDN edge. Waiting ${EM_PROBE_WAIT}s and asking again…"
+      sleep "$EM_PROBE_WAIT"
+    fi
+  done
+  return 1
+}
+
+#: The verdict on the PIN, probed ONCE and remembered.
+#:
+#: Two callers need it (the status table and the gate) and one of them prints
+#: before it decides. Probing twice would mean two network round trips and, worse,
+#: the chance of a table that says "yes" above a refusal that says "no" — the very
+#: disagreement the retry work above exists to remove. So: one probe per run.
+S3D_PIN=""
+S3D_RC=""
+
+s3d_probe() {
+  S3D_PIN="$(pinned_s3dgraphy)"
+  [[ -n "$S3D_PIN" ]] || die "no exact s3dgraphy pin in tools/requirements.txt — \
+the sidecar build has no version to freeze"
+  S3D_RC=0
+  s3dgraphy_published "$S3D_PIN" || S3D_RC=$?
+}
+
+#: The refusal, in words — for a verdict that is not 0. ONE wording, said by the
+#: local gate and by the CI step, because a release refused on a laptop and the
+#: same release refused in Actions must not read like two different problems.
+s3d_refuse() {
+  if [[ "$S3D_RC" -eq 1 ]]; then
+    fail 1 "s3dgraphy==$S3D_PIN is NOT on PyPI, so nobody (including CI) can build \
+the sidecar this release ships.
+   Publish that dev FIRST, then release EMStudio:
+       cd ../s3Dgraphy && ./bump_and_push.sh      # bumps + publishes
+   …then, if the pin should move:  ./em.sh s3d pin <the published version>"
+  fi
+  fail 2 "cannot verify s3dgraphy==$S3D_PIN on PyPI, and this gate does not guess: \
+an unverified pin is exactly how a release ships a sidecar nobody can rebuild.
+   Check the network, or run again when the index answers."
+}
+
+#: `./em.sh s3d status` — the table a human reads. With `--check` it also ENDS
+#: with the verdict (exit 1 not published · 2 cannot verify), which is what makes
+#: it usable as a CI step: the workflow runs this instead of carrying its own copy
+#: of the question.
 do_s3d_status() {
-  local pin local_v rc
-  pin="$(pinned_s3dgraphy)"
-  [[ -n "$pin" ]] || die "no exact s3dgraphy pin found in tools/requirements.txt"
-  echo "pinned (the sidecar freezes this)   s3dgraphy==$pin"
+  local check=0 local_v
+  if [[ "${1:-}" == "--check" ]]; then
+    check=1
+  elif [[ -n "${1:-}" ]]; then
+    die "s3d status: unknown option '${1}' (only --check)"
+  fi
+
+  s3d_probe
+  echo "pinned (the sidecar freezes this)   s3dgraphy==$S3D_PIN"
   local_v="$(local_s3dgraphy_version || true)"
   if [[ -n "$local_v" ]]; then
     echo "local checkout (../s3Dgraphy)       $local_v"
   else
     echo "local checkout (../s3Dgraphy)       not found"
   fi
-  set +e
-  s3dgraphy_published "$pin"
-  rc=$?
-  set -e
-  case "$rc" in
+  case "$S3D_RC" in
     0) echo "on PyPI                             yes — a packager can build the sidecar" ;;
     1) echo "on PyPI                             NO — publish it before releasing" ;;
     *) echo "on PyPI                             unknown (no index reachable)" ;;
   esac
-  if [[ -n "$local_v" && "$local_v" != "$pin" ]]; then
-    warn "the checkout ($local_v) is not the pin ($pin): whatever you are \
+  if [[ -n "$local_v" && "$local_v" != "$S3D_PIN" ]]; then
+    warn "the checkout ($local_v) is not the pin ($S3D_PIN): whatever you are \
 developing against is NOT what the packaged sidecar will contain. Publish a dev \
 and move the pin (./em.sh s3d pin <version>) when the app depends on it."
+  fi
+  if [[ "$check" -eq 1 && "$S3D_RC" -ne 0 ]]; then
+    s3d_refuse
   fi
   return 0
 }
@@ -176,10 +441,8 @@ and move the pin (./em.sh s3d pin <version>) when the app depends on it."
 do_s3d_pin() {
   local version="${1:-}" rc
   [[ -n "$version" ]] || die "usage: ./em.sh s3d pin <version>   e.g. 1.6.0.dev15"
-  set +e
-  s3dgraphy_published "$version"
-  rc=$?
-  set -e
+  rc=0
+  s3dgraphy_published "$version" || rc=$?
   [[ "$rc" -eq 0 ]] || die "s3dgraphy==$version is not installable from PyPI \
 (rc=$rc) — pinning it would produce a sidecar nobody else can build. Publish it \
 first: cd ../s3Dgraphy && ./bump_and_push.sh"
@@ -197,28 +460,17 @@ PY
   log "pin moved — the next sidecar freezes s3dgraphy==$version"
 }
 
-#: The gate itself, shared by `devrel` and the nightly. Fails CLOSED.
+#: The gate itself, shared by `devrel`, `ghrelease` and — through
+#: `s3d status --check` — by the CI workflow. Fails CLOSED.
 s3d_gate() {
-  local pin rc
+  local pin
   pin="$(pinned_s3dgraphy)"
   [[ -n "$pin" ]] || die "no exact s3dgraphy pin in tools/requirements.txt — the \
 sidecar build has no version to freeze"
   log "gate: is s3dgraphy==$pin published?"
-  set +e
-  s3dgraphy_published "$pin"
-  rc=$?
-  set -e
-  case "$rc" in
-    0) log "gate: s3dgraphy==$pin is on PyPI — the sidecar is reproducible" ;;
-    1) die "s3dgraphy==$pin is NOT on PyPI, so nobody (including CI) can build \
-the sidecar this release ships.
-   Publish that dev FIRST, then release EMStudio:
-       cd ../s3Dgraphy && ./bump_and_push.sh      # bumps + publishes
-   …then, if the pin should move:  ./em.sh s3d pin <the published version>" ;;
-    *) die "cannot verify s3dgraphy==$pin on PyPI, and this gate does not guess: \
-an unverified pin is exactly how a release ships a sidecar nobody can rebuild.
-   Check the network, or run again when the index answers." ;;
-  esac
+  s3d_probe
+  [[ "$S3D_RC" -eq 0 ]] || s3d_refuse
+  log "gate: s3dgraphy==$S3D_PIN is on PyPI — the sidecar is reproducible"
 }
 
 # ── the manual (EMStudio-doc), built as a check ──────────────────────────────
@@ -390,7 +642,7 @@ case "$cmd" in
     sub="${1:-status}"
     shift || true
     case "$sub" in
-      status) do_s3d_status ;;
+      status) do_s3d_status "$@" ;;
       pin) do_s3d_pin "$@" ;;
       *) die "s3d: expected 'status' or 'pin <version>', got '$sub'" ;;
     esac
