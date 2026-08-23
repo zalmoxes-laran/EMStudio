@@ -8,6 +8,7 @@ side by side under one parent directory:
   EMStudio/          # this repo
   s3Dgraphy/         # EM language reference impl (Python); dev.sh/tools use ../s3Dgraphy/src
   EM-blender-tools/  # EMtools Blender addon (sync server lives here)
+  EMStudio-doc/      # the user manual (Sphinx). Optional — `./em.sh doc` builds it
 ```
 
 ## Prerequisites
@@ -238,6 +239,124 @@ curl -s -X POST http://localhost:8799/resource-preview -H 'Content-Type: applica
 
 Then kill it (`lsof -ti tcp:8799 | xargs kill`) before launching the app, or the
 app's own sidecar finds the port taken.
+
+## Releasing (the dev channel, and the four installers)
+
+One command, the same ergonomics as EMtools:
+
+```bash
+./em.sh devrel --dry-run      # what would happen: version, tag, files, gate
+./em.sh devrel                # gate → bump → commit → tag → push
+```
+
+The push of the tag is the whole trigger: `.github/workflows/release.yml` then
+builds the desktop app on **four** runners — macOS arm64 (`macos-14`), macOS
+Intel (`macos-13`), Windows and Linux (`ubuntu-22.04`) — and attaches the
+installers (`.dmg` · `.msi`/NSIS · `.deb`/`.AppImage`) to the Release of that tag.
+Public binaries are an **autumn 2026** target; the dev channel runs now.
+
+### s3dgraphy first. Always.
+
+The app ships a **frozen Python sidecar** built from the s3dgraphy version pinned
+in `tools/requirements.txt`, so that build is reproducible **only if the pin is
+published on PyPI**. `devrel` therefore refuses to tag when it is not, and the
+first CI job asks the same question before any 40-minute matrix starts:
+
+```
+✗ s3dgraphy==1.6.0.dev99 is NOT on PyPI, so nobody (including CI) can build
+  the sidecar this release ships.
+     cd ../s3Dgraphy && ./bump_and_push.sh
+```
+
+The order is: **publish the s3dgraphy dev → move the pin if needed → release
+EMStudio.** Never the other way round.
+
+```bash
+./em.sh s3d status            # the pin · is it on PyPI · is the checkout ahead?
+./em.sh s3d pin 1.6.0.dev15   # move it (refuses a version PyPI does not have)
+```
+
+`s3d status` also says the thing that is easy to forget: when the local
+`../s3Dgraphy` checkout is **ahead** of the pin, what you are developing against
+is *not* what the packaged sidecar will contain. That is a warning and not a
+refusal — releasing on an older published pin is legitimate — but it is how a
+feature ends up working in `./dev.sh` and missing in the installer.
+
+A note on measuring the pin by hand: `pip index versions s3dgraphy` needs
+`--pre` to see a dev release at all (without it the list stops at 1.5.4). The gate
+uses `pip download --no-deps s3dgraphy==<pin>`, which is the real question — can a
+packager get these bytes — and it **fails closed**: an index it cannot reach is
+reported as *unverified*, never as *fine*.
+
+### CI builds the sidecar from the published wheel
+
+Not from a checkout. `build-bridge.sh` expects a s3Dgraphy checkout layout
+(`$S3DGRAPHY/src/s3dgraphy`), so the workflow installs the pinned wheel into a
+venv and **copies** the installed package into that shape (a copy rather than a
+symlink: Windows runners need developer mode for symlinks). The freeze flags stay
+where they belong — in `build-bridge.sh`, which no workflow reproduces.
+
+Rehearsed locally on 23 Aug 2026 with the exact CI recipe (venv →
+`s3dgraphy[geo,rdf]==1.6.0.dev12` from PyPI → shim → `build-bridge.sh`): a
+33.8 MB sidecar that answers `/health` and reprojects easting 500 000 in zone 33
+to `lon: 14.999999999999982` — i.e. PROJ found its data (see § *Verify the
+build*).
+
+`build-bridge.sh` is now Windows-aware in the two places that would have failed
+silently: PyInstaller writes `em-bridge.exe` and Tauri resolves
+`binaries/em-bridge-<triple>.exe` (a copy without the suffix builds an app that
+cannot find its sidecar), and `--add-data SRC<sep>DEST` uses `;` on Windows (with
+`:` PyInstaller reads `C` as a path and bundles no `JSON_config`).
+
+### The nightly
+
+`.github/workflows/nightly.yml` runs `./em.sh devrel --yes --if-changed` at 03:17
+UTC — the same script, with two guards: nothing is released on a night with **no
+commits since the last tag**, and the s3dgraphy gate must pass. It then **calls**
+the release workflow (which is `workflow_call`-able) rather than relying on its
+own tag push to trigger it: a tag pushed with the default `GITHUB_TOKEN` does not
+start another workflow, and the alternative — a personal access token in the
+repository's secrets — is a long-lived credential for a job that needs none.
+
+`workflow_dispatch` with `force: true` releases even on a quiet night.
+
+### Signing, and what an unsigned build costs a user
+
+macOS signing + notarization happen **when the Apple secrets are present**
+(`APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_SIGNING_IDENTITY`,
+`APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID`) and are skipped with a line in the
+log when they are not — the build stays green either way. No certificate or
+password is in the repository, and none should be.
+
+An **unsigned** alpha is usable, with one extra step the release notes state:
+
+- macOS — right-click ▸ **Open** the first time, or
+  `xattr -dr com.apple.quarantine /Applications/EMStudio.app`;
+- Windows — SmartScreen ▸ **More info** ▸ **Run anyway**.
+
+**Windows signing is not wired**, deliberately: Tauri v2 takes a certificate
+thumbprint or a `signCommand` in `tauri.conf.json`, which is a repo change *plus*
+a certificate installed on the machine — not something a workflow can carry.
+
+### The manual travels with the release
+
+`EMStudio-doc` is a separate repository (`zalmoxes-laran/EMStudio-doc`, Sphinx +
+Read the Docs). The release checks it out and builds it with `-W`, so a broken
+reference fails the release, and passes the app's version as a Sphinx override
+(`-D version=… -D release=…`) so the built manual carries the version of the build
+it documents. **Nothing is committed or dispatched in the doc repo** — the
+smallest touch that still verifies it. Locally:
+
+```bash
+./em.sh doc                       # ../EMStudio-doc by default
+./em.sh doc /path/to/EMStudio-doc
+```
+
+### A stable release
+
+```bash
+./em.sh ghrelease 1.6.0           # exact version, same gate, tag v1.6.0
+```
 
 ## Live sync with Blender (ADR-002, phase 1 — WIP)
 

@@ -45,6 +45,20 @@ PY="${PYTHON:-$S3/.venv/bin/python}"
 TRIPLE="$(rustc -vV | sed -n 's/host: //p')"
 OUT="$HERE/src-tauri/binaries"
 
+# WINDOWS, in two places and both of them silent failures if missed (added when
+# the release workflow started building on windows-latest):
+#   · PyInstaller writes `em-bridge.exe`, and Tauri looks for
+#     `binaries/em-bridge-<triple>.exe` — the suffix is part of the name it
+#     resolves, so a copy without it produces an app that starts and then cannot
+#     find its sidecar;
+#   · `--add-data SRC<sep>DEST` uses os.pathsep, i.e. `;` on Windows. With `:`
+#     PyInstaller reads `C` as the source path and bundles nothing, which shows up
+#     only at run time as a missing JSON_config.
+case "$TRIPLE" in
+  *windows*) EXE=".exe"; SEP=";" ;;
+  *)         EXE="";     SEP=":" ;;
+esac
+
 [[ -x "$PY" ]] || { echo "python not found at $PY (set PYTHON=…)"; exit 1; }
 [[ -d "$SRC" ]] || { echo "s3Dgraphy src not found at $SRC (set S3DGRAPHY=…)"; exit 1; }
 "$PY" -c "import PyInstaller" 2>/dev/null || { echo "pyinstaller missing: $PY -m pip install pyinstaller"; exit 1; }
@@ -89,7 +103,7 @@ if "$PY" -c "import pyproj" 2>/dev/null; then
   PROJ_DATA_DIR="$("$PY" -c 'import pyproj, os; print(os.path.join(os.path.dirname(pyproj.__file__), "proj_dir", "share", "proj"))')"
   GEO_ARGS=(--collect-submodules pyproj --copy-metadata pyproj)
   if [[ -d "$PROJ_DATA_DIR" ]]; then
-    GEO_ARGS+=(--add-data "$PROJ_DATA_DIR:pyproj/proj_dir/share/proj")
+    GEO_ARGS+=(--add-data "$PROJ_DATA_DIR${SEP}pyproj/proj_dir/share/proj")
   fi
   echo "  · bundling 'pyproj' (/reproject + /georeference-scene enabled)"
 else
@@ -169,9 +183,9 @@ fi
 
 "$PY" -m PyInstaller --onefile --name em-bridge \
   --paths "$S3/src" --collect-submodules s3dgraphy \
-  --add-data "$SRC/JSON_config:s3dgraphy/JSON_config" \
-  --add-data "$SRC/templates:s3dgraphy/templates" \
-  --add-data "$SRC/mappings:s3dgraphy/mappings" \
+  --add-data "$SRC/JSON_config${SEP}s3dgraphy/JSON_config" \
+  --add-data "$SRC/templates${SEP}s3dgraphy/templates" \
+  --add-data "$SRC/mappings${SEP}s3dgraphy/mappings" \
   --hidden-import lxml --hidden-import lxml.etree --hidden-import lxml._elementpath \
   --collect-submodules rdflib --copy-metadata rdflib \
   ${MINIO_ARGS[@]+"${MINIO_ARGS[@]}"} \
@@ -186,9 +200,9 @@ fi
   "$EMSTUDIO/tools/em_bridge.py"
 
 mkdir -p "$OUT"
-cp "$WORK/dist/em-bridge" "$OUT/em-bridge-$TRIPLE"
+cp "$WORK/dist/em-bridge$EXE" "$OUT/em-bridge-$TRIPLE$EXE"
 # ad-hoc sign so macOS lets the sidecar's child process run (real releases
-# get Developer ID + notarization at the .app level).
-codesign -s - --force "$OUT/em-bridge-$TRIPLE" 2>/dev/null || true
+# get Developer ID + notarization at the .app level). A no-op elsewhere.
+codesign -s - --force "$OUT/em-bridge-$TRIPLE$EXE" 2>/dev/null || true
 rm -rf "$WORK"
-echo "✓ $OUT/em-bridge-$TRIPLE"
+echo "✓ $OUT/em-bridge-$TRIPLE$EXE"

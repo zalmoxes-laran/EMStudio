@@ -1,0 +1,102 @@
+# The nightly dev channel: one dev build a night, and only when there is
+# something to build.
+#
+# It is `./em.sh devrel` on a timer — the SAME script a human runs, not a second
+# implementation of the release. So the version bump, the tag name, the commit
+# message and above all the **s3dgraphy gate** are identical to a hand-made
+# release, and a nightly that behaves differently from `devrel` cannot happen by
+# drift.
+#
+# ── three conditions, and each one is a decision ──────────────────────────────
+#
+# 1. **something changed.** `--if-changed` skips the night when there are no
+#    commits since the last tag. A release whose only difference from the previous
+#    one is its number teaches testers to ignore the channel.
+# 2. **the pinned s3dgraphy is published.** The gate in `em.sh`, unchanged: the
+#    desktop app freezes that wheel into its sidecar, so an unpublished pin makes
+#    a build nobody can reproduce. (E.D.'s rule, and it is an order: publish the
+#    s3dgraphy dev first, then release EMStudio.)
+# 3. **this repository.** A fork should not tag and push on a schedule.
+#
+# ── why it CALLS the release workflow instead of just pushing a tag ───────────
+#
+# A tag pushed with the default `GITHUB_TOKEN` does **not** trigger other
+# workflows — GitHub's recursion guard, and the classic way a nightly ends with a
+# tag and no builds. The alternative is a personal access token, i.e. a
+# long-lived credential in the repository's secrets for a job that needs none.
+# So `release.yml` is **reusable** (`workflow_call`) and this calls it directly:
+# same jobs, same matrix, same gate, no extra secret.
+name: nightly (dev channel)
+
+on:
+  schedule:
+    # 03:17 UTC — a few minutes off the hour, where the runner queue is shorter,
+    # and late enough that a European evening's commits are all in.
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Release even with no commits since the last tag"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    if: github.repository == 'zalmoxes-laran/EMStudio'
+    runs-on: ubuntu-latest
+    outputs:
+      built: ${{ steps.devrel.outputs.built }}
+      tag: ${{ steps.devrel.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # the whole history and every tag: `--if-changed` counts commits since
+          # the last v* tag, and a shallow clone has no tags to count from
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Who commits the bump
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: ./em.sh devrel (the same script a human runs)
+        id: devrel
+        shell: bash
+        run: |
+          set -euo pipefail
+          before="$(git tag --points-at HEAD | head -1 || true)"
+          if [ "${{ github.event.inputs.force }}" = "true" ]; then
+            ./em.sh devrel --yes
+          else
+            ./em.sh devrel --yes --if-changed
+          fi
+          after="$(git tag --points-at HEAD | head -1 || true)"
+          if [ -n "$after" ] && [ "$after" != "$before" ]; then
+            echo "built=true" >> "$GITHUB_OUTPUT"
+            echo "tag=$after" >> "$GITHUB_OUTPUT"
+            echo "tagged $after"
+          else
+            echo "built=false" >> "$GITHUB_OUTPUT"
+            echo "nothing to release tonight (no commits since the last tag)"
+          fi
+
+  # The four installers, the manual check and the Release — the release workflow
+  # itself, called rather than copied.
+  build:
+    needs: prepare
+    if: needs.prepare.outputs.built == 'true'
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.prepare.outputs.tag }}
+    secrets: inherit

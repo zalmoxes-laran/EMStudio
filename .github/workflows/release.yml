@@ -1,0 +1,380 @@
+# The desktop app, built for the four targets people actually run it on, and
+# attached to the Release of the tag that started it.
+#
+# Triggered by a tag, which is what `./em.sh devrel` pushes. The whole flow:
+#
+#   ./em.sh devrel   →   v1.6.0-dev.N   →   this workflow   →   4 installers
+#
+# ── the order that matters ───────────────────────────────────────────────────
+# The app ships a FROZEN Python sidecar (`em-bridge`) built from the s3dgraphy
+# version PINNED in `tools/requirements.txt`. So the very first job asks PyPI
+# whether that pin exists, and nothing else starts if it does not: a 40-minute
+# matrix that fails on all four runners for a missing wheel is a bad way to be
+# told something a single HTTP request knows. `./em.sh devrel` refuses locally for
+# the same reason — this is the same gate, on the other side of the push, because
+# a tag can also be pushed by hand.
+#
+# ── what is built, where ─────────────────────────────────────────────────────
+# PyInstaller does not cross-compile, so the sidecar needs a run on each OS *and*
+# each macOS architecture. `apps/desktop/build-bridge.sh` is the single source of
+# truth for the freeze flags (which optional engines go in, and what is lost when
+# they do not) — this workflow prepares its inputs and calls it, it never
+# reproduces its command line.
+#
+# The sidecar is frozen from the PUBLISHED wheel, not from a checkout: what a user
+# installs must be buildable by anybody with the pin, which is exactly what the
+# gate above protects.
+#
+# ── signing ──────────────────────────────────────────────────────────────────
+# macOS signing + notarization happen when the Apple secrets are present, and are
+# SKIPPED with a line in the log when they are not — an alpha may ship unsigned
+# (see docs/DEVELOPMENT.md § Releasing for the Gatekeeper note users then need).
+# Windows signing is NOT wired: Tauri v2 takes a certificate thumbprint or a
+# signCommand in tauri.conf.json, which is a repo change plus a machine-installed
+# certificate, and neither belongs in a workflow. Declared rather than half-done.
+name: release (desktop)
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+      - "v*.*.*-dev.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build (e.g. v1.6.0-dev.3)"
+        required: true
+        type: string
+  # REUSABLE, and for a specific reason: the nightly needs to start these builds
+  # without a personal access token. A tag pushed by a job using the default
+  # `GITHUB_TOKEN` does not trigger another workflow (GitHub's recursion guard),
+  # so the nightly CALLS this one instead of hoping its tag push will.
+  workflow_call:
+    inputs:
+      tag:
+        description: "Existing tag to build"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  # The tag this run is about, whichever way it started: an input for a dispatch
+  # or a call, the ref itself for a tag push (where `inputs` is empty).
+  EM_TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  # ── 1 · the gate: is the pinned s3dgraphy published? ──────────────────────
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      pin: ${{ steps.pin.outputs.version }}
+      app_version: ${{ steps.pin.outputs.app_version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Read the pin and the app version
+        id: pin
+        shell: bash
+        run: |
+          PIN="$(sed -n 's/^s3dgraphy\(\[[^]]*\]\)\{0,1\}==\([^ #]*\).*/\2/p' \
+                 tools/requirements.txt | head -1)"
+          [ -n "$PIN" ] || { echo "::error::no exact s3dgraphy pin in tools/requirements.txt"; exit 1; }
+          APP="$(python -c "import json; print(json.load(open('frontend/package.json'))['version'])")"
+          echo "version=$PIN" >> "$GITHUB_OUTPUT"
+          echo "app_version=$APP" >> "$GITHUB_OUTPUT"
+          echo "pinned s3dgraphy: $PIN   ·   app: $APP   ·   tag: $EM_TAG"
+
+      - name: The tag and the app version must agree
+        shell: bash
+        run: |
+          # A tag that says one version while the bundle says another is the kind
+          # of mismatch nobody notices until somebody reports a bug against a
+          # build that does not exist.
+          WANT="${EM_TAG#v}"
+          GOT="${{ steps.pin.outputs.app_version }}"
+          if [ "$WANT" != "$GOT" ]; then
+            echo "::error::tag $EM_TAG says $WANT but frontend/package.json says $GOT"
+            exit 1
+          fi
+
+      - name: s3dgraphy must be on PyPI (the sidecar freezes it)
+        shell: bash
+        run: |
+          PIN="${{ steps.pin.outputs.version }}"
+          # An EXACT pin is the real question: can a packager get these bytes?
+          # (`pip index versions` needs --pre to even see a dev release.)
+          if ! python -m pip download --no-deps --quiet --dest /tmp/probe \
+                 "s3dgraphy==$PIN"; then
+            echo "::error::s3dgraphy==$PIN is not installable from PyPI, so the"
+            echo "::error::sidecar this release ships cannot be rebuilt by anybody."
+            echo "::error::Publish that dev first (s3Dgraphy: ./bump_and_push.sh)."
+            exit 1
+          fi
+          echo "s3dgraphy==$PIN is published — the sidecar is reproducible"
+
+  # ── 2 · the manual still compiles, and carries this version ───────────────
+  #
+  # EMStudio-doc is a SEPARATE repository, and this is the smallest touch that
+  # verifies it: checkout + `sphinx-build -W`, with the version passed as a Sphinx
+  # override. No commit, no dispatch, no token in the doc repo — and the built
+  # HTML carries the app's version because `-D version=` says so.
+  manual:
+    runs-on: ubuntu-latest
+    needs: gate
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: zalmoxes-laran/EMStudio-doc
+          path: doc
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Sphinx
+        run: python -m pip install -r doc/docs/requirements.txt
+
+      - name: Build the manual as a check (-W), at the app's version
+        run: |
+          python -m sphinx -b html -W \
+            -D "version=${{ needs.gate.outputs.app_version }}" \
+            -D "release=${{ needs.gate.outputs.app_version }}" \
+            doc/docs doc/docs/_build/check
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: manual-html
+          path: doc/docs/_build/check
+
+  # ── 3 · the Release, as a draft, so four jobs can fill it ─────────────────
+  draft:
+    runs-on: ubuntu-latest
+    needs: gate
+    outputs:
+      release_id: ${{ steps.create.outputs.result }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create (or reuse) the draft release for this tag
+        id: create
+        uses: actions/github-script@v7
+        env:
+          PIN: ${{ needs.gate.outputs.pin }}
+        with:
+          script: |
+            const tag = process.env.EM_TAG;
+            const notes = [
+              `EMStudio ${tag.replace(/^v/, "")} — desktop builds.`,
+              "",
+              `Python sidecar frozen against **s3dgraphy==${process.env.PIN}**`
+                + " (published on PyPI; that is what makes this build reproducible).",
+              "",
+              "macOS: unsigned builds need one right-click ▸ Open, or",
+              "`xattr -dr com.apple.quarantine /Applications/EMStudio.app`.",
+            ].join("\n");
+            const { owner, repo } = context.repo;
+            // Reusing an existing draft keeps a re-run from creating a second
+            // release for the same tag — which is how a tag ends up with half
+            // its installers in one place and half in another.
+            const existing = await github.rest.repos.listReleases({ owner, repo, per_page: 100 });
+            const found = existing.data.find((r) => r.tag_name === tag);
+            if (found) {
+              core.info(`reusing release ${found.id} for ${tag}`);
+              return found.id;
+            }
+            const made = await github.rest.repos.createRelease({
+              owner, repo, tag_name: tag, name: tag, body: notes,
+              draft: true, prerelease: tag.includes("-dev."),
+            });
+            core.info(`created draft release ${made.data.id} for ${tag}`);
+            return made.data.id;
+          result-encoding: string
+
+  # ── 4 · the four builds ───────────────────────────────────────────────────
+  desktop:
+    needs: [gate, draft]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-14, target: aarch64-apple-darwin, label: macos-arm64 }
+          - { os: macos-13, target: x86_64-apple-darwin, label: macos-intel }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, label: windows-x64 }
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, label: linux-x64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri -> target
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Tauri's Linux prerequisites. webkit2gtk 4.1 is the Tauri v2 one (4.0 is
+      # v1): on 22.04 that package exists, which is why this pins 22.04 rather
+      # than `ubuntu-latest` — and the older glibc also makes the AppImage run on
+      # more machines, not fewer.
+      - name: Linux · Tauri system dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf \
+            build-essential curl wget file libxdo-dev libssl-dev
+
+      - name: Frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      # ── the sidecar ──────────────────────────────────────────────────────
+      # Frozen from the PUBLISHED wheel. `build-bridge.sh` expects a s3Dgraphy
+      # *checkout* layout (`$S3DGRAPHY/src/s3dgraphy`), so the installed package
+      # is COPIED into that shape — a copy and not a symlink because Windows
+      # runners need developer mode for symlinks, and 1.3 MB is not worth a
+      # platform exception. What is frozen is byte-for-byte what `pip install`
+      # gives anybody else.
+      - name: Sidecar · build venv from the pinned s3dgraphy
+        shell: bash
+        run: |
+          set -euo pipefail
+          PIN="${{ needs.gate.outputs.pin }}"
+          python -m venv "$RUNNER_TEMP/bridge-venv"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            VPY="$RUNNER_TEMP/bridge-venv/Scripts/python.exe"
+          else
+            VPY="$RUNNER_TEMP/bridge-venv/bin/python"
+          fi
+          "$VPY" -m pip install --upgrade pip
+          # The extras are not cosmetic: [geo] is /reproject (the map for any
+          # projected CRS), [rdf] is /export-ttl. python-docx is the Word export
+          # and Pillow the thumbnails — both bundle-if-present in build-bridge.sh.
+          "$VPY" -m pip install "s3dgraphy[geo,rdf]==$PIN" \
+            pyinstaller pandas lxml sqlalchemy python-docx Pillow
+          echo "VPY=$VPY" >> "$GITHUB_ENV"
+
+      - name: Sidecar · lay the wheel out the way build-bridge.sh reads it
+        shell: bash
+        run: |
+          set -euo pipefail
+          SHIM="$RUNNER_TEMP/s3d"
+          mkdir -p "$SHIM/src"
+          PKG="$("$VPY" -c "import s3dgraphy, os; print(os.path.dirname(s3dgraphy.__file__))")"
+          cp -R "$PKG" "$SHIM/src/s3dgraphy"
+          echo "S3DGRAPHY=$SHIM" >> "$GITHUB_ENV"
+          echo "PYTHON=$VPY" >> "$GITHUB_ENV"
+          "$VPY" -c "import s3dgraphy; print('frozen from', s3dgraphy.__version__)"
+
+      - name: Sidecar · freeze (PyInstaller)
+        shell: bash
+        working-directory: apps/desktop
+        run: ./build-bridge.sh
+
+      - name: Sidecar · it is there, and it is the right triple
+        shell: bash
+        run: ls -l apps/desktop/src-tauri/binaries/
+
+      # ── the app ──────────────────────────────────────────────────────────
+      - name: Do we have signing material?
+        id: signing
+        shell: bash
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+        run: |
+          if [ "$RUNNER_OS" = "macOS" ] && [ -n "${APPLE_CERTIFICATE:-}" ]; then
+            echo "sign=true" >> "$GITHUB_OUTPUT"
+            echo "macOS: signing material present — the bundle will be signed"
+          else
+            echo "sign=false" >> "$GITHUB_OUTPUT"
+            echo "no signing material for $RUNNER_OS — building UNSIGNED (declared:"
+            echo "an alpha may ship unsigned; users need one right-click ▸ Open on"
+            echo "macOS, or SmartScreen ▸ More info ▸ Run anyway on Windows)"
+          fi
+
+      - name: Build the desktop app (signed)
+        if: steps.signing.outputs.sign == 'true'
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        with:
+          projectPath: apps/desktop
+          releaseId: ${{ needs.draft.outputs.release_id }}
+          args: --target ${{ matrix.target }}
+
+      - name: Build the desktop app (unsigned)
+        if: steps.signing.outputs.sign != 'true'
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: apps/desktop
+          releaseId: ${{ needs.draft.outputs.release_id }}
+          args: --target ${{ matrix.target }}
+
+      # A copy of the installers as a plain artifact too: a draft release is
+      # visible only to people with write access, and a tester on the team
+      # should not need that to try a nightly.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: emstudio-${{ matrix.label }}
+          path: |
+            apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.dmg
+            apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.app
+            apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.msi
+            apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*-setup.exe
+            apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.deb
+            apps/desktop/src-tauri/target/${{ matrix.target }}/release/bundle/**/*.AppImage
+          if-no-files-found: warn
+
+  # ── 5 · publish, once all four are in ────────────────────────────────────
+  publish:
+    runs-on: ubuntu-latest
+    needs: [desktop, manual]
+    steps:
+      - name: Undraft the release
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const tag = process.env.EM_TAG;
+            const { owner, repo } = context.repo;
+            const releases = await github.rest.repos.listReleases({ owner, repo, per_page: 100 });
+            const found = releases.data.find((r) => r.tag_name === tag);
+            if (!found) {
+              core.setFailed(`no release for ${tag}`);
+              return;
+            }
+            const assets = await github.rest.repos.listReleaseAssets({
+              owner, repo, release_id: found.id, per_page: 100 });
+            core.info(`${assets.data.length} asset(s): `
+                      + assets.data.map((a) => a.name).join(", "));
+            if (assets.data.length === 0) {
+              // Publishing an empty release would announce a download that is
+              // not there — worse than a draft nobody has seen.
+              core.setFailed("the release has no assets: leaving it as a draft");
+              return;
+            }
+            await github.rest.repos.updateRelease({
+              owner, repo, release_id: found.id, draft: false });
+            core.info(`published ${tag}`);

@@ -1,46 +1,37 @@
 #!/usr/bin/env bash
-# Bump the EMStudio app version across its three sources of truth in one shot:
-#   frontend/package.json           (the canonical value; Vite inlines it and
-#                                     the GUI shows it next to the wordmark)
-#   apps/desktop/src-tauri/tauri.conf.json   (the .app / .dmg bundle version)
-#   apps/desktop/src-tauri/Cargo.toml        (the desktop crate version)
+# Set the EMStudio APP version — a thin front for `scripts/set-version.mjs`.
 #
-# This is the EMStudio APP version — distinct from the EM *language* version
-# (the "Extended Matrix 1.6" badge, data-driven from the datamodel).
+# There were TWO setters in this repository, and they disagreed on the one thing
+# that is easy to get wrong: this script used to write the full version —
+# `1.6.0-dev.3` — into all three files, `apps/desktop/src-tauri/tauri.conf.json`
+# included. The macOS `CFBundleShortVersionString` and a Windows MSI
+# ProductVersion are numeric (`x.y.z`), so a pre-release suffix there is either
+# rejected or **silently truncated** — silently being the worse of the two,
+# because the .dmg then claims a version nobody chose.
 #
-# Use a semver-valid string (Cargo/Tauri/npm reject 4-part "1.6.0.dev01"):
-#   ./set-version.sh 1.6.0-dev.2
-#   ./set-version.sh 1.6.0
+# `scripts/set-version.mjs` knows that (it keeps the suffix in package.json and
+# Cargo.toml and writes the numeric core to the bundle config), it can bump the
+# dev counter on its own, it can print, and it has a dry run. Two behaviours for
+# one act is one too many, so this is now the same act under the name people
+# already type — and `./em.sh inc` / `devrel` call the same implementation.
+#
+#   ./set-version.sh 1.6.0-dev.3     set exactly
+#   ./set-version.sh --bump-dev      1.6.0-dev.2 → 1.6.0-dev.3
+#   ./set-version.sh --print         what is set now, per file
+#   ./set-version.sh <any> --dry-run
+#
+# This is the APP version, distinct from the EM *language* version (the
+# "Extended Matrix 1.6" badge, data-driven from the datamodels and never written
+# by hand).
 set -euo pipefail
 
-VER="${1:-}"
-if [[ -z "$VER" ]]; then
-  echo "usage: ./set-version.sh <semver>   e.g. 1.6.0-dev.2"
-  exit 1
-fi
-# minimal semver check (MAJOR.MINOR.PATCH with optional -prerelease / +build)
-if ! [[ "$VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
-  echo "error: '$VER' is not valid semver (Cargo/Tauri need e.g. 1.6.0-dev.2, not 1.6.0.dev02)"
-  exit 1
-fi
-
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-python3 - "$ROOT" "$VER" <<'PY'
-import json, re, sys
-root, ver = sys.argv[1], sys.argv[2]
 
-for rel in ("frontend/package.json", "apps/desktop/src-tauri/tauri.conf.json"):
-    p = f"{root}/{rel}"
-    d = json.load(open(p))
-    d["version"] = ver
-    json.dump(d, open(p, "w"), indent=2)
-    open(p, "a").write("\n")
-    print(f"  {rel} -> {ver}")
+if [[ $# -eq 0 ]]; then
+  echo "usage: ./set-version.sh <semver | --bump-dev | --print> [--dry-run]"
+  echo
+  node "$ROOT/scripts/set-version.mjs" --print
+  exit 1
+fi
 
-cargo = f"{root}/apps/desktop/src-tauri/Cargo.toml"
-txt = open(cargo).read()
-txt = re.sub(r'(?m)^version = ".*"$', f'version = "{ver}"', txt, count=1)
-open(cargo, "w").write(txt)
-print(f"  apps/desktop/src-tauri/Cargo.toml -> {ver}")
-PY
-echo "✓ EMStudio version set to $VER — rebuild to pick it up (npm run build / cargo tauri build)"
+node "$ROOT/scripts/set-version.mjs" "$@"
