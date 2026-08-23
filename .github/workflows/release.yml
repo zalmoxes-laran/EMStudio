@@ -141,6 +141,10 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: zalmoxes-laran/EMStudio-doc
+          # The manual lives on the versioned branch (1.6), like the other EM
+          # docs — `main` is the older initial-scaffold state and has no
+          # docs/requirements.txt yet. Track the app's line here.
+          ref: "1.6"
           path: doc
 
       - uses: actions/setup-python@v5
@@ -361,7 +365,11 @@ jobs:
   # ── 5 · publish, once all four are in ────────────────────────────────────
   publish:
     runs-on: ubuntu-latest
-    needs: [desktop, manual]
+    # The binaries are the release. The `manual` job is an INFORMATIONAL doc
+    # check (EMStudio-doc is a separate repo, not shipped in these installers),
+    # so a doc hiccup must never hold the binaries hostage — it runs, it is
+    # visible if red, but it does not gate the publish. Only the four builds do.
+    needs: [desktop]
     steps:
       - name: Undraft the release
         uses: actions/github-script@v7
