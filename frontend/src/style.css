@@ -6713,3 +6713,57 @@ body.nv-standalone main.nv-standalone-main {
   color: var(--text-muted);
   font-style: italic;
 }
+
+/* ── MEMBERS · the owner's face on em-server's user management ──────────────
+   A floating panel rather than a dock slot: it is a room's ADMINISTRATION, not
+   a view of the study, and it should not take space away from the canvas for
+   something somebody opens twice a week. Colours from the app's tokens, so it
+   follows the theme like everything else. */
+
+.members-panel {
+  position: fixed;
+  right: 1rem;
+  bottom: 3.2rem;
+  z-index: 40;
+  width: min(30rem, calc(100vw - 2rem));
+  max-height: min(30rem, calc(100vh - 6rem));
+  display: flex;
+  flex-direction: column;
+  background: var(--panel, #fff);
+  color: var(--text, #1a1a1a);
+  border: 1px solid var(--border, #ccc);
+  border-radius: 8px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, .22);
+  font-size: 13px;
+}
+
+.mem-titlebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: .4rem .6rem;
+  border-bottom: 1px solid var(--border, #ccc);
+  font-weight: 600;
+}
+
+.mem-body { padding: .6rem; overflow: auto; }
+.mem-head { display: flex; justify-content: space-between; align-items: baseline; }
+.mem-role { color: var(--text-dim, #667); font-size: .9em; }
+.mem-table { width: 100%; border-collapse: collapse; margin: .5rem 0; }
+.mem-table td { padding: .25rem .3rem; border-bottom: 1px solid var(--border, #eee); }
+.mem-orcid { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .9em; }
+.mem-rolecell select { font: inherit; }
+.mem-actions { text-align: right; }
+.mem-empty, .mem-note, .mem-refused { color: var(--text-dim, #667); }
+.mem-refused { border-left: 3px solid var(--warn, #b8860b); padding-left: .5rem; }
+.mem-hint { color: var(--text-dim, #667); margin-left: .4rem; font-size: .85em; }
+.mem-add, .mem-inline { display: flex; gap: .3rem; align-items: center; margin: .4rem 0; }
+.mem-add input, .mem-add select, .mem-inline select { font: inherit; }
+.mem-invites h4 { margin: .8rem 0 .3rem; font-size: .95em; }
+.mem-invite { display: flex; justify-content: space-between; gap: .5rem; align-items: center; }
+.mem-token { display: flex; gap: .4rem; align-items: center; margin: .3rem 0; }
+.mem-token code { word-break: break-all; font-size: .85em; }
+.mem-ghost { background: transparent; border: 1px solid var(--border, #ccc); border-radius: 5px; cursor: pointer; color: inherit; }
+
+/* the chip says, quietly, that this session may act */
+#hub-roster.can-manage { font-weight: 600; }

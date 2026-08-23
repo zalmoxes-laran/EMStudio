@@ -69,6 +69,7 @@ import {
 } from "./connectors";
 import type { ConnectorVersions } from "./connectors";
 import { narrativesIn, renderNarrativeView, VIEW_TYPE_MIME } from "./narrative";
+import { acceptInvite, canManage, pendingJoin, renderMembersPanel } from "./members";
 
 import {
   addEpochChapter,
@@ -3249,6 +3250,116 @@ function replayAfterResync(): void {
   nodeList.refresh();
 }
 
+/**
+ * MEMBERS · the owner's face on em-server's user management.
+ *
+ * The panel itself is `members.ts` and it holds no rule: every action is one call
+ * to the room's own endpoints, and the sentence the server answers with is what
+ * the user reads. This is the wiring — where it opens from, and who is asking.
+ *
+ * It opens from the roster chip, which is where somebody already looks to see who
+ * is in the room. A viewer clicking it gets the panel too: the server refuses the
+ * member list to anybody below admin, and the panel shows that refusal rather
+ * than a blank box (a membership list is a list of the people working on an
+ * unpublished study — that is the rule, and it is em-server's).
+ */
+function membersAccess(): { base: string; room: string; token: string | null } | null {
+  if (!sync.room) return null;
+  return { base: getSettings().sync.hubUrl, room: sync.room, token: hubToken };
+}
+
+function openMembersPanel(): void {
+  const access = membersAccess();
+  if (!access) {
+    toast(t("members.noRoom"));
+    return;
+  }
+  let panel = document.getElementById("members-panel");
+  if (panel) {
+    // second click closes: the chip is a toggle, like every other footer chip
+    panel.remove();
+    return;
+  }
+  panel = document.createElement("div");
+  panel.id = "members-panel";
+  panel.className = "members-panel";
+  const head = document.createElement("div");
+  head.className = "mem-titlebar";
+  const title = document.createElement("span");
+  title.textContent = t("members.title");
+  const close = document.createElement("button");
+  close.className = "mem-ghost";
+  close.textContent = "✕";
+  close.addEventListener("click", () => panel?.remove());
+  head.append(title, close);
+  const body = document.createElement("div");
+  body.className = "mem-body";
+  panel.append(head, body);
+  document.body.appendChild(panel);
+
+  renderMembersPanel(body, {
+    access,
+    role: hostInfo.role ?? null,
+    note: (message, kind) => {
+      if (kind === "bad") logWarn(message);
+      else logInfo(message);
+      toast(message);
+    },
+  });
+}
+
+/**
+ * An invite link opened this app: `?join=<token>`.
+ *
+ * The three steps the design asks for, in order, and none of them is skippable:
+ * the link says which room, the ORCID says who (the hub token — without one the
+ * server answers 401 and we say so), and the ACL ends up holding the grant. Then
+ * the app joins the room it was invited to, which is what closes the circle
+ * without a third surface.
+ */
+async function acceptPendingInvite(): Promise<void> {
+  const pending = pendingJoin();
+  if (!pending) return;
+  const settings = getSettings();
+  const base = settings.sync.hubUrl;
+  if (!base) {
+    logWarn(t("members.joinNoHub"));
+    return;
+  }
+  if (!hubToken) {
+    // The link opened the door; it does not authenticate. Ask for the identity
+    // the same way joining a room does today.
+    hubToken = window.prompt(t("hub.tokenPrompt")) || null;
+  }
+  if (!hubToken) {
+    logWarn(t("members.joinNeedsIdentity"));
+    toast(t("members.joinNeedsIdentity"));
+    return;
+  }
+  try {
+    const joined = await acceptInvite(base, pending.token, hubToken);
+    logInfo(t("members.joined", { room: joined.title || joined.room_id,
+                                  role: joined.role }));
+    toast(t("members.joined", { room: joined.title || joined.room_id,
+                                role: joined.role }));
+    // …and then actually go in, which is the point of following a link
+    const s = getSettings();
+    saveSettings({ ...s, sync: { ...s.sync, hubRoom: joined.room_id } });
+    connectToHub(base, joined.room_id, hubToken);
+  } catch (error) {
+    // The server's sentence: "that invitation is revoked", "expired", "used up".
+    logWarn(String((error as Error).message));
+    toast(String((error as Error).message));
+  } finally {
+    // The token leaves the URL either way: a bearer-ish string in the address
+    // bar gets pasted into bug reports and shared screens.
+    const url = new URL(window.location.href);
+    url.searchParams.delete("join");
+    url.searchParams.delete("room");
+    window.history.replaceState({}, "", url.toString());
+  }
+}
+
 /** The roster chip + the awareness map the canvas reads. */
 function renderHubRoster(): void {
   hubPeerSelections = peerSelections(hubPresence);
@@ -3258,6 +3369,13 @@ function renderHubRoster(): void {
   const inRoom = hubPresence.members.length;
   chip.classList.toggle("hidden", !sync.room);
   chip.textContent = sync.room ? t("hub.roster", { n: String(inRoom) }) : "";
+  if (!chip.dataset.membersWired) {
+    // wired ONCE: `renderHubRoster` runs on every presence frame, and a listener
+    // added per frame is a click that fires eleven times by the afternoon
+    chip.dataset.membersWired = "1";
+    chip.addEventListener("click", () => openMembersPanel());
+  }
+  chip.classList.toggle("can-manage", canManage(hostInfo.role));
   chip.title = [
     sync.room ? `${t("hub.room")}: ${sync.room}` : "",
     ...hubPresence.members.map((m) =>
@@ -14783,6 +14901,9 @@ void onForeignBridge((message) => {
 });
 
 // ---------- boot ----------
+// An invite link (`?join=<token>`) is the first thing to answer: it decides which
+// room this session is about, so it runs before anything auto-connects.
+void acceptPendingInvite();
 // Language FIRST: `initI18n` sets `dir`/`lang` on <html> and translates the
 // static chrome before anything is rendered. Doing it after the first render
 // would show a frame of English (or an LTR frame in Hebrew) and then flip.
