@@ -96,6 +96,27 @@ export async function pickXlsx(): Promise<string | null> {
     : (typeof picked === "string" ? picked : null);
 }
 
+/** Native picker for a MAPPING SOURCE → the chosen path, or null.
+ *
+ * `extensions` comes from the library (`api.mapping_source_extensions`), so the
+ * dialog offers exactly the files a mapping can describe — a filter written here
+ * would be a second answer to "can this be a source?".
+ *
+ * The PATH only, like `pickXlsx`: the source is read by the BRIDGE (sqlite3,
+ * openpyxl and the XML parser all live there), so its contents never enter the
+ * webview. That is also why a browser `<input type=file>` cannot stand in for
+ * this — it withholds the path by design.
+ */
+export async function pickSourceFile(extensions: string[]): Promise<string | null> {
+  if (!isTauri()) return null;
+  const filters = extensions.length
+    ? [{ name: "Mapping source", extensions }]
+    : undefined;
+  const picked = await open({ multiple: false, filters });
+  return Array.isArray(picked) ? (picked[0] ?? null)
+    : (typeof picked === "string" ? picked : null);
+}
+
 /** Native "Open…" dialog for a .graphml file → picked path + contents. */
 export async function openGraphml(): Promise<
   { path: string; text: string } | null

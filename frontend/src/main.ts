@@ -34,6 +34,8 @@ import {
 import {
   buildMapping,
   EMPTY_STATE as EMPTY_MAPPING_STATE,
+  type FsListing as MappingFsListing,
+  type FsPlace as MappingFsPlace,
   edgeKey,
   renderMappingEditor,
   typeOfField,
@@ -186,6 +188,7 @@ import {
   clearLlmKey,
   onForeignBridge,
   pickFolder,
+  pickSourceFile,
   pickXlsx,
 } from "./tauri";
 import {
@@ -7594,6 +7597,8 @@ async function ensureMappingCatalog(): Promise<void> {
   if (!answer) return;
   meState.catalog = (answer.catalog as MappingEditorState["catalog"]) ?? [];
   meState.propertyType = (answer.property_type as string | undefined) ?? undefined;
+  meState.extensions =
+    (answer.extensions as Record<string, string> | undefined) ?? undefined;
 }
 
 /** Read a source: its fields, its samples, and the one question only a person
@@ -7656,8 +7661,159 @@ async function ensureMappingEdges(relation: RelationDraft): Promise<void> {
   refreshMappingEditor();
 }
 
+/** The picker's own state, kept out of `meState` only where it must persist
+ *  across closes: the folder you were in, and the folders you have visited. A
+ *  picker that forgets both is a picker you fight. */
+let mePickerPath: string | undefined;
+let mePickerRecent: string[] = [];
+let mePickerHistory: string[] = [];
+let mePickerPlaces: MappingFsPlace[] = [];
+let mePickerBookmarks: MappingFsPlace[] = [];
+let mePickerScope = "roots";
+let mePickerFilter = "";
+let mePickerSort: "name" | "date" | "size" = "name";
+
+function mePicker(patch: Partial<NonNullable<MappingEditorState["picker"]>>): void {
+  meState.picker = {
+    listing: meState.picker?.listing ?? null,
+    loading: false,
+    error: "",
+    places: mePickerPlaces,
+    bookmarks: mePickerBookmarks,
+    scope: mePickerScope,
+    recent: mePickerRecent,
+    history: mePickerHistory,
+    filter: mePickerFilter,
+    sort: mePickerSort,
+    typed: "",
+    ...patch,
+  };
+}
+
+/** Home, the user folders, the volumes, the served roots — and the SCOPE.
+ *
+ *  `/fs/places` is computed by the bridge from the machine, so the sidebar is
+ *  never a list somebody configured. The scope (`whole-disk` / `roots`) is what
+ *  lets the panel say why a place is greyed instead of letting a click 403. */
+async function loadMappingPlaces(): Promise<void> {
+  try {
+    const res = await fetch(`${await bridgeUrl()}/fs/places`);
+    if (!res.ok) return;
+    const answer = (await res.json()) as {
+      places?: MappingFsPlace[]; bookmarks?: MappingFsPlace[]; scope?: string };
+    mePickerPlaces = answer.places ?? [];
+    mePickerBookmarks = answer.bookmarks ?? [];
+    mePickerScope = answer.scope ?? "roots";
+  } catch {
+    /* no bridge: the browse below will say so with the one honest sentence */
+  }
+}
+
+/** Browse the filesystem THROUGH THE BRIDGE — the browser's picker.
+ *
+ *  `fsList` is the Storage window's own client (one implementation of "what is
+ *  in this folder"), and what the bridge will serve is its business: named roots
+ *  by default, the whole machine with `--fs-all`. */
+async function browseMappingSource(path?: string): Promise<void> {
+  const from = meState.picker?.listing?.path;
+  mePicker({ loading: true });
+  refreshMappingEditor();
+  try {
+    const listing = await fsList(path);
+    if (from && from !== listing.path) {
+      // one step of history, deduplicated: ← should go back, not oscillate
+      mePickerHistory = [...mePickerHistory.filter((p) => p !== from), from]
+        .slice(-20);
+    }
+    mePickerPath = listing.roots ? undefined : listing.path;
+    if (mePickerPath) {
+      mePickerRecent = [mePickerPath,
+                        ...mePickerRecent.filter((p) => p !== mePickerPath)]
+        .slice(0, 6);
+    }
+    mePicker({ listing: listing as unknown as MappingFsListing, loading: false,
+               error: "", history: mePickerHistory, recent: mePickerRecent });
+  } catch (error) {
+    // "the bridge is not running" and "that folder is not a root" are different
+    // problems with different fixes, and `storage.ts` already tells them apart
+    mePicker({
+      loading: false,
+      error: error instanceof BridgeDownError
+        ? BRIDGE_UNREACHABLE
+        : (error instanceof Error ? error.message : String(error)),
+    });
+  }
+  refreshMappingEditor();
+}
+
+/** Grant the bridge a folder — Blender's "add bookmark", and in roots-mode the
+ *  only way to reach a place at all. The same `/fs/roots` channel the Storage
+ *  window uses (DS4): one folder, named by a person, remembered on disk. */
+async function addMappingRoot(path: string): Promise<void> {
+  try {
+    const res = await fetch(`${await bridgeUrl()}/fs/roots`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "add", path }),
+    });
+    const answer = (await res.json().catch(() => null)) as
+      { ok?: boolean; error?: string } | null;
+    if (!res.ok || !answer?.ok) {
+      mePicker({ error: answer?.error ?? `HTTP ${res.status}` });
+      refreshMappingEditor();
+      return;
+    }
+    toast(t("me.pickerGranted", { name: path.split("/").filter(Boolean).pop()
+                                        ?? path }));
+    await loadMappingPlaces();
+    await browseMappingSource(path);
+  } catch (error) {
+    mePicker({ error: error instanceof Error ? error.message : String(error) });
+    refreshMappingEditor();
+  }
+}
+
 const meHandlers: MappingEditorHandlers = {
-  pickSource: () => void readMappingSource(),
+  pickSource: () => void (async () => {
+    // THE OS DIALOG when we have one. It is the better instrument and it returns
+    // the same thing the bridge needs: a real absolute path.
+    if (isTauri()) {
+      const extensions = Object.keys(meState.extensions ?? {});
+      const picked = await pickSourceFile(extensions);
+      if (picked) {
+        meHandlers.setPath(picked);
+        void readMappingSource();
+      }
+      return;
+    }
+    // …and in a browser, the bridge's filesystem browse — because
+    // `<input type=file>` withholds the path, and the path is the whole point.
+    await ensureMappingCatalog();
+    await loadMappingPlaces();
+    await browseMappingSource(mePickerPath);
+  })(),
+  browse: (path) => void browseMappingSource(path),
+  addRoot: (path) => void addMappingRoot(path),
+  setPickerFilter: (text) => {
+    mePickerFilter = text;
+    mePicker({ filter: text });
+    refreshMappingEditor();
+  },
+  setPickerSort: (sort) => {
+    mePickerSort = sort;
+    mePicker({ sort });
+    refreshMappingEditor();
+  },
+  chooseFile: (path) => {
+    if (!path) return;
+    meState.picker = null;
+    meHandlers.setPath(path);
+    void readMappingSource();
+  },
+  closePicker: () => {
+    meState.picker = null;
+    refreshMappingEditor();
+  },
   setPath: (path) => {
     meState.path = path;
     // a new source is a new mapping: keeping the old choices would silently map

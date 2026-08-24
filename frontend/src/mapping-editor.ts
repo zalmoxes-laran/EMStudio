@@ -115,6 +115,37 @@ export interface MappingEditorState {
   relations: RelationDraft[];
   /** the edges legal for the relation being edited, keyed `src→tgt` */
   edgeOptions: Record<string, EdgeOption[]>;
+  /** `{extension: format}` — which files are mappable, from the library. Drives
+   *  the native dialog's filter AND the browser's greying, so "can this be a
+   *  source?" has one answer. */
+  extensions?: Record<string, string>;
+  /** THE FILE PICKER, when it is open. On the desktop this stays null and the OS
+   *  dialog does the job; in a browser the path cannot come from
+   *  `<input type=file>` (it withholds it by design), so this is a real
+   *  filesystem browse served by the bridge — the same `/fs/list` the Storage
+   *  window shows, with the sidebar Blender's File View has. */
+  picker?: {
+    listing: FsListing | null;
+    loading: boolean;
+    error: string;
+    /** Home, the user folders, the volumes — computed by the bridge from the
+     *  machine (`/fs/places`), never configured. */
+    places: FsPlace[];
+    /** the folders the bridge serves — Blender's "Bookmarks" */
+    bookmarks: FsPlace[];
+    /** `whole-disk` or `roots`: WHAT is reachable, so the panel can say why a
+     *  place is greyed instead of letting a click 403 */
+    scope: string;
+    /** the folders visited in this session, most recent first */
+    recent: string[];
+    /** where we came from, for the ← button */
+    history: string[];
+    /** the name filter, and how the list is ordered */
+    filter: string;
+    sort: "name" | "date" | "size";
+    /** the path bar's text while it is being typed */
+    typed: string;
+  } | null;
   name: string;
   /** the node type a PROPERTY column produces — the LIBRARY's answer
    *  (`api.mapping_property_node_type`), carried so that asking for the legal
@@ -132,8 +163,52 @@ export const EMPTY_STATE: MappingEditorState = {
   edgeOptions: {}, name: "", verdict: null, applied: null, busy: "", note: "",
 };
 
+/** One row of a listing, in the shape `storage.ts` already returns (`FsEntry`).
+ *  Redeclared structurally rather than imported so this module stays a leaf. */
+export interface FsRow {
+  name: string;
+  type: "dir" | "file";
+  path: string;
+  ext: string;
+  size: number;
+  outside?: boolean;
+}
+
+export interface FsListing {
+  roots: boolean;
+  path: string;
+  parent: string | null;
+  entries: FsRow[];
+}
+
+/** One row of the picker's sidebar. `served: false` means the bridge is in
+ *  roots-mode and this place has not been granted — the row is shown with the
+ *  grant offered, because "why can I not open my own Documents?" deserves an
+ *  answer and a button, not a 403. */
+export interface FsPlace {
+  label: string;
+  path: string;
+  kind: "home" | "user" | "volume" | "bookmark" | string;
+  served: boolean;
+}
+
 export interface MappingEditorHandlers {
+  /** OPEN THE PICKER: the OS dialog on the desktop, the bridge browse in a
+   *  browser. Both end at a real path, which is the only thing the bridge can
+   *  read a source from. */
   pickSource(): void;
+  /** Browse into a directory (or, with no path, where the bridge starts). */
+  browse(path?: string): void;
+  /** Choose this file as the source. */
+  chooseFile(path: string): void;
+  closePicker(): void;
+  /** Grant the bridge access to a folder (Blender's "add bookmark", and in
+   *  roots-mode the only way to reach a place). */
+  addRoot(path: string): void;
+  /** the name filter / the sort order / the typed path — view state, so the
+   *  caller keeps one copy of it */
+  setPickerFilter(text: string): void;
+  setPickerSort(sort: "name" | "date" | "size"): void;
   setPath(path: string): void;
   setTable(table: string): void;
   setRecordPath(path: string): void;
@@ -303,12 +378,18 @@ function sourceBox(state: MappingEditorState, h: MappingEditorHandlers,
   input.value = state.path;
   input.placeholder = t("me.pathPlaceholder");
   input.addEventListener("change", () => h.setPath(input.value));
+  const browse = document.createElement("button");
+  browse.textContent = t("me.browse");
+  browse.title = t("me.browseWhy");
+  browse.disabled = busy;
+  browse.addEventListener("click", () => h.pickSource());
   const pick = document.createElement("button");
   pick.textContent = t("me.read");
-  pick.disabled = busy;
-  pick.addEventListener("click", () => h.pickSource());
-  row.append(input, pick);
+  pick.disabled = busy || !state.path.trim();
+  pick.addEventListener("click", () => h.chooseFile(state.path.trim()));
+  row.append(input, browse, pick);
   section.appendChild(row);
+  if (state.picker) section.appendChild(pickerBox(state, h, busy));
 
   if (state.format) {
     const what = document.createElement("p");
@@ -336,6 +417,237 @@ function sourceBox(state: MappingEditorState, h: MappingEditorHandlers,
     section.appendChild(why);
   }
   return section;
+}
+
+/**
+ * THE FILE BROWSER — a real filesystem, served by the bridge.
+ *
+ * Why this exists at all: the bridge READS the source (sqlite3, openpyxl and the
+ * XML parser all live there), so what it needs is a **path**. A browser's
+ * `<input type="file">` withholds the path by design — it hands over bytes and a
+ * bare name — so a picker built on it could not produce the one thing this tool
+ * needs. The bridge's `/fs/list` can: it is the same filesystem browse the
+ * Storage window shows, rooted in the folders the bridge was started with.
+ *
+ * On the desktop this never opens: the OS dialog is the better instrument and it
+ * returns the same real path.
+ */
+function pickerBox(state: MappingEditorState, h: MappingEditorHandlers,
+                   busy: boolean): HTMLElement {
+  const picker = state.picker!;
+  const section = document.createElement("div");
+  section.className = "me-picker";
+
+  // ── the bar: back · up · the PATH, typeable · close ──────────────────────
+  const bar = document.createElement("div");
+  bar.className = "me-picker-bar";
+  const back = document.createElement("button");
+  back.textContent = "←";
+  back.title = t("me.pickerBack");
+  back.disabled = busy || picker.history.length === 0;
+  back.addEventListener("click", () => {
+    const previous = picker.history[picker.history.length - 1];
+    h.browse(previous || undefined);
+  });
+  const up = document.createElement("button");
+  up.textContent = "↑";
+  up.title = t("me.pickerUp");
+  up.disabled = busy || !picker.listing || picker.listing.roots;
+  up.addEventListener("click", () => h.browse(picker.listing?.parent ?? undefined));
+  // The path bar is an INPUT, like Blender's: reading where you are is half of
+  // it, typing where you want to go is the other half — and pasting a path from
+  // a terminal is how anybody actually gets to a deep folder.
+  const where = document.createElement("input");
+  where.type = "text";
+  where.className = "me-where";
+  where.value = picker.typed
+    || (picker.listing?.roots ? "" : (picker.listing?.path ?? ""));
+  where.placeholder = t("me.pickerRoots");
+  where.addEventListener("change", () => h.browse(where.value.trim() || undefined));
+  where.addEventListener("keydown", (event) => {
+    if ((event as KeyboardEvent).key === "Enter") {
+      h.browse(where.value.trim() || undefined);
+    }
+  });
+  const close = document.createElement("button");
+  close.className = "me-x";
+  close.textContent = "✕";
+  close.addEventListener("click", () => h.closePicker());
+  bar.append(back, up, where, close);
+  section.appendChild(bar);
+
+  const body = document.createElement("div");
+  body.className = "me-picker-body";
+  body.append(pickerSidebar(state, h, busy), pickerFiles(state, h, busy));
+  section.appendChild(body);
+  return section;
+}
+
+/** The sidebar: Places · Volumes · Bookmarks · Recent. The same four groups
+ *  Blender's File View has, and for the same reason — a picker that starts at
+ *  one folder makes you type your way out of it. */
+function pickerSidebar(state: MappingEditorState, h: MappingEditorHandlers,
+                       busy: boolean): HTMLElement {
+  const picker = state.picker!;
+  const side = document.createElement("div");
+  side.className = "me-picker-side";
+
+  const group = (labelKey: string, places: FsPlace[]): void => {
+    if (!places.length) return;
+    const head = document.createElement("div");
+    head.className = "me-side-head";
+    head.textContent = t(labelKey);
+    side.appendChild(head);
+    for (const place of places) {
+      const row = document.createElement("button");
+      row.className = "me-side-row";
+      row.textContent = place.label;
+      row.title = place.path;
+      if (place.path === picker.listing?.path) row.classList.add("on");
+      if (place.served) {
+        row.disabled = busy;
+        row.addEventListener("click", () => h.browse(place.path));
+      } else {
+        // roots-mode and this place has not been granted. Not hidden and not a
+        // dead end: the row says what it needs and the button next to it does
+        // it, because "why can I not open my own Documents?" deserves an answer.
+        row.disabled = true;
+        row.title = t("me.pickerNotServed");
+        const grant = document.createElement("button");
+        grant.className = "me-side-grant";
+        grant.textContent = "+";
+        grant.title = t("me.pickerGrant", { name: place.label });
+        grant.disabled = busy;
+        grant.addEventListener("click", () => h.addRoot(place.path));
+        const pair = document.createElement("div");
+        pair.className = "me-side-pair";
+        pair.append(row, grant);
+        side.appendChild(pair);
+        continue;
+      }
+      side.appendChild(row);
+    }
+  };
+
+  group("me.sidePlaces", picker.places.filter((p) => p.kind !== "volume"));
+  group("me.sideVolumes", picker.places.filter((p) => p.kind === "volume"));
+  group("me.sideBookmarks", picker.bookmarks);
+  group("me.sideRecent", picker.recent.map((path) => ({
+    label: path.split("/").filter(Boolean).pop() ?? path,
+    path, kind: "recent", served: true,
+  })));
+
+  // …and the way to ADD one: the current folder becomes a bookmark, which in
+  // roots-mode is also the grant. Blender's ＋ over the bookmark list.
+  const current = picker.listing?.roots ? "" : (picker.listing?.path ?? "");
+  if (current) {
+    const add = document.createElement("button");
+    add.className = "me-side-add";
+    add.textContent = t("me.pickerBookmark");
+    add.title = t("me.pickerBookmarkWhy");
+    add.disabled = busy;
+    add.addEventListener("click", () => h.addRoot(current));
+    side.appendChild(add);
+  }
+  const scope = document.createElement("p");
+  scope.className = "me-side-scope";
+  scope.textContent = picker.scope === "whole-disk"
+    ? t("me.scopeAll") : t("me.scopeRoots");
+  side.appendChild(scope);
+  return side;
+}
+
+/** The file list: folders first, filtered by name, sorted by the clicked column
+ *  — and only the mappable files enabled. */
+function pickerFiles(state: MappingEditorState, h: MappingEditorHandlers,
+                     busy: boolean): HTMLElement {
+  const picker = state.picker!;
+  const pane = document.createElement("div");
+  pane.className = "me-picker-pane";
+
+  const tools = document.createElement("div");
+  tools.className = "me-picker-tools";
+  const filter = document.createElement("input");
+  filter.type = "text";
+  filter.className = "me-filter";
+  filter.value = picker.filter;
+  filter.placeholder = t("me.pickerFilter");
+  filter.addEventListener("input", () => h.setPickerFilter(filter.value));
+  tools.appendChild(filter);
+  for (const sort of ["name", "date", "size"] as const) {
+    const button = document.createElement("button");
+    button.textContent = t(`me.sort.${sort}`);
+    button.className = picker.sort === sort ? "on" : "";
+    button.disabled = busy;
+    button.addEventListener("click", () => h.setPickerSort(sort));
+    tools.appendChild(button);
+  }
+  pane.appendChild(tools);
+
+  if (picker.error) {
+    const error = document.createElement("p");
+    error.className = "me-error";
+    error.textContent = picker.error;
+    pane.appendChild(error);
+    return pane;
+  }
+  if (picker.loading || !picker.listing) {
+    const wait = document.createElement("p");
+    wait.className = "me-muted";
+    wait.textContent = t("me.pickerLoading");
+    pane.appendChild(wait);
+    return pane;
+  }
+
+  const list = document.createElement("div");
+  list.className = "me-picker-list";
+  const known = state.extensions ?? {};
+  const needle = picker.filter.trim().toLowerCase();
+  const entries = picker.listing.entries
+    .filter((e) => !needle || e.name.toLowerCase().includes(needle))
+    .sort((a, b) => {
+      // folders first, always: it is a hierarchy, and mixing them makes it a
+      // list of names
+      if ((a.type === "dir") !== (b.type === "dir")) {
+        return a.type === "dir" ? -1 : 1;
+      }
+      if (picker.sort === "size") return (b.size ?? 0) - (a.size ?? 0);
+      if (picker.sort === "date") {
+        return ((b as { mtime?: number }).mtime ?? 0)
+          - ((a as { mtime?: number }).mtime ?? 0);
+      }
+      return a.name.localeCompare(b.name);
+    });
+  for (const entry of entries) {
+    const row = document.createElement("button");
+    row.className = "me-picker-row";
+    if (entry.type === "dir") {
+      row.classList.add("dir");
+      row.textContent = `▸ ${entry.name}`;
+      row.disabled = busy || Boolean(entry.outside);
+      if (entry.outside) row.title = t("me.pickerOutside");
+      row.addEventListener("click", () => h.browse(entry.path));
+    } else {
+      // WHICH files are mappable is the library's answer (`extensions`), not a
+      // list written here. Unmappable ones are shown and disabled rather than
+      // hidden: "my file is not in the list" is a worse puzzle than "my file is
+      // greyed out, and the tooltip says why".
+      const format = known[(entry.ext || "").toLowerCase().replace(/^\./, "")];
+      row.textContent = format ? `${entry.name} · ${format}` : entry.name;
+      row.disabled = busy || !format;
+      if (!format) row.title = t("me.pickerNotASource");
+      row.addEventListener("click", () => h.chooseFile(entry.path));
+    }
+    list.appendChild(row);
+  }
+  if (!entries.length) {
+    const empty = document.createElement("p");
+    empty.className = "me-muted";
+    empty.textContent = needle ? t("me.pickerNoMatch") : t("me.pickerEmpty");
+    list.appendChild(empty);
+  }
+  pane.appendChild(list);
+  return pane;
 }
 
 function pickerRow(label: string, options: Array<{ value: string; label: string }>,

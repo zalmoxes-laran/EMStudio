@@ -181,6 +181,95 @@ _ALLOWED_EXTRA_ORIGINS = {
 #: to a place two public routes can share.
 _FS_ROOTS: list[str] = []
 
+#: WHOLE-DISK mode — opt-in, and the opposite of an accident.
+#:
+#: The sandbox above exists for a real reason: an `<img src>` from any page in the
+#: same browser is a no-cors request, and a folder of excavation data is not
+#: something to hand out on the strength of "the page cannot read the pixels
+#: back". So confinement to named roots stays the DEFAULT.
+#:
+#: But a single-user desktop run has a different shape of problem: the person is
+#: the operator, the machine is theirs, and a file picker that cannot leave two
+#: bookmarked folders is a picker that cannot do its job (E.D., 2026-08-24 — "deve
+#: pescare tutti i percorsi del computer"). So there is now a switch, and it is a
+#: switch: `--fs-all` / `EM_BRIDGE_FS_ALL=1`, announced at startup, reported by
+#: `/health` and by `/fs/roots`, so it can never be a surprise or a default
+#: somebody inherited. The Origin gate is UNCHANGED — this widens WHAT is
+#: reachable, never WHO may ask.
+_FS_ALL = False
+
+
+def _fs_all_from_env() -> bool:
+    return (os.environ.get("EM_BRIDGE_FS_ALL") or "").strip().lower() in (
+        "1", "true", "yes", "on")
+
+
+def _fs_scope() -> str:
+    """`whole-disk` or `roots` — the word `/health` and the UI both print."""
+    return "whole-disk" if _FS_ALL else "roots"
+
+
+def _fs_places() -> list:
+    """The PLACES a file picker starts from — the same idea as Blender's File
+    View sidebar: Home and its usual folders, plus the mounted volumes.
+
+    Computed, never configured: these are facts about the machine. Each one says
+    whether it is currently `served`, because in the default (confined) mode a
+    place is a *destination* only once somebody has granted it — and a picker that
+    offered a row leading to a 403 would be a dead end with a nice icon.
+    """
+    home = pathlib.Path.home()
+    out = []
+
+    seen = set()
+
+    def add(label, path, kind):
+        full = os.path.realpath(str(path))
+        if not os.path.isdir(full) or full in seen:
+            # de-duplicated by REALPATH: on macOS `/Volumes/Macintosh HD` and `/`
+            # are the same volume, and a sidebar that lists it twice looks like a
+            # bug in the sidebar (measured — it did).
+            return
+        seen.add(full)
+        out.append({"label": label, "path": full, "kind": kind,
+                    "served": _fs_inside_roots(full)})
+
+    add("Home", home, "home")
+    for name in ("Desktop", "Documents", "Downloads", "Pictures", "Movies",
+                 "Music"):
+        add(name, home / name, "user")
+    # the volumes, per platform. macOS mounts under /Volumes, Linux under
+    # /media/<user> or /mnt; on Windows the drive letters are the volumes.
+    if sys.platform == "darwin":
+        add("Macintosh HD", "/", "volume")
+        for entry in sorted(_listdir_safe("/Volumes")):
+            add(entry, os.path.join("/Volumes", entry), "volume")
+    elif sys.platform.startswith("win"):
+        import string
+        for letter in string.ascii_uppercase:
+            add(f"{letter}:", f"{letter}:\\", "volume")
+    else:
+        add("/", "/", "volume")
+        for base in ("/media", "/mnt", f"/media/{os.environ.get('USER', '')}"):
+            for entry in sorted(_listdir_safe(base)):
+                add(entry, os.path.join(base, entry), "volume")
+    return out
+
+
+def _listdir_safe(path: str) -> list:
+    try:
+        return [e for e in os.listdir(path) if not e.startswith(".")]
+    except OSError:
+        return []
+
+
+def _fs_inside_roots(full: str) -> bool:
+    """Is this path reachable right now? True everywhere in whole-disk mode."""
+    if _FS_ALL:
+        return True
+    return any(full == root or full.startswith(root + os.sep)
+               for root in _FS_ROOTS)
+
 #: The roots given at startup (flag + environment). Kept apart from the ones the
 #: UI persists so that removing a folder from the interface can never delete what
 #: the operator asked for on the command line — two channels, two owners.
@@ -446,7 +535,10 @@ def make_handler(api):
             parsed = urllib.parse.urlparse(self.path)
             route = parsed.path.rstrip("/")
             if route == "/health":
-                body = json.dumps({"ok": True, "service": "em_bridge"}).encode()
+                # the SCOPE travels with the health probe: "can this bridge see
+                # my whole disk?" must be answerable without reading its argv
+                body = json.dumps({"ok": True, "service": "em_bridge",
+                                   "fs_scope": _fs_scope()}).encode()
                 self.send_response(200)
                 self._cors()
                 self.send_header("Content-Type", "application/json")
@@ -474,6 +566,18 @@ def make_handler(api):
                     return
                 q = urllib.parse.parse_qs(parsed.query)
                 self._fs_checksum((q.get("path") or [""])[0])
+            elif route == "/fs/places":
+                # WHERE A PICKER STARTS — Home and its folders, the volumes, and
+                # the served roots as bookmarks. The same sidebar Blender's File
+                # View has, computed from the machine instead of configured.
+                if not self._fs_gate():
+                    return
+                self._json({"ok": True, "scope": _fs_scope(),
+                            "places": _fs_places(),
+                            "bookmarks": [
+                                {"label": os.path.basename(r) or r, "path": r,
+                                 "kind": "bookmark", "served": True}
+                                for r in _FS_ROOTS]})
             elif route == "/fs/roots":
                 if not self._fs_gate():
                     return
@@ -662,6 +766,14 @@ def make_handler(api):
                                # …and the node type a PROPERTY column produces,
                                # so the editor can ask for a property end's legal
                                # edges without a class name written in a UI
+                               # …and which files are mappable at all, so a
+                               # native dialog's filter and a file browser's
+                               # greying come from the library and not from a
+                               # list written beside them
+                               "extensions": (
+                                   api.mapping_source_extensions()
+                                   if hasattr(api, "mapping_source_extensions")
+                                   else {}),
                                "property_type": (
                                    api.mapping_property_node_type()
                                    if hasattr(api, "mapping_property_node_type")
@@ -1089,7 +1201,8 @@ def make_handler(api):
             # Re-resolve the live set from the same three sources as at startup,
             # so what /fs serves and what was saved can never drift apart.
             _set_fs_roots(list(_FS_ROOTS_STARTUP) + persisted)
-            self._json({"ok": True, "roots": _FS_ROOTS, "persisted": persisted})
+            self._json({"ok": True, "roots": _FS_ROOTS, "persisted": persisted,
+                        "scope": _fs_scope()})
 
         # ── W1 · the filesystem as two routes ──────────────────────────────
         #
@@ -1115,13 +1228,14 @@ def make_handler(api):
             if not raw:
                 return None, (400, "this route needs a 'path' query parameter")
             full = os.path.realpath(os.path.expanduser(raw))
-            inside = any(full == root or full.startswith(root + os.sep)
-                         for root in _FS_ROOTS)
-            if not inside:
+            if not _fs_inside_roots(full):
                 return None, (403, "path outside the allowed roots. em-bridge "
                                    "serves only the folders named at launch "
-                                   "(--fs-root / EM_BRIDGE_FS_ROOTS); it is not "
-                                   "a file server for the whole disk.")
+                                   "(--fs-root / EM_BRIDGE_FS_ROOTS) or added "
+                                   "from the interface. To browse the whole "
+                                   "machine, start it with --fs-all "
+                                   "(EM_BRIDGE_FS_ALL=1) — one switch, announced, "
+                                   "never a default.")
             if want == "dir" and not os.path.isdir(full):
                 return None, (404, "not a directory")
             if want == "file" and not os.path.isfile(full):
@@ -1157,9 +1271,7 @@ def make_handler(api):
             # here instead, the same way `parent: null` says "no '..' from a
             # root": the listing knows where the fence is, the caller shouldn't
             # have to discover it by walking into it.
-            real = os.path.realpath(full)
-            if not any(real == root or real.startswith(root + os.sep)
-                       for root in _FS_ROOTS):
+            if not _fs_inside_roots(os.path.realpath(full)):
                 entry["outside"] = True
             return entry
 
@@ -1168,12 +1280,22 @@ def make_handler(api):
             # has somewhere to start without inventing a path and getting a 403
             # for its trouble.
             if not raw:
+                # In whole-disk mode the roots list is not the useful start —
+                # HOME is. A picker that opened on "one bookmarked folder" when
+                # the whole machine is reachable would hide what it can do.
+                starts = ([str(pathlib.Path.home())] if _FS_ALL and not _FS_ROOTS
+                          else list(_FS_ROOTS))
+                if _FS_ALL:
+                    starts = [str(pathlib.Path.home())] + [
+                        r for r in _FS_ROOTS
+                        if r != str(pathlib.Path.home())]
                 entries = [e for e in (self._fs_entry(r, os.path.basename(r) or r)
-                                       for r in _FS_ROOTS) if e]
-                for entry, root in zip(entries, _FS_ROOTS):
+                                       for r in starts) if e]
+                for entry, root in zip(entries, starts):
                     entry["path"] = root
                 self._json({"ok": True, "roots": True, "path": "",
-                            "parent": None, "entries": entries})
+                            "parent": None, "scope": _fs_scope(),
+                            "entries": entries})
                 return
             full, err = self._fs_resolve(raw, want="dir")
             if err:
@@ -2673,6 +2795,13 @@ def main() -> int:
     ap.add_argument("--fs-root", action="append", default=None, metavar="DIR",
                     help="a folder /fs/list and /fs/file may reach; repeatable. "
                          "Default: the EMStudio checkout. Also EM_BRIDGE_FS_ROOTS.")
+    ap.add_argument("--fs-all", action="store_true",
+                    help="serve the WHOLE filesystem to /fs/* instead of the "
+                         "named roots. For a single-user desktop run where the "
+                         "person is the operator and a file picker has to reach "
+                         "the whole machine. Announced at startup and reported "
+                         "by /health (fs_scope) — never a silent default. "
+                         "Also EM_BRIDGE_FS_ALL=1.")
     args = ap.parse_args()
 
     if args.exit_with_parent:
@@ -2687,6 +2816,18 @@ def main() -> int:
     ]
     # The live set is the startup roots PLUS whatever the UI has saved (DS4).
     _set_fs_roots(_FS_ROOTS_STARTUP + _fs_roots_persisted())
+
+    # …and the SCOPE. Said out loud, because "this process can read my whole
+    # disk" is not a thing to learn from a 200.
+    global _FS_ALL
+    _FS_ALL = bool(args.fs_all or _fs_all_from_env())
+    if _FS_ALL:
+        print("  [bridge] /fs/* scope: WHOLE DISK (--fs-all). Every folder this "
+              "user can read is reachable by a page with an allowed Origin. "
+              "Drop the flag to go back to the named roots.", file=sys.stderr)
+    else:
+        print(f"  [bridge] /fs/* scope: {len(_FS_ROOTS)} root(s) — "
+              f"--fs-all serves the whole disk instead.", file=sys.stderr)
 
     _ensure_proj_data()
 

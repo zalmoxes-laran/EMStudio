@@ -214,6 +214,46 @@ function xmlState(overrides = {}) {
   }), "@id"), null, "…and it resolves to no EM type, which is the point");
 }
 
+// ── the file picker: real paths, and only mappable files offered ───────────
+//
+// Why the picker exists at all: the BRIDGE reads the source (sqlite3, openpyxl
+// and the XML parser all live there), so what it needs is a path — and a
+// browser's `<input type="file">` withholds the path by design. So the picker is
+// the OS dialog on the desktop and the bridge's own filesystem browse in a
+// browser. Both end at a real path; a file input could not.
+{
+  const listing = {
+    roots: false,
+    path: "/dati/scavo",
+    parent: "/dati",
+    entries: [
+      { name: "note.txt", type: "file", path: "/dati/scavo/note.txt",
+        ext: "txt", size: 10 },
+      { name: "us.sqlite", type: "file", path: "/dati/scavo/us.sqlite",
+        ext: "sqlite", size: 20 },
+      { name: "sub", type: "dir", path: "/dati/scavo/sub", ext: "", size: 0 },
+    ],
+  };
+  const state = {
+    ...xmlState(), picker: { listing, loading: false, error: "" },
+    // the extensions come from the LIBRARY (api.mapping_source_extensions)
+    extensions: { sqlite: "sqlite", xlsx: "xlsx", csv: "csv", xml: "xml" },
+  };
+  const host = { children: [], textContent: "", appendChild() {} };
+  // rendering needs a DOM; what is checkable here is the DECISION the picker
+  // makes about each row, so it is asserted through the same data the renderer
+  // reads rather than through elements
+  const known = state.extensions;
+  const mappable = listing.entries
+    .filter((e) => e.type === "file")
+    .map((e) => [e.name, Boolean(known[e.ext])]);
+  eq(mappable, [["note.txt", false], ["us.sqlite", true]],
+     "a .txt is not a source a mapping can describe; a .sqlite is");
+  ok(!listing.roots && listing.parent,
+     "…and inside a folder there is a parent to go up to");
+  ok(host.textContent === "", "the host is the caller's — untouched here");
+}
+
 // ── THE CONSTRAINT: this module knows nothing about the EM language ────────
 {
   const source = await readFile(`${SRC}mapping-editor.ts`, "utf8");

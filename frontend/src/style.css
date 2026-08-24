@@ -5996,6 +5996,68 @@ object.viewer-media {
 .me-muted { color: var(--text-muted); margin: 4px 0; }
 .me-arrow { color: var(--text-muted); min-width: 0 !important; }
 .me-x { padding: 0 6px; }
+/* the file browser: a real filesystem, served by the bridge (a browser cannot
+   give a path, and the path is what the importer reads) */
+.me-picker {
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  margin: 6px 0;
+  padding: 4px 6px;
+  background: var(--bg-elevated);
+}
+.me-picker-bar { display: flex; gap: 4px; align-items: center;
+                 margin-bottom: 4px; }
+.me-where { flex: 1; font-size: 10px; font-family: ui-monospace, monospace; }
+/* two panes, like Blender's File View: where you can GO on the left, what is
+   HERE on the right */
+.me-picker-body { display: flex; gap: 6px; align-items: stretch; }
+.me-picker-side {
+  width: 11rem; flex: 0 0 11rem; max-height: 15rem; overflow: auto;
+  border-right: 1px solid var(--border); padding-right: 4px;
+}
+.me-side-head {
+  font-size: 9px; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--text-muted); margin: 5px 0 2px;
+}
+.me-side-row {
+  display: block; width: 100%; text-align: left; padding: 1px 5px;
+  border: 1px solid transparent; border-radius: 3px; background: transparent;
+  color: var(--text); font: inherit; font-size: 11px; cursor: pointer;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.me-side-row:hover:not(:disabled) { border-color: var(--border); }
+.me-side-row.on { background: var(--bg-panel); font-weight: 600; }
+.me-side-row:disabled { opacity: .5; cursor: default; }
+.me-side-pair { display: flex; gap: 2px; align-items: center; }
+.me-side-grant { padding: 0 5px; font-size: 11px; }
+.me-side-add { width: 100%; margin-top: 6px; font-size: 10px; }
+.me-side-scope { font-size: 9px; color: var(--text-muted); margin: 6px 0 0;
+                 line-height: 1.35; }
+.me-picker-pane { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.me-picker-tools { display: flex; gap: 3px; align-items: center;
+                   margin-bottom: 3px; }
+.me-filter { flex: 1; min-width: 4rem; font-size: 10px; }
+.me-picker-tools button { padding: 0 6px; font-size: 10px; }
+.me-picker-tools button.on { border-color: var(--accent, #6fb3e0); }
+.me-picker-list { max-height: 15rem; overflow: auto; display: flex;
+                  flex-direction: column; gap: 1px; }
+.me-picker-row {
+  text-align: left;
+  padding: 2px 6px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.me-picker-row:hover:not(:disabled) { border-color: var(--border);
+                                      background: var(--bg-panel); }
+.me-picker-row.dir { font-weight: 600; }
+/* an unmappable file is SHOWN and disabled: "my file is not in the list" is a
+   worse puzzle than "my file is greyed out, and the tooltip says why" */
+.me-picker-row:disabled { opacity: .45; cursor: default; }
 .me-table { width: 100%; border-collapse: collapse; }
 .me-table th {
   text-align: left; padding: 3px 6px; color: var(--text-muted);
