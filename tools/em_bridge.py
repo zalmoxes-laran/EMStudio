@@ -770,6 +770,17 @@ def make_handler(api):
                 elif route == "/mapping-catalog":
                     payload = {"ok": True,
                                "catalog": api.mapping_target_catalog(),
+                               # …and the SAME catalogue grouped by the ontology
+                               # each class belongs to, with the version the
+                               # datamodel declares. The picker draws the groups;
+                               # nothing about which class is whose is decided on
+                               # that side.
+                               "groups": (api.mapping_target_groups()
+                                          if hasattr(api, "mapping_target_groups")
+                                          else []),
+                               "ontologies": (api.mapping_ontologies()
+                                              if hasattr(api, "mapping_ontologies")
+                                              else {}),
                                "formats": list(api.mapping_formats()),
                                # …and the node type a PROPERTY column produces,
                                # so the editor can ask for a property end's legal
@@ -791,7 +802,11 @@ def make_handler(api):
                     payload = {"ok": True,
                                "edges": api.mapping_allowed_edges(
                                    body.get("source_type") or None,
-                                   body.get("target_type") or None)}
+                                   body.get("target_type") or None),
+                               "groups": (api.mapping_edge_groups(
+                                   body.get("source_type") or None,
+                                   body.get("target_type") or None)
+                                   if hasattr(api, "mapping_edge_groups") else [])}
                 elif route == "/mapping-validate":
                     mapping = body.get("mapping")
                     if not isinstance(mapping, dict):
@@ -876,7 +891,14 @@ def make_handler(api):
                 self._fail(400, f"the name {name!r} has nothing usable in it")
                 return None
             os.makedirs(root, exist_ok=True)
-            target = os.path.join(root, f"{safe}_mapping.json")
+            # The house convention is `<name>_mapping.json` (pyarchinit_usr_mapping,
+            # usm_mapping, …) and the registry looks a mapping up by its FILE name
+            # without the extension. So the loadable name is `<name>_mapping`, and
+            # that — not `<name>` — is what goes back: measured, a mapping saved as
+            # "round2xlsx" could not be applied as "round2xlsx", which reads as a
+            # broken save rather than as a naming convention.
+            registered = f"{safe}_mapping"
+            target = os.path.join(root, f"{registered}.json")
             with open(target, "w", encoding="utf-8") as handle:
                 json.dump(mapping, handle, ensure_ascii=False, indent=1)
             # …and register the directory so `load_mapping(name)` finds it in this
@@ -886,7 +908,9 @@ def make_handler(api):
                 mapping_registry.add_mapping_directory("generic", root)
             except Exception as exc:  # noqa: BLE001 — saving worked either way
                 sys.stderr.write(f"  [bridge] mapping saved, not registered: {exc}\n")
-            return {"ok": True, "path": target, "name": safe,
+            return {"ok": True, "path": target,
+                    # the name to APPLY it by — `mapping_name` on /mapping-apply
+                    "name": registered,
                     "verdict": api.mapping_validate(mapping)}
 
         # ── THE SHELF, as the library sees it (Traccia B) ────────────────────

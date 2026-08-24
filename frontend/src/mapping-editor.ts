@@ -65,6 +65,26 @@ export interface EdgeOption {
   cidoc: string;
 }
 
+/** The catalogue GROUPED BY ONTOLOGY, as the library sends it.
+ *
+ *  Which class belongs to which ontology is the datamodel's answer, not this
+ *  side's: CIDOC-CRM · CRMarchaeo · CRMdig · CRMgeo · CRMinf · HDT-O · PROV-O,
+ *  each with the version the datamodel declares. A picker that grouped by its own
+ *  rule would be a second opinion about the ontology somebody is committing to. */
+export interface TargetGroup {
+  ontology: string;
+  version: string;
+  count: number;
+  targets: CidocTarget[];
+}
+
+export interface EdgeGroup {
+  ontology: string;
+  version: string;
+  count: number;
+  edges: EdgeOption[];
+}
+
 export interface Verdict {
   ok: boolean;
   errors: string[];
@@ -111,6 +131,10 @@ export interface MappingEditorState {
   recordPaths?: Array<{ path: string; count: number }>;
   fields: MappingField[];
   catalog: CidocTarget[];
+  /** the same catalogue, grouped by ontology — what the picker draws */
+  groups?: TargetGroup[];
+  /** the legal edges for the relation being edited, grouped the same way */
+  edgeGroups?: Record<string, EdgeGroup[]>;
   choices: Record<string, FieldChoice>;
   relations: RelationDraft[];
   /** the edges legal for the relation being edited, keyed `src→tgt` */
@@ -735,7 +759,7 @@ function fieldRow(state: MappingEditorState, h: MappingEditorHandlers,
   none.value = "";
   none.textContent = t("me.noClass");
   cidoc.appendChild(none);
-  for (const entry of state.catalog) {
+  const targetOption = (entry: CidocTarget): HTMLOptionElement => {
     const option = document.createElement("option");
     option.value = entry.cidoc;
     // the CIDOC class is what the author picks; the EM type it resolves to is
@@ -743,7 +767,23 @@ function fieldRow(state: MappingEditorState, h: MappingEditorHandlers,
     option.textContent = entry.cidoc_direct
       ? `${entry.cidoc} · ${t("me.cidocDirect")}`
       : `${entry.cidoc} → ${entry.em_type}`;
-    cidoc.appendChild(option);
+    return option;
+  };
+  // GROUPED BY ONTOLOGY when the library grouped them — CRMarchaeo's
+  // stratigraphic classes are a different commitment from the CRM trunk's, and a
+  // flat list of thirty-two says they are the same kind of choice. Flat is the
+  // fallback for an older bridge, not a second layout to maintain.
+  if (state.groups?.length) {
+    for (const group of state.groups) {
+      const optgroup = document.createElement("optgroup");
+      optgroup.label = group.version
+        ? `${group.ontology} ${group.version} · ${group.count}`
+        : `${group.ontology} · ${group.count}`;
+      for (const entry of group.targets) optgroup.appendChild(targetOption(entry));
+      cidoc.appendChild(optgroup);
+    }
+  } else {
+    for (const entry of state.catalog) cidoc.appendChild(targetOption(entry));
   }
   cidoc.value = choice.cidoc ?? "";
   cidoc.addEventListener("change", () => h.setChoice(field.name,
@@ -815,7 +855,7 @@ function relationsBox(state: MappingEditorState, h: MappingEditorHandlers,
     none.value = "";
     none.textContent = options.length ? t("me.pickEdge") : t("me.noEdge");
     edge.appendChild(none);
-    for (const option of options) {
+    const edgeOption = (option: EdgeOption): HTMLOptionElement => {
       const item = document.createElement("option");
       item.value = option.edge_type;
       // the CIDOC property beside the EM edge: the same two faces the whole
@@ -823,7 +863,20 @@ function relationsBox(state: MappingEditorState, h: MappingEditorHandlers,
       item.textContent = option.cidoc
         ? `${option.edge_type} · ${option.cidoc}`
         : option.edge_type;
-      edge.appendChild(item);
+      return item;
+    };
+    const grouped = state.edgeGroups?.[key];
+    if (grouped?.length) {
+      for (const group of grouped) {
+        const optgroup = document.createElement("optgroup");
+        optgroup.label = group.ontology === "unmapped"
+          ? t("me.edgeUnmapped")
+          : (group.version ? `${group.ontology} ${group.version}` : group.ontology);
+        for (const option of group.edges) optgroup.appendChild(edgeOption(option));
+        edge.appendChild(optgroup);
+      }
+    } else {
+      for (const option of options) edge.appendChild(edgeOption(option));
     }
     edge.value = relation.edge_type;
     edge.addEventListener("change", () => h.setRelation(index,

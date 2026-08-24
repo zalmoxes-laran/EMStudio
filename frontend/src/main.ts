@@ -7596,6 +7596,7 @@ async function ensureMappingCatalog(): Promise<void> {
   const answer = await askMapping("/mapping-catalog", {});
   if (!answer) return;
   meState.catalog = (answer.catalog as MappingEditorState["catalog"]) ?? [];
+  meState.groups = (answer.groups as MappingEditorState["groups"]) ?? undefined;
   meState.propertyType = (answer.property_type as string | undefined) ?? undefined;
   meState.extensions =
     (answer.extensions as Record<string, string> | undefined) ?? undefined;
@@ -7658,6 +7659,11 @@ async function ensureMappingEdges(relation: RelationDraft): Promise<void> {
   if (!answer) return;
   meState.edgeOptions[key] =
     (answer.edges as MappingEditorState["edgeOptions"][string]) ?? [];
+  const groups = answer.groups as
+    NonNullable<MappingEditorState["edgeGroups"]>[string] | undefined;
+  if (groups?.length) {
+    meState.edgeGroups = { ...(meState.edgeGroups ?? {}), [key]: groups };
+  }
   refreshMappingEditor();
 }
 

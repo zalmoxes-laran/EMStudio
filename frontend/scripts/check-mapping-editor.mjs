@@ -254,6 +254,45 @@ function xmlState(overrides = {}) {
   ok(host.textContent === "", "the host is the caller's — untouched here");
 }
 
+// ── C3 · the picker groups by ONTOLOGY, and the grouping is the library's ──
+{
+  const groups = [
+    { ontology: "CIDOC-CRM", version: "7.1.3", count: 2, targets: [
+      { cidoc: "E31 Document", em_type: "DocumentNode", em_candidates: [],
+        label: "", extension: "CIDOC-CRM", cidoc_direct: false },
+      { cidoc: "E21 Person", em_type: "AuthorNode", em_candidates: [],
+        label: "", extension: "CIDOC-CRM", cidoc_direct: false }] },
+    { ontology: "CRMarchaeo", version: "2.1.1", count: 1, targets: [
+      { cidoc: "A2 Stratigraphic Volume Unit", em_type: "US",
+        em_candidates: [], label: "", extension: "CRMarchaeo",
+        cidoc_direct: false }] },
+  ];
+  const state = { ...xmlState(), groups };
+  // the flat catalogue stays the fallback for an older bridge, and both must
+  // describe the same set — a picker showing a class the catalogue does not
+  // carry would be a picker inventing one
+  const inGroups = groups.flatMap((g) => g.targets.map((t) => t.cidoc));
+  eq(inGroups.length, groups.reduce((n, g) => n + g.count, 0),
+     "each group's count is the number of targets in it");
+  ok(state.groups.every((g) => typeof g.ontology === "string" && g.ontology),
+     "every group names its ontology");
+  ok(state.groups.every((g) => "version" in g),
+     "…and carries the version the datamodel declares");
+  // the module must not decide WHICH ontology a class belongs to
+  const src = await readFile(`${SRC}mapping-editor.ts`, "utf8");
+  const codeOnly = src
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/^\s*\/\/.*$/gm, "")
+    .replace(/^\s*\*.*$/gm, "");
+  for (const name of ["CRMarchaeo", "CRMdig", "CRMgeo", "CRMinf", "HDT-O",
+                      "PROV-O"]) {
+    ok(!codeOnly.includes(name),
+       `the code never names ${name}: which class is whose is the datamodel's`);
+  }
+  ok(!/\.owl|\.ttl|rdflib/.test(codeOnly),
+     "…and no ontology file is read on this side");
+}
+
 // ── THE CONSTRAINT: this module knows nothing about the EM language ────────
 {
   const source = await readFile(`${SRC}mapping-editor.ts`, "utf8");
