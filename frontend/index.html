@@ -146,6 +146,13 @@
                that reaches the bridge for the shared Resource layer — the same
                kind of thing as StratiMiner, and this is where that kind lives.
                The button keeps its id, so its handler is untouched. -->
+          <!-- MAPPING EDITOR · StratiMiner's twin: StratiMiner makes a GRAPH
+               from a folder of sources, this makes the MAPPING FILE an importer
+               applies. Same family (a one-shot instrument that produces an
+               artefact and gets out of the way), so the same menu. -->
+          <button id="btn-tool-mapping" data-i18n-title="me.toolTitle" title="Mapping editor: author the JSON that importers apply — a source's fields → EM/CIDOC targets → relations">
+            <span data-i18n="me.tool">Mapping editor</span>
+          </button>
           <button id="btn-resources" title="Resources: the shared Resource layer (Documents · RM · DTC · Shelf) via the bridge" data-i18n="toolbar.resources">Resources</button>
         </div>
       </div>
@@ -458,6 +465,7 @@
         <div id="nodelist" class="hidden"></div>
         <div id="emtree" class="hidden"></div>
         <div id="stratiminer" class="hidden"></div>
+        <div id="mapping-editor" class="hidden"></div>
         <div id="logpanel" class="hidden"></div>
       </aside>
     </main>

@@ -32,6 +32,17 @@ import {
   type ShelfScope,
 } from "./shelf";
 import {
+  buildMapping,
+  EMPTY_STATE as EMPTY_MAPPING_STATE,
+  edgeKey,
+  renderMappingEditor,
+  typeOfField,
+  type FieldChoice,
+  type MappingEditorHandlers,
+  type MappingEditorState,
+  type RelationDraft,
+} from "./mapping-editor";
+import {
   badgeClass,
   cellText,
   EMPTY_TABLE,
@@ -7525,6 +7536,246 @@ function refreshStratiMiner(): void {
   renderStratiMiner(stratiminerEl, smState, smHandlers, { native: isTauri() });
 }
 
+// ── THE MAPPING EDITOR · StratiMiner's twin ─────────────────────────────────
+//
+// StratiMiner makes a GRAPH from a folder of sources. This makes the MAPPING
+// FILE that importers apply — to a table or to an XML, dynamically (a volatile
+// auxiliary) or baked. Same family, same kind of surface: an instrument you
+// reach for, that produces an artefact, and that goes away.
+//
+// EVERY vocabulary comes from the library over the bridge — the CIDOC classes on
+// offer, the EM type each resolves to, the edges the datamodel allows between two
+// of them, and the verdict on the result. Nothing about the EM language is
+// written on this side; `scripts/check-mapping-editor.mjs` reads the render
+// module and fails if a type name appears in it. The reason is not tidiness: the
+// one thing this editor exists to produce is a file that agrees with the
+// datamodel, and a picker with its own list would be a second datamodel.
+
+const mappingEditorEl = document.getElementById("mapping-editor")!;
+let meState: MappingEditorState = { ...EMPTY_MAPPING_STATE };
+
+function refreshMappingEditor(): void {
+  renderMappingEditor(mappingEditorEl, meState, meHandlers);
+}
+
+/** One call to the bridge's mapping surface. Returns null and sets the note when
+ *  the bridge is not there — the editor is unusable without it and says so,
+ *  rather than offering pickers filled with nothing. */
+async function askMapping(route: string, body: Record<string, unknown>
+                          ): Promise<Record<string, unknown> | null> {
+  try {
+    const res = await fetch(`${await bridgeUrl()}${route}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      let message = `bridge ${res.status}`;
+      try {
+        const answer = (await res.json()) as { error?: string };
+        if (answer?.error) message = answer.error;
+      } catch {
+        /* not JSON */
+      }
+      meState.note = message;
+      return null;
+    }
+    return (await res.json()) as Record<string, unknown>;
+  } catch {
+    meState.note = BRIDGE_UNREACHABLE;
+    return null;
+  }
+}
+
+/** The catalog, once per session: the CIDOC classes and the property type. */
+async function ensureMappingCatalog(): Promise<void> {
+  if (meState.catalog.length) return;
+  const answer = await askMapping("/mapping-catalog", {});
+  if (!answer) return;
+  meState.catalog = (answer.catalog as MappingEditorState["catalog"]) ?? [];
+  meState.propertyType = (answer.property_type as string | undefined) ?? undefined;
+}
+
+/** Read a source: its fields, its samples, and the one question only a person
+ *  can answer (which table / which element is a record). */
+async function readMappingSource(): Promise<void> {
+  const path = meState.path.trim();
+  if (!path) {
+    meState.note = t("me.needPath");
+    refreshMappingEditor();
+    return;
+  }
+  meState.busy = "read";
+  meState.note = "";
+  refreshMappingEditor();
+  await ensureMappingCatalog();
+  const answer = await askMapping("/mapping-fields", {
+    path,
+    table: meState.table,
+    record_path: meState.recordPath,
+  });
+  meState.busy = "";
+  if (answer) {
+    meState.format = String(answer.format ?? "");
+    meState.fields = (answer.fields as MappingEditorState["fields"]) ?? [];
+    meState.tables = (answer.tables as string[] | undefined) ?? undefined;
+    meState.table = (answer.table as string | undefined) ?? meState.table;
+    meState.recordPath = (answer.record_path as string | undefined)
+      ?? meState.recordPath;
+    meState.recordPaths =
+      (answer.record_paths as MappingEditorState["recordPaths"]) ?? undefined;
+    // a re-read of the same source keeps the choices for fields that are still
+    // there: changing the record path should not throw away an hour of work
+    const present = new Set(meState.fields.map((f) => f.name));
+    for (const name of Object.keys(meState.choices)) {
+      if (!present.has(name)) delete meState.choices[name];
+    }
+    meState.verdict = null;
+    meState.applied = null;
+    if (!meState.name) {
+      meState.name = (path.split(/[\\/]/).pop() ?? "mapping")
+        .replace(/\.[^.]+$/, "");
+    }
+  }
+  refreshMappingEditor();
+}
+
+/** The edges legal between the two ends of a relation — asked of the datamodel,
+ *  cached by the pair, so switching an end asks once and not on every keystroke. */
+async function ensureMappingEdges(relation: RelationDraft): Promise<void> {
+  const sourceType = typeOfField(meState, relation.source_column);
+  const targetType = typeOfField(meState, relation.target_column);
+  if (!sourceType || !targetType) return;
+  const key = edgeKey(sourceType, targetType);
+  if (meState.edgeOptions[key]) return;
+  const answer = await askMapping("/mapping-edges", {
+    source_type: sourceType, target_type: targetType });
+  if (!answer) return;
+  meState.edgeOptions[key] =
+    (answer.edges as MappingEditorState["edgeOptions"][string]) ?? [];
+  refreshMappingEditor();
+}
+
+const meHandlers: MappingEditorHandlers = {
+  pickSource: () => void readMappingSource(),
+  setPath: (path) => {
+    meState.path = path;
+    // a new source is a new mapping: keeping the old choices would silently map
+    // columns that are not in this file
+    meState.fields = [];
+    meState.choices = {};
+    meState.relations = [];
+    meState.table = undefined;
+    meState.recordPath = undefined;
+    refreshMappingEditor();
+  },
+  setTable: (table) => {
+    meState.table = table;
+    void readMappingSource();
+  },
+  setRecordPath: (path) => {
+    meState.recordPath = path;
+    void readMappingSource();
+  },
+  setName: (name) => {
+    meState.name = name;
+    refreshMappingEditor();
+  },
+  setChoice: (field, choice: FieldChoice) => {
+    if (!choice.role && !choice.cidoc) delete meState.choices[field];
+    else meState.choices[field] = choice;
+    meState.verdict = null;
+    refreshMappingEditor();
+    for (const relation of meState.relations) void ensureMappingEdges(relation);
+  },
+  addRelation: () => {
+    meState.relations.push({ source_column: "", target_column: "",
+                             edge_type: "" });
+    refreshMappingEditor();
+  },
+  setRelation: (index, relation) => {
+    meState.relations[index] = relation;
+    meState.verdict = null;
+    refreshMappingEditor();
+    void ensureMappingEdges(relation);
+  },
+  removeRelation: (index) => {
+    meState.relations.splice(index, 1);
+    refreshMappingEditor();
+  },
+  validate: () => void (async () => {
+    meState.busy = "validate";
+    refreshMappingEditor();
+    const answer = await askMapping("/mapping-validate",
+                                    { mapping: buildMapping(meState) });
+    meState.busy = "";
+    if (answer) {
+      meState.verdict = answer.verdict as MappingEditorState["verdict"];
+      meState.note = "";
+    }
+    refreshMappingEditor();
+  })(),
+  apply: (mode) => void (async () => {
+    meState.busy = "apply";
+    meState.applied = null;
+    refreshMappingEditor();
+    const answer = await askMapping("/mapping-apply", {
+      mapping: buildMapping(meState), path: meState.path, mode });
+    meState.busy = "";
+    if (answer) {
+      const report = (answer.report ?? {}) as Record<string, unknown>;
+      meState.applied = report;
+      meState.verdict = {
+        ok: Boolean(report.ok),
+        errors: (report.errors as string[]) ?? [],
+        warnings: (report.warnings as string[]) ?? [],
+      };
+      const doc = answer.graph as EmDocument | undefined;
+      if (report.ok && doc) {
+        // the mapping's result arrives as a DOCUMENT and is adopted as a graph of
+        // the project — additive, so a mapping applied twice does not replace the
+        // study somebody is working on. In `volatile` mode its nodes carry
+        // `aux_volatile`, so they show and stay out of the saved file until baked.
+        loadDocument(doc, `${meState.name || "mapping"} (${mode})`, null);
+        refreshEMTree();
+        draw();
+        toast(t("me.applied", { mode: String(mode),
+                                rows: String(report.rows ?? 0),
+                                nodes: String(report.nodes_added ?? 0),
+                                edges: String(report.edges_added ?? 0) }));
+      }
+    }
+    refreshMappingEditor();
+  })(),
+  exportJson: () => {
+    const mapping = buildMapping(meState);
+    const blob = new Blob([JSON.stringify(mapping, null, 1)],
+                          { type: "application/json" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `${meState.name || "mapping"}_mapping.json`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+    toast(t("me.exported", { name: link.download }));
+  },
+  saveToRegistry: () => void (async () => {
+    meState.busy = "save";
+    refreshMappingEditor();
+    const answer = await askMapping("/mapping-save", {
+      mapping: buildMapping(meState), name: meState.name });
+    meState.busy = "";
+    if (answer) {
+      meState.note = t("me.saved", { path: String(answer.path ?? "") });
+    }
+    refreshMappingEditor();
+  })(),
+};
+
+function openMappingEditor(): void {
+  openFloatingTool("mapping-editor", t("me.tool"));
+  void ensureMappingCatalog().then(refreshMappingEditor);
+}
+
 // ── WIN7 · the floating one-shot tool ───────────────────────────────────────
 //
 // StratiMiner was a tab of the Inspector, and it never belonged there: every
@@ -7545,10 +7796,16 @@ const toolFloatTitle = document.getElementById("tool-float-title")!;
 /** The panel element the float is currently showing, if any. */
 let floatingToolId: string | null = null;
 
+/** The tools that need more than the default width. Data, not an `if` per tool:
+ *  a panel's width is a fact about its content (the mapping editor's table has a
+ *  column of example values, and eliding that one defeats the tool). */
+const WIDE_TOOLS = new Set(["mapping-editor"]);
+
 function openFloatingTool(panelId: string, title: string): void {
   if (floatingToolId && floatingToolId !== panelId) closeFloatingTool();
   const el = document.getElementById(panelId);
   if (!el) return;
+  toolFloat.classList.toggle("wide", WIDE_TOOLS.has(panelId));
   el.classList.remove("hidden");
   toolFloatBody.appendChild(el);
   toolFloatTitle.textContent = title;
@@ -7613,6 +7870,9 @@ function openStratiMiner(): void {
 document
   .getElementById("btn-tool-stratiminer")
   ?.addEventListener("click", openStratiMiner);
+document
+  .getElementById("btn-tool-mapping")
+  ?.addEventListener("click", openMappingEditor);
 document
   .getElementById("drop-hint-stratiminer")
   ?.addEventListener("click", (e) => {
@@ -12508,6 +12768,7 @@ function refreshPanelById(id: string): void {
     else if (id === "inspector") refreshInspector();
     else if (id === "logpanel") refreshLogPanel();
     else if (id === "stratiminer") refreshStratiMiner();
+    else if (id === "mapping-editor") refreshMappingEditor();
   });
 }
 

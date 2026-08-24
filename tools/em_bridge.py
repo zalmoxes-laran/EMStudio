@@ -597,6 +597,15 @@ def make_handler(api):
                     self._fail(400, f"invalid JSON body: {exc}")
                     return
                 self._dtc(route, body)
+            elif route in ("/mapping-fields", "/mapping-catalog",
+                           "/mapping-edges", "/mapping-validate",
+                           "/mapping-apply", "/mapping-save"):
+                try:
+                    body = json.loads(raw.decode("utf-8")) if raw else {}
+                except Exception as exc:
+                    self._fail(400, f"invalid JSON body: {exc}")
+                    return
+                self._mapping(route, body)
             elif route in ("/shelf-table", "/shelf-add-uri", "/shelf-hat",
                            "/shelf-facets"):
                 try:
@@ -607,6 +616,158 @@ def make_handler(api):
                 self._shelf(route, body)
             else:
                 self.send_error(404, "unknown endpoint")
+
+        # ── THE MAPPING EDITOR (StratiMiner family) ──────────────────────────
+        #
+        # Six routes, and one rule: **the mapping semantics stay in s3Dgraphy.**
+        # What a field may become, which CIDOC class resolves to which EM type,
+        # which edge the datamodel allows between two types, whether a mapping is
+        # coherent — all answered by `api.mapping_*`. EMStudio draws the table and
+        # takes the choice. A picker that carried its own list of node types would
+        # be a second datamodel, and the one thing this editor exists to produce
+        # is a file that agrees with the first.
+        #
+        # `/mapping-fields` READS THE DISK, so it goes through the same stricter
+        # gate as `/fs/*`: a source table is a folder of excavation data, and the
+        # reason that gate exists does not stop applying because the route has a
+        # different prefix.
+        def _mapping(self, route, body):
+            needed = ("mapping_source_fields", "mapping_target_catalog",
+                      "mapping_allowed_edges", "mapping_validate", "mapping_apply")
+            for op in needed:
+                if not hasattr(api, op):
+                    self._fail(501, f"the mapping editor needs a newer s3dgraphy "
+                                    f"(api.{op} is missing)")
+                    return
+            if route in ("/mapping-fields", "/mapping-apply") and not self._fs_gate():
+                return                             # _fail already answered
+            try:
+                if route == "/mapping-fields":
+                    path = str(body.get("path") or "").strip()
+                    if not path:
+                        self._fail(400, "mapping-fields needs a 'path'")
+                        return
+                    if not os.path.isfile(path):
+                        self._fail(404, f"no such file: {path}")
+                        return
+                    payload = {"ok": True, **api.mapping_source_fields(
+                        path, format_type=body.get("format_type"),
+                        table=body.get("table"),
+                        record_path=body.get("record_path"),
+                        samples=int(body.get("samples") or 3))}
+                elif route == "/mapping-catalog":
+                    payload = {"ok": True,
+                               "catalog": api.mapping_target_catalog(),
+                               "formats": list(api.mapping_formats()),
+                               # …and the node type a PROPERTY column produces,
+                               # so the editor can ask for a property end's legal
+                               # edges without a class name written in a UI
+                               "property_type": (
+                                   api.mapping_property_node_type()
+                                   if hasattr(api, "mapping_property_node_type")
+                                   else None),
+                               "schema_version": api.mapping_schema_version()}
+                elif route == "/mapping-edges":
+                    payload = {"ok": True,
+                               "edges": api.mapping_allowed_edges(
+                                   body.get("source_type") or None,
+                                   body.get("target_type") or None)}
+                elif route == "/mapping-validate":
+                    mapping = body.get("mapping")
+                    if not isinstance(mapping, dict):
+                        self._fail(400, "mapping-validate needs a 'mapping' object")
+                        return
+                    payload = {"ok": True,
+                               "verdict": api.mapping_validate(mapping),
+                               "normalized": api.mapping_normalize(mapping)}
+                elif route == "/mapping-apply":
+                    payload = self._mapping_apply(body)
+                    if payload is None:
+                        return                     # _fail already answered
+                else:                              # /mapping-save
+                    payload = self._mapping_save(body)
+                    if payload is None:
+                        return
+            except Exception as exc:  # pragma: no cover — surface to the UI
+                import traceback
+                traceback.print_exc()
+                self._fail(500, f"{route} failed: {exc}")
+                return
+            out = json.dumps(payload).encode()
+            self.send_response(200)
+            self._cors()
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+
+        def _mapping_apply(self, body):
+            """Run a mapping over a source and hand back the em.json it made.
+
+            The graph goes out as a DOCUMENT, not as an object: the editor is a
+            preview, and what the caller does with it (adopt it as a volatile
+            auxiliary, keep it as a new graph, throw it away) is the caller's.
+            `mode: volatile` marks every node it added with `aux_volatile` — the
+            same marker EMStudio's own auxiliaries carry, so an existing bake
+            promotes them and nothing needed a second concept."""
+            mapping = body.get("mapping")
+            path = str(body.get("path") or "").strip()
+            if not isinstance(mapping, dict) or not path:
+                self._fail(400, "mapping-apply needs a 'mapping' and a 'path'")
+                return None
+            if not os.path.isfile(path):
+                self._fail(404, f"no such file: {path}")
+                return None
+            mode = str(body.get("mode") or "volatile")
+            if mode not in ("volatile", "bake"):
+                self._fail(400, f"mode must be 'volatile' or 'bake', got {mode!r}")
+                return None
+            report = api.mapping_apply(mapping, path, mode=mode,
+                                       mapping_name=body.get("mapping_name"))
+            graph = report.pop("graph", None)
+            out = {"ok": bool(report.get("ok")), "report": report}
+            if graph is not None and report.get("ok"):
+                out["graph"] = api.graph_to_emjson(graph)
+            return out
+
+        def _mapping_save(self, body):
+            """File the mapping where the registry can find it.
+
+            Gated on `EM_USER_MAPPINGS`, and that is deliberate: a bridge that
+            wrote JSON wherever a browser asked would be a write-anywhere
+            endpoint on localhost. With the variable unset the refusal names it
+            and the editor falls back to a plain DOWNLOAD, which needs no new
+            write surface at all."""
+            root = (os.environ.get("EM_USER_MAPPINGS") or "").strip()
+            if not root:
+                self._fail(501,
+                           "saving into the registry needs EM_USER_MAPPINGS "
+                           "(a directory this bridge may write mappings into). "
+                           "Unset, the editor downloads the JSON instead — which "
+                           "needs no write access at all.")
+                return None
+            mapping = body.get("mapping")
+            name = str(body.get("name") or (mapping or {}).get("name") or "").strip()
+            if not isinstance(mapping, dict) or not name:
+                self._fail(400, "mapping-save needs a 'mapping' and a 'name'")
+                return None
+            safe = "".join(c if (c.isalnum() or c in "-_") else "_" for c in name)
+            if not safe:
+                self._fail(400, f"the name {name!r} has nothing usable in it")
+                return None
+            os.makedirs(root, exist_ok=True)
+            target = os.path.join(root, f"{safe}_mapping.json")
+            with open(target, "w", encoding="utf-8") as handle:
+                json.dump(mapping, handle, ensure_ascii=False, indent=1)
+            # …and register the directory so `load_mapping(name)` finds it in this
+            # process too, not only after a restart
+            try:
+                from s3dgraphy.mappings import mapping_registry
+                mapping_registry.add_mapping_directory("generic", root)
+            except Exception as exc:  # noqa: BLE001 — saving worked either way
+                sys.stderr.write(f"  [bridge] mapping saved, not registered: {exc}\n")
+            return {"ok": True, "path": target, "name": safe,
+                    "verdict": api.mapping_validate(mapping)}
 
         # ── THE SHELF, as the library sees it (Traccia B) ────────────────────
         #

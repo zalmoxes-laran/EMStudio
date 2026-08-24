@@ -1,0 +1,635 @@
+/**
+ * THE MAPPING EDITOR — authoring the JSON that importers apply.
+ *
+ * StratiMiner's twin, and the pairing is the design: StratiMiner turns a folder
+ * of sources into a graph THROUGH a reviewable table; this turns a source's
+ * shape into a **mapping file** that importers then apply, dynamically or baked.
+ * One makes a graph, the other makes an instrument. Both are one-shot tools that
+ * exist to produce an artefact and get out of the way — which is why this is a
+ * floating tool under Tools ▸ and not a window you arrange a project around.
+ *
+ * The gesture: drop in a source (a table or an XML) → see every field with three
+ * of its values → say for each what it MEANS → say how the fields connect →
+ * export the JSON.
+ *
+ * ## What this module does not know
+ *
+ * Not one node type, not one edge type, not one CIDOC class is written in this
+ * file. They all arrive in `state` from `api.mapping_*` over the bridge:
+ *
+ *   · the field list and its samples          → `mapping_source_fields`
+ *   · the classes on offer, CIDOC-first        → `mapping_target_catalog`
+ *   · the edges legal between two of them      → `mapping_allowed_edges`
+ *   · whether the result is coherent           → `mapping_validate`
+ *
+ * That is not tidiness. A picker with its own list of types is a second
+ * datamodel, and the single thing this editor exists to produce is a file that
+ * agrees with the first — so `scripts/check-mapping-editor.mjs` reads this source
+ * and fails if a type name appears in it.
+ *
+ * The one string this file DOES have to carry is the schema's own vocabulary
+ * (`is_id`, `property_name`, `relations`, …): those are the mapping FORMAT, which
+ * is what this module is a writer for.
+ *
+ * Pure module: no DOM queries outside the host it is given, no fetch. The caller
+ * does the round trips and hands the answers back in `state`.
+ */
+
+import { t } from "./i18n";
+
+// ── what the library told us ────────────────────────────────────────────────
+
+export interface MappingField {
+  name: string;
+  /** XML only: the path this field lives at, relative to the record */
+  source_path?: string;
+  samples: string[];
+  /** how many of the sampled records actually had a value */
+  filled: number;
+  seen: number;
+}
+
+export interface CidocTarget {
+  cidoc: string;
+  /** the EM node type that implements it, or null → CIDOC-direct */
+  em_type: string | null;
+  em_candidates: string[];
+  label: string;
+  extension: string;
+  cidoc_direct: boolean;
+}
+
+export interface EdgeOption {
+  edge_type: string;
+  label: string;
+  cidoc: string;
+}
+
+export interface Verdict {
+  ok: boolean;
+  errors: string[];
+  warnings: string[];
+}
+
+// ── what the author decided ─────────────────────────────────────────────────
+
+/** The ROLE a field plays. Four, and they are the schema's own four — not a
+ *  taxonomy invented here:
+ *
+ *   · `id`          → `is_id`: this field identifies the record
+ *   · `description` → `is_description` + `target_id_column`
+ *   · `property`    → `property_name`: a PropertyNode hung off the record
+ *   · `relation`    → `is_relation`: the value NAMES another record (an edge)
+ *
+ *  …plus the empty role: not mapped. Which is the default, because a source has
+ *  columns nobody wants and pretending otherwise is how mappings grow noise. */
+export type FieldRole = "" | "id" | "description" | "property" | "relation";
+
+export interface FieldChoice {
+  role: FieldRole;
+  /** the CIDOC class the author picked (the picker is CIDOC-first) */
+  cidoc?: string;
+  /** a property's name in the graph — defaults to the field's own name */
+  property_name?: string;
+}
+
+export interface RelationDraft {
+  source_column: string;
+  target_column: string;
+  edge_type: string;
+}
+
+export interface MappingEditorState {
+  /** the source on screen */
+  path: string;
+  format: string;
+  /** tables/sheets (a table source) — which one, and which exist */
+  table?: string;
+  tables?: string[];
+  /** XML: which element is one RECORD, and the candidates the library found */
+  recordPath?: string;
+  recordPaths?: Array<{ path: string; count: number }>;
+  fields: MappingField[];
+  catalog: CidocTarget[];
+  choices: Record<string, FieldChoice>;
+  relations: RelationDraft[];
+  /** the edges legal for the relation being edited, keyed `src→tgt` */
+  edgeOptions: Record<string, EdgeOption[]>;
+  name: string;
+  /** the node type a PROPERTY column produces — the LIBRARY's answer
+   *  (`api.mapping_property_node_type`), carried so that asking for the legal
+   *  edges of a property end does not need a literal on this side */
+  propertyType?: string;
+  verdict: Verdict | null;
+  /** the last apply, as the library reported it */
+  applied: Record<string, unknown> | null;
+  busy: string;
+  note: string;
+}
+
+export const EMPTY_STATE: MappingEditorState = {
+  path: "", format: "", fields: [], catalog: [], choices: {}, relations: [],
+  edgeOptions: {}, name: "", verdict: null, applied: null, busy: "", note: "",
+};
+
+export interface MappingEditorHandlers {
+  pickSource(): void;
+  setPath(path: string): void;
+  setTable(table: string): void;
+  setRecordPath(path: string): void;
+  setName(name: string): void;
+  setChoice(field: string, choice: FieldChoice): void;
+  addRelation(): void;
+  setRelation(index: number, relation: RelationDraft): void;
+  removeRelation(index: number): void;
+  validate(): void;
+  apply(mode: "volatile" | "bake"): void;
+  exportJson(): void;
+  saveToRegistry(): void;
+}
+
+// ── the serialiser: choices → the mapping JSON ──────────────────────────────
+
+/**
+ * Build the mapping. THE function this module exists for, and the reason it is
+ * separate from the rendering: it is pure, and `check-mapping-editor.mjs`
+ * exercises it directly.
+ *
+ * What it deliberately does NOT do is resolve anything. A column carries the
+ * CIDOC class the author picked and its role; turning `A2 Stratigraphic Volume
+ * Unit` into `US`, or a property into its node type, is `mapping_normalize`'s
+ * job on the library side. Resolving here would put a copy of the datamodel in
+ * a UI, and the copy would be the one that goes stale.
+ */
+export function buildMapping(state: MappingEditorState): Record<string, unknown> {
+  const columns: Record<string, Record<string, unknown>> = {};
+  const idField = Object.entries(state.choices)
+    .find(([, choice]) => choice.role === "id")?.[0];
+  for (const field of state.fields) {
+    const choice = state.choices[field.name];
+    if (!choice || !choice.role) continue;         // not mapped: not in the file
+    const column: Record<string, unknown> = {};
+    if (field.source_path && field.source_path !== field.name) {
+      column.source_path = field.source_path;
+    } else if (state.format === "xml") {
+      // an XML field IS its path, even when the path is just the tag: the
+      // importer reads `source_path`, and leaving it out for the simple case
+      // would make the mapping depend on a fallback
+      column.source_path = field.source_path ?? field.name;
+    }
+    if (choice.cidoc) column.cidoc = choice.cidoc;
+    switch (choice.role) {
+      case "id":
+        column.is_id = true;
+        break;
+      case "description":
+        column.is_description = true;
+        if (idField) column.target_id_column = idField;
+        break;
+      case "property":
+        // the NAME only: which node type a property is, is the datamodel's
+        // answer (`mapping_property_node_type`), filled in by normalisation
+        column.property_name = choice.property_name?.trim() || field.name;
+        break;
+      case "relation":
+        column.is_relation = true;
+        break;
+    }
+    columns[field.name] = column;
+  }
+  const mapping: Record<string, unknown> = {
+    name: state.name.trim() || "untitled-mapping",
+    version: "1.0",
+    source_settings: sourceSettings(state),
+    column_mappings: columns,
+  };
+  const relations = state.relations
+    .filter((r) => r.source_column && r.target_column && r.edge_type)
+    .map((r) => ({ ...r }));
+  if (relations.length) mapping.relations = relations;
+  return mapping;
+}
+
+function sourceSettings(state: MappingEditorState): Record<string, unknown> {
+  const settings: Record<string, unknown> = { format_type: state.format };
+  if (state.format === "xml") {
+    if (state.recordPath) settings.record_path = state.recordPath;
+  } else if (state.table) {
+    // a sheet is a sheet and a table is a table: the importers read different
+    // keys, and writing both would be a guess about which one is meant
+    if (state.format === "xlsx") settings.sheet_name = state.table;
+    else settings.table_name = state.table;
+  }
+  return settings;
+}
+
+/** How many fields carry a role — the number the header shows, because "12 of
+ *  47 mapped" is the state of the work and a count of columns is not. */
+export function mappedCount(state: MappingEditorState): number {
+  return Object.values(state.choices).filter((c) => c && c.role).length;
+}
+
+/** The fields that can be an edge's end: the ones with a role, since an unmapped
+ *  field is not in the file the relation would refer to. */
+export function relatableFields(state: MappingEditorState): string[] {
+  return state.fields
+    .filter((f) => state.choices[f.name]?.role)
+    .map((f) => f.name);
+}
+
+/** The key under which the edges for one relation's pair are cached. */
+export function edgeKey(sourceType: string, targetType: string): string {
+  return `${sourceType || "?"}→${targetType || "?"}`;
+}
+
+/** The EM type a field will produce, as far as this side can tell: the CIDOC
+ *  class's first candidate, from the catalog the library sent. Used to ASK for
+ *  the legal edges — never to decide anything. */
+export function typeOfField(state: MappingEditorState, field: string
+                            ): string | null {
+  const choice = state.choices[field];
+  if (!choice) return null;
+  if (choice.role === "property") return state.propertyType ?? null;
+  const entry = state.catalog.find((c) => c.cidoc === choice.cidoc);
+  return entry ? entry.em_type : null;
+}
+
+// ── the panel ───────────────────────────────────────────────────────────────
+
+export function renderMappingEditor(host: HTMLElement,
+                                    state: MappingEditorState,
+                                    handlers: MappingEditorHandlers): void {
+  const busy = state.busy !== "";
+  host.textContent = "";
+  const panel = document.createElement("div");
+  panel.className = "me-panel";
+
+  const intro = document.createElement("p");
+  intro.className = "me-intro";
+  intro.textContent = t("me.intro");
+  panel.appendChild(intro);
+
+  panel.appendChild(sourceBox(state, handlers, busy));
+  if (state.fields.length) {
+    panel.appendChild(fieldsBox(state, handlers, busy));
+    panel.appendChild(relationsBox(state, handlers, busy));
+    panel.appendChild(outputBox(state, handlers, busy));
+  }
+  if (state.note) {
+    const note = document.createElement("p");
+    note.className = "me-note";
+    note.textContent = state.note;
+    panel.appendChild(note);
+  }
+  host.appendChild(panel);
+}
+
+function box(titleKey: string): HTMLElement {
+  const section = document.createElement("section");
+  section.className = "me-box";
+  const head = document.createElement("h4");
+  head.textContent = t(titleKey);
+  section.appendChild(head);
+  return section;
+}
+
+function sourceBox(state: MappingEditorState, h: MappingEditorHandlers,
+                   busy: boolean): HTMLElement {
+  const section = box("me.source");
+  const row = document.createElement("div");
+  row.className = "me-row";
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = state.path;
+  input.placeholder = t("me.pathPlaceholder");
+  input.addEventListener("change", () => h.setPath(input.value));
+  const pick = document.createElement("button");
+  pick.textContent = t("me.read");
+  pick.disabled = busy;
+  pick.addEventListener("click", () => h.pickSource());
+  row.append(input, pick);
+  section.appendChild(row);
+
+  if (state.format) {
+    const what = document.createElement("p");
+    what.className = "me-muted";
+    what.textContent = t("me.readAs", { format: state.format,
+                                        n: String(state.fields.length) });
+    section.appendChild(what);
+  }
+  // WHICH table, or WHICH element is a record — the one question a reader
+  // cannot answer for the author (see `mapping_source_fields`)
+  if (state.tables && state.tables.length > 1) {
+    section.appendChild(pickerRow(
+      t("me.table"), state.tables.map((name) => ({ value: name, label: name })),
+      state.table ?? "", (value) => h.setTable(value), busy));
+  }
+  if (state.format === "xml" && state.recordPaths?.length) {
+    section.appendChild(pickerRow(
+      t("me.recordPath"),
+      state.recordPaths.map((c) => ({ value: c.path,
+                                      label: `${c.path} · ${c.count}` })),
+      state.recordPath ?? "", (value) => h.setRecordPath(value), busy));
+    const why = document.createElement("p");
+    why.className = "me-muted";
+    why.textContent = t("me.recordPathWhy");
+    section.appendChild(why);
+  }
+  return section;
+}
+
+function pickerRow(label: string, options: Array<{ value: string; label: string }>,
+                   current: string, onPick: (value: string) => void,
+                   busy: boolean): HTMLElement {
+  const row = document.createElement("label");
+  row.className = "me-row";
+  const span = document.createElement("span");
+  span.textContent = label;
+  const select = document.createElement("select");
+  select.disabled = busy;
+  for (const option of options) {
+    const opt = document.createElement("option");
+    opt.value = option.value;
+    opt.textContent = option.label;
+    select.appendChild(opt);
+  }
+  select.value = current;
+  select.addEventListener("change", () => onPick(select.value));
+  row.append(span, select);
+  return row;
+}
+
+/** The field panel — one row per field, with its samples and its two choices.
+ *  A table, because that is what a source is, and because the Shelf window's
+ *  table established the shape (SHELF-B). */
+function fieldsBox(state: MappingEditorState, h: MappingEditorHandlers,
+                   busy: boolean): HTMLElement {
+  const section = box("me.fields");
+  const count = document.createElement("p");
+  count.className = "me-muted";
+  count.textContent = t("me.mappedCount", { n: String(mappedCount(state)),
+                                            total: String(state.fields.length) });
+  section.appendChild(count);
+
+  const table = document.createElement("table");
+  table.className = "me-table";
+  const head = document.createElement("thead");
+  head.innerHTML = `<tr><th>${t("me.field")}</th><th>${t("me.samples")}</th>` +
+    `<th>${t("me.mapTo")}</th><th>${t("me.role")}</th></tr>`;
+  const body = document.createElement("tbody");
+  for (const field of state.fields) {
+    body.appendChild(fieldRow(state, h, field, busy));
+  }
+  table.append(head, body);
+  section.appendChild(table);
+  return section;
+}
+
+const ROLES: FieldRole[] = ["", "id", "description", "property", "relation"];
+
+function fieldRow(state: MappingEditorState, h: MappingEditorHandlers,
+                  field: MappingField, busy: boolean): HTMLElement {
+  const choice = state.choices[field.name] ?? { role: "" as FieldRole };
+  const row = document.createElement("tr");
+  row.className = choice.role ? "me-mapped" : "";
+
+  const name = document.createElement("td");
+  name.className = "me-field";
+  name.textContent = field.name;
+  if (field.source_path && field.source_path !== field.name) {
+    const path = document.createElement("code");
+    path.textContent = field.source_path;
+    name.appendChild(path);
+  }
+
+  // THE SAMPLES. The reason this editor is usable at all: `d_interpretativa`
+  // means nothing, and "Crollo del tetto" means everything.
+  const samples = document.createElement("td");
+  samples.className = "me-samples";
+  samples.textContent = field.samples.filter((s) => s).join(" · ") || "—";
+  samples.title = t("me.filled", { filled: String(field.filled),
+                                   seen: String(field.seen) });
+  if (!field.filled) samples.classList.add("me-empty");
+
+  const target = document.createElement("td");
+  const cidoc = document.createElement("select");
+  cidoc.disabled = busy;
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = t("me.noClass");
+  cidoc.appendChild(none);
+  for (const entry of state.catalog) {
+    const option = document.createElement("option");
+    option.value = entry.cidoc;
+    // the CIDOC class is what the author picks; the EM type it resolves to is
+    // shown beside it, because that is the thing that will be in the graph
+    option.textContent = entry.cidoc_direct
+      ? `${entry.cidoc} · ${t("me.cidocDirect")}`
+      : `${entry.cidoc} → ${entry.em_type}`;
+    cidoc.appendChild(option);
+  }
+  cidoc.value = choice.cidoc ?? "";
+  cidoc.addEventListener("change", () => h.setChoice(field.name,
+    { ...choice, cidoc: cidoc.value || undefined }));
+  target.appendChild(cidoc);
+  const picked = state.catalog.find((c) => c.cidoc === choice.cidoc);
+  if (picked?.cidoc_direct) {
+    const badge = document.createElement("span");
+    badge.className = "me-badge me-direct";
+    badge.textContent = t("me.cidocDirect");
+    badge.title = t("me.cidocDirectWhy");
+    target.appendChild(badge);
+  }
+
+  const role = document.createElement("td");
+  const roleSelect = document.createElement("select");
+  roleSelect.disabled = busy;
+  for (const value of ROLES) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = value ? t(`me.role.${value}`) : t("me.role.none");
+    roleSelect.appendChild(option);
+  }
+  roleSelect.value = choice.role;
+  roleSelect.addEventListener("change", () => h.setChoice(field.name,
+    { ...choice, role: roleSelect.value as FieldRole }));
+  role.appendChild(roleSelect);
+  if (choice.role === "property") {
+    const propertyName = document.createElement("input");
+    propertyName.type = "text";
+    propertyName.className = "me-prop";
+    propertyName.value = choice.property_name ?? field.name;
+    propertyName.placeholder = t("me.propertyName");
+    propertyName.addEventListener("change", () => h.setChoice(field.name,
+      { ...choice, property_name: propertyName.value }));
+    role.appendChild(propertyName);
+  }
+
+  row.append(name, samples, target, role);
+  return row;
+}
+
+/** The relations — the same gesture as the canvas: pick two ends, pick the edge
+ *  from what the datamodel allows between them. */
+function relationsBox(state: MappingEditorState, h: MappingEditorHandlers,
+                      busy: boolean): HTMLElement {
+  const section = box("me.relations");
+  const fields = relatableFields(state);
+  if (fields.length < 2) {
+    const hint = document.createElement("p");
+    hint.className = "me-muted";
+    hint.textContent = t("me.relationsNeedTwo");
+    section.appendChild(hint);
+    return section;
+  }
+  state.relations.forEach((relation, index) => {
+    const row = document.createElement("div");
+    row.className = "me-row";
+    const source = fieldSelect(fields, relation.source_column, busy, (value) =>
+      h.setRelation(index, { ...relation, source_column: value, edge_type: "" }));
+    const target = fieldSelect(fields, relation.target_column, busy, (value) =>
+      h.setRelation(index, { ...relation, target_column: value, edge_type: "" }));
+    const key = edgeKey(typeOfField(state, relation.source_column) ?? "",
+                        typeOfField(state, relation.target_column) ?? "");
+    const options = state.edgeOptions[key] ?? [];
+    const edge = document.createElement("select");
+    edge.disabled = busy || !options.length;
+    const none = document.createElement("option");
+    none.value = "";
+    none.textContent = options.length ? t("me.pickEdge") : t("me.noEdge");
+    edge.appendChild(none);
+    for (const option of options) {
+      const item = document.createElement("option");
+      item.value = option.edge_type;
+      // the CIDOC property beside the EM edge: the same two faces the whole
+      // editor is built on
+      item.textContent = option.cidoc
+        ? `${option.edge_type} · ${option.cidoc}`
+        : option.edge_type;
+      edge.appendChild(item);
+    }
+    edge.value = relation.edge_type;
+    edge.addEventListener("change", () => h.setRelation(index,
+      { ...relation, edge_type: edge.value }));
+    const drop = document.createElement("button");
+    drop.className = "me-x";
+    drop.textContent = "✕";
+    drop.disabled = busy;
+    drop.addEventListener("click", () => h.removeRelation(index));
+    row.append(source, arrow(), target, edge, drop);
+    section.appendChild(row);
+  });
+  const add = document.createElement("button");
+  add.textContent = t("me.addRelation");
+  add.disabled = busy;
+  add.addEventListener("click", () => h.addRelation());
+  section.appendChild(add);
+  return section;
+}
+
+function arrow(): HTMLElement {
+  const span = document.createElement("span");
+  span.className = "me-arrow";
+  span.textContent = "→";
+  return span;
+}
+
+function fieldSelect(fields: string[], current: string, busy: boolean,
+                     onPick: (value: string) => void): HTMLElement {
+  const select = document.createElement("select");
+  select.disabled = busy;
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = "—";
+  select.appendChild(none);
+  for (const field of fields) {
+    const option = document.createElement("option");
+    option.value = field;
+    option.textContent = field;
+    select.appendChild(option);
+  }
+  select.value = current;
+  select.addEventListener("change", () => onPick(select.value));
+  return select;
+}
+
+function outputBox(state: MappingEditorState, h: MappingEditorHandlers,
+                   busy: boolean): HTMLElement {
+  const section = box("me.output");
+  const row = document.createElement("div");
+  row.className = "me-row";
+  const name = document.createElement("input");
+  name.type = "text";
+  name.value = state.name;
+  name.placeholder = t("me.namePlaceholder");
+  name.addEventListener("change", () => h.setName(name.value));
+  const check = document.createElement("button");
+  check.textContent = t("me.validate");
+  check.disabled = busy;
+  check.addEventListener("click", () => h.validate());
+  row.append(name, check);
+  section.appendChild(row);
+
+  if (state.verdict) section.appendChild(verdictBox(state.verdict));
+
+  const acts = document.createElement("div");
+  acts.className = "me-row";
+  for (const mode of ["volatile", "bake"] as const) {
+    const button = document.createElement("button");
+    button.textContent = t(`me.apply.${mode}`);
+    button.title = t(`me.apply.${mode}Why`);
+    button.disabled = busy || state.verdict?.ok === false;
+    button.addEventListener("click", () => h.apply(mode));
+    acts.appendChild(button);
+  }
+  const download = document.createElement("button");
+  download.textContent = t("me.export");
+  download.disabled = busy;
+  download.addEventListener("click", () => h.exportJson());
+  const save = document.createElement("button");
+  save.textContent = t("me.saveRegistry");
+  save.title = t("me.saveRegistryWhy");
+  save.disabled = busy;
+  save.addEventListener("click", () => h.saveToRegistry());
+  acts.append(download, save);
+  section.appendChild(acts);
+
+  if (state.applied) {
+    const report = document.createElement("p");
+    report.className = "me-muted";
+    const a = state.applied as { mode?: string; rows?: number;
+                                 nodes_added?: number; edges_added?: number };
+    report.textContent = t("me.applied", {
+      mode: String(a.mode ?? ""), rows: String(a.rows ?? 0),
+      nodes: String(a.nodes_added ?? 0), edges: String(a.edges_added ?? 0) });
+    section.appendChild(report);
+  }
+
+  const preview = document.createElement("details");
+  preview.className = "me-preview";
+  const summary = document.createElement("summary");
+  summary.textContent = t("me.preview");
+  const pre = document.createElement("pre");
+  pre.textContent = JSON.stringify(buildMapping(state), null, 1);
+  preview.append(summary, pre);
+  section.appendChild(preview);
+  return section;
+}
+
+function verdictBox(verdict: Verdict): HTMLElement {
+  const box = document.createElement("div");
+  box.className = "me-verdict " + (verdict.ok ? "ok" : "bad");
+  const head = document.createElement("p");
+  head.textContent = verdict.ok ? t("me.verdictOk") : t("me.verdictBad");
+  box.appendChild(head);
+  for (const [kind, lines] of [["error", verdict.errors],
+                               ["warning", verdict.warnings]] as const) {
+    for (const line of lines) {
+      const item = document.createElement("p");
+      item.className = `me-${kind}`;
+      item.textContent = line;
+      box.appendChild(item);
+    }
+  }
+  return box;
+}
