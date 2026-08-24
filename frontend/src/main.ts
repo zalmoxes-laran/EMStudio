@@ -6550,7 +6550,7 @@ document.getElementById("btn-add-project")?.addEventListener("click", () => {
 });
 
 document.getElementById("storage-add-root")?.addEventListener(
-  "click", () => void addStorageRoot());
+  "click", () => void openStoragePlaces());
 document.getElementById("shelf-add-url")?.addEventListener(
   "click", () => void addUrlToShelf());
 document.getElementById("shelf-url")?.addEventListener("keydown", (e) => {
@@ -7752,6 +7752,70 @@ async function browseMappingSource(path?: string): Promise<void> {
   refreshMappingEditor();
 }
 
+/** A file chosen in the SYSTEM dialog → a path the bridge can read.
+ *
+ *  The browser's half of the deal: `<input type="file">` opens the OS picker, so
+ *  the person reaches anything on the machine, and then the browser hands over
+ *  bytes and withholds the location. So the bytes are staged by the bridge and
+ *  what comes back is a real path — after which everything downstream (fields,
+ *  validate, apply) is the path it always was.
+ *
+ *  It is a COPY, and the panel says so. That is not a caveat to hide: a mapping
+ *  records a SHAPE (format, sheet, record path), not a location, so the artefact
+ *  authored here applies to the original file later — from the desktop app, or
+ *  from Browse… on a served folder.
+ */
+/** Hand a browser-picked file to the bridge and get back a real PATH.
+ *
+ *  Shared by the mapping editor and StratiMiner: the system dialog reaches
+ *  anything on the machine and returns bytes, the bridge turns those into a path
+ *  in a folder it serves. Returns null and toasts the reason when it cannot —
+ *  the size refusal in particular names the cap and the two ways that copy
+ *  nothing. */
+async function stageThroughBridge(file: File): Promise<string | null> {
+  try {
+    const res = await fetch(`${await bridgeUrl()}/fs/stage`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/octet-stream",
+        "X-EM-Filename": encodeURIComponent(file.name),
+      },
+      body: file,
+    });
+    const answer = (await res.json().catch(() => null)) as
+      { ok?: boolean; path?: string; error?: string } | null;
+    if (!res.ok || !answer?.ok || !answer.path) {
+      toast(answer?.error ?? `bridge ${res.status}`);
+      return null;
+    }
+    return answer.path;
+  } catch {
+    toast(BRIDGE_UNREACHABLE);
+    return null;
+  }
+}
+
+async function stageMappingFile(file: File): Promise<void> {
+  meState.busy = "read";
+  meState.note = t("me.staging", { name: file.name });
+  refreshMappingEditor();
+  const path = await stageThroughBridge(file);
+  meState.busy = "";
+  if (!path) {
+    meState.note = t("me.stageFailed", { name: file.name });
+    refreshMappingEditor();
+    return;
+  }
+  meState.picker = null;
+  meHandlers.setPath(path);
+  // …named after the file the PERSON picked, not after the staged copy. The
+  // staged name carries a content digest (`e235261b8008-scavo-2026`), and a
+  // mapping called that is a mapping nobody will recognise next month.
+  meState.name = file.name.replace(/\.[^.]+$/, "");
+  meState.note = t("me.staged", { name: file.name });
+  await readMappingSource();
+}
+
 /** Grant the bridge a folder — Blender's "add bookmark", and in roots-mode the
  *  only way to reach a place at all. The same `/fs/roots` channel the Storage
  *  window uses (DS4): one folder, named by a person, remembered on disk. */
@@ -7784,6 +7848,8 @@ const meHandlers: MappingEditorHandlers = {
     // THE OS DIALOG when we have one. It is the better instrument and it returns
     // the same thing the bridge needs: a real absolute path.
     if (isTauri()) {
+      // the native dialog reaches everything AND returns the location, so on the
+      // desktop there is nothing to stage
       const extensions = Object.keys(meState.extensions ?? {});
       const picked = await pickSourceFile(extensions);
       if (picked) {
@@ -7798,6 +7864,7 @@ const meHandlers: MappingEditorHandlers = {
     await loadMappingPlaces();
     await browseMappingSource(mePickerPath);
   })(),
+  openSystemFile: (file) => void stageMappingFile(file),
   browse: (path) => void browseMappingSource(path),
   addRoot: (path) => void addMappingRoot(path),
   setPickerFilter: (text) => {
@@ -8243,6 +8310,16 @@ const smHandlers: StratiMinerHandlers = {
   onPickXlsx: async () => {
     const picked = await pickXlsx();
     if (picked) smSet({ xlsxPath: picked });
+  },
+
+  /** The browser's half: the system dialog gives BYTES, the bridge stages them,
+   *  and StratiMiner gets a real path instead of a bare filename. The same route
+   *  the mapping editor uses — one staging, two tools. */
+  onStageXlsx: async (file: File) => {
+    smSet({ busy: "stage" });
+    const path = await stageThroughBridge(file);
+    smSet({ busy: "" });
+    if (path) smSet({ xlsxPath: path });
   },
 };
 
@@ -12441,17 +12518,107 @@ function formatBytes(n: number): string {
  * "serve the whole disk" here and there will not be — the sandbox exists so the
  * browser can see a library or a DOSCO folder and nothing else.
  */
+/** The PLACES menu under Storage's "+ 📁".
+ *
+ * The button's job is "serve one more folder", and until now it did that by
+ * asking for an absolute path in a `prompt` — the least usable control in the
+ * app, on a machine where Home and Documents are two clicks away. So it opens
+ * the same list the mapping editor's sidebar shows (`/fs/places`, computed by
+ * the bridge from the machine), each row granting that folder; typing a path is
+ * still there, as the last entry, for a folder that is nobody's standard place.
+ */
+async function openStoragePlaces(anchor?: HTMLElement): Promise<void> {
+  // The button lives in the WINDOW HEADER (`buildHeaderStrip`), one per storage
+  // window — so the menu is a body-level element positioned under whichever
+  // button was pressed, rather than a fixed node next to one of them.
+  const existing = document.getElementById("storage-places");
+  if (existing) {
+    existing.remove();
+    if (existing.dataset.anchor === anchorKey(anchor)) return;   // toggle off
+  }
+  const menu = document.createElement("div");
+  menu.id = "storage-places";
+  menu.className = "storage-places";
+  menu.dataset.anchor = anchorKey(anchor);
+  document.body.appendChild(menu);
+  const rect = anchor?.getBoundingClientRect();
+  if (rect && rect.width) {
+    menu.style.left = `${Math.min(rect.left, window.innerWidth - 220)}px`;
+    menu.style.top = `${rect.bottom + 4}px`;
+  } else {
+    // a button that is not laid out (a header of a window that is not on screen)
+    // has a zero rect, and pinning to it puts the menu in the top-left corner
+    // over the app's own menus — measured. Centred is the honest fallback.
+    menu.style.left = "50%";
+    menu.style.top = "20%";
+    menu.style.transform = "translateX(-50%)";
+  }
+  const waiting = document.createElement("div");
+  waiting.className = "storage-place muted";
+  waiting.textContent = t("me.pickerLoading");
+  menu.appendChild(waiting);
+  await loadMappingPlaces();                       // one loader, two surfaces
+  menu.textContent = "";
+  const served = new Set(mePickerBookmarks.map((b) => b.path));
+  for (const place of mePickerPlaces) {
+    const row = document.createElement("button");
+    row.className = "storage-place";
+    const already = place.served || served.has(place.path);
+    row.textContent = already ? `✓ ${place.label}` : `+ ${place.label}`;
+    row.title = place.path;
+    row.disabled = already;
+    row.addEventListener("click", () => {
+      menu.remove();
+      void addStorageRootPath(place.path);
+    });
+    menu.appendChild(row);
+  }
+  const other = document.createElement("button");
+  other.className = "storage-place other";
+  other.textContent = t("storage.rootOther");
+  other.addEventListener("click", () => {
+    menu.remove();
+    void addStorageRoot();
+  });
+  menu.appendChild(other);
+  // …and it closes the way every menu closes: the next click elsewhere
+  setTimeout(() => document.addEventListener("click", function away(event) {
+    if (!menu.contains(event.target as Node)) {
+      menu.remove();
+      document.removeEventListener("click", away);
+    }
+  }), 0);
+}
+
+/** Which button opened it, so pressing the same one again closes the menu. */
+function anchorKey(anchor?: HTMLElement): string {
+  if (!anchor) return "";
+  const rect = anchor.getBoundingClientRect();
+  return `${Math.round(rect.left)}:${Math.round(rect.top)}`;
+}
+
 async function addStorageRoot(): Promise<void> {
-  // `prompt` because a folder PICKER in the browser cannot hand back a path (it
-  // gives file handles, not locations) — the honest options are typing the path
-  // or the desktop dialog, and the desktop dialog belongs to the Tauri shell.
-  const path = window.prompt(t("storage.rootPrompt"), "");
+  // THE DESKTOP DIALOG FIRST. `pickFolder()` has existed since StratiMiner and
+  // this button never called it — so on the desktop, where a native folder
+  // dialog was one line away, people got a `prompt` asking them to type an
+  // absolute path. Measured by looking at it.
+  //
+  // In a browser a folder picker still cannot hand back a location (that is the
+  // rule, not this app's limitation), so the prompt stays as the fallback — with
+  // the Blender-style browser next to it as the way that does not need typing:
+  // navigate there and press "+ bookmark this folder".
+  let path = isTauri() ? await pickFolder() : null;
+  if (!path) path = window.prompt(t("storage.rootPrompt"), "");
   if (!path?.trim()) return;
+  await addStorageRootPath(path.trim());
+}
+
+async function addStorageRootPath(path: string): Promise<void> {
   try {
     const res = await fetch(`${await bridgeUrl()}/fs/roots`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "add", path: path.trim() }),
+      body: JSON.stringify({ action: "add", path }),
     });
     const payload = (await res.json().catch(() => null)) as
       | { ok?: boolean; error?: string; roots?: string[] } | null;
@@ -12459,7 +12626,8 @@ async function addStorageRoot(): Promise<void> {
       toast(t("storage.rootFailed", { detail: payload?.error ?? `HTTP ${res.status}` }));
       return;
     }
-    toast(t("storage.rootAdded", { name: path.trim().split("/").filter(Boolean).pop() ?? path }));
+    toast(t("storage.rootAdded", { name: path.split("/").filter(Boolean).pop() ?? path }));
+    await loadMappingPlaces();           // the place is served now: reflect it
     setStoragePath(activeWin(), null);   // back to the roots, where it now shows
   } catch (err) {
     toast(t("storage.rootFailed", { detail: err instanceof Error ? err.message : String(err) }));
@@ -13900,7 +14068,7 @@ function buildHeaderStrip(win: Win): HTMLElement {
     root.title = t("storage.rootTitle");
     root.addEventListener("click", (e) => {
       e.stopPropagation();
-      focusThen(win, () => void addStorageRoot());
+      focusThen(win, () => void openStoragePlaces(root));
     });
     strip.append(up, crumb, root);
     return strip;

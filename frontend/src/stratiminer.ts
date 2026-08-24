@@ -105,7 +105,9 @@ export interface StratiMinerState {
   folder: string;
   xlsxPath: string;
   language: string;
-  busy: "" | "extract" | "prompt" | "import";
+  //: `stage` is the browser handing a workbook to the bridge — a wait like the
+  //: others, so the panel disables the same buttons while it happens.
+  busy: "" | "extract" | "prompt" | "import" | "stage";
   /** Last outcome, shown inline. Cleared when a new run starts. */
   report: string;
   warnings: string[];
@@ -140,6 +142,12 @@ export interface StratiMinerHandlers {
   /** Native folder/file pickers, when running in Tauri. */
   onPickFolder?(): void;
   onPickXlsx?(): void;
+  /** A workbook chosen in the browser's SYSTEM dialog. The browser gives bytes
+   *  and no location, so the caller stages them through the bridge and gets back
+   *  a real path — the same trick the mapping editor uses. Without it this
+   *  picker could only prefill a NAME, and the panel had to warn that the path
+   *  needed completing by hand. */
+  onStageXlsx?(file: File): void;
   /** Last resort for Path B: put the prompt in a file. */
   onSavePrompt?(): void;
 }
@@ -362,8 +370,21 @@ export function renderStratiMiner(host: HTMLElement, state: StratiMinerState,
   } else {
     wireFallback("sm-pick-folder", "sm-folder-file",
       (v) => handlers.onFolderChange(v));
-    wireFallback("sm-pick-xlsx", "sm-xlsx-file",
-      (v) => handlers.onXlsxChange(v));
+    // the WORKBOOK can do better than a name: its bytes are staged and the
+    // path that comes back is real (`onStageXlsx`). The folder above cannot —
+    // a directory picker hands over the files, never the folder's location.
+    if (handlers.onStageXlsx) {
+      const input = host.querySelector<HTMLInputElement>("#sm-xlsx-file");
+      on("sm-pick-xlsx", "click", () => input?.click());
+      input?.addEventListener("change", () => {
+        const file = input.files?.[0];
+        input.value = "";
+        if (file) handlers.onStageXlsx?.(file);
+      });
+    } else {
+      wireFallback("sm-pick-xlsx", "sm-xlsx-file",
+        (v) => handlers.onXlsxChange(v));
+    }
   }
 }
 

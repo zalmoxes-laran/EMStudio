@@ -155,6 +155,7 @@ from __future__ import annotations
 import argparse
 import base64
 import errno
+import hashlib
 import io
 import json
 import os
@@ -205,6 +206,20 @@ _FS_ROOTS: list[str] = []
 #: somebody inherited. The Origin gate is UNCHANGED — this widens WHAT is
 #: reachable, never WHO may ask.
 _FS_ALL = False
+
+
+#: Where a browser-picked file is staged, and how big it may be. Under the state
+#: directory so it lives with the bridge's other remembered things, and cleanable
+#: by hand — nothing here deletes a file somebody may still be mapping.
+_STAGE_MAX = int(os.environ.get("EM_BRIDGE_STAGE_MAX") or (64 * 1024 * 1024))
+
+
+def _stage_dir() -> pathlib.Path:
+    return pathlib.Path(
+        os.environ.get("EM_BRIDGE_STAGE_DIR")
+        or (pathlib.Path(os.environ.get("EM_BRIDGE_STATE_DIR")
+                         or (pathlib.Path.home() / ".config" / "emstudio"))
+            / "staged"))
 
 
 def _fs_all_from_env() -> bool:
@@ -528,7 +543,15 @@ def make_handler(api):
                 self.send_header("Access-Control-Allow-Origin", origin)
                 self.send_header("Vary", "Origin")
             self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            # `X-EM-Filename` rides with a staged upload (/fs/stage). A custom
+            # header makes the request non-simple, so the browser sends a
+            # PREFLIGHT first — and a preflight that does not list the header
+            # fails the real request before it leaves. Measured: the staging call
+            # died in the browser with a bare network error while the same call
+            # from curl worked, which is exactly what an unlisted header looks
+            # like from the page's side.
+            self.send_header("Access-Control-Allow-Headers",
+                             "Content-Type, X-EM-Filename")
 
         def do_OPTIONS(self):
             if not self._gate():
@@ -709,6 +732,15 @@ def make_handler(api):
                     self._fail(400, f"invalid JSON body: {exc}")
                     return
                 self._dtc(route, body)
+            elif route == "/fs/stage":
+                # THE OS DIALOG'S OTHER HALF. A browser file input opens the
+                # system picker — which reaches every corner of the machine —
+                # and then hands back BYTES and a name, never a location. So the
+                # bytes are staged here and the caller gets the one thing it
+                # needs: a real path, inside a folder this bridge already serves.
+                if not self._fs_gate():
+                    return
+                self._fs_stage(raw)
             elif route in ("/mapping-fields", "/mapping-catalog",
                            "/mapping-edges", "/mapping-validate",
                            "/mapping-apply", "/mapping-save"):
@@ -728,6 +760,61 @@ def make_handler(api):
                 self._shelf(route, body)
             else:
                 self.send_error(404, "unknown endpoint")
+
+        # ── STAGING: what the OS dialog can give a web page ─────────────────
+        #
+        # `<input type="file">` opens the SYSTEM picker, so a person can reach
+        # anything they can see — and then the browser withholds the location by
+        # design and hands over bytes. Neither half is enough on its own: the
+        # dialog knows where the file is and cannot say, the bridge can read any
+        # path and is not told one.
+        #
+        # So the bytes are written into a staging folder the bridge serves, and
+        # the caller gets a path. What the tools then read is a COPY, and that is
+        # said out loud rather than hidden: a mapping authored against it applies
+        # to the original later, because a mapping records a SHAPE (format, sheet,
+        # record path) and not a location.
+        #
+        # Bounded on purpose. A picker is for choosing a source, not for moving a
+        # 4 GB database through a browser — over the cap the refusal names the
+        # number and points at the two paths that do not copy anything (the
+        # desktop app's native dialog, or Browse… on a served folder).
+        def _fs_stage(self, raw):
+            name = urllib.parse.unquote(
+                self.headers.get("X-EM-Filename") or "").strip()
+            if not raw:
+                self._fail(400, "empty body: there is nothing to stage")
+                return
+            if len(raw) > _STAGE_MAX:
+                self._fail(413,
+                           f"that file is {len(raw) // (1024 * 1024)} MB and the "
+                           f"staging cap is {_STAGE_MAX // (1024 * 1024)} MB "
+                           f"(EM_BRIDGE_STAGE_MAX). A browser upload is for "
+                           f"choosing a source, not for moving a database: use "
+                           f"the desktop app's native dialog, or Browse… a folder "
+                           f"the bridge already serves — neither copies anything.")
+                return
+            safe = "".join(c if (c.isalnum() or c in "-_.") else "_"
+                           for c in (name or "source"))[-80:] or "source"
+            digest = hashlib.sha256(raw).hexdigest()[:12]
+            folder = _stage_dir()
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+                target = folder / f"{digest}-{safe}"
+                # content-addressed by prefix: the same file staged twice is one
+                # file, so re-picking it does not fill the folder with copies
+                if not target.exists():
+                    target.write_bytes(raw)
+            except OSError as exc:
+                self._fail(500, f"cannot stage the file: {exc}")
+                return
+            # …and the staging folder is served, or the path we just returned
+            # would 403 on the very next call
+            if str(folder) not in _FS_ROOTS:
+                _set_fs_roots(_FS_ROOTS + [str(folder)])
+            self._json({"ok": True, "path": str(target), "name": name or safe,
+                        "size": len(raw), "staged": True,
+                        "folder": str(folder)})
 
         # ── THE MAPPING EDITOR (StratiMiner family) ──────────────────────────
         #

@@ -221,6 +221,10 @@ export interface MappingEditorHandlers {
    *  browser. Both end at a real path, which is the only thing the bridge can
    *  read a source from. */
   pickSource(): void;
+  /** THE SYSTEM DIALOG, in a browser too. It reaches every corner of the
+   *  machine — and hands back bytes, never a location — so the caller stages
+   *  them and gets a path back. See `me.openWhy`. */
+  openSystemFile(file: File): void;
   /** Browse into a directory (or, with no path, where the bridge starts). */
   browse(path?: string): void;
   /** Choose this file as the source. */
@@ -402,6 +406,29 @@ function sourceBox(state: MappingEditorState, h: MappingEditorHandlers,
   input.value = state.path;
   input.placeholder = t("me.pathPlaceholder");
   input.addEventListener("change", () => h.setPath(input.value));
+  // TWO WAYS IN, and they are complementary rather than alternatives:
+  //
+  //  · Open…  — the SYSTEM dialog. Reaches anything on the machine, and what it
+  //    returns is bytes: the caller stages them and works on a copy. This is the
+  //    one for "the file is somewhere over there";
+  //  · Browse… — the bridge's own filesystem, Blender-style. No copy, no size
+  //    limit, and it is the one for a folder you work in every day.
+  const open = document.createElement("button");
+  open.textContent = t("me.open");
+  open.title = t("me.openWhy");
+  open.disabled = busy;
+  const fileInput = document.createElement("input");
+  fileInput.type = "file";
+  fileInput.className = "me-hidden-file";
+  const accept = Object.keys(state.extensions ?? {})
+    .map((ext) => `.${ext}`).join(",");
+  if (accept) fileInput.accept = accept;
+  fileInput.addEventListener("change", () => {
+    const file = fileInput.files?.[0];
+    fileInput.value = "";                          // re-picking the same file fires
+    if (file) h.openSystemFile(file);
+  });
+  open.addEventListener("click", () => fileInput.click());
   const browse = document.createElement("button");
   browse.textContent = t("me.browse");
   browse.title = t("me.browseWhy");
@@ -411,7 +438,7 @@ function sourceBox(state: MappingEditorState, h: MappingEditorHandlers,
   pick.textContent = t("me.read");
   pick.disabled = busy || !state.path.trim();
   pick.addEventListener("click", () => h.chooseFile(state.path.trim()));
-  row.append(input, browse, pick);
+  row.append(input, open, browse, pick, fileInput);
   section.appendChild(row);
   if (state.picker) section.appendChild(pickerBox(state, h, busy));
 
