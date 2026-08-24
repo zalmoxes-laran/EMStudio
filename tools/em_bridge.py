@@ -597,8 +597,191 @@ def make_handler(api):
                     self._fail(400, f"invalid JSON body: {exc}")
                     return
                 self._dtc(route, body)
+            elif route in ("/shelf-table", "/shelf-add-uri", "/shelf-hat",
+                           "/shelf-facets"):
+                try:
+                    body = json.loads(raw.decode("utf-8")) if raw else {}
+                except Exception as exc:
+                    self._fail(400, f"invalid JSON body: {exc}")
+                    return
+                self._shelf(route, body)
             else:
                 self.send_error(404, "unknown endpoint")
+
+        # ── THE SHELF, as the library sees it (Traccia B) ────────────────────
+        #
+        # Three routes, and one rule behind all three: **the shelf's semantics
+        # stay in s3Dgraphy**. EMStudio draws the table and takes the gesture;
+        # what a row MEANS — where the bytes are, whether it is in use, which
+        # roles exist, what a URI acquisition produces — is answered here by
+        # `api.shelf_table` / `api.resource_roles` / `api.uri_acquisition_record`,
+        # because a second implementation in TypeScript is a second answer, and a
+        # shelf with two answers to "is this in use?" is worse than no badge.
+        #
+        # Every route takes the CONTAINER (`doc`), not one graph: a resource sits
+        # on the ShelfGraph and is hatted into a STUDY graph, so asking one graph
+        # alone gets the mode wrong half the time.
+        def _shelf(self, route, body):
+            for op in ("shelf_table", "shelf_table_columns", "resource_roles"):
+                if not hasattr(api, op):
+                    self._fail(501, f"the shelf table needs a newer s3dgraphy "
+                                    f"(api.{op} is missing)")
+                    return
+            doc = body.get("doc")
+            if doc is None:
+                self._fail(400, f"{route} needs the current 'doc' (em.json)")
+                return
+            try:
+                container, warnings = api.load_container(doc)
+                for w in warnings:
+                    sys.stderr.write(f"  [bridge] warning: {w}\n")
+                payload = {"ok": True}
+                if route == "/shelf-add-uri":
+                    uri = str(body.get("uri") or "").strip()
+                    if not uri:
+                        self._fail(400, "shelf-add-uri needs a 'uri'")
+                        return
+                    payload.update(self._shelf_add_uri(container, body, uri))
+                elif route == "/shelf-hat":
+                    outcome = self._shelf_hat(container, body)
+                    if outcome is None:
+                        return                       # _fail already answered
+                    payload.update(outcome)
+                elif route == "/shelf-facets":
+                    # WHERE a promotion may land, per facet — from the CONNECTIONS
+                    # DATAMODEL (`api.attach_candidates`), never from a list in
+                    # the UI. This is what makes the dialog honest about
+                    # something surprising: a **Document does not attach to an
+                    # Epoch**. "Put it in time" is the RM facet's business
+                    # (has_first_epoch / survive_in_epoch); a Document attaches to
+                    # what it DOCUMENTS. A picker that offered epochs for a
+                    # Document would offer an edge the datamodel refuses.
+                    graph_id = body.get("graph_id")
+                    target = (container.graphs.get(graph_id) if graph_id
+                              else container.active())
+                    if target is None:
+                        self._fail(404,
+                                   f"no graph {graph_id!r} in this container"
+                                   if graph_id else
+                                   "this project has no study graph yet — open "
+                                   "or create one to promote into")
+                        return
+                    payload["facets"] = list(api.hat_facets())
+                    payload["candidates"] = {
+                        facet: api.attach_candidates(facet, target)
+                        for facet in api.hat_facets()}
+                    payload["graph_id"] = str(
+                        getattr(target, "graph_id", "") or "")
+                    payload["graph_ids"] = list(container.graphs)
+                # …and every route answers with the TABLE, so a caller never has
+                # to ask twice and can never render a stale row beside a fresh
+                # one. The vocabularies travel with it for the same reason: a UI
+                # that hardcoded the two roles would be a third place they live.
+                payload.update({
+                    "columns": list(api.shelf_table_columns()),
+                    "rows": api.shelf_table(container),
+                    "roles": list(api.resource_roles()),
+                    "access_modes": list(api.access_modes())
+                    if hasattr(api, "access_modes") else [],
+                    "shelf": (api.graph_to_emjson(container.shelf)["graph"]
+                              if getattr(container, "shelf", None) else None),
+                })
+            except Exception as exc:  # pragma: no cover — surface to the UI
+                import traceback
+                traceback.print_exc()
+                self._fail(500, f"{route} failed: {exc}")
+                return
+            out = json.dumps(payload).encode()
+            self.send_response(200)
+            self._cors()
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(out)))
+            self.end_headers()
+            self.wfile.write(out)
+
+        def _shelf_add_uri(self, container, body, uri):
+            """Paste a link → a shelf entry that is the URI and nothing else.
+
+            No bytes are copied and no object store is touched (that is the point
+            of the `uri` mapping), and the resource id comes from the URI — so
+            pasting the same link twice does not grow the shelf. The idempotence
+            is the library's; this route only carries the gesture."""
+            if not hasattr(api, "uri_acquisition_record"):
+                raise RuntimeError("this s3dgraphy has no URI acquisition "
+                                   "(api.uri_acquisition_record)")
+            if container.shelf is None:
+                container.shelf = api.new_shelf()
+            before = {e["id"] for e in api.list_shelf(container.shelf)}
+            record = api.uri_acquisition_record(
+                uri, access=body.get("access") or "open")
+            descriptor = api.apply_acquisition_mapping("uri", record)
+            role = body.get("role")
+            if role:
+                descriptor.setdefault("asset", {})["role"] = role
+            info, _shelf = api.acquire_from_descriptor(descriptor, container.shelf)
+            return {"resource_id": info["resource_id"],
+                    "acquisition_id": info["acquisition_id"],
+                    "entry": info["entry"],
+                    # SAID, because silence here reads as a failed add: a link
+                    # already on the shelf is one entry, not two.
+                    "created": info["resource_id"] not in before}
+
+        def _shelf_hat(self, container, body):
+            """Promote a shelf entry into a study graph through a FACET.
+
+            The facets and their targets are the library's (`hat_as_document` /
+            `hat_as_representation_model` / …) — this picks the member graph and
+            passes the arguments through. Returns the updated study graph so the
+            caller can adopt it."""
+            rid = str(body.get("resource_id") or "")
+            if not rid:
+                self._fail(400, "shelf-hat needs a 'resource_id'")
+                return None
+            facet = str(body.get("facet") or "document").lower()
+            ops = {"document": "hat_as_document",
+                   "rm": "hat_as_representation_model",
+                   "rmsf": "hat_as_rmsf",
+                   "rmdoc": "hat_as_rmdoc"}
+            if facet not in ops:
+                self._fail(400, f"unknown facet {facet!r}; expected one of "
+                                f"{sorted(ops)}")
+                return None
+            graph_id = body.get("graph_id")
+            target = (container.graphs.get(graph_id) if graph_id
+                      else container.active())
+            if target is None:
+                # …and say WHICH of the two things is missing: a project with no
+                # study graph at all is a different problem from a graph_id that
+                # does not name one, and "no graph None" helps nobody.
+                self._fail(404,
+                           f"no graph {graph_id!r} in this container to promote "
+                           f"into" if graph_id else
+                           "this project has no study graph yet — open or create "
+                           "one, then promote into it")
+                return None
+            if container.shelf is None:
+                self._fail(400, "this project has no shelf to promote from")
+                return None
+            kwargs = {"shelf": container.shelf}
+            if body.get("name"):
+                kwargs["name"] = body["name"]
+            if body.get("attach_to"):
+                kwargs["attach_to"] = body["attach_to"]
+            if facet == "rm" and body.get("epochs"):
+                kwargs["epochs"] = list(body["epochs"])
+            if facet == "document":
+                # canonical by default: "promote to Document" means make it the
+                # document of record for this resource, which is what
+                # `mark_as_canonical` says.
+                kwargs["mark_as_canonical"] = bool(body.get("canonical", True))
+            try:
+                result = getattr(api, ops[facet])(target, rid, **kwargs)
+            except ValueError as exc:
+                self._fail(400, str(exc))
+                return None
+            return {"facet": facet, "result": result,
+                    "graph_id": str(getattr(target, "graph_id", "") or ""),
+                    "graph": api.graph_to_emjson(target)}
 
         # term + facet → ranked offline authority candidates (P1-D).
         # The resolver is pure Python (no rdflib/network); imported lazily so a

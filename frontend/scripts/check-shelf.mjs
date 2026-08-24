@@ -161,4 +161,163 @@ const DIGEST_B = "sha256:" + "cd".repeat(32);
   eq(S.shelfEntries().length, 0, "restoring after a clear finds an empty shelf");
 }
 
+// ── SHELF-B · the role: carried, persisted, never validated on this side ────
+{
+  S.clearShelf();
+  const mine = S.addToShelf({
+    locator: "s3://em-assets/aabbcc", name: "tempio (mio)",
+    checksum: DIGEST_A, scope: "own-study", residency: "resident",
+    // MY OWN asset, held up as a comparandum: the cell that proves the role is
+    // not derived from the fence
+    role: "comparandum",
+  });
+  const theirs = S.addToShelf({
+    locator: "https://zenodo.org/records/12345", name: "altrove",
+    scope: "other-HDT", role: "internal_source",
+  });
+  const unset = S.addToShelf({ locator: "/scavi/us12.jpg", scope: "own-study" });
+  eq(mine.role, "comparandum", "an own-study asset can be a comparandum");
+  eq(theirs.role, "internal_source", "…and somebody else's URI an internal source");
+  eq(unset.role, undefined, "an unstated role stays unstated (no default)");
+  ok(!("effectiveRole" in S), "there is no effectiveRole: neither value is a default");
+
+  const doc = S.shelfToDocument();
+  const roles = Object.fromEntries(
+    doc.graph.nodes.map((n) => [n.name, n.data.role]));
+  eq(roles["tempio (mio)"], "comparandum", "the role goes where s3Dgraphy reads it");
+  eq(roles["altrove"], "internal_source", "…for both");
+  ok(!("role" in doc.graph.nodes.find((n) => n.name === "us12.jpg").data),
+     "…and an unstated one writes nothing");
+
+  S.clearShelf();
+  S.loadShelfDocument(doc);
+  eq(S.shelfEntries().find((e) => e.checksum === DIGEST_A).role, "comparandum",
+     "the role survives a reopen");
+
+  // a value this side has never heard of must NOT be dropped: the vocabulary is
+  // the library's, and a reader with its own allow-list would eat the day a
+  // third role is declared
+  const future = {
+    header: {}, graph: {
+      graph_id: "s", name: "S", data: { em_collection: "ShelfGraph" },
+      nodes: [{ id: "r9", node_type: "resource", name: "domani",
+                data: { url: "/a/b.jpg", role: "un_terzo_ruolo" } }],
+    },
+  };
+  S.loadShelfDocument(future);
+  eq(S.shelfEntries()[0].role, "un_terzo_ruolo",
+     "a role the library accepts is carried even if this side has never seen it");
+}
+
+// ── SHELF-B · nothing the library wrote is dropped on the way through ──────
+//
+// Measured before it was written: a URI entry acquired through s3Dgraphy comes
+// back with media_type / access / origin / size, this list models none of them,
+// and adopting the library's shelf lost them — the next table read showed blank
+// cells for fields that had been correctly filled one call earlier.
+{
+  const doc = {
+    header: {}, graph: {
+      graph_id: "shelf", name: "S", data: { em_collection: "ShelfGraph" },
+      nodes: [{
+        id: "r-uri", node_type: "resource", name: "tempio.glb",
+        data: {
+          url: "https://zenodo.org/records/12345/files/tempio.glb",
+          role: "internal_source",
+          media_type: "model/gltf-binary",
+          access: { mode: "subscribe", endpoint: "https://zenodo.org/login" },
+          origin: { repo: "zenodo.org", capabilities: [], protocol: "https" },
+          size: 1234,
+          un_campo_di_domani: "che questo file non conosce",
+        },
+      }],
+    },
+  };
+  S.clearShelf();
+  S.loadShelfDocument(doc);
+  const entry = S.shelfEntries()[0];
+  eq(entry.role, "internal_source", "the modelled field is modelled");
+  eq(entry.extra.media_type, "model/gltf-binary", "…and the unmodelled ones are kept");
+  eq(entry.extra.access.mode, "subscribe", "…including a nested one");
+  eq(entry.extra.un_campo_di_domani, "che questo file non conosce",
+     "…including one nobody here has heard of");
+  ok(!("role" in entry.extra), "a modelled key is not duplicated into the bag");
+
+  const back = S.shelfToDocument().graph.nodes[0].data;
+  eq(back.media_type, "model/gltf-binary", "…and it goes back out");
+  eq(back.access.mode, "subscribe", "…nested and all");
+  eq(back.origin.repo, "zenodo.org", "…origin too");
+  eq(back.role, "internal_source", "…while the modelled field still wins");
+  eq(back.un_campo_di_domani, "che questo file non conosce",
+     "…and tomorrow's field survives a round trip through today's code");
+}
+
+// ── SHELF-B · the TABLE is a read-model, and it computes nothing ────────────
+{
+  const bundle = await esbuild.build({
+    entryPoints: [`${SRC}shelf-table.ts`],
+    bundle: true, format: "esm", write: false,
+  });
+  const T = await import(
+    "data:text/javascript;base64," +
+      Buffer.from(bundle.outputFiles[0].text).toString("base64")
+  );
+  const answer = {
+    columns: ["ID", "NAME", "RESIDENCE", "ROLE", "MODE", "SIZE"],
+    rows: [
+      { ID: "r1", NAME: "tempio", RESIDENCE: "minio", ROLE: "comparandum",
+        MODE: "used_in_graph", SIZE: 104857 },
+      { ID: "r2", NAME: "foto", RESIDENCE: "uri", ROLE: "", MODE: "only_shelf",
+        SIZE: "" },
+    ],
+    roles: ["comparandum", "internal_source"],
+    access_modes: ["open", "subscribe"],
+    shelf: { graph_id: "shelf" },
+  };
+  const table = T.parseShelfTable(answer);
+  eq(table.columns, answer.columns, "the column ORDER is the library's, kept");
+  eq(table.rows.length, 2, "both rows");
+  eq(table.roles, ["comparandum", "internal_source"], "the vocabulary travels with it");
+  eq(table.accessModes, ["open", "subscribe"], "…and so do the access modes");
+  eq(T.rowId(table.rows[0]), "r1", "a row knows its id");
+  eq(T.findRow(table, "r2").NAME, "foto", "…and can be found by it");
+
+  // the three badges, and NOT a fourth: what is a badge is a presentation
+  // decision, what a badge MEANS is not ours
+  eq([...T.BADGE_COLUMNS], ["RESIDENCE", "ROLE", "MODE"], "three badge columns");
+  ok(T.isBadgeColumn("MODE") && !T.isBadgeColumn("LOCATOR"), "…and only those");
+  eq(T.badgeClass("MODE", "used_in_graph"), "shelf-badge b-mode v-used_in_graph",
+     "the class carries the value verbatim — the COLOUR lives in style.css");
+  eq(T.badgeClass("ROLE", ""), "shelf-badge b-role v-unset",
+     "…and an unstated value is marked as unstated, not as something");
+  eq(T.badgeClass("ROLE", "un terzo ruolo"), "shelf-badge b-role v-un-terzo-ruolo",
+     "a value nobody planned for still becomes a usable class");
+
+  eq(T.humanSize(104857), "102 kB", "a size is formatted, never re-parsed");
+  eq(T.humanSize(1536), "1.5 kB", "…with one decimal only where it says something");
+  eq(T.humanSize(""), "", "…and an absent one stays absent (not 0 B)");
+  eq(T.cellText(table.rows[1], "ROLE"), "", "an empty cell is empty");
+  eq(T.cellText(table.rows[0], "SIZE"), "104857", "…and a number is still the number");
+
+  // an answer that is NOT a table must not read as an empty shelf: drawing zero
+  // rows for a proxy's HTML error page is a lie the user cannot see through
+  eq(T.parseShelfTable(null), null, "nothing is not a table");
+  eq(T.parseShelfTable({ ok: true }), null, "…nor is a bare ok");
+  eq(T.parseShelfTable({ columns: [], rows: [] }), null, "…nor is a table with no columns");
+  eq(T.parseShelfTable({ columns: ["ID"], rows: [] }).rows, [],
+     "…while a real table with no rows IS an empty shelf");
+
+  // THE constraint: this module answers nothing about a row. No locator
+  // regex, and not one of the badge VALUES written down anywhere in it.
+  const src = await (await import("node:fs/promises"))
+    .readFile(`${SRC}shelf-table.ts`, "utf8");
+  const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+  ok(!/https?:/.test(code), "no locator scheme in the code: residence is not computed here");
+  ok(!/s3:/.test(code), "…nor an s3 prefix");
+  for (const value of ["minio", "only_shelf", "used_in_graph", "comparandum",
+                       "internal_source", "subscribe"]) {
+    ok(!code.includes(value), `the value "${value}" is never mentioned: it is the library's`);
+  }
+}
+
 console.log(`shelf: ${checks} checks passed`);

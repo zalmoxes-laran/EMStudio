@@ -5968,6 +5968,94 @@ object.viewer-media {
 .shelf-badge.checksum {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
+/* SHELF-B · THE TABLE. Values come from s3Dgraphy and arrive as `v-<value>`
+   class names (see `shelf-table.ts`, which never mentions one) — so the colours
+   live here, in the palette, and nowhere else. A value with no rule of its own
+   simply reads as a neutral badge, which is the right way for a vocabulary that
+   can grow to degrade. */
+.shelf-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 11px;
+}
+.shelf-table th {
+  text-align: left;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+}
+.shelf-table td {
+  padding: 3px 8px;
+  border-bottom: 1px solid var(--border-subtle, var(--border));
+  vertical-align: middle;
+}
+.shelf-table tr:hover td {
+  background: var(--bg-elevated);
+}
+.shelf-table td.mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  max-width: 22ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.shelf-table td.c-size {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.shelf-table .shelf-role-pick {
+  font: inherit;
+  font-size: 10px;
+  padding: 0 2px;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+/* WHERE the bytes are */
+.shelf-badge.v-minio { border-color: #3a7fb8; color: #6fb3e0; }
+.shelf-badge.v-uri { border-color: #7a6fb8; color: #a99be0; }
+.shelf-badge.v-disk { border-color: var(--border); color: var(--text-muted); }
+/* WHAT it is for — a comparandum is somebody else's yardstick, an internal
+   source is part of this argument. Two roles, two readings, never derived. */
+.shelf-badge.v-comparandum { border-color: #b8893a; color: #d8bd30; }
+.shelf-badge.v-internal_source { border-color: #3a8f4f; color: #7cc59b; }
+/* WHETHER it is in the study yet */
+.shelf-badge.v-used_in_graph { border-color: #3a8f4f; color: #7cc59b; }
+.shelf-badge.v-only_shelf { border-style: dashed; color: var(--text-muted); }
+.shelf-badge.v-unset { opacity: 0.55; }
+/* the bridge, when it is not there: a sentence, not an empty table */
+.shelf-note {
+  margin: 12px;
+  padding: 8px 10px;
+  border-left: 3px solid #b8893a;
+  color: var(--text);
+  font-size: 12px;
+}
+.shelf-note-hint {
+  margin: 0 12px 12px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+.modal-card.narrow { max-width: 30rem; }
+.modal-card.narrow label {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  margin: 8px 0;
+}
+.modal-card.narrow select { min-width: 16rem; }
+.shelf-promote-hint,
+.shelf-promote-status {
+  color: var(--text-muted);
+  font-size: 11px;
+  margin: 6px 0 0;
+}
 .shelf-actions {
   display: flex;
   gap: 4px;

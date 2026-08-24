@@ -26,10 +26,22 @@ import {
   shelfMeta,
   shelfToDocument,
   renameShelf,
+  updateShelfEntry,
   SHELF_SCOPES,
   type ShelfEntry,
   type ShelfScope,
 } from "./shelf";
+import {
+  badgeClass,
+  cellText,
+  EMPTY_TABLE,
+  humanSize,
+  isBadgeColumn,
+  parseShelfTable,
+  rowId,
+  type ShelfRow,
+  type ShelfTable,
+} from "./shelf-table";
 import {
   currentIdentity,
   declareIdentity,
@@ -5254,6 +5266,28 @@ document.getElementById("btn-svg")!.addEventListener("click", () => {
 /** Which scope a URI added by hand gets — remembered between additions, because
  *  somebody adding comparanda adds several in a row. */
 let shelfUrlScope: ShelfScope = "own-study";
+/** How a pasted URI is REACHED — `open` (click it) or `subscribe` (you register
+ *  first). Not a rights statement: the licence says what you may DO with the
+ *  object, this says whether you can reach it at all. The two values come from
+ *  the API (`api.access_modes()`, they travel with the table); this is only the
+ *  current pick, and `open` is the sane default for a link somebody just
+ *  pasted. */
+let shelfUriAccess = "open";
+// …and the table itself. Declared HERE, next to the rest of the shelf's state,
+// and not next to the renderer that uses it: the shelf bar is wired up in this
+// file's top-level flow (well before the render section), and a `let` declared
+// after that point is in its TDZ when the wiring runs — measured, in the
+// browser, as `Cannot access 'shelfTable' before initialization` with a blank
+// app behind it. Module order is load-bearing in this file.
+let shelfTable: ShelfTable = EMPTY_TABLE;
+let shelfTableNote: string | null = null;
+let shelfTableBusy = false;
+/** Has the table been asked for since the shelf last changed? The table is a
+ *  read-model, so it has to be FETCHED before it can be drawn — and drawing an
+ *  un-fetched one shows "the shelf is empty" over a shelf that is not (measured,
+ *  on first entering Table mode). Cleared whenever the shelf changes, so the
+ *  next draw asks again instead of showing a stale answer. */
+let shelfTableAsked = false;
 
 let _bridgeUrl: string | null = null;
 async function bridgeUrl(): Promise<string> {
@@ -6478,6 +6512,9 @@ document.getElementById("footer-identity")?.addEventListener(
 // ── SHELF1 · the wide list's own verbs ──────────────────────────────────────
 restoreShelf();                       // a saved list that vanishes on reload is not saved
 onShelfChange(() => {
+  // the list changed, so the library's answer about it is stale: the next draw
+  // of the Table asks again rather than showing yesterday's rows
+  shelfTableAsked = false;
   if (activeWin().type === "shelf") renderShelf();
 });
 // MULTIGRAPH · take another project into this one (additive, merge-by-UUID).
@@ -6500,10 +6537,53 @@ document.getElementById("btn-add-project")?.addEventListener("click", () => {
 
 document.getElementById("storage-add-root")?.addEventListener(
   "click", () => void addStorageRoot());
-document.getElementById("shelf-add-url")?.addEventListener("click", () => addUrlToShelf());
+document.getElementById("shelf-add-url")?.addEventListener(
+  "click", () => void addUrlToShelf());
 document.getElementById("shelf-url")?.addEventListener("keydown", (e) => {
-  if ((e as KeyboardEvent).key === "Enter") addUrlToShelf();
+  if ((e as KeyboardEvent).key === "Enter") void addUrlToShelf();
 });
+{
+  // The access mode of a pasted URI. Populated from the API the first time the
+  // table answers — until then it holds the one default, and it never invents a
+  // second vocabulary (that is the whole point of asking).
+  const sel = document.getElementById("shelf-url-access") as HTMLSelectElement | null;
+  const fill = (): void => {
+    if (!sel) return;
+    const modes = shelfTable.accessModes.length
+      ? shelfTable.accessModes : [shelfUriAccess];
+    // compare the VALUES, not the count: the first fill happens before the
+    // library has answered and puts one option in (the default), and a
+    // count-based guard then refuses the real vocabulary for ever — measured,
+    // the picker stayed stuck on "open link" alone.
+    const same = sel.options.length === modes.length
+      && modes.every((m, i) => sel.options[i]?.value === m);
+    if (same) return;
+    sel.textContent = "";
+    for (const mode of modes) {
+      const opt = document.createElement("option");
+      opt.value = mode;
+      opt.textContent = t(`shelf.v.${mode}`, {}, mode);
+      sel.appendChild(opt);
+    }
+    sel.value = shelfUriAccess;
+  };
+  fill();
+  sel?.addEventListener("change", () => {
+    shelfUriAccess = sel.value || "open";
+  });
+  document.getElementById("shelf-refresh")?.addEventListener("click", () => {
+    void refreshShelfTable().then(fill);
+  });
+  onShelfChange(fill);
+}
+document.getElementById("shelf-promote-facet")?.addEventListener(
+  "change", () => renderShelfPromoteTargets());
+document.getElementById("shelf-promote-go")?.addEventListener(
+  "click", () => void confirmShelfPromote());
+document.getElementById("shelf-promote-cancel")?.addEventListener(
+  "click", () => closeShelfPromote());
+document.getElementById("shelf-promote-x")?.addEventListener(
+  "click", () => closeShelfPromote());
 document.getElementById("shelf-save")?.addEventListener("click", () => saveShelf());
 document.getElementById("shelf-open")?.addEventListener("click", () => openShelfFile());
 document.getElementById("shelf-name")?.addEventListener("change", (e) => {
@@ -9115,6 +9195,18 @@ function renderShelfInto(win: Win, body: HTMLElement,
                          count: HTMLElement | null): void {
   const entries = shelfEntries();
   if (count) count.textContent = t("shelf.count", { n: String(entries.length) });
+  // SHELF-B · the same shelf, two ways of looking (`SHELF_MODES`). The TABLE is
+  // the library's answer about these entries; the LIST is what you drag into and
+  // it keeps working with no bridge. Neither is a second shelf: both read the
+  // one list that becomes the container's ShelfGraph.
+  if (winModeOf(win) === "table") {
+    if (!shelfTableAsked && !shelfTableBusy) {
+      shelfTableAsked = true;
+      void refreshShelfTable();
+    }
+    paintSurface(win, body, () => renderShelfTableInto(body));
+    return;
+  }
   paintSurface(win, body, () => {
     body.textContent = "";
     if (!entries.length) {
@@ -9131,6 +9223,216 @@ function renderShelfInto(win: Win, body: HTMLElement,
     for (const entry of entries) list.appendChild(shelfRow(entry));
     body.appendChild(list);
   });
+}
+
+// ── SHELF-B · THE TABLE, and why it comes from the library ─────────────────
+//
+// The list above is what you drag INTO. This is the same shelf read BACK from
+// s3Dgraphy — because three of its columns are things only the library can
+// answer, and answering them here would be a second answer:
+//
+//   · RESIDENCE (disk/minio/uri) — the locator, plus what the origin says;
+//   · ROLE (comparandum/internal_source) — STATED, orthogonal to the fence;
+//   · MODE (only_shelf/used_in_graph) — the hatting reference-check across
+//     EVERY graph of the container, which is why the whole container travels.
+//
+// A shelf with two opinions about "is this in use?" is worse than one with no
+// badge, so nothing about a row is computed on this side (see `shelf-table.ts`).
+// The cost is a bridge round trip, and it is declared: no bridge → the table
+// says so and the LIST mode still works offline, which is the honest trade.
+
+/**
+ * The project as the library needs to see it: every graph plus the shelf.
+ *
+ * NOT `projectContainer()`, and that is not an oversight — that one settles the
+ * project's VERSION, and reading a table must not invent a revision. Same
+ * members, same shelf, no bump.
+ */
+function shelfContainerDoc(): Record<string, unknown> {
+  const graphs = emtree.slots.map((slot) => ({
+    id: String((slot.store.doc.graph as Record<string, unknown>).graph_id ?? slot.id),
+    doc: JSON.parse(slot.store.toJSON()) as EmDocument,
+  }));
+  const activeSlot = emtree.active();
+  return buildContainer({
+    graphs,
+    shelf: projectShelfSection(),
+    corpus: projectCorpusSection(),
+    activeGraphId: activeSlot
+      ? String((activeSlot.store.doc.graph as Record<string, unknown>).graph_id
+               ?? activeSlot.id)
+      : null,
+  }) as unknown as Record<string, unknown>;
+}
+
+/** Ask the bridge for the shelf as rows. `extra` carries a WRITE (paste-URI,
+ *  promote) — every shelf route answers with the fresh table, so a caller never
+ *  renders a stale row beside a new one. */
+async function askShelf(route: string, extra: Record<string, unknown> = {},
+                        ): Promise<Record<string, unknown> | null> {
+  const body = { doc: shelfContainerDoc(), ...extra };
+  try {
+    const res = await fetch(`${await bridgeUrl()}${route}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      let msg = `bridge ${res.status}`;
+      try {
+        const j = (await res.json()) as { error?: string };
+        if (j?.error) msg = j.error;
+      } catch {
+        /* non-JSON error page */
+      }
+      shelfTableNote = msg;
+      return null;
+    }
+    const answer = (await res.json()) as Record<string, unknown>;
+    const table = parseShelfTable(answer);
+    if (!table) {
+      // an answer that is not a table is not an empty shelf, and drawing zero
+      // rows for it would be a lie the user cannot see through
+      shelfTableNote = t("shelf.tableUnreadable");
+      return null;
+    }
+    shelfTable = table;
+    shelfTableNote = null;
+    return answer;
+  } catch {
+    shelfTableNote = BRIDGE_UNREACHABLE;
+    return null;
+  }
+}
+
+async function refreshShelfTable(): Promise<void> {
+  if (shelfTableBusy) return;
+  shelfTableBusy = true;
+  shelfTableAsked = true;
+  await askShelf("/shelf-table");
+  shelfTableBusy = false;
+  renderShelf();
+}
+
+/** The table body. One row per shelf entry, columns and order as the library
+ *  gave them — a column added in s3Dgraphy appears here without an edit. */
+function renderShelfTableInto(body: HTMLElement): void {
+  body.textContent = "";
+  if (shelfTableNote) {
+    const note = document.createElement("div");
+    note.className = "shelf-note";
+    note.textContent = shelfTableNote;
+    const hint = document.createElement("div");
+    hint.className = "shelf-note-hint";
+    hint.textContent = t("shelf.tableNeedsBridge");
+    body.append(note, hint);
+    return;
+  }
+  if (!shelfTable.rows.length) {
+    const empty = document.createElement("div");
+    empty.className = "viewer-empty";
+    const p = document.createElement("p");
+    // "asking" and "empty" are different things, and a table that says the
+    // second while doing the first is a lie with a 200 ms lifetime
+    p.textContent = shelfTableBusy ? t("shelf.tableAsking") : t("shelf.empty");
+    empty.appendChild(p);
+    body.appendChild(empty);
+    return;
+  }
+  const table = document.createElement("table");
+  table.className = "shelf-table";
+  const head = document.createElement("thead");
+  const hr = document.createElement("tr");
+  for (const column of shelfTable.columns) {
+    if (column === "ID") continue;              // the key, not a column to read
+    const th = document.createElement("th");
+    th.textContent = t(`shelf.col.${column}`, {}, column);
+    th.className = `c-${column.toLowerCase()}`;
+    hr.appendChild(th);
+  }
+  head.appendChild(hr);
+  const tbody = document.createElement("tbody");
+  for (const row of shelfTable.rows) tbody.appendChild(shelfTableRow(row));
+  table.append(head, tbody);
+  body.appendChild(table);
+}
+
+function shelfTableRow(row: ShelfRow): HTMLElement {
+  const tr = document.createElement("tr");
+  const id = rowId(row);
+  tr.dataset.entry = id;
+  for (const column of shelfTable.columns) {
+    if (column === "ID") continue;
+    const td = document.createElement("td");
+    td.className = `c-${column.toLowerCase()}`;
+    if (column === "ROLE") {
+      td.appendChild(shelfRoleCell(id, cellText(row, column)));
+    } else if (isBadgeColumn(column)) {
+      const value = cellText(row, column);
+      const badge = document.createElement("span");
+      badge.className = badgeClass(column, value);
+      // the LABEL is localised, the VALUE is the library's — a missing key
+      // falls back to what the library said rather than to an empty cell
+      badge.textContent = value ? t(`shelf.v.${value}`, {}, value) : "—";
+      td.appendChild(badge);
+    } else if (column === "SIZE") {
+      td.textContent = humanSize(row[column]);
+      td.title = cellText(row, column);
+    } else {
+      td.textContent = cellText(row, column);
+      if (column === "LOCATOR" || column === "CHECKSUM") {
+        td.className += " mono";
+        td.title = cellText(row, column);
+      }
+    }
+    tr.appendChild(td);
+  }
+  // …and the gesture that turns a row into part of the study
+  tr.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    openShelfPromote(id, cellText(row, "NAME"));
+  });
+  return tr;
+}
+
+/**
+ * The ROLE cell is editable, and it is the only editable one — because it is the
+ * only column that is a DECISION rather than a fact. Where the bytes are and
+ * whether the resource is used are read off the graph; what it is FOR is
+ * something a person says.
+ *
+ * The options come from the API (`roles` travelled with the table). Nothing here
+ * knows what they are, so the day a third one is declared this picker grows it
+ * without an edit.
+ */
+function shelfRoleCell(id: string, current: string): HTMLElement {
+  if (!shelfTable.roles.length) {
+    const span = document.createElement("span");
+    span.className = badgeClass("ROLE", current);
+    span.textContent = current ? t(`shelf.v.${current}`, {}, current) : "—";
+    return span;
+  }
+  const sel = document.createElement("select");
+  sel.className = "shelf-role-pick";
+  const unset = document.createElement("option");
+  unset.value = "";
+  unset.textContent = t("shelf.roleUnset");
+  sel.appendChild(unset);
+  for (const role of shelfTable.roles) {
+    const opt = document.createElement("option");
+    opt.value = role;
+    opt.textContent = t(`shelf.v.${role}`, {}, role);
+    sel.appendChild(opt);
+  }
+  sel.value = current;
+  sel.addEventListener("change", () => {
+    // written on THIS side (the shelf list is the in-memory shelf of the
+    // container) and then read BACK from the library, so the badge you see is
+    // the library's answer and not this select's optimism
+    updateShelfEntry(id, { role: sel.value || undefined });
+    void refreshShelfTable();
+  });
+  return sel;
 }
 
 function shelfRow(entry: ShelfEntry): HTMLElement {
@@ -9262,12 +9564,43 @@ async function addFileToShelf(payload: StorageDragPayload): Promise<void> {
     : t("shelf.addedNoChecksum", { name: entry.name }));
 }
 
-function addUrlToShelf(): void {
+/**
+ * Paste a link → a shelf entry that is the URI and NOTHING ELSE.
+ *
+ * Through the library when it is reachable (`/shelf-add-uri` →
+ * `api.uri_acquisition_record` + the `uri` acquisition mapping), and that is not
+ * ceremony: the library derives the resource id FROM THE URI, so pasting the
+ * same link twice is one entry, and it records the acquisition as a D12 event
+ * whose method says what actually happened — the URI was acquired, not the
+ * object. **No bytes are copied and no object store is touched.**
+ *
+ * Without a bridge it still lands, locally, and SAYS so. Losing the paste
+ * because a sidecar is not running would be the wrong trade — but so would
+ * pretending the entry carries an acquisition it does not have.
+ */
+async function addUrlToShelf(): Promise<void> {
   const input = document.getElementById("shelf-url") as HTMLInputElement;
   const uri = input.value.trim();
   if (!uri) return;
   if (!/^(https?:|s3:)/i.test(uri)) {
     toast(t("shelf.notAUri"));
+    return;
+  }
+  const answer = await askShelf("/shelf-add-uri", {
+    uri,
+    access: { mode: shelfUriAccess },
+  });
+  if (answer) {
+    // the library's shelf is the one that counts now: adopt it, so the list and
+    // the table cannot disagree about what is on the shelf
+    const section = answer.shelf as Record<string, unknown> | null;
+    if (section) adoptProjectShelf(section);
+    input.value = "";
+    renderShelf();
+    const entry = (answer.entry ?? {}) as { name?: string };
+    toast(answer.created
+      ? t("shelf.added", { name: String(entry.name ?? uri) })
+      : t("shelf.uriAlready", { name: String(entry.name ?? uri) }));
     return;
   }
   const entry = addToShelf({
@@ -9279,7 +9612,155 @@ function addUrlToShelf(): void {
   });
   input.value = "";
   renderShelf();
-  toast(t("shelf.added", { name: entry.name }));
+  toast(t("shelf.addedNoBridge", { name: entry.name }));
+}
+
+// ── promote a shelf entry into the study ────────────────────────────────────
+//
+// The gesture: right-click a row → pick a FACET and where it lands → the entry
+// is hatted into the active graph.
+//
+// The facets and their legal targets come from the CONNECTIONS DATAMODEL
+// (`api.attach_candidates` over `/shelf-facets`), and that is what makes this
+// dialog honest about something surprising, MEASURED rather than assumed: a
+// **Document does not attach to an Epoch**. "Put it in time" is the RM facet's
+// business (`has_first_epoch` / `survive_in_epoch`); a Document attaches to what
+// it DOCUMENTS (a unit, via `has_documentation`) or to the Extractor that reads
+// it. So the dialog offers the epochs under `rm` and the units under `document`,
+// because that is what the datamodel allows — a picker that offered epochs for a
+// Document would be offering an edge the library refuses.
+
+interface ShelfFacets {
+  facets: string[];
+  candidates: Record<string, Array<{ id: string; name: string;
+                                     node_type: string; edge: string }>>;
+  graph_id?: string;
+}
+
+let shelfPromoteTarget: { id: string; name: string } | null = null;
+let shelfFacets: ShelfFacets | null = null;
+
+async function openShelfPromote(id: string, name: string): Promise<void> {
+  const modal = document.getElementById("shelf-promote-modal");
+  if (!modal) return;
+  shelfPromoteTarget = { id, name };
+  shelfFacets = null;
+  const label = document.getElementById("shelf-promote-what");
+  if (label) label.textContent = name || id;
+  const status = document.getElementById("shelf-promote-status");
+  if (status) status.textContent = t("shelf.promoteAsking");
+  modal.classList.remove("hidden");
+  const answer = await askShelf("/shelf-facets", {});
+  if (!answer) {
+    if (status) status.textContent = shelfTableNote ?? BRIDGE_UNREACHABLE;
+    return;
+  }
+  shelfFacets = {
+    facets: (answer.facets as string[]) ?? [],
+    candidates: (answer.candidates as ShelfFacets["candidates"]) ?? {},
+    graph_id: answer.graph_id as string | undefined,
+  };
+  if (status) {
+    status.textContent = t("shelf.promoteInto",
+                           { graph: String(shelfFacets.graph_id ?? "") });
+  }
+  const facetSel = document.getElementById("shelf-promote-facet") as HTMLSelectElement;
+  facetSel.textContent = "";
+  for (const facet of shelfFacets.facets) {
+    const opt = document.createElement("option");
+    opt.value = facet;
+    opt.textContent = t(`shelf.facet.${facet}`, {}, facet);
+    facetSel.appendChild(opt);
+  }
+  // Document is the default because it is the gesture people asked for; the
+  // others are there because the library has them, not because we guessed.
+  facetSel.value = shelfFacets.facets.includes("document")
+    ? "document" : (shelfFacets.facets[0] ?? "");
+  renderShelfPromoteTargets();
+}
+
+function renderShelfPromoteTargets(): void {
+  const facetSel = document.getElementById("shelf-promote-facet") as HTMLSelectElement;
+  const targetSel = document.getElementById("shelf-promote-target") as HTMLSelectElement;
+  const hint = document.getElementById("shelf-promote-hint");
+  if (!facetSel || !targetSel) return;
+  const facet = facetSel.value;
+  const candidates = shelfFacets?.candidates[facet] ?? [];
+  targetSel.textContent = "";
+  const none = document.createElement("option");
+  none.value = "";
+  none.textContent = t("shelf.promoteNoTarget");
+  targetSel.appendChild(none);
+  for (const c of candidates) {
+    const opt = document.createElement("option");
+    opt.value = c.id;
+    opt.textContent = `${c.name || c.id} · ${c.node_type} (${c.edge})`;
+    targetSel.appendChild(opt);
+  }
+  targetSel.disabled = !candidates.length;
+  if (hint) {
+    // The honest sentence, per facet — including the one that says why there is
+    // nothing to pick.
+    hint.textContent = candidates.length
+      ? t(`shelf.promoteHint.${facet}`, {}, "")
+      : t("shelf.promoteNothing", { facet: t(`shelf.facet.${facet}`, {}, facet) });
+  }
+}
+
+async function confirmShelfPromote(): Promise<void> {
+  if (!shelfPromoteTarget) return;
+  const facetSel = document.getElementById("shelf-promote-facet") as HTMLSelectElement;
+  const targetSel = document.getElementById("shelf-promote-target") as HTMLSelectElement;
+  const status = document.getElementById("shelf-promote-status");
+  const facet = facetSel?.value || "document";
+  const attach = targetSel?.value || "";
+  const extra: Record<string, unknown> = {
+    resource_id: shelfPromoteTarget.id,
+    facet,
+    graph_id: shelfFacets?.graph_id,
+  };
+  if (attach) {
+    // the RM facet takes EPOCHS (ordered: the first becomes has_first_epoch);
+    // every other facet takes a single attach target. The library's own shapes.
+    if (facet === "rm") extra.epochs = [attach];
+    else extra.attach_to = attach;
+  }
+  if (status) status.textContent = t("shelf.promoting");
+  const answer = await askShelf("/shelf-hat", extra);
+  if (!answer) {
+    if (status) status.textContent = shelfTableNote ?? BRIDGE_UNREACHABLE;
+    return;
+  }
+  // Adopt what the library made: the facet node plus the reference-by-stable-ID
+  // to the resource. `addSubgraph` is additive and does not re-stamp — the nodes
+  // were made elsewhere (see its own note), and the promotion is a checkpoint on
+  // this side, so ⌘Z undoes it.
+  const graph = (answer.graph as { graph?: { nodes?: EmNode[]; edges?: EmEdge[] } })?.graph;
+  const slot = emtree.slots.find((sl) =>
+    String((sl.store.doc.graph as Record<string, unknown>).graph_id ?? sl.id)
+    === String(answer.graph_id ?? "")) ?? emtree.active();
+  if (graph && slot) {
+    const added = slot.store.addSubgraph(graph.nodes ?? [], graph.edges ?? []);
+    logInfo(t("shelf.promoted", {
+      name: shelfPromoteTarget.name,
+      facet: t(`shelf.facet.${facet}`, {}, facet),
+      nodes: String(added.nodes), edges: String(added.edges),
+    }));
+    toast(t("shelf.promoted", {
+      name: shelfPromoteTarget.name,
+      facet: t(`shelf.facet.${facet}`, {}, facet),
+      nodes: String(added.nodes), edges: String(added.edges),
+    }));
+  }
+  closeShelfPromote();
+  refreshEMTree();
+  draw();
+  void refreshShelfTable();
+}
+
+function closeShelfPromote(): void {
+  document.getElementById("shelf-promote-modal")?.classList.add("hidden");
+  shelfPromoteTarget = null;
 }
 
 function saveShelf(): void {

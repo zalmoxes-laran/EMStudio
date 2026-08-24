@@ -389,7 +389,11 @@
             <span class="shelf-bar-spacer"></span>
             <input id="shelf-url" type="text" spellcheck="false" placeholder="https://… (URI/LOD)" />
             <select id="shelf-url-scope"></select>
+            <!-- how the pasted URI is REACHED (open / subscribe) — the vocabulary
+                 comes from s3Dgraphy and is filled in when the table answers -->
+            <select id="shelf-url-access"></select>
             <button id="shelf-add-url" type="button">+ URI</button>
+            <button id="shelf-refresh" type="button" data-i18n-title="shelf.refreshTitle">⟳</button>
             <button id="shelf-open" type="button">Apri…</button>
             <button id="shelf-save" type="button">Salva</button>
           </div>
@@ -825,6 +829,34 @@
         <div class="modal-foot">
           <button id="settings-cancel" data-i18n="settings.cancel">Cancel</button>
           <button id="settings-save" class="primary" data-i18n="settings.save">Save</button>
+        </div>
+      </div>
+    </div>
+    <!-- SHELF-B · promote a shelf entry into the study. The FACETS and the legal
+         targets come from the connections datamodel over the bridge — this markup
+         holds no list of node types, on purpose. -->
+    <div id="shelf-promote-modal" class="modal hidden">
+      <div class="modal-card narrow">
+        <div class="modal-head">
+          <h3 data-i18n="shelf.promoteTitle">Promuovi nello studio</h3>
+          <button id="shelf-promote-x" class="modal-x" type="button">✕</button>
+        </div>
+        <div class="modal-body">
+          <p class="shelf-promote-what"><strong id="shelf-promote-what"></strong></p>
+          <label>
+            <span data-i18n="shelf.promoteFacet">Come</span>
+            <select id="shelf-promote-facet"></select>
+          </label>
+          <label>
+            <span data-i18n="shelf.promoteTarget">Aggancia a</span>
+            <select id="shelf-promote-target"></select>
+          </label>
+          <p id="shelf-promote-hint" class="shelf-promote-hint"></p>
+          <p id="shelf-promote-status" class="shelf-promote-status"></p>
+        </div>
+        <div class="modal-foot">
+          <button id="shelf-promote-cancel" type="button" data-i18n="shelf.promoteCancel">Annulla</button>
+          <button id="shelf-promote-go" type="button" data-i18n="shelf.promoteGo">Promuovi</button>
         </div>
       </div>
     </div>

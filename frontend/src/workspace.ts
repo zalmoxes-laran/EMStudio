@@ -75,6 +75,13 @@ export const STORAGE_MODES = ["filesystem", "minio"] as const;
  *  Same collection either way — the Mode is the reading, not the content. */
 export const VIEWER_MODES = ["single", "gallery"] as const;
 
+/** How a Shelf window shows the list. SHELF1 shipped the wide LIST (a row per
+ *  resource, with its thumbnail); the TABLE is the same shelf read back from
+ *  s3Dgraphy as rows — with the three columns only the library can answer
+ *  (residence, role, mode). One window, two ways of looking, the same shape as
+ *  the Storage window's backends: the table is not a second shelf. */
+export const SHELF_MODES = ["list", "table"] as const;
+
 /** What the pointer does in an Annotator window. `mask` is DECLARED and not
  *  implemented (phase 2, like the datamodel's `shape_kind: "mask"`): it is
  *  listed because the plan is decided, and it is disabled in the header rather
@@ -103,6 +110,7 @@ export const WINDOW_MODES: Partial<Record<WindowType, readonly string[]>> = {
   storage: STORAGE_MODES,
   viewer: VIEWER_MODES,
   annotator: ANNOTATOR_MODES,
+  shelf: SHELF_MODES,
 };
 
 /**

@@ -55,7 +55,43 @@ export interface ShelfEntry {
   residency?: ShelfResidency;
   /** resource kind from the extension (image/document/…), for the icon */
   kind?: string;
+  /**
+   * SHELF-B · what this resource is FOR in the argument — `comparandum` or
+   * `internal_source`.
+   *
+   * A plain string and NOT a union, deliberately: the two values are
+   * s3Dgraphy's (`api.resource_roles()`, validated by `ResourceNode.set_role`),
+   * and a union here would be a second place they live — free to drift the day a
+   * third one is declared. This side carries and shows it; the library decides
+   * what is valid.
+   *
+   * **Orthogonal to `scope` and `residency`**: my own asset can be a
+   * comparandum and somebody else's URI can be a source inside my own argument,
+   * so it is never derived from the fence. Absent means UNSTATED — there is no
+   * `effectiveRole`, because neither value is what a resource is by default.
+   */
+  role?: string;
+  /**
+   * EVERYTHING ELSE the resource's `data` carried — untouched and put back.
+   *
+   * Measured, and it was a real loss: a URI entry acquired through s3Dgraphy
+   * comes back with `media_type`, `access`, `origin`, `size`… this list models
+   * none of those, so adopting the library's shelf DROPPED them and the next
+   * table read showed blank cells for fields that had been correctly filled in
+   * one call earlier.
+   *
+   * So the fields this module does not model are carried through rather than
+   * modelled: the shelf list is the in-memory form of the container's
+   * ShelfGraph, and a mirror that quietly loses half of what it reflects is
+   * worse than no mirror. Modelled keys always win over what is in here.
+   */
+  extra?: Record<string, unknown>;
 }
+
+/** The `data` keys this module models itself — everything else rides in
+ *  `extra`. Named once so the reader and the writer cannot disagree. */
+const MODELLED_KEYS = ["url", "url_type", "description", "checksum", "scope",
+                       "residency", "role"] as const;
 
 /** The sane READING when nothing was recorded. A method, not a default written
  *  into the entry: the document keeps saying nothing, and the assumption stays
@@ -131,6 +167,11 @@ export function addToShelf(input: {
   checksum?: string;
   scope?: ShelfScope;
   residency?: ShelfResidency;
+  /** see `ShelfEntry.role` — stated, never derived, and validated by the library */
+  role?: string;
+  /** see `ShelfEntry.extra` — whatever the library wrote and this list does not
+   *  model, carried through instead of dropped */
+  extra?: Record<string, unknown>;
   id?: string;
 }): ShelfEntry {
   const locator = input.locator.trim();
@@ -142,6 +183,8 @@ export function addToShelf(input: {
     // create a second entry to say it in
     if (input.scope) twin.scope = input.scope;
     if (input.residency) twin.residency = input.residency;
+    if (input.role) twin.role = input.role;
+    if (input.extra) twin.extra = { ...twin.extra, ...input.extra };
     if (input.checksum && !twin.checksum) twin.checksum = input.checksum;
     changed();
     return twin;
@@ -155,6 +198,8 @@ export function addToShelf(input: {
   if (input.checksum) entry.checksum = input.checksum;
   if (input.scope) entry.scope = input.scope;
   if (input.residency) entry.residency = input.residency;
+  if (input.role) entry.role = input.role;
+  if (input.extra) entry.extra = { ...input.extra };
   entries = [entry, ...entries];
   changed();
   return entry;
@@ -205,6 +250,14 @@ export function shelfToDocument(): {
     if (e.checksum) data.checksum = e.checksum;
     if (e.scope) data.scope = e.scope;
     if (e.residency) data.residency = e.residency;
+    // …where s3Dgraphy reads it (`ResourceNode.data.role`), so a role stated
+    // here is the one the shelf table reports back
+    if (e.role) data.role = e.role;
+    // …and back go the fields we do not model (media_type, access, origin, …),
+    // written FIRST so a modelled key always wins over a stale copy of itself
+    if (e.extra) for (const [k, v] of Object.entries(e.extra)) {
+      if (!(k in data)) data[k] = v;
+    }
     return { id: e.id, node_type: "resource", name: e.name, description: "", data };
   });
   return {
@@ -257,6 +310,15 @@ export function loadShelfDocument(doc: unknown): ShelfLoad {
     if (SHELF_SCOPES.includes(data.scope as ShelfScope)) entry.scope = data.scope as ShelfScope;
     if (SHELF_RESIDENCIES.includes(data.residency as ShelfResidency))
       entry.residency = data.residency as ShelfResidency;
+    // no allow-list here on purpose: validating the role against a list written
+    // on this side would silently DROP a value s3Dgraphy accepts (the day a
+    // third one is declared, this reader would eat it)
+    if (typeof data.role === "string" && data.role) entry.role = data.role;
+    const extra: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(data)) {
+      if (!(MODELLED_KEYS as readonly string[]).includes(k)) extra[k] = v;
+    }
+    if (Object.keys(extra).length) entry.extra = extra;
     loaded.push(entry);
   }
   entries = loaded;

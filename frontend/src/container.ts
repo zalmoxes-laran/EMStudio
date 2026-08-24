@@ -266,10 +266,23 @@ export function buildContainer(input: {
     graphs[corpusId] = input.corpus;
   }
   // The header comes from the first member so the format/version/datamodel
-  // stamps stay written in one place (whoever wrote that document wrote them).
-  const header =
-    (input.graphs[0]?.doc.header as Record<string, unknown> | undefined) ??
-    { format: "em.json", version: "1.0" };
+  // stamps stay written in one place (whoever wrote that document wrote them) —
+  // but the two stamps that SAY WHAT THIS FILE IS are filled in when the member
+  // has none.
+  //
+  // Measured, and it was not a cosmetic gap: a document created with File → New
+  // carries a header of `{last_editor}` alone, so the project built from it went
+  // out with no `format` — and s3Dgraphy refused every member of it with
+  // "not an em.json document (format=None)". The file looked fine in EMStudio
+  // (which does not check) and was unreadable by the library that defines the
+  // format. Whoever wrote a header still wins; this only fills a blank.
+  const memberHeader =
+    (input.graphs[0]?.doc.header as Record<string, unknown> | undefined) ?? {};
+  const header: Record<string, unknown> = {
+    format: "em.json", version: "1.0", ...memberHeader,
+  };
+  if (!header.format) header.format = "em.json";
+  if (!header.version) header.version = "1.0";
   const out: ContainerDoc = { header, graphs };
   const active = input.activeGraphId ?? input.graphs[0]?.id ?? null;
   if (active) out.active_graph_id = active;
