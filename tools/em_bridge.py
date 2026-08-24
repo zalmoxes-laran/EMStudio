@@ -52,6 +52,14 @@ Endpoints:
                              anything resolving outside them is 403, symlinks
                              included. With no `path`, /fs/list answers with the
                              roots themselves, so the UI never has to guess one.)
+    GET  /fs/places        → where a file PICKER starts: Home and its folders, the
+                             mounted volumes, and the served roots as bookmarks —
+                             each with `served`, so a UI can offer the grant
+                             instead of letting a click 403. The same sidebar
+                             Blender's File View has, computed from the machine.
+                             ⚠ scope: `roots` by default, `whole-disk` with
+                             --fs-all (EM_BRIDGE_FS_ALL=1) — reported here, by
+                             /health and by /fs/roots, never a silent default.
     GET  /resolve-authority?term=&facet=     → ranked authority candidates (JSON)
     POST /resolve-authority ← {term, facet}  → ranked authority candidates (JSON)
                              (offline resolver — s3Dgraphy authorities; P1-D)

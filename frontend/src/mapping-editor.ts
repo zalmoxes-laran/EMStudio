@@ -531,7 +531,12 @@ function pickerSidebar(state: MappingEditorState, h: MappingEditorHandlers,
 
   group("me.sidePlaces", picker.places.filter((p) => p.kind !== "volume"));
   group("me.sideVolumes", picker.places.filter((p) => p.kind === "volume"));
-  group("me.sideBookmarks", picker.bookmarks);
+  // …and a bookmark that IS already a place is not listed twice. Granting
+  // Documents makes it a served root, and before this the sidebar answered with
+  // three identical rows called "Documents" (Places, Bookmarks, Recent) —
+  // measured, and it reads as a bug in the sidebar rather than as three groups.
+  const placed = new Set(picker.places.map((p) => p.path));
+  group("me.sideBookmarks", picker.bookmarks.filter((b) => !placed.has(b.path)));
   group("me.sideRecent", picker.recent.map((path) => ({
     label: path.split("/").filter(Boolean).pop() ?? path,
     path, kind: "recent", served: true,
