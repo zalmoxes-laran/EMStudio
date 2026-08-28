@@ -1,7 +1,7 @@
 # ADR-003 — Offline versioning vs real-time convergence
 
 Status: **accepted** (E. Demetrescu, August 2026).
-Scope: EMStudio, s3Dgraphy, em-server, EM-blender-tools — every place where
+Scope: EMStudio, s3Dgraphy, StratiGraph Server, EM-blender-tools — every place where
 the *same* study is edited by more than one hand, whether at the same moment
 or months apart. Builds on ADR-002 (who is the host, what travels on the
 wire); this ADR is about **which edit wins, and what a version means** once
@@ -55,7 +55,7 @@ operational-transform server.
 
 ### 2. Real-time is offline, faster
 
-A room (em-server, P4.2) holds the state of record and applies every
+A room (StratiGraph Server, P4.2) holds the state of record and applies every
 operation through the same library. It does not transform, order or
 reconcile: if this ever changes, the rule has moved to the wrong
 repository. A client that has been away is not a special case of anything —

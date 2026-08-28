@@ -63,7 +63,7 @@ Do the three tracks **in this exact order**, one at a time:
    from Blender (needs Blender authoring UI), the msgbus shrink-selection limit,
    container-member multi-move fidelity, re-parent-on-Group-draws-box.
 3. **(c) Cloud phase** (§5 last bullet) — StratiGraph Service / KG Engine
-   (em-server), oxigraph→Virtuoso on a Field Computing Node, Heriverse via the
+   (StratiGraph Server), oxigraph→Virtuoso on a Field Computing Node, Heriverse via the
    shared host, Keycloak/ORCID auth.
 
 Session stopped here for the evening; nothing new was coded this turn.
@@ -91,7 +91,7 @@ been exercised end to end.** First next step:
   `EMListItem.node_id` is often empty). Needs Blender authoring UI first.
 - Selection reverse limitation: `msgbus` fires on **active** change, so shrinking a
   selection without changing active may not re-broadcast.
-- **Cloud phase** (big arc): StratiGraph Service / KG Engine (em-server), oxigraph→Virtuoso,
+- **Cloud phase** (big arc): StratiGraph Service / KG Engine (StratiGraph Server), oxigraph→Virtuoso,
   Heriverse via the shared host, Keycloak/ORCID auth.
 
 ## 6. Gotchas / dev flow

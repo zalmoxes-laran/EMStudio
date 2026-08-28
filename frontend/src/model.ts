@@ -2047,7 +2047,7 @@ export class DocumentStore {
   //
   // The graph-scope trio above is the DEFAULT everything inherits. This is the
   // statement about ONE object — "this photograph is CC-BY, embargoed until
-  // March, taken by me" — and it is what em-server reads before serving the
+  // March, taken by me" — and it is what StratiGraph Server reads before serving the
   // bytes (`s3dgraphy.rights`, `GET /rooms/{id}/asset/{ref}`).
   //
   // Same three classes, attached DIRECTLY to the node with `has_license` /

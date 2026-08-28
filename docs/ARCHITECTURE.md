@@ -35,7 +35,7 @@ datamodels** — EMStudio never hardcodes the EM language.
         │ model · .em.json I/O · validation ·     │
         │ layout engine · GraphML import (legacy) │
         └───────┬─────────────────┬───────────────┘
-        em-server (axum)   apps/desktop (Tauri)      em-cli
+        StratiGraph Server (axum)   apps/desktop (Tauri)      em-cli
         multi-user web     local files, offline,     batch ops,
         deployment         embedded Oxigraph         CI checks
 ```
@@ -199,4 +199,4 @@ plus a pointer.
 | 3 | matrix view (lanes from epochs) + layout engine v1 (steps 4.2.1–4.2.4) |
 | 4 | editing: palette, socket validation, undo; folding navigation (§5) |
 | 5 | from-sketch incremental layout; SVG/PDF export; GraphML import via s3Dgraphy |
-| 6 | em-server multi-user (CRDT); Oxigraph embedded SPARQL panel |
+| 6 | StratiGraph Server multi-user (CRDT); Oxigraph embedded SPARQL panel |

@@ -517,7 +517,7 @@ eq(doc.graph.nodes.filter(
 // now depends on WHERE it is served from, because it asks for its assets
 // relatively.
 //
-// em-catalog holds up its end by serving the whole `dist/` as a directory with
+// StratiGraph Catalog holds up its end by serving the whole `dist/` as a directory with
 // the shell at its root (`READER_MOUNT`). This asserts the other end: that the
 // shell asks relatively and that what it asks for is actually in the dist. A
 // build that started emitting absolute `/assets/…` would 404 every asset behind

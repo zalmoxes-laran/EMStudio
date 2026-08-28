@@ -1,5 +1,5 @@
 /**
- * P4.3 — the room client: what EMStudio decides when it talks to an em-server.
+ * P4.3 — the room client: what EMStudio decides when it talks to an StratiGraph Server.
  *
  * A PURE module on purpose. Everything here is "given these messages, what
  * should happen" — the URL to open, whether the local history is still usable,

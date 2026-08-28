@@ -759,7 +759,7 @@ function renderSidecarDetail(): void {
  *
  *   standalone — no live connection: a local .em.json, on your own
  *   sidecar    — connected to a HOST that owns the graph (Blender/EMtools)
- *   hub        — connected to an em-server (multi-user). NOT WIRED: the mode
+ *   hub        — connected to an StratiGraph Server (multi-user). NOT WIRED: the mode
  *                exists as a name and a menu entry, and says so. Showing it as
  *                available while faking a connection would be worse than not
  *                showing it.
@@ -3277,7 +3277,7 @@ function replayAfterResync(): void {
 }
 
 /**
- * MEMBERS · the owner's face on em-server's user management.
+ * MEMBERS · the owner's face on StratiGraph Server's user management.
  *
  * The panel itself is `members.ts` and it holds no rule: every action is one call
  * to the room's own endpoints, and the sentence the server answers with is what
@@ -3287,7 +3287,7 @@ function replayAfterResync(): void {
  * is in the room. A viewer clicking it gets the panel too: the server refuses the
  * member list to anybody below admin, and the panel shows that refusal rather
  * than a blank box (a membership list is a list of the people working on an
- * unpublished study — that is the rule, and it is em-server's).
+ * unpublished study — that is the rule, and it is StratiGraph Server's).
  */
 function membersAccess(): { base: string; room: string; token: string | null } | null {
   if (!sync.room) return null;
@@ -3413,7 +3413,7 @@ function renderHubRoster(): void {
 }
 
 /**
- * Join a room on an em-server.
+ * Join a room on an StratiGraph Server.
  *
  * The callbacks are where the client's whole behaviour lives, so they are worth
  * reading as a list: the snapshot decides the document, `host_info` decides
@@ -5829,14 +5829,14 @@ btnSync.addEventListener("click", () => {
 // ---------- MENU1 · Mode menu (Standalone / Sidecar / Hub) ----------
 // Reuses the existing sync toggle (btnSync) rather than reimplementing it:
 // Sidecar connects if not connected, Standalone disconnects if connected. Hub
-// is disabled (em-server, later). The active mode's ✓ is set by setModeIndicator.
+// is disabled (StratiGraph Server, later). The active mode's ✓ is set by setModeIndicator.
 document.getElementById("btn-mode-standalone")?.addEventListener("click", () => {
   if (sync.connected) btnSync.click(); // disconnect → back to local document
 });
 document.getElementById("btn-mode-sidecar")?.addEventListener("click", () => {
   if (!sync.connected) btnSync.click(); // connect → live-synced to the host
 });
-// P4.3 · Hub is now a real mode with a real server behind it (em-server, P4.2).
+// P4.3 · Hub is now a real mode with a real server behind it (StratiGraph Server, P4.2).
 // The endpoint and the room live in Settings; the TOKEN is asked for and kept in
 // memory only — the same rule the AI key follows, because a token written to
 // disk is a token that leaks.
@@ -10719,7 +10719,7 @@ function pasteWebAnnotation(): void {
 
 /** The manifest of this image, as a URL a viewer can be pointed at.
  *
- *  Built by em-server from the ROOM's graph (`/v1/rooms/…/iiif/…/manifest`),
+ *  Built by StratiGraph Server from the ROOM's graph (`/v1/rooms/…/iiif/…/manifest`),
  *  because a manifest must be fetchable by the viewer — a document this page
  *  holds in memory is not something Mirador can open. Without a room there is
  *  no such URL, and the button says so instead of opening an empty viewer. */
@@ -11399,7 +11399,7 @@ function renderStorageInto(host: StorageHost): void {
  *    the citations at stake, because a superseded file may no longer be what a
  *    published text cites;
  *  · **hide where the gate is** — `reference` residency keeps the bytes outside
- *    em-server, so no embargo can be applied to them. Offered, with the note,
+ *    StratiGraph Server, so no embargo can be applied to them. Offered, with the note,
  *    and never for something embargoed;
  *  · **guess a derivation** — output ← input is DECLARED here, by hand, with the
  *    tool named;
@@ -11944,7 +11944,7 @@ async function publishQueue(): Promise<void> {
       n: String(lot.count),
       lot: corpus.node(lot.acquisitionId)?.name ?? lot.acquisitionId,
     }));
-    // …AND IN THE REGISTER em-server enforces from. Writing the licence only into
+    // …AND IN THE REGISTER StratiGraph Server enforces from. Writing the licence only into
     // the file corpus is exactly what was measured coming back as
     // `x-em-license: null`: the statement existed and the server could not see
     // it. Best-effort and awaited-but-not-blocking the UI: the file corpus keeps
@@ -11961,14 +11961,14 @@ async function publishQueue(): Promise<void> {
   renderStorage();
 }
 
-// ── THE RESIDENT REGISTER · the corpus em-server can enforce from ────────────
+// ── THE RESIDENT REGISTER · the corpus StratiGraph Server can enforce from ────────────
 //
 // Two corpora, one shape, and the difference is who can READ them:
 //
 // * the **file** corpus (`container.corpus`) travels inside the project. It is
 //   the truth offline, and it is what standalone has always used;
 // * the **resident** corpus lives in the room's instance (`GET /v1/corpus`,
-//   `POST /v1/corpus/append`). It is the one em-server reads when it serves an
+//   `POST /v1/corpus/append`). It is the one StratiGraph Server reads when it serves an
 //   asset — which is why a licence declared only in the file was measured coming
 //   back as `x-em-license: null`: the server had no way to see it.
 //
@@ -11978,7 +11978,7 @@ async function publishQueue(): Promise<void> {
 // in both directions — the register is shared, and nothing here may quietly
 // overwrite what a colleague said about a file.
 
-/** The room's em-server base URL, or null when this session is not in a room. */
+/** The room's StratiGraph Server base URL, or null when this session is not in a room. */
 function registerBase(): string | null {
   const base = getSettings().sync.hubUrl?.replace(/\/+$/, "") ?? "";
   if (!base || !sync.room) return null;

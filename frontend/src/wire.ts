@@ -28,7 +28,7 @@
  * `type`, `v` or `source` is now simply a field.
  *
  * This module is the one place this client spells that out — the same shape as
- * `em-server/app/wire.py` and `EM-blender-tools/sync_bridge/wire.py`. Three
+ * `stratigraph-server/app/wire.py` and `EM-blender-tools/sync_bridge/wire.py`. Three
  * languages, one rule, small enough to state three times.
  */
 

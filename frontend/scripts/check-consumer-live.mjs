@@ -69,7 +69,7 @@ if (BASE.startsWith("https://") && !process.env.NODE_EXTRA_CA_CERTS) {
 }
 
 // ── the two identities ──────────────────────────────────────────────────────
-const HELPER = `${HERE}../../../em-server/dev-stack/token.sh`;
+const HELPER = `${HERE}../../../stratigraph-server/dev-stack/token.sh`;
 
 function tokenFor(user) {
   if (!existsSync(HELPER)) return null;
@@ -81,7 +81,7 @@ function tokenFor(user) {
   }
 }
 
-/** What a token says it is. Decoded, never verified — em-server checks the
+/** What a token says it is. Decoded, never verified — StratiGraph Server checks the
  *  signature and it is right to be the only one that does. */
 function claims(token) {
   const part = token.split(".")[1] ?? "";
@@ -394,7 +394,7 @@ try {
     ? "\nconsumer: a room frame now carries a descriptor — wire the registry to it"
     : "\nconsumer: DECLARED GAP — no room frame carries a connector descriptor, "
       + "so a consumer cannot announce itself to EMStudio through a room. The "
-      + "smallest fix is one field on the presence member (em-server), not a "
+      + "smallest fix is one field on the presence member (StratiGraph Server), not a "
       + "new channel.");
 } finally {
   try { viewer?.ws.close(); } catch { /* already gone */ }

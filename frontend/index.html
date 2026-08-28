@@ -119,9 +119,9 @@
           <button id="btn-mode-sidecar" title="Sidecar: live-synced to a host (Blender/EMtools) — ADR-002"><span data-i18n="toolbar.modeSidecar">Sidecar (sync)</span></button>
           <!-- MODES1 · reachable, not faked: the entry exists so the third mode
                has a NAME in the interface, and clicking it says plainly that
-               there is no em-server to connect to yet. A disabled button would
+               there is no StratiGraph Server to connect to yet. A disabled button would
                have said "later" without saying what it is. -->
-          <button id="btn-mode-hub" data-i18n-title="mode.hubTitle" title="Hub: em-server multi-user session (coming later)"><span data-i18n="toolbar.modeHub">Hub</span></button>
+          <button id="btn-mode-hub" data-i18n-title="mode.hubTitle" title="Hub: StratiGraph Server multi-user session (coming later)"><span data-i18n="toolbar.modeHub">Hub</span></button>
         </div>
       </div>
       <!-- WIN7 · Tools: the one-shot instruments. They are not editors and never
@@ -619,12 +619,12 @@
               Endpoint: <code id="set-sync-url"></code>
             </p>
             <!-- P4.3 · the HUB is a different kind of destination: not a
-                 laptop pairing but a ROOM on an em-server, where several people
+                 laptop pairing but a ROOM on an StratiGraph Server, where several people
                  meet. Endpoint and room are configuration; the TOKEN is asked
                  for at connection time and kept in memory only. -->
-            <h4 data-i18n="settings.hub">Hub (em-server)</h4>
+            <h4 data-i18n="settings.hub">Hub (StratiGraph Server)</h4>
             <p class="settings-hint" data-i18n="settings.hubHint">
-              A room on an em-server: several people on the same study, live.
+              A room on an StratiGraph Server: several people on the same study, live.
               The access token is asked for when you connect and is never saved.
             </p>
             <label

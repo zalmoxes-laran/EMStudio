@@ -1,4 +1,4 @@
-// ROOM · EMStudio as a real client of a real em-server room, headless.
+// ROOM · EMStudio as a real client of a real StratiGraph Server room, headless.
 //
 //   node scripts/check-room-live.mjs
 //
@@ -66,7 +66,7 @@ if (BASE.startsWith("https://") && !process.env.NODE_EXTRA_CA_CERTS) {
 // ── the token ────────────────────────────────────────────────────────────────
 function token() {
   if (process.env.EM_TOKEN) return process.env.EM_TOKEN;
-  const helper = `${HERE}../../../em-server/dev-stack/token.sh`;
+  const helper = `${HERE}../../../stratigraph-server/dev-stack/token.sh`;
   if (!existsSync(helper)) return null;
   try {
     return execFileSync(helper, { encoding: "utf-8" }).trim() || null;

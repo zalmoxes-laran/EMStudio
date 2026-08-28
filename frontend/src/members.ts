@@ -1,7 +1,7 @@
 /**
  * MEMBERS · who is in this room, and what they may do — the OWNER's face.
  *
- * The other face of the same contract. em-server holds the policy (`access.py`:
+ * The other face of the same contract. StratiGraph Server holds the policy (`access.py`:
  * four ordered roles, the owner untouchable by an admin, a grant to a person
  * being a grant to a person), the node console shows it across every room, and
  * this shows it for the room you have open. **No rule is implemented here.** Every
@@ -56,7 +56,7 @@ export interface InviteRow {
 
 /** What the panel needs from the app: where the room is, and who is asking. */
 export interface RoomAccess {
-  /** the em-server base, as the sync settings hold it (`https://host/em`) */
+  /** the StratiGraph Server base, as the sync settings hold it (`https://host/em`) */
   base: string;
   room: string;
   token: string | null;
@@ -94,7 +94,7 @@ async function call<T>(access: RoomAccess, method: string, path: string,
   }
   if (!answer.ok) {
     const detail = (payload as { detail?: string } | null)?.detail;
-    // The SERVER's sentence. Every refusal in em-server names what is missing
+    // The SERVER's sentence. Every refusal in StratiGraph Server names what is missing
     // and who can grant it; replacing it with a status code throws away the
     // only part somebody can act on.
     throw new Error(detail || `${answer.status} ${method} ${path}`);

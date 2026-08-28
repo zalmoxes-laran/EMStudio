@@ -35,7 +35,7 @@ export default defineConfig({
   // The editor is one file, so its base is moot. The reader is a shell that
   // asks for `./assets/reader-*.{js,css}` — and, when a model appears,
   // `./three.module-*.js` beside them — every one of which the browser resolves
-  // against the URL DIRECTORY the shell came from. em-catalog therefore serves
+  // against the URL DIRECTORY the shell came from. StratiGraph Catalog therefore serves
   // the whole `dist/` as a directory and puts the shell at its root
   // (`/catalog/reader/reader.html`, `app/main.py::READER_MOUNT`), and the
   // requests land.
@@ -50,7 +50,7 @@ export default defineConfig({
   define: { __EMSTUDIO_VERSION__: JSON.stringify(pkg.version) },
   // The EDITOR is one file you can double-click, and that is a product
   // property: it opens from a USB stick, in a trench, with no server. The
-  // READER is SERVED (em-catalog, the field node), so it does not need to be —
+  // READER is SERVED (StratiGraph Catalog, the field node), so it does not need to be —
   // and paying the single-file tax there is what made the 3D engine cost +800 kB
   // of inlined base64 instead of a chunk fetched only when a model appears.
   //

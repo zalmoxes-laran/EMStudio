@@ -2,7 +2,7 @@
 
 Status: **accepted** (E. Demetrescu, July 2026).
 Scope: EMStudio, EM-blender-tools (EMtools), Heriverse, and the future
-`em-server`, whenever two or more of them work on the **same** EM graph at
+`StratiGraph Server`, whenever two or more of them work on the **same** EM graph at
 the same time. Builds on ADR-001 (s3Dgraphy is the language's source of
 truth); this ADR is about the *runtime* data, not the language.
 
@@ -37,7 +37,7 @@ send it operations. "Host" is a role that different tools can play:
 | EMStudio alone | EMStudio (`DocumentStore`) | — | user (Save) |
 | 3D-centric (Blender open) | **EMtools/Blender** (s3dgraphy in memory) | EMStudio = client editor | Blender |
 | Graph-centric (desktop) | **EMStudio-desktop (Tauri)** | Blender/other = client | EMStudio |
-| Online / multi-user | **em-server** (CRDT) | all clients | server |
+| Online / multi-user | **StratiGraph Server** (CRDT) | all clients | server |
 
 Host ≠ editor: the host is the authoritative store + the server endpoint,
 not "who is typing". A rich editor talking to an authoritative store is the
@@ -48,7 +48,7 @@ normal client-server shape.
 Hard constraint that resolves most ambiguity: a browser cannot be a WS
 *server*. Therefore **EMStudio-in-a-browser is always a client**. Only a
 native process can host: EMtools (Python asyncio server inside Blender),
-**EMStudio-desktop** (Tauri/Rust can run a WS server), or `em-server`.
+**EMStudio-desktop** (Tauri/Rust can run a WS server), or `StratiGraph Server`.
 Which native tool hosts is negotiated per session by "who is primary / who
 opened the project", constrained by "must be able to run a server".
 
@@ -87,7 +87,7 @@ their GraphML EMID (a UUID).
 ### 7. One protocol, from local pairing to the server
 
 The host↔client op-log is designed **once**. In local pairing the host is a
-peer tool; online the same op stream is what `em-server` reconciles as a
+peer tool; online the same op stream is what `StratiGraph Server` reconciles as a
 CRDT. Local pairing is not throw-away — it is the first implementation of
 the phase-6 protocol.
 
@@ -97,9 +97,9 @@ the phase-6 protocol.
   "close the other tool" discipline; no live interaction, race-prone.
 - **B. Single-host op-log over WebSocket** — **CHOSEN**: one authoritative
   in-memory graph, operations on the wire, host role negotiated per session,
-  same protocol reused by `em-server`.
+  same protocol reused by `StratiGraph Server`.
 - **C. Full CRDT in every tool from day one** — deferred: the CRDT belongs
-  in `em-server` (phase 6); peer-to-peer CRDT between two desktop tools is
+  in `StratiGraph Server` (phase 6); peer-to-peer CRDT between two desktop tools is
   more than the near-term scenarios need.
 
 ## Consequences — phased plan
@@ -110,8 +110,8 @@ the phase-6 protocol.
    and it stands up the transport reused by phase 2.
 2. **Phase 2:** op-log data sync with Blender as host — an EMStudio edit
    becomes an operation applied to EMtools' s3dgraphy graph (3D updates
-   live). Same protocol `em-server` will speak.
-3. **Phase 3:** `em-server` (online, CRDT) — the host role moves from a peer
+   live). Same protocol `StratiGraph Server` will speak.
+3. **Phase 3:** `StratiGraph Server` (online, CRDT) — the host role moves from a peer
    tool to the server; clients are unchanged.
 
 ## Open questions (to refine through iterations)

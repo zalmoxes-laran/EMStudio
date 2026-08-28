@@ -193,15 +193,15 @@ that loads anything on boot.
 5. **Realtime bridge EMStudio ⇄ EMtools**: design fixed in
    **`docs/adr-002-sync-architecture.md`** (July 2026). Source of truth =
    a single HOST role per session (not a fixed tool); browser EMStudio is
-   always a WS client, EMStudio-desktop/EMtools/em-server can host. Two
+   always a WS client, EMStudio-desktop/EMtools/StratiGraph Server can host. Two
    channels: ephemeral selection/focus vs the op-log (add/update/delete/
-   move/layout-patch → host applies + rebroadcasts, same stream em-server
+   move/layout-patch → host applies + rebroadcasts, same stream StratiGraph Server
    will CRDT). Single-host removes collisions while connected; UUID node
    ids (done — `DocumentStore.newId`, GUI nodes no longer `US_01`) guard
    offline merges. Phased: (1) selection sync EMStudio↔Blender (Blender
-   host, EMStudio client) — NEXT; (2) op-log data; (3) em-server.
+   host, EMStudio client) — NEXT; (2) op-log data; (3) StratiGraph Server.
 6. **Auth**: Keycloak (existing StratiGraph services) + ORCID as user id —
-   enters with em-server (phase 6); frontend OIDC flow.
+   enters with StratiGraph Server (phase 6); frontend OIDC flow.
 7. **Multigraph + cross-graph edges** (Emanuel knows the design), and
    internal citation edges rendered ONLY in Graph view, hidden in Matrix
    view (hook exists: per-view edge filtering in `buildScenes`).

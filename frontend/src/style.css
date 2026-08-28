@@ -6951,7 +6951,7 @@ body.nv-standalone main.nv-standalone-main {
   font-style: italic;
 }
 
-/* ── MEMBERS · the owner's face on em-server's user management ──────────────
+/* ── MEMBERS · the owner's face on StratiGraph Server's user management ──────────────
    A floating panel rather than a dock slot: it is a room's ADMINISTRATION, not
    a view of the study, and it should not take space away from the canvas for
    something somebody opens twice a week. Colours from the app's tokens, so it

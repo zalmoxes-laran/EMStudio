@@ -163,7 +163,7 @@ function render(doc: EmDocument): void {
   // The 3D, on the other hand, is passed IN — and this is the only page that
   // does. Measured in P5b: three.js inlined into the editor's single-file build
   // cost +41% (1.96 → 2.76 MB), and the editor is a desk tool that reaches ATON
-  // when it is online. This page is SERVED (by em-catalog, by the field node),
+  // when it is online. This page is SERVED (by StratiGraph Catalog, by the field node),
   // so it is not bound by the one-file rule, and it is where a reader who was
   // handed a link should be able to turn the model with no ATON deployed
   // anywhere. Same reference, same contract, the engine only where it earns its

@@ -1,7 +1,7 @@
 // Live-sync client (ADR-002, phase 1: ephemeral selection/focus).
 //
 // EMStudio is always a WebSocket CLIENT. It connects to a host that runs the
-// server — EMtools inside Blender (local pairing) or, later, em-server. This
+// server — EMtools inside Blender (local pairing) or, later, StratiGraph Server. This
 // module carries ONLY the ephemeral selection/focus channel: it mutates no
 // graph data, so there is no ownership/collision concern (the op-log data
 // channel is a separate, later phase).
@@ -110,7 +110,7 @@ export interface PresencePayload {
 
 /** P4.3 · what a HUB connection needs that a sidecar one does not. */
 export interface HubOptions {
-  /** the em-server base URL (http/https or ws/wss — both are accepted) */
+  /** the StratiGraph Server base URL (http/https or ws/wss — both are accepted) */
   url: string;
   room: string;
   /** the access token, held in MEMORY for this session only — never stored, the
@@ -235,7 +235,7 @@ export class SyncClient {
   }
 
   /**
-   * P4.3 · join a ROOM on an em-server (the hub mode).
+   * P4.3 · join a ROOM on an StratiGraph Server (the hub mode).
    *
    * Same client, same wire, a different endpoint — which is the whole point of
    * P4.2 having spoken the protocol EMStudio already knew. What is new here is

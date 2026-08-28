@@ -9,7 +9,7 @@
 // warning about an edge whose ends do not exist.
 //
 // What is asserted here is the CONTRACT the three speakers share — this client,
-// `em-server/app/wire.py` and `EM-blender-tools/sync_bridge/wire.py`. Three
+// `stratigraph-server/app/wire.py` and `EM-blender-tools/sync_bridge/wire.py`. Three
 // languages, one rule; if they ever disagree, the disagreement is here.
 import * as esbuild from "esbuild";
 import assert from "node:assert/strict";
@@ -93,7 +93,7 @@ const eq = (got, want, what) => {
 
 // ── 5 · the op matrix, from this side ───────────────────────────────────────
 //
-// The mirror of `em-server/tests/test_wire.py::test_2_every_verb…`: there, every
+// The mirror of `stratigraph-server/tests/test_wire.py::test_2_every_verb…`: there, every
 // verb goes through two real sockets; here, every verb this client can BUILD
 // survives the envelope untouched. The one that matters is `add_edge`, whose
 // `source`/`target` are endpoints and used to be eaten by the wire's own

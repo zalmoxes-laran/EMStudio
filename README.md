@@ -102,7 +102,7 @@ the study in a catalogue.
 **Working with Blender, or with other people.** The badge at the bottom-left says
 which mode you are in: **Standalone** (just this window), **Sidecar** (connected
 to a running Blender with EM-blender-tools — edits travel both ways) or **Hub**
-(a room on an em-server, where several people edit at once). You do not choose
+(a room on an StratiGraph Server, where several people edit at once). You do not choose
 the badge; it reflects what is actually connected.
 
 **Two things worth knowing early.** A deletion is *kept* in the file as a mark,
@@ -112,7 +112,7 @@ is claimed offline and verified later: what you publish is signed rather than
 merely dated.
 
 **Where this sits in the wider system:**
-[`ARCHITECTURE-SYSTEM.md`](../em-server/docs/ARCHITECTURE-SYSTEM.md).
+[`ARCHITECTURE-SYSTEM.md`](../stratigraph-server/docs/ARCHITECTURE-SYSTEM.md).
 
 ## Quickstart — how to run EMStudio
 
@@ -156,7 +156,7 @@ npm run dev        # dev alternative: http://localhost:5173, live reload
 ```
 
 Documents already merge asynchronously (offline-then-integrate) via the
-dated single arbiter; real-time multi-user co-editing over the `em-server`
+dated single arbiter; real-time multi-user co-editing over the `StratiGraph Server`
 (axum, CRDT relay + presence) is the next roadmap phase and will serve the
 same frontend. The CRDT foundation (op-model, tombstones, per-field LWW)
 is what unifies the async merge and the future live hub.

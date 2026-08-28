@@ -1,9 +1,9 @@
-// MEMBERS · executable check of src/members.ts — the owner's face on em-server's
+// MEMBERS · executable check of src/members.ts — the owner's face on StratiGraph Server's
 // user management.
 //
 //   node scripts/check-members.mjs
 //
-// The policy is em-server's (`app/access.py`: four ordered roles, the owner
+// The policy is StratiGraph Server's (`app/access.py`: four ordered roles, the owner
 // untouchable by an admin) and the node's tests hold it. What is checked HERE is
 // what a client can get wrong on its own, and each case is a way the panel could
 // lie to somebody:
@@ -20,7 +20,7 @@
 //     invented a verb would fail at the first click.
 //
 // `fetch` is stubbed, so this runs with no node and no network: what is measured
-// is the panel's behaviour, not em-server's — the server has its own suite and
+// is the panel's behaviour, not StratiGraph Server's — the server has its own suite and
 // four live smokes.
 import assert from "node:assert/strict";
 import * as esbuild from "esbuild";

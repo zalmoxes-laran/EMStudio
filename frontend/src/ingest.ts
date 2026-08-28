@@ -561,7 +561,7 @@ export function supersessionOf(
 
 /** The honest note on `reference` residency, in one place so every surface says
  *  the same thing. Not a warning about a bug: a statement about where the gate
- *  is. em-server reads the graph before serving BYTES IT HOLDS — bytes that stay
+ *  is. StratiGraph Server reads the graph before serving BYTES IT HOLDS — bytes that stay
  *  on somebody's NAS never pass through it, so an embargo cannot be applied to
  *  them and a licence can only be transported, not enforced. */
 export const REFERENCE_NOTE_KEY = "assets.referenceNote";

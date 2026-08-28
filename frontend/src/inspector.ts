@@ -1072,7 +1072,7 @@ export function renderInspector(
   // ── DTC · the rights of THIS resource (licence / embargo / author) ─────────
   //
   // On a resource, because a resource is the thing that has bytes behind it and
-  // the bytes are what somebody downloads. em-server reads exactly these three
+  // the bytes are what somebody downloads. StratiGraph Server reads exactly these three
   // statements before serving an asset: while an embargo runs the file is for
   // the people working on the study, and the licence travels with it.
   //
