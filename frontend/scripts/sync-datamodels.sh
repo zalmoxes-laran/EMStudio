@@ -136,6 +136,40 @@ for f in sorted(src.iterdir()):
 print(f"  icons2d          {copied} vendored, {skipped} unreachable/shadowed")
 PYEOF
 
+# DECLARED BUT ABSENT — the assets the datamodel promises and does not have.
+#
+# `icons.ts::asset` returns null for a missing file and the canvas quietly draws
+# the node's shape instead: a stale declaration therefore fails SILENTLY, and
+# four of them had accumulated by 2026-08-29 before anybody looked. So they are
+# counted where the assets are copied.
+#
+# 2D is an ERROR in s3Dgraphy's own suite (`tests/test_visual_assets.py`) because
+# 2D is what renders. Here it is only reported, so vendoring never fails on it.
+# 3D is reported on both sides: sixteen styles declare a `.glb` that has not been
+# modelled, which is a known state of the visual language and not a bug to fix
+# from a script.
+python3 - "$CFG" <<'PYEOF'
+import json, pathlib, sys
+
+cfg = pathlib.Path(sys.argv[1])
+styles = json.loads((cfg / "em_visual_rules.json").read_text()).get("node_styles") or {}
+gaps = {"2D": [], "3D": []}
+for key, style in sorted(styles.items()):
+    if not isinstance(style, dict):
+        continue
+    for field in ("2d_file_vect", "2d_file_rast", "file_2d", "file_3d"):
+        path = style.get(field)
+        if isinstance(path, str) and not (cfg / path).is_file():
+            gaps["3D" if field == "file_3d" else "2D"].append(f"{key}.{field}")
+for kind, names in gaps.items():
+    if not names:
+        print(f"  {kind} assets        all declared files present")
+        continue
+    shown = ", ".join(names[:6]) + ("…" if len(names) > 6 else "")
+    mark = "WARNING: " if kind == "2D" else ""
+    print(f"  {kind} assets        {mark}{len(names)} declared and MISSING: {shown}")
+PYEOF
+
 # EM3 · the declared glyph ASPECTS must still match the files.
 #
 # `em_visual_rules.2d_render_glyph_types.aspect` is a STATIC number (the layout may
