@@ -18,6 +18,11 @@ tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-shell = "2"
+# The OS hands a `stratigraph://` URL to the app; this delivers it as an event
+# (frontend: `wireDesktopDeepLink`). Desktop only, and the web build has its own
+# way in (the same parameters on its own URL) — which is why the frontend
+# resolves this plugin at runtime and carries on without it.
+tauri-plugin-deep-link = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 

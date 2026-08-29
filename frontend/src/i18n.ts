@@ -562,6 +562,13 @@ const EN: Dict = {
   "cmd.failed": "{what} — refused: {error}",
   // P4.3 · the room client
   "hub.needsConfig": "Set the StratiGraph Server URL and the room in Settings ▸ Live sync.",
+  // THE HANDOFF (`stratigraph://open?server=&room=`): a link names a place, this
+  // app signs in for itself. These say which half is happening, because a join
+  // that "just works" is indistinguishable from one that silently did not.
+  "handoff.joining": "Opening room {room} on {server}…",
+  "handoff.noAuth": "{server} has no sign-in configured (it is running open) — joining without a token.",
+  "handoff.signInFailed": "Sign-in did not complete: {why}",
+  "handoff.noDesktopHandler": "No desktop deep-link handler in this build ({why}) — links still work as a web address.",
   "hub.tokenPrompt": "Access token for the StratiGraph Server (leave empty for a local server without auth). It is kept for this session only and never saved.",
   "hub.joined": "joined the room {room}",
   "hub.connected": "live in the room {room}",
@@ -1526,6 +1533,10 @@ const IT: Dict = {
   "cmd.doneRepeat": "{what} — già fatto (stesso comando): non è stato costruito niente due volte",
   "cmd.failed": "{what} — rifiutato: {error}",
   "hub.needsConfig": "Imposta l'URL dell'StratiGraph Server e la stanza in Impostazioni ▸ Live sync.",
+  "handoff.joining": "Apro la stanza {room} su {server}…",
+  "handoff.noAuth": "{server} non ha un accesso configurato (gira aperto) — entro senza token.",
+  "handoff.signInFailed": "L\'accesso non è andato a buon fine: {why}",
+  "handoff.noDesktopHandler": "In questa build non c\'è il gestore dei deep-link desktop ({why}) — i link funzionano comunque come indirizzo web.",
   "hub.tokenPrompt": "Token di accesso per l'StratiGraph Server (lascia vuoto per un server locale senza auth). Vale solo per questa sessione e non viene salvato.",
   "hub.joined": "sei entrato nella stanza {room}",
   "hub.connected": "in diretta nella stanza {room}",

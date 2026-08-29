@@ -369,6 +369,13 @@ import {
   type ResourceUse,
   type Scope,
 } from "./ingest";
+import {
+  clearHandoffFromLocation, handoffFromLocation, parseHandoff, type Handoff,
+} from "./handoff";
+import {
+  authorizeUrl, completeSignIn, loadAuthConfig, returningFromIdp,
+  type AuthConfig,
+} from "./oidc";
 import { buildDtcGenesisScene, buildGroupScene } from "./views/context";
 import { buildDtcScene } from "./views/dtc";
 import { buildGraphScene, type GraphAlgorithm } from "./views/graph";
@@ -3343,6 +3350,141 @@ function openMembersPanel(): void {
  * the app joins the room it was invited to, which is what closes the circle
  * without a third surface.
  */
+/**
+ * THE HANDOFF, consumed — "open this room in EMStudio", without typing anything.
+ *
+ * Three steps, and the order is the security property:
+ *
+ * 1. the LINK says which server and which room (`handoff.ts`) — and nothing else:
+ *    there is no token in it, deliberately;
+ * 2. this app signs in AGAINST THAT SERVER by itself (`oidc.ts`, PKCE, public
+ *    client) and holds the token in memory — so the credential belongs to
+ *    whoever clicked, not to whoever forwarded;
+ * 3. it joins, with `HubOptions` filled from those two answers.
+ *
+ * On a node with no OIDC (a dev stack) step 2 finds no configuration and the join
+ * goes ahead without a token, which is exactly what that node expects. Said in
+ * the log rather than assumed, because "it worked on my laptop" is what that
+ * branch produces when it is silent.
+ *
+ * A link is NOT a membership. If there is no grant, the room refuses at the door
+ * and the sentence says to ask for an invite — which is the other link, the one
+ * that carries a role.
+ */
+let handoffAuth: AuthConfig | null = null;
+
+/** Keep the handoff across the IdP round trip. Not a secret — there is nothing
+ *  secret in it — but the tab is replaced by the IdP and comes back empty. */
+const HANDOFF_KEY = "emstudio.handoff";
+
+function rememberHandoff(handoff: Handoff): void {
+  try {
+    sessionStorage.setItem(HANDOFF_KEY, JSON.stringify(handoff));
+  } catch { /* a private window: the link is simply followed again */ }
+}
+
+function recallHandoff(): Handoff | null {
+  try {
+    const raw = sessionStorage.getItem(HANDOFF_KEY);
+    sessionStorage.removeItem(HANDOFF_KEY);
+    return raw ? JSON.parse(raw) as Handoff : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Follow a handoff: sign in if the node asks for it, then join. */
+export async function openHandoff(handoff: Handoff): Promise<void> {
+  handoffAuth = await loadAuthConfig(handoff.server);
+
+  if (!handoffAuth) {
+    // No OIDC on that node. Not an error — a dev stack runs open — but SAID, so
+    // nobody concludes from a working laptop that the token flow is wired.
+    logInfo(t("handoff.noAuth", { server: handoff.server }));
+    joinFromHandoff(handoff, null);
+    return;
+  }
+  rememberHandoff(handoff);
+  window.location.assign(await authorizeUrl(handoffAuth));
+}
+
+function joinFromHandoff(handoff: Handoff, token: string | null): void {
+  // The settings are UPDATED from the link, not consulted: the whole point is
+  // that nobody types them. They are still written down so the next launch
+  // reconnects without the link.
+  const s = getSettings();
+  saveSettings({ ...s, sync: { ...s.sync, hubUrl: handoff.server,
+                               hubRoom: handoff.room } });
+  hubToken = token;
+  logInfo(t("handoff.joining", { room: handoff.room, server: handoff.server }));
+  connectToHub(handoff.server, handoff.room, token);
+}
+
+/** At boot: a handoff on the URL, or a sign-in coming back from one. */
+async function followHandoff(): Promise<void> {
+  if (returningFromIdp()) {
+    const handoff = recallHandoff();
+    if (handoff) {
+      const config = await loadAuthConfig(handoff.server);
+      const result = config
+        ? await completeSignIn(config)
+        : { ok: false, error: "that node no longer offers a sign-in" };
+      clearHandoffFromLocation();
+      if (!result.ok) {
+        logWarn(t("handoff.signInFailed", { why: String(result.error) }));
+        toast(t("handoff.signInFailed", { why: String(result.error) }));
+        return;
+      }
+      joinFromHandoff(handoff, result.token || null);
+      return;
+    }
+  }
+  const handoff = handoffFromLocation();
+  if (!handoff) return;
+  clearHandoffFromLocation();
+  await openHandoff(handoff);
+}
+
+/** The DESKTOP way in: the OS hands the app a `stratigraph://` URL.
+ *
+ *  Wired defensively because the plugin is a desktop-only dependency: on the web
+ *  build there is no Tauri at all, and a hard import would break the bundle for
+ *  the majority of users to serve a minority path. */
+async function wireDesktopDeepLink(): Promise<void> {
+  const tauri = (window as unknown as { __TAURI_INTERNALS__?: unknown });
+  if (!tauri.__TAURI_INTERNALS__) return;          // web build: nothing to wire
+  try {
+    // Resolved at RUNTIME and not by the bundler: the plugin is a desktop-only
+    // dependency that is not installed in this build, and a static import would
+    // fail the type-check and the web bundle to serve a path neither has. The
+    // specifier is built so no bundler can follow it.
+    const specifier = ["@tauri-apps", "plugin-deep-link"].join("/");
+    const plugin = await (new Function("s", "return import(s)")(specifier)) as {
+      onOpenUrl?: (cb: (urls: string[]) => void) => Promise<unknown>;
+      getCurrent?: () => Promise<string[] | null>;
+    };
+    const follow = (urls: string[] | null | undefined) => {
+      for (const url of urls || []) {
+        try {
+          void openHandoff(parseHandoff(url));
+          return;
+        } catch (error) {
+          logWarn(String((error as Error).message));
+        }
+      }
+    };
+    // the link that STARTED the app (cold launch)…
+    if (plugin.getCurrent) follow(await plugin.getCurrent());
+    // …and any that arrive while it is running
+    if (plugin.onOpenUrl) await plugin.onOpenUrl(follow);
+  } catch (error) {
+    // The plugin is not installed in this build. Declared, not swallowed: the
+    // web parameter still works and the person should know which half they have.
+    logInfo(t("handoff.noDesktopHandler", { why: String(error) }));
+  }
+}
+
+
 async function acceptPendingInvite(): Promise<void> {
   const pending = pendingJoin();
   if (!pending) return;
@@ -15976,6 +16118,12 @@ void onForeignBridge((message) => {
 // An invite link (`?join=<token>`) is the first thing to answer: it decides which
 // room this session is about, so it runs before anything auto-connects.
 void acceptPendingInvite();
+// …and a HANDOFF (`stratigraph://open?server=&room=`, or the same parameters on
+// this page's URL) is the other way a session learns which room it is about.
+// Separate from the invite on purpose: an invite carries a ROLE and writes the
+// ACL; a handoff carries a PLACE and carries nothing else.
+void followHandoff();
+void wireDesktopDeepLink();
 // Language FIRST: `initI18n` sets `dir`/`lang` on <html> and translates the
 // static chrome before anything is rendered. Doing it after the first render
 // would show a frame of English (or an LTR frame in Hebrew) and then flip.

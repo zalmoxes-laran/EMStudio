@@ -289,6 +289,17 @@ fn main() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
+        // THE HANDOFF. The OS hands us `stratigraph://open?server=&room=` and
+        // this delivers it to the frontend, which reads `{server, room}`, signs
+        // in against that server by itself and joins the room — the whole point
+        // being that nobody types an address, a room name, or a token.
+        //
+        // `register_all` at runtime as well as the bundle declaration: the
+        // bundle registers the scheme at INSTALL time, and a developer running
+        // `tauri dev` has installed nothing. Without this, the one person most
+        // likely to test the feature is the one for whom it silently does not
+        // work.
+        .plugin(tauri_plugin_deep_link::init())
         .manage(BridgeChild(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
             transformer_url,
@@ -297,6 +308,20 @@ fn main() {
             clear_llm_key
         ])
         .setup(|app| {
+            #[cfg(any(target_os = "linux", all(debug_assertions,
+                                              windows)))]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                // Best-effort and SAID rather than unwrapped: a scheme this
+                // desktop cannot claim is a link that opens elsewhere, which is
+                // a worse day than a log line but not a reason to refuse to
+                // start.
+                if let Err(error) = app.deep_link().register_all() {
+                    eprintln!("deep-link: could not register stratigraph:// \
+                               at runtime ({error}); the installed bundle's \
+                               registration still applies");
+                }
+            }
             // A remote transformer is configured → nothing to start locally.
             if std::env::var("EM_TRANSFORMER_URL").is_ok() {
                 return Ok(());
