@@ -73,6 +73,25 @@ jobs:
       app_version: ${{ steps.pin.outputs.app_version }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # THE TAG, not the run's context — and this is a bug fix, not tidying.
+          #
+          # A workflow reached by `workflow_call` inherits the CALLING run's
+          # context, so a bare checkout takes `github.sha`: the HEAD from when
+          # the nightly started, which is the commit BEFORE `devrel` bumped
+          # `frontend/package.json` and tagged. The version step then compared
+          # tag dev.N against a package.json still saying dev.N-1 and failed —
+          # every night, always N vs N-1 (runs #5 and #7 on the same mechanic).
+          #
+          # `EM_TAG` is the tag this run is about however it started (see `env`
+          # at the top): an input for a call or a dispatch, the ref for a push.
+          # On the push path this resolves to exactly what the default already
+          # did, so nothing about that route changes.
+          #
+          # No `fetch-depth`: nothing in this workflow reads git history —
+          # checked, not assumed (no `git describe`, no `rev-parse`, and the
+          # build derives its version from `package.json`).
+          ref: ${{ env.EM_TAG }}
 
       - uses: actions/setup-python@v5
         with:
@@ -96,10 +115,31 @@ jobs:
           # A tag that says one version while the bundle says another is the kind
           # of mismatch nobody notices until somebody reports a bug against a
           # build that does not exist.
+          #
+          # THE MESSAGE NAMES THE TREE, and that is the whole lesson of runs #5
+          # and #7. Both failed here, both said "tag dev.N but package.json says
+          # dev.N-1", and both were TRUE — and useless: the defect was not a
+          # version disagreement, it was a checkout of the wrong commit, and half
+          # an hour went to suspecting s3dgraphy because the sentence described
+          # the symptom and named nothing that could point at the cause.
+          #
+          # A checked-out SHA in the error turns "these two numbers differ" into
+          # "…and here is the tree I read them from", which is the first thing
+          # anybody would have asked.
           WANT="${EM_TAG#v}"
           GOT="${{ steps.pin.outputs.app_version }}"
+          HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+          HEAD_REF="$(git describe --tags --exact-match HEAD 2>/dev/null \
+                      || git rev-parse --abbrev-ref HEAD 2>/dev/null || echo unknown)"
+          echo "read from: $HEAD_SHA ($HEAD_REF) · tag under release: $EM_TAG"
           if [ "$WANT" != "$GOT" ]; then
             echo "::error::tag $EM_TAG says $WANT but frontend/package.json says $GOT"
+            echo "::error::…read from commit $HEAD_SHA ($HEAD_REF)."
+            echo "::error::If that commit is NOT $EM_TAG, this is a checkout"
+            echo "::error::problem and not a version problem: a workflow reached"
+            echo "::error::by workflow_call inherits the CALLING run's context,"
+            echo "::error::so a bare checkout takes the HEAD from before the tag"
+            echo "::error::existed. Every job here checks out \`ref: \$EM_TAG\`."
             exit 1
           fi
 
@@ -174,6 +214,25 @@ jobs:
       release_id: ${{ steps.create.outputs.result }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # THE TAG, not the run's context — and this is a bug fix, not tidying.
+          #
+          # A workflow reached by `workflow_call` inherits the CALLING run's
+          # context, so a bare checkout takes `github.sha`: the HEAD from when
+          # the nightly started, which is the commit BEFORE `devrel` bumped
+          # `frontend/package.json` and tagged. The version step then compared
+          # tag dev.N against a package.json still saying dev.N-1 and failed —
+          # every night, always N vs N-1 (runs #5 and #7 on the same mechanic).
+          #
+          # `EM_TAG` is the tag this run is about however it started (see `env`
+          # at the top): an input for a call or a dispatch, the ref for a push.
+          # On the push path this resolves to exactly what the default already
+          # did, so nothing about that route changes.
+          #
+          # No `fetch-depth`: nothing in this workflow reads git history —
+          # checked, not assumed (no `git describe`, no `rev-parse`, and the
+          # build derives its version from `package.json`).
+          ref: ${{ env.EM_TAG }}
 
       - name: Create (or reuse) the draft release for this tag
         id: create
@@ -224,6 +283,25 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # THE TAG, not the run's context — and this is a bug fix, not tidying.
+          #
+          # A workflow reached by `workflow_call` inherits the CALLING run's
+          # context, so a bare checkout takes `github.sha`: the HEAD from when
+          # the nightly started, which is the commit BEFORE `devrel` bumped
+          # `frontend/package.json` and tagged. The version step then compared
+          # tag dev.N against a package.json still saying dev.N-1 and failed —
+          # every night, always N vs N-1 (runs #5 and #7 on the same mechanic).
+          #
+          # `EM_TAG` is the tag this run is about however it started (see `env`
+          # at the top): an input for a call or a dispatch, the ref for a push.
+          # On the push path this resolves to exactly what the default already
+          # did, so nothing about that route changes.
+          #
+          # No `fetch-depth`: nothing in this workflow reads git history —
+          # checked, not assumed (no `git describe`, no `rev-parse`, and the
+          # build derives its version from `package.json`).
+          ref: ${{ env.EM_TAG }}
 
       - uses: actions/setup-node@v4
         with:
