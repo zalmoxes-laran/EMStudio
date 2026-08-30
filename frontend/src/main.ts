@@ -373,6 +373,9 @@ import {
   clearHandoffFromLocation, handoffFromLocation, parseHandoff, type Handoff,
 } from "./handoff";
 import {
+  doorTo, fallbackPage, otherSurface, roomHandoff, RoundTripError,
+} from "./roundtrip";
+import {
   authorizeUrl, completeSignIn, loadAuthConfig, returningFromIdp,
   type AuthConfig,
 } from "./oidc";
@@ -3420,6 +3423,82 @@ function joinFromHandoff(handoff: Handoff, token: string | null): void {
   connectToHub(handoff.server, handoff.room, token);
 }
 
+/**
+ * ROUND-TRIP · open the room this session is in, in the OTHER editor.
+ *
+ * Not a file transfer, and the menu says so: the document lives in the room (a
+ * CRDT graph behind the relay), so changing surface is a new JOIN to the same
+ * room. There is no save step and no version conflict to arrange — that is a
+ * property of the room, not something this function does.
+ *
+ * The link is ASKED FOR, never built here (`roundtrip.ts` says why): one grammar
+ * on the server, measured against every consumer's copy of it. And it carries no
+ * token — the other surface signs itself in.
+ */
+async function openRoomElsewhere(): Promise<void> {
+  const settings = getSettings();
+  const base = settings.sync.hubUrl;
+  const room = sync.room || settings.sync.hubRoom;
+  if (!base || !room || !sync.connected) {
+    toast(t("roundtrip.noRoom"));
+    return;
+  }
+  const target = otherSurface();
+  let handoff;
+  try {
+    handoff = await roomHandoff(base, room, hubToken);
+  } catch (error) {
+    const why = error instanceof RoundTripError
+      ? error.message : String((error as Error).message);
+    logWarn(t("roundtrip.failed", { why }));
+    toast(t("roundtrip.failed", { why }));
+    return;
+  }
+
+  const door = doorTo(handoff, target);
+  if (!door) {
+    // desktop → web with no web build deployed. A fact about the deployment,
+    // said rather than a button that fails after the click.
+    toast(t("roundtrip.noWeb"));
+    return;
+  }
+  logInfo(t("roundtrip.opening", { room, surface: target }));
+
+  if (door.kind === "browser") {
+    window.open(door.url, "_blank", "noopener");
+    return;
+  }
+  // A scheme: nothing can tell us in advance whether this machine answers it.
+  // Watch for the window losing focus — that IS the handler opening — and fall
+  // back to the server's own `/open` page, which already says what to install.
+  let left = false;
+  const onBlur = () => { left = true; };
+  window.addEventListener("blur", onBlur, { once: true });
+  window.location.href = door.url;
+  window.setTimeout(() => {
+    window.removeEventListener("blur", onBlur);
+    if (left) return;
+    const page = fallbackPage(handoff);
+    if (page) window.open(page.url, "_blank", "noopener");
+    toast(t("roundtrip.noHandler"));
+  }, 1800);
+}
+
+/** The menu entry appears only while there is a room, and names the surface it
+ *  would open — "Open in EMStudio desktop" reads as an action; "Open in…" reads
+ *  as a question. */
+function reflectRoundTrip(): void {
+  const button = document.getElementById("btn-open-other");
+  if (!button) return;
+  const inRoom = Boolean(sync.room && sync.connected);
+  button.classList.toggle("hidden", !inRoom);
+  if (!inRoom) return;
+  const target = otherSurface();
+  const label = button.querySelector("span") || button;
+  label.textContent = target === "desktop"
+    ? t("roundtrip.desktop") : t("roundtrip.browser");
+}
+
 /** At boot: a handoff on the URL, or a sign-in coming back from one. */
 async function followHandoff(): Promise<void> {
   if (returningFromIdp()) {
@@ -3530,6 +3609,9 @@ async function acceptPendingInvite(): Promise<void> {
 
 /** The roster chip + the awareness map the canvas reads. */
 function renderHubRoster(): void {
+  // …and the round-trip entry with it: this runs on every presence frame and on
+  // connect/disconnect, which is exactly when "am I in a room" changes.
+  reflectRoundTrip();
   hubPeerSelections = peerSelections(hubPresence);
   const chip = document.getElementById("hub-roster");
   if (!chip) return;
@@ -5982,6 +6064,9 @@ document.getElementById("btn-mode-sidecar")?.addEventListener("click", () => {
 // The endpoint and the room live in Settings; the TOKEN is asked for and kept in
 // memory only — the same rule the AI key follows, because a token written to
 // disk is a token that leaks.
+document.getElementById("btn-open-other")
+  ?.addEventListener("click", () => void openRoomElsewhere());
+
 document.getElementById("btn-mode-hub")?.addEventListener("click", () => {
   const s = getSettings().sync;
   if (!s.hubUrl || !s.hubRoom) {

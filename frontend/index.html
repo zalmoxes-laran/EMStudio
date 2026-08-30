@@ -122,6 +122,12 @@
                there is no StratiGraph Server to connect to yet. A disabled button would
                have said "later" without saying what it is. -->
           <button id="btn-mode-hub" data-i18n-title="mode.hubTitle" title="Hub: StratiGraph Server multi-user session (coming later)"><span data-i18n="toolbar.modeHub">Hub</span></button>
+          <div class="dd-sep"></div>
+          <!-- ROUND-TRIP · the same room, in the other editor. Not a file
+               transfer: the document lives in the room, so changing surface is
+               a new join. Hidden until there IS a room, because an "open the
+               other editor" that opens nothing is worse than an absent one. -->
+          <button id="btn-open-other" class="hidden" data-i18n-title="roundtrip.title"><span data-i18n="roundtrip.item">Open this room in…</span></button>
         </div>
       </div>
       <!-- WIN7 · Tools: the one-shot instruments. They are not editors and never

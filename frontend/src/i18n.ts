@@ -565,6 +565,17 @@ const EN: Dict = {
   // THE HANDOFF (`stratigraph://open?server=&room=`): a link names a place, this
   // app signs in for itself. These say which half is happening, because a join
   // that "just works" is indistinguishable from one that silently did not.
+  // ROUND-TRIP · the same room, the other surface. The document lives in the
+  // room, so this is a join and not a transfer — the wording says so.
+  "roundtrip.item": "Open this room in…",
+  "roundtrip.title": "Open the same room in the other editor — the graph is the room's, so nothing is transferred",
+  "roundtrip.desktop": "Open in EMStudio desktop",
+  "roundtrip.browser": "Open in EMStudio for the web",
+  "roundtrip.opening": "Opening room {room} in the {surface} editor…",
+  "roundtrip.noRoom": "Join a room first: there is nothing to open elsewhere.",
+  "roundtrip.noWeb": "This node hosts no web build of EMStudio, so there is nowhere to open it in a browser.",
+  "roundtrip.noHandler": "Nothing opened — no StratiGraph handler on this machine. The page that just opened says what to install.",
+  "roundtrip.failed": "Could not ask the node how to open this room: {why}",
   "handoff.joining": "Opening room {room} on {server}…",
   "handoff.noAuth": "{server} has no sign-in configured (it is running open) — joining without a token.",
   "handoff.signInFailed": "Sign-in did not complete: {why}",
@@ -1533,6 +1544,15 @@ const IT: Dict = {
   "cmd.doneRepeat": "{what} — già fatto (stesso comando): non è stato costruito niente due volte",
   "cmd.failed": "{what} — rifiutato: {error}",
   "hub.needsConfig": "Imposta l'URL dell'StratiGraph Server e la stanza in Impostazioni ▸ Live sync.",
+  "roundtrip.item": "Apri questa stanza in…",
+  "roundtrip.title": "Apri la stessa stanza nell\'altro editor — il grafo è della stanza, quindi non si trasferisce niente",
+  "roundtrip.desktop": "Apri in EMStudio desktop",
+  "roundtrip.browser": "Apri in EMStudio per il web",
+  "roundtrip.opening": "Apro la stanza {room} nell\'editor {surface}…",
+  "roundtrip.noRoom": "Entra prima in una stanza: non c\'è niente da aprire altrove.",
+  "roundtrip.noWeb": "Questo nodo non ospita una build web di EMStudio, quindi non c\'è dove aprirla nel browser.",
+  "roundtrip.noHandler": "Non si è aperto niente — su questa macchina non c\'è un gestore StratiGraph. La pagina appena aperta dice cosa installare.",
+  "roundtrip.failed": "Non riesco a chiedere al nodo come aprire questa stanza: {why}",
   "handoff.joining": "Apro la stanza {room} su {server}…",
   "handoff.noAuth": "{server} non ha un accesso configurato (gira aperto) — entro senza token.",
   "handoff.signInFailed": "L\'accesso non è andato a buon fine: {why}",
