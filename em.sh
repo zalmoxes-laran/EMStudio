@@ -28,7 +28,8 @@
 #
 #   ./em.sh version              What version is set, per file.
 #   ./em.sh inc                  Bump the dev counter (1.6.0-dev.2 → -dev.3).
-#   ./em.sh s3d status [--check] The pinned s3dgraphy: is it published? is the
+#   ./em.sh s3d status [--check] The pinned s3dgraphy: is it published? is there
+#                                a newer one? is the
 #                                local checkout ahead of it? `--check` also
 #                                EXITS non-zero on a bad verdict — that is what
 #                                the CI workflow runs, so the gate is one
@@ -386,6 +387,89 @@ the sidecar build has no version to freeze"
   s3dgraphy_published "$S3D_PIN" || S3D_RC=$?
 }
 
+#: ── the SECOND question: is there a newer one? ───────────────────────────────
+#:
+#: The gate has always asked "is this version published?". E.D.'s policy is that
+#: we sit on the newest published dev — but a policy is not a mechanism, and this
+#: is the line where the two must not blur: **the pin stays EXACT (`==`) and
+#: moves because somebody decides.** A pin that moves by itself is `>=`, and `>=`
+#: is exactly what produced the dev12/dev16 divergence closed on 2026-08-31: a
+#: build that changes what it contains without anybody having decided.
+#:
+#: So being behind is INFORMATION, never a refusal (see `do_s3d_status`). A
+#: warning that blocks becomes, in a fortnight, a warning that is ignored.
+#:
+#: THE TRAP HERE IS NOT `--pre`. That one bites `pip index`, which hides
+#: pre-releases without it; this reads the SIMPLE INDEX, where every file is
+#: listed, devs included. The trap is the SORT: `1.6.0.dev9` is lexically
+#: greater than `1.6.0.dev16`, so a naive `sort | tail -1` would announce that we
+#: are behind a version released months ago — worse than silence. Hence a key, in
+#: python, over the two shapes this project actually publishes (`X.Y.Z` and
+#: `X.Y.Z.devN`, checked against the index).
+index_latest() {
+  local base page_url page status
+
+  base="${PIP_INDEX_URL:-https://pypi.org/simple}"
+  base="${base%/}"
+  page_url="$base/s3dgraphy/"
+  page="$(mktemp)"
+  status="$(curl -sS -o "$page" -w '%{http_code}' \
+            --max-time "$EM_PROBE_HTTP" "$page_url" 2>/dev/null)" || status="000"
+  if [[ "$status" != "200" ]]; then rm -f "$page"; return 1; fi
+  python3 - "$page" <<'PY'
+import re, sys
+
+names = re.findall(r's3dgraphy-([0-9][^"#/]*?)(?:-py3|-any|\.tar\.gz|\.zip|-cp)',
+                   open(sys.argv[1], encoding="utf-8", errors="replace").read())
+
+
+def key(v):
+    m = re.fullmatch(r"(\d+(?:\.\d+)*)(?:\.?dev(\d+))?", v)
+    if not m:
+        return ((-1,), 0, 0)
+    release = tuple(int(p) for p in m.group(1).split("."))
+    return (release, 0 if m.group(2) is not None else 1, int(m.group(2) or 0))
+
+
+# Anything unexpected sorts LOWEST rather than winning by accident: announcing a
+# version nobody can install would be worse than announcing nothing.
+if names:
+    print(max(set(names), key=key))
+PY
+  rm -f "$page"
+}
+
+#: Empty when the question could not be answered — and that is a legitimate
+#: answer, said by omission: the row simply does not appear. Nothing in here may
+#: fail, because nothing in here is a gate.
+S3D_LATEST=""
+
+s3d_latest_probe() {
+  S3D_LATEST="$(bounded "$EM_PROBE_DEADLINE" index_latest 2>/dev/null || true)"
+  S3D_LATEST="$(printf '%s' "$S3D_LATEST" | tr -d ' \n')"
+}
+
+#: Is the pin behind the newest published version? The same key, through python,
+#: because the shell has no version comparison that gets `dev9` vs `dev16` right.
+s3d_is_behind() {
+  local pin="$1" latest="$2"
+  [[ -n "$pin" && -n "$latest" && "$pin" != "$latest" ]] || return 1
+  python3 - "$pin" "$latest" <<'PY'
+import re, sys
+
+
+def key(v):
+    m = re.fullmatch(r"(\d+(?:\.\d+)*)(?:\.?dev(\d+))?", v)
+    if not m:
+        return ((-1,), 0, 0)
+    release = tuple(int(p) for p in m.group(1).split("."))
+    return (release, 0 if m.group(2) is not None else 1, int(m.group(2) or 0))
+
+
+sys.exit(0 if key(sys.argv[1]) < key(sys.argv[2]) else 1)
+PY
+}
+
 #: The refusal, in words — for a verdict that is not 0. ONE wording, said by the
 #: local gate and by the CI step, because a release refused on a laptop and the
 #: same release refused in Actions must not read like two different problems.
@@ -415,6 +499,9 @@ do_s3d_status() {
   fi
 
   s3d_probe
+  # The second question, asked only here: it is information for a human and for
+  # the nightly's log, never a gate. Its failure is silence (see `s3d_latest_probe`).
+  s3d_latest_probe
   echo "pinned (the sidecar freezes this)   s3dgraphy==$S3D_PIN"
   local_v="$(local_s3dgraphy_version || true)"
   if [[ -n "$local_v" ]]; then
@@ -427,6 +514,20 @@ do_s3d_status() {
     1) echo "on PyPI                             NO — publish it before releasing" ;;
     *) echo "on PyPI                             unknown (no index reachable)" ;;
   esac
+  if [[ -n "$S3D_LATEST" ]]; then
+    echo "newest on PyPI                      $S3D_LATEST"
+  fi
+  # BEHIND IS NOT A FAILURE. E.D.'s policy is to sit on the newest published dev,
+  # and this is how a policy is enforced: by telling somebody, so they decide. A
+  # release is never blocked because a dev came out yesterday — the gate refuses
+  # only what makes the binary irreproducible (an unpublished pin, an unreachable
+  # index), and `--check` below is untouched by this.
+  if s3d_is_behind "$S3D_PIN" "$S3D_LATEST"; then
+    warn "the pin ($S3D_PIN) is behind the newest published s3dgraphy \
+($S3D_LATEST). The policy is to sit on the newest dev — move it when the app is \
+ready for it:  ./em.sh s3d pin $S3D_LATEST   (this is not a failure, and it does \
+not block a release.)"
+  fi
   if [[ -n "$local_v" && "$local_v" != "$S3D_PIN" ]]; then
     warn "the checkout ($local_v) is not the pin ($S3D_PIN): whatever you are \
 developing against is NOT what the packaged sidecar will contain. Publish a dev \

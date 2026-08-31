@@ -21,7 +21,7 @@
 #   [rdf] → rdflib, for /export-ttl.
 # Without them those endpoints answer 501 (honestly, but uselessly). dev12 is
 # the first release that declares [geo]; dev11 and older silently ignored it.
-s3dgraphy[geo,rdf]==1.6.0.dev15
+s3dgraphy[geo,rdf]==1.6.0.dev16
 
 # Hard runtime deps of the s3Dgraphy importer/exporter used by the tools.
 lxml>=4.9
@@ -66,7 +66,7 @@ python-docx>=1.1
 
 # ── installing these in a CHECKOUT venv ──────────────────────────────────────
 # `pip install -r tools/requirements.txt` inside `../s3Dgraphy/.venv` would also
-# install the PINNED `s3dgraphy==…dev12` from PyPI, shadowing the editable
+# install the PINNED `s3dgraphy==` above from PyPI, shadowing the editable
 # checkout that venv exists for — i.e. the bridge would stop seeing the library
 # you are editing. In that venv install the deps WITHOUT the pin:
 #
