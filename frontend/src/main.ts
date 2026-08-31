@@ -6816,6 +6816,13 @@ onShelfChange(() => {
   // of the Table asks again rather than showing yesterday's rows
   shelfTableAsked = false;
   if (activeWin().type === "shelf") renderShelf();
+  // HDR2 · …and every OTHER shelf window on screen, which now matters: the
+  // nine controls exist in every area's header, so a `+ URI` pressed in a
+  // window that has not got the focus must repaint THAT window's list. While
+  // the bar was a singleton inside the focused mount this could not happen,
+  // which is why nobody had noticed it was missing.
+  refreshTileSurfaces();
+  syncShelfNameInputs();
 });
 // MULTIGRAPH · take another project into this one (additive, merge-by-UUID).
 document.getElementById("btn-add-project")?.addEventListener("click", () => {
@@ -6837,45 +6844,11 @@ document.getElementById("btn-add-project")?.addEventListener("click", () => {
 
 document.getElementById("storage-add-root")?.addEventListener(
   "click", () => void openStoragePlaces());
-document.getElementById("shelf-add-url")?.addEventListener(
-  "click", () => void addUrlToShelf());
-document.getElementById("shelf-url")?.addEventListener("keydown", (e) => {
-  if ((e as KeyboardEvent).key === "Enter") void addUrlToShelf();
-});
-{
-  // The access mode of a pasted URI. Populated from the API the first time the
-  // table answers — until then it holds the one default, and it never invents a
-  // second vocabulary (that is the whole point of asking).
-  const sel = document.getElementById("shelf-url-access") as HTMLSelectElement | null;
-  const fill = (): void => {
-    if (!sel) return;
-    const modes = shelfTable.accessModes.length
-      ? shelfTable.accessModes : [shelfUriAccess];
-    // compare the VALUES, not the count: the first fill happens before the
-    // library has answered and puts one option in (the default), and a
-    // count-based guard then refuses the real vocabulary for ever — measured,
-    // the picker stayed stuck on "open link" alone.
-    const same = sel.options.length === modes.length
-      && modes.every((m, i) => sel.options[i]?.value === m);
-    if (same) return;
-    sel.textContent = "";
-    for (const mode of modes) {
-      const opt = document.createElement("option");
-      opt.value = mode;
-      opt.textContent = t(`shelf.v.${mode}`, {}, mode);
-      sel.appendChild(opt);
-    }
-    sel.value = shelfUriAccess;
-  };
-  fill();
-  sel?.addEventListener("change", () => {
-    shelfUriAccess = sel.value || "open";
-  });
-  document.getElementById("shelf-refresh")?.addEventListener("click", () => {
-    void refreshShelfTable().then(fill);
-  });
-  onShelfChange(fill);
-}
+// HDR2 · nothing to wire by id here any more. The shelf's nine controls are
+// built per window in `buildHeaderStrip` (the name, the count, `+ URI`, ⟳), in
+// the Shelf menu (Open, Save, Empty) and in `openShelfUriForm` (the address and
+// its two facts) — and their handlers close over the window they belong to,
+// which is what a singleton `#shelf-bar` could never do.
 document.getElementById("shelf-promote-facet")?.addEventListener(
   "change", () => renderShelfPromoteTargets());
 document.getElementById("shelf-promote-go")?.addEventListener(
@@ -6884,29 +6857,6 @@ document.getElementById("shelf-promote-cancel")?.addEventListener(
   "click", () => closeShelfPromote());
 document.getElementById("shelf-promote-x")?.addEventListener(
   "click", () => closeShelfPromote());
-document.getElementById("shelf-save")?.addEventListener("click", () => saveShelf());
-document.getElementById("shelf-open")?.addEventListener("click", () => openShelfFile());
-document.getElementById("shelf-name")?.addEventListener("change", (e) => {
-  renameShelf((e.target as HTMLInputElement).value);
-});
-{
-  // The scope of a hand-added URI, from the datamodel's own list — a comparandum
-  // is `other-HDT`, and the person adding one says so here rather than editing
-  // the entry afterwards.
-  const sel = document.getElementById("shelf-url-scope") as HTMLSelectElement | null;
-  if (sel) {
-    for (const scope of SHELF_SCOPES) {
-      const option = document.createElement("option");
-      option.value = scope;
-      option.textContent = t(`shelf.scope.${scope}`);
-      sel.appendChild(option);
-    }
-    sel.value = shelfUrlScope;
-    sel.addEventListener("change", () => {
-      shelfUrlScope = sel.value as ShelfScope;
-    });
-  }
-}
 
 // THE GATE, on the one publication-shaped action there is. Note what is NOT
 // here: Save, Save As, Export SVG/GraphML/TTL. Those put a file on your own
@@ -9954,18 +9904,30 @@ function renderDocViewInto(
 
 function renderShelf(): void {
   const body = document.getElementById("shelf-body");
-  const count = document.getElementById("shelf-count");
-  const nameInput = document.getElementById("shelf-name") as HTMLInputElement | null;
-  if (!body || !count || !nameInput) return;
-  // Ask the SURFACE, not who has the focus. The bar's buttons live in the DOM
-  // whether or not this area is the focused one, so a click on "+ URI" from a
-  // neighbouring window used to add the entry and then skip the redraw — the
+  if (!body) return;
+  // Ask the SURFACE, not who has the focus. The header's controls live in the
+  // DOM whether or not this area is the focused one, so a click on "+ URI" from
+  // a neighbouring window used to add the entry and then skip the redraw — the
   // list said two while the shelf held three. Same rule the EM-Data hosts use
   // (`body.isConnected`): a renderer should ask the screen whether it is on it.
   if (document.getElementById("shelf-view")?.classList.contains("hidden")) return;
-
-  if (document.activeElement !== nameInput) nameInput.value = shelfMeta().name;
+  // HDR2 · the count is in the window header, looked up at render time because
+  // that header is rebuilt whenever the arrangement changes — exactly what the
+  // Tabular window does with the same element.
+  const count = document.querySelector<HTMLElement>(
+    "#window-header .win-strip-count");
   renderShelfInto(activeWin(), body, count);
+  syncShelfNameInputs();
+}
+
+/** Every shelf-name box on screen, brought back to the list's own name — except
+ *  the one somebody is typing in, which must not be corrected under their
+ *  fingers. There is one per shelf window now, not one in the app. */
+function syncShelfNameInputs(): void {
+  for (const input of document.querySelectorAll<HTMLInputElement>(
+         ".win-strip-shelfname")) {
+    if (document.activeElement !== input) input.value = shelfMeta().name;
+  }
 }
 
 /**
@@ -10363,13 +10325,144 @@ async function addFileToShelf(payload: StorageDragPayload): Promise<void> {
  * because a sidecar is not running would be the wrong trade — but so would
  * pretending the entry carries an acquisition it does not have.
  */
-async function addUrlToShelf(): Promise<void> {
-  const input = document.getElementById("shelf-url") as HTMLInputElement;
-  const uri = input.value.trim();
-  if (!uri) return;
+/**
+ * HDR2 · the `+ URI` FORM, hanging from the one chip in the window header.
+ *
+ * Four controls that are a single gesture: the address, which fence it comes
+ * from, how it is reached, and the verb. They were four boxes in `#shelf-bar`,
+ * and a row that holds two inputs and two selects is a row nobody reads — so
+ * the rule this pass follows is "one row of chrome", not "one row that contains
+ * everything". A form is allowed to be a form.
+ *
+ * BUILT ON OPEN, which is not a detail. The access vocabulary comes from
+ * s3Dgraphy and arrives only when the table has answered once; the singleton
+ * `<select>` this replaces had to decide whether to refill itself by comparing
+ * its own options against the library's answer, and the first version of that
+ * guard counted them instead — measured, the picker stayed stuck on "open link"
+ * for ever. A form born at every opening cannot have that bug.
+ *
+ * The two choices persist in `shelfUrlScope` / `shelfUriAccess`, so a session
+ * that is adding ten comparanda says "comparandum" once.
+ */
+function openShelfUriForm(anchor: HTMLElement): void {
+  const existing = document.getElementById("shelf-uri-form");
+  if (existing) {
+    existing.remove();
+    if (existing.dataset.anchor === anchorKey(anchor)) return;   // toggle off
+  }
+  const form = document.createElement("div");
+  form.id = "shelf-uri-form";
+  form.className = "bar-popover shelf-uri-form";
+  form.dataset.anchor = anchorKey(anchor);
+  document.body.appendChild(form);
+
+  const uri = document.createElement("input");
+  uri.type = "text";
+  uri.spellcheck = false;
+  uri.className = "shelf-uri-input";
+  uri.placeholder = t("shelf.uriPlaceholder");
+  form.appendChild(uri);
+
+  /** A labelled control. The two labels are the TABLE's own column names, so the
+   *  same two facts are called the same thing wherever you meet them. */
+  const field = (labelKey: string, control: HTMLElement): void => {
+    const wrap = document.createElement("label");
+    wrap.className = "shelf-uri-field";
+    const caption = document.createElement("span");
+    caption.textContent = t(labelKey);
+    wrap.append(caption, control);
+    form.appendChild(wrap);
+  };
+
+  const scope = document.createElement("select");
+  scope.className = "shelf-uri-scope";
+  for (const value of SHELF_SCOPES) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = t(`shelf.scope.${value}`);
+    scope.appendChild(option);
+  }
+  scope.value = shelfUrlScope;
+  scope.addEventListener("change", () => {
+    shelfUrlScope = scope.value as ShelfScope;
+  });
+  field("shelf.col.SCOPE", scope);
+
+  const access = document.createElement("select");
+  access.className = "shelf-uri-access";
+  // the library's vocabulary when it has spoken, the one default until then —
+  // and never a second vocabulary invented here, which is the whole point of
+  // having asked
+  const modes = shelfTable.accessModes.length
+    ? shelfTable.accessModes : [shelfUriAccess];
+  for (const mode of modes) {
+    const option = document.createElement("option");
+    option.value = mode;
+    option.textContent = t(`shelf.v.${mode}`, {}, mode);
+    access.appendChild(option);
+  }
+  access.value = shelfUriAccess;
+  access.addEventListener("change", () => {
+    shelfUriAccess = access.value || "open";
+  });
+  field("shelf.col.ACCESS", access);
+
+  const go = document.createElement("button");
+  go.type = "button";
+  go.className = "shelf-uri-go";
+  go.textContent = t("shelf.addUri");
+  const submit = (): void => {
+    void addUrlToShelf(uri.value).then((added) => {
+      // it closes when it worked. A form that stays open after a refusal keeps
+      // the address you typed, which is exactly what you need to fix it.
+      if (added) form.remove();
+    });
+  };
+  go.addEventListener("click", submit);
+  uri.addEventListener("keydown", (e) => {
+    if ((e as KeyboardEvent).key === "Enter") submit();
+  });
+  form.appendChild(go);
+
+  const rect = anchor.getBoundingClientRect();
+  if (rect.width) {
+    form.style.left = `${Math.min(rect.left, window.innerWidth - 300)}px`;
+    form.style.top = `${rect.bottom + 4}px`;
+  } else {
+    // a chip that is not laid out has a zero rect, and pinning to it puts the
+    // form in the top-left corner over the app's own menus (measured, in
+    // `openStoragePlaces`, which is the other popover a header chip opens)
+    form.style.left = "50%";
+    form.style.top = "20%";
+    form.style.transform = "translateX(-50%)";
+  }
+  uri.focus();
+  // …and it closes the way every menu closes: the next click elsewhere
+  setTimeout(() => document.addEventListener("click", function away(event) {
+    if (!form.isConnected) {
+      document.removeEventListener("click", away);
+      return;
+    }
+    if (!form.contains(event.target as Node)) {
+      form.remove();
+      document.removeEventListener("click", away);
+    }
+  }), 0);
+}
+
+/**
+ * Put an address on the shelf. Answers whether it went on, so the form that
+ * called knows whether to close.
+ *
+ * The URI is a PARAMETER now, not a lookup: there is no singleton `#shelf-url`
+ * to read any more, and there are as many forms as there are shelf windows.
+ */
+async function addUrlToShelf(raw: string): Promise<boolean> {
+  const uri = raw.trim();
+  if (!uri) return false;
   if (!/^(https?:|s3:)/i.test(uri)) {
     toast(t("shelf.notAUri"));
-    return;
+    return false;
   }
   const answer = await askShelf("/shelf-add-uri", {
     uri,
@@ -10380,13 +10473,12 @@ async function addUrlToShelf(): Promise<void> {
     // the table cannot disagree about what is on the shelf
     const section = answer.shelf as Record<string, unknown> | null;
     if (section) adoptProjectShelf(section);
-    input.value = "";
     renderShelf();
     const entry = (answer.entry ?? {}) as { name?: string };
     toast(answer.created
       ? t("shelf.added", { name: String(entry.name ?? uri) })
       : t("shelf.uriAlready", { name: String(entry.name ?? uri) }));
-    return;
+    return true;
   }
   const entry = addToShelf({
     locator: uri,
@@ -10395,9 +10487,9 @@ async function addUrlToShelf(): Promise<void> {
     // a published URI is somebody else's: it stays at home until asked otherwise
     residency: "reference",
   });
-  input.value = "";
   renderShelf();
   toast(t("shelf.addedNoBridge", { name: entry.name }));
+  return true;
 }
 
 // ── promote a shelf entry into the study ────────────────────────────────────
@@ -11896,6 +11988,12 @@ interface IngestItem {
   file?: File;
   path?: string;
   status: "pending" | "working" | "done" | "same" | "failed" | "referenced";
+  /** F3 · the PAPER side, separate from the byte side on purpose. A file can be
+   *  in the store and carry no statement about who made it or what may be done
+   *  with it — that is the debt the counter below is about, and a single status
+   *  enum could not say it: `done` would mean "arrived" to one reader and
+   *  "finished" to another. */
+  signed?: boolean;
   digest?: string;
   nodeId?: string;
   note?: string;
@@ -11905,28 +12003,87 @@ interface IngestItem {
  *  renders (a form that forgot the lot name on every drop would be unusable). */
 interface IngestDraft {
   lot: string;
+  /** F1 · the DELIVERY's stable acquisition id, minted once per lot.
+   *
+   *  Load-bearing, and the trap it avoids is the one thing that could silently
+   *  ruin this: the corpus derives an acquisition's id from the NAME when there
+   *  is one and otherwise from its sorted members, so appending one file at a
+   *  time to an unnamed lot would mint two hundred one-file acquisitions. Which
+   *  is exactly the property F2 says not to break — «una serie è un gruppo».
+   *  With an explicit id every act adds to the same event. */
+  lotId: string | null;
+  /** NO DEFAULT. Empty means nobody has said anything, and the delivery does not
+   *  sign until somebody does — see `deliveryProblem()`. */
   license: string;
+  /** the AUTHOR: who made the content. Not pre-filled with the depositor — see
+   *  `ingestDelivery`. */
   authorName: string;
   authorOrcid: string;
+  /** the EDITOR: who takes responsibility for publishing. `me` is the
+   *  depositor, which the register already records; `other` is a declaration
+   *  the acts have no field for yet, and is refused rather than smuggled. */
+  editor: "me" | "other";
+  editorName: string;
+  /** the EMBARGO: until when, and why. Optional — an absent embargo is not a
+   *  shorter one. */
+  embargoUntil: string;
+  embargoReason: string;
   residency: Residency;
   scope: Scope;
   items: IngestItem[];
   lastAcquisition: string | null;
+  /** F3 · THE DEBT, cumulative and deliberately not derived from `items`.
+   *
+   *  Derived counts vanish when the rows are cleared, and a debt that disappears
+   *  because you tidied the list is the palude the counter exists to prevent.
+   *  These only ever go up, within a session. */
+  stored: number;
+  signed: number;
   /** the panel's own trail; the Log window keeps the durable one */
   log: string[];
 }
 
 const ingestDraft: IngestDraft = {
   lot: "",
-  license: DEFAULT_ASSET_LICENSE,
+  lotId: null,
+  // NOT `DEFAULT_ASSET_LICENSE`. A preselected licence is a legal statement
+  // nobody made — the same species of mistake as a default password — and it was
+  // preselected here (measured: `license: DEFAULT_ASSET_LICENSE`, i.e.
+  // CC-BY-SA-4.0, in every fresh panel). The constant is still what the form
+  // OFFERS, one click away, which is a declaration; this is not.
+  license: "",
   authorName: "",
   authorOrcid: "",
+  editor: "me",
+  editorName: "",
+  embargoUntil: "",
+  embargoReason: "",
   residency: "resident",
   scope: "own-study",
   items: [],
   lastAcquisition: null,
+  stored: 0,
+  signed: 0,
   log: [],
 };
+
+/** Why this delivery cannot be signed yet — or null when it can.
+ *
+ *  ONE place, read by the funnel (which refuses to start), by the publish button
+ *  (which says why instead of being mutely grey) and by the check. Two copies of
+ *  a rule like this drift, and the drift is always in the direction of letting
+ *  something through. */
+function deliveryProblem(): string | null {
+  if (!ingestDraft.license.trim()) return t("assets.needsLicense");
+  // The third role has no home in the model yet: `enrich_asset_dtc` carries the
+  // AUTHOR (who made it) and the ATTRIBUTOR (who says so, from the token) and
+  // nothing else. Writing an editor into a metadata bag would put a statement of
+  // responsibility where `asset_rights` will never look for it — a claim that
+  // reads as recorded and is not enforceable. So it is refused, out loud, with
+  // the proposal in the end-of.
+  if (ingestDraft.editor === "other") return t("assets.editorNotYet");
+  return null;
+}
 
 /** The derivation form's own state — an output, its inputs, and the tool. */
 const derivationDraft = { output: "", inputs: [] as string[], tool: "" };
@@ -12000,15 +12157,20 @@ function minioPanel(): HTMLElement {
     }
     return box;
   }
-  const me = currentIdentity()!;
-  if (!ingestDraft.authorOrcid) {
-    ingestDraft.authorOrcid = me.orcid;
-    ingestDraft.authorName =
-      [me.name, me.surname].filter(Boolean).join(" ") || me.orcid;
-  }
-
-  box.appendChild(ingestDropZone());
-  box.appendChild(ingestDefaults());
+  // NO PRE-FILL OF THE AUTHOR. This used to read
+  //   `if (!ingestDraft.authorOrcid) { ingestDraft.authorOrcid = me.orcid; … }`
+  // — every fresh panel asserted that whoever was logged in had MADE the files.
+  // Which is the exact confusion §1 of the design note is about: one digitises a
+  // colleague's photograph, deposits it, answers for having published it, and is
+  // not its author. The convenience survives as a one-click «it was me» in the
+  // form, where it is a declaration instead of an assumption.
+  //
+  // F1 · THE SIGNATURE COMES FIRST, so it is above the funnel: a file inherits
+  // the delivery at the moment it lands, which is only possible if the delivery
+  // already exists.
+  box.appendChild(ingestDelivery());
+  box.appendChild(ingestFunnel());
+  box.appendChild(ingestDebt());
   box.appendChild(ingestQueue());
   box.appendChild(ingestPublishBar());
   box.appendChild(ingestLots());
@@ -12017,11 +12179,41 @@ function minioPanel(): HTMLElement {
   return box;
 }
 
-/** Where files land: an OS drop, a pick, or a drag out of the disk pane. */
-function ingestDropZone(): HTMLElement {
+/**
+ * F2 · THE FUNNEL — where the bytes go in.
+ *
+ * A drop target big enough to aim at, with the funnel as its icon: this is the
+ * one gesture of the whole tab, and it had the visual weight of a paragraph.
+ *
+ * What it accepts: a drop from the OPERATING SYSTEM, a pick, and a drag out of
+ * the disk pane. The OS drop is worth saying plainly because the prompt for this
+ * night believed it was missing — it is not, and it was not built tonight:
+ * `queueFiles(Array.from(e.dataTransfer?.files ?? []))` has been the last line of
+ * the drop handler all along, and the measurement is in the end-of. What was
+ * missing is everything after it.
+ *
+ * And it only appears where it can work: the store belongs to a ROOM, and in
+ * Standalone the panel says so above (`storage.minioNeedsRoom`) and this is not
+ * built at all — a funnel greyed out with no explanation is worse than no funnel.
+ */
+function ingestFunnel(): HTMLElement {
   const zone = document.createElement("div");
-  zone.className = "ing-drop";
-  zone.appendChild(storageText(t("assets.drop", { room: sync.room ?? "" })));
+  zone.className = "ing-drop ing-funnel";
+  const problem = deliveryProblem();
+  if (problem) zone.classList.add("ing-funnel-unsigned");
+
+  const glyph = ing("div", "ing-funnel-glyph");
+  glyph.setAttribute("aria-hidden", "true");
+  // an inline SVG rather than a character: there is no funnel in the glyph sets
+  // this app already leans on, and a big ▽ reads as a play button turned round
+  glyph.innerHTML =
+    '<svg viewBox="0 0 48 48" width="72" height="72" fill="none" '
+    + 'stroke="currentColor" stroke-width="2.2" stroke-linejoin="round">'
+    + '<path d="M6 8h36L28 25v13l-8 5V25z"/>'
+    + '<path d="M24 44v-1" stroke-linecap="round"/></svg>';
+  zone.appendChild(glyph);
+  zone.appendChild(storageText(
+    problem ?? t("assets.drop", { room: sync.room ?? "" })));
 
   const picker = document.createElement("input");
   picker.type = "file";
@@ -12093,6 +12285,7 @@ function queueFiles(files: File[]): void {
   }
   if (files.length) ingestLog(t("assets.queued", { n: String(files.length) }));
   renderStorage();
+  void runDelivery();
 }
 
 /** A file dragged out of the disk pane: the bridge holds the bytes, and the
@@ -12110,28 +12303,113 @@ function queuePath(path: string, name: string): void {
   });
   ingestLog(t("assets.queued", { n: "1" }));
   renderStorage();
+  void runDelivery();
 }
 
-/** The defaults of the LOT: one licence, one author, one name, one fence. */
-function ingestDefaults(): HTMLElement {
+/**
+ * F2 · «i byte entrano subito» — a drop IS the delivery, when it is signed.
+ *
+ * There is no reason to make somebody drop files and then press a button: the
+ * signature was given before the drag (F1), so everything the act needs is
+ * already here. When it is NOT signed the files still queue and the funnel says
+ * why — losing a drop because a licence was missing would be worse than asking
+ * twice — and the publish button picks them up once it is.
+ *
+ * Serialised by a flag, not by cleverness: two drops a second apart would
+ * otherwise both walk the same queue and upload every file twice. Idempotence at
+ * the two endpoints means that costs nothing durable, but it does cost the bytes
+ * twice over the wire.
+ */
+let deliveryRunning = false;
+
+async function runDelivery(): Promise<void> {
+  if (deliveryRunning) return;
+  if (deliveryProblem()) return;      // the funnel already says which
+  deliveryRunning = true;
+  try {
+    await publishQueue();
+  } finally {
+    deliveryRunning = false;
+  }
+}
+
+/**
+ * F1 · THE DELIVERY FORM — one signs BEFORE dragging.
+ *
+ * Above the funnel, not below it: what a lot says about itself is not a
+ * afterthought to be filled in once the bytes are already somewhere. Every file
+ * that lands inherits this at the moment it lands, which is only possible if it
+ * is already here.
+ *
+ * THREE ROLES, and they are not the same field (design note §1):
+ *
+ *  · the DEPOSITOR — whoever brings the bytes in. **Not a field.** It comes from
+ *    the token, always, and the server takes the attributor from there
+ *    (`enrich_asset_dtc(attributor=…)`, refusing an unsigned attribution as «a
+ *    rumour»). Shown as a line, never as a box: a box is somewhere a name that
+ *    is not yours can be typed;
+ *  · the EDITOR — whoever takes responsibility for publishing. Often the
+ *    depositor, not necessarily: one digitises somebody else's photograph, is
+ *    not its author, and answers for having published it all the same;
+ *  · the AUTHOR — whoever made the content. **Not pre-filled with the
+ *    depositor**, which is what it used to be (`ingestDraft.authorOrcid =
+ *    me.orcid` on every open): «a model with one author field cannot say it
+ *    without lying», and pre-filling is the lie made comfortable. There is a
+ *    one-click «it was me» instead — a click is a declaration, a pre-fill is not.
+ *
+ * And the licence has NO DEFAULT. A preselected licence is a legal statement
+ * nobody made; `DEFAULT_ASSET_LICENSE` is still OFFERED as a button, which is
+ * the difference between suggesting and asserting.
+ */
+function ingestDelivery(): HTMLElement {
   const box = document.createElement("div");
-  box.className = "ing-defaults";
-  box.appendChild(ing("h3", "insp-sect", t("assets.batchDefaults")));
+  box.className = "ing-defaults ing-delivery";
+  box.appendChild(ing("h3", "insp-sect", t("assets.delivery")));
 
-  const lot = document.createElement("input");
-  lot.className = "insp-name-input";
-  lot.value = ingestDraft.lot;
-  lot.placeholder = t("assets.lotPlaceholder");
-  lot.addEventListener("change", () => { ingestDraft.lot = lot.value.trim(); });
-  ingestField(box, t("assets.lot"), lot, t("assets.lotHint"));
+  // ── the DEPOSITOR · a line, never a box ───────────────────────────────────
+  const me = currentIdentity();
+  const who = me
+    ? [me.name, me.surname].filter(Boolean).join(" ") || me.orcid
+    : "";
+  const dep = ing("div", "ing-depositor");
+  dep.appendChild(ing("span", "ing-role-tag", t("assets.depositor")));
+  dep.appendChild(ing("strong", "", who));
+  if (me?.orcid) dep.appendChild(ing("code", "viewer-path", me.orcid));
+  box.appendChild(dep);
+  box.appendChild(ing("div", "insp-hint", t("assets.depositorHint")));
 
-  const lic = document.createElement("input");
-  lic.className = "insp-name-input";
-  lic.value = ingestDraft.license;
-  lic.placeholder = DEFAULT_ASSET_LICENSE;
-  lic.addEventListener("change", () => { ingestDraft.license = lic.value.trim(); });
-  ingestField(box, t("assets.license"), lic, t("assets.licenseHint"));
+  // ── the EDITOR · a declared choice, and one it cannot yet record ───────────
+  const editor = document.createElement("select");
+  editor.className = "ing-select";
+  for (const value of ["me", "other"] as const) {
+    const o = document.createElement("option");
+    o.value = value;
+    o.textContent = value === "me"
+      ? t("assets.editorMe", { who })
+      : t("assets.editorOther");
+    if (value === ingestDraft.editor) o.selected = true;
+    editor.appendChild(o);
+  }
+  editor.addEventListener("change", () => {
+    ingestDraft.editor = editor.value as "me" | "other";
+    renderStorage();          // the refusal and the field appear with the choice
+  });
+  ingestField(box, t("assets.editor"), editor,
+              ingestDraft.editor === "other"
+                ? t("assets.editorNotYet")
+                : t("assets.editorMeHint"));
+  if (ingestDraft.editor === "other") {
+    const name = document.createElement("input");
+    name.className = "insp-name-input";
+    name.value = ingestDraft.editorName;
+    name.placeholder = t("assets.editorPlaceholder");
+    name.addEventListener("change", () => {
+      ingestDraft.editorName = name.value.trim();
+    });
+    ingestField(box, t("assets.editorName"), name);
+  }
 
+  // ── the AUTHOR · may be nobody, and is never assumed to be you ─────────────
   const author = document.createElement("input");
   author.className = "insp-name-input";
   author.value = ingestDraft.authorName;
@@ -12156,6 +12434,72 @@ function ingestDefaults(): HTMLElement {
   });
   ingestField(box, t("assets.author"), author);
   ingestField(box, "ORCID", orcid, t("assets.authorHint"));
+  if (me && (ingestDraft.authorOrcid !== me.orcid || !ingestDraft.authorName)) {
+    const mine = ing("div", "insp-actions");
+    const btn = ing("button", "insp-btn", t("assets.authorIsMe")) as HTMLButtonElement;
+    btn.title = t("assets.authorIsMeHint");
+    btn.addEventListener("click", () => {
+      ingestDraft.authorOrcid = me.orcid;
+      ingestDraft.authorName = who;
+      renderStorage();
+    });
+    mine.appendChild(btn);
+    box.appendChild(mine);
+  }
+
+  // ── the LICENCE · required, and never preselected ──────────────────────────
+  const lic = document.createElement("input");
+  lic.className = "insp-name-input"
+    + (ingestDraft.license.trim() ? "" : " insp-input-bad");
+  lic.value = ingestDraft.license;
+  // a PLACEHOLDER that does not name a licence: showing "CC-BY-SA-4.0" in grey
+  // inside a required box is how a hurried reader ends up believing one was
+  // chosen. The offer is the button underneath, where it costs a click.
+  lic.placeholder = t("assets.licensePlaceholder");
+  lic.addEventListener("change", () => {
+    ingestDraft.license = lic.value.trim();
+    renderStorage();
+  });
+  ingestField(box, t("assets.license"), lic, t("assets.licenseHint"));
+  const offer = ing("div", "insp-actions");
+  const suggest = ing("button", "insp-btn",
+    t("assets.licenseOffer", { license: DEFAULT_ASSET_LICENSE })) as HTMLButtonElement;
+  suggest.title = t("assets.licenseOfferHint");
+  suggest.addEventListener("click", () => {
+    ingestDraft.license = DEFAULT_ASSET_LICENSE;
+    renderStorage();
+  });
+  offer.appendChild(suggest);
+  box.appendChild(offer);
+
+  // ── the EMBARGO · optional, with its reason ────────────────────────────────
+  const until = document.createElement("input");
+  until.type = "date";
+  until.className = "insp-name-input";
+  until.value = ingestDraft.embargoUntil;
+  until.addEventListener("change", () => {
+    ingestDraft.embargoUntil = until.value.trim();
+    renderStorage();
+  });
+  ingestField(box, t("assets.embargo"), until, t("assets.embargoHint"));
+  if (ingestDraft.embargoUntil) {
+    const why = document.createElement("input");
+    why.className = "insp-name-input";
+    why.value = ingestDraft.embargoReason;
+    why.placeholder = t("assets.embargoReasonPlaceholder");
+    why.addEventListener("change", () => {
+      ingestDraft.embargoReason = why.value.trim();
+    });
+    ingestField(box, t("assets.embargoReason"), why);
+  }
+
+  // ── the LOT · a name is how you keep adding to the same event ──────────────
+  const lot = document.createElement("input");
+  lot.className = "insp-name-input";
+  lot.value = ingestDraft.lot;
+  lot.placeholder = t("assets.lotPlaceholder");
+  lot.addEventListener("change", () => { ingestDraft.lot = lot.value.trim(); });
+  ingestField(box, t("assets.lot"), lot, t("assets.lotHint"));
 
   const residency = document.createElement("select");
   residency.className = "ing-select";
@@ -12177,18 +12521,81 @@ function ingestDefaults(): HTMLElement {
 
   const scope = document.createElement("select");
   scope.className = "ing-select";
-  for (const s of SCOPES) {
+  for (const sc of SCOPES) {
     const o = document.createElement("option");
-    o.value = s;
-    o.textContent = s;
-    if (s === ingestDraft.scope) o.selected = true;
+    o.value = sc;
+    o.textContent = sc;
+    if (sc === ingestDraft.scope) o.selected = true;
     scope.appendChild(o);
   }
   scope.addEventListener("change", () => {
     ingestDraft.scope = scope.value as Scope;
   });
   ingestField(box, t("assets.scope"), scope, t("assets.scopeHint"));
+
+  // …and whether it is signed, said here rather than discovered at the funnel
+  const problem = deliveryProblem();
+  const verdict = ing("div", problem ? "ing-unsigned" : "ing-signed",
+                      problem ?? t("assets.deliverySigned"));
+  box.appendChild(verdict);
   return box;
+}
+
+/**
+ * F3 · THE DEBT — «412 depositati, 0 firmati».
+ *
+ * Not a progress bar. Three hundred files do not have a percentage, they have
+ * STATES, and the one that matters is the gap between the two columns: bytes are
+ * in the store and nothing says who made them or what may be done with them.
+ *
+ * Two properties make it a debt rather than a notice:
+ *
+ *  · it is CUMULATIVE, kept on the draft and never derived from `items` — so
+ *    «Clear done» tidies the list and does not tidy away the arrears. A debt
+ *    that vanishes because you swept the desk is the palude;
+ *  · it does not go away when ignored. It leaves only when the two numbers meet,
+ *    which is the same shape as the endorsement counter in the narrative window
+ *    («Endorse chapter (3)»), and for the same reason.
+ *
+ * Nothing to show before anything has been deposited: a zero debt is not news.
+ */
+function ingestDebt(): HTMLElement {
+  const box = document.createElement("div");
+  const { stored, signed } = ingestDraft;
+  if (!stored) return box;
+  const owed = Math.max(0, stored - signed);
+  box.className = owed ? "ing-debt ing-debt-owed" : "ing-debt";
+  box.textContent = t("assets.debt", {
+    stored: String(stored), signed: String(signed),
+  });
+  if (owed) {
+    box.title = t("assets.debtHint", { n: String(owed) });
+  }
+  return box;
+}
+
+/** F3 · how many files are in each state, RIGHT NOW — the four words, derived.
+ *
+ *  Derived here on purpose (unlike the debt): this is about the rows on screen,
+ *  and a row that has been cleared is not waiting for anything. The byte side is
+ *  the status; the paper side is `signed`; «deposited» is the honest name for
+ *  arrived-but-unsigned, which no single enum value could have said. */
+interface QueueTally {
+  pending: number;
+  stored: number;
+  signed: number;
+  failed: number;
+}
+
+function queueTally(): QueueTally {
+  const tally = { pending: 0, stored: 0, signed: 0, failed: 0 };
+  for (const item of ingestDraft.items) {
+    if (item.status === "failed") tally.failed += 1;
+    else if (item.status === "pending" || item.status === "working") tally.pending += 1;
+    else if (item.signed) tally.signed += 1;
+    else tally.stored += 1;
+  }
+  return tally;
 }
 
 /** The queue: one row per file, with the deduced use as a correctable select. */
@@ -12201,6 +12608,21 @@ function ingestQueue(): HTMLElement {
   }
   box.appendChild(ing("h3", "insp-sect",
     t("assets.queue", { n: String(ingestDraft.items.length) })));
+  // F3 · the four states, always all four — a state showing only when it is
+  // non-zero makes the row jump around and hides that nothing failed
+  const tally = queueTally();
+  // `ing-tally`, not `ing-state`: THAT class already exists on every row's own
+  // status text (`state.className = "ing-state"` below), and reusing it put a
+  // pill border round three digests — measured on screen, which is the only way
+  // a collision like this is ever noticed.
+  const states = ing("div", "ing-tallies");
+  for (const key of ["pending", "stored", "signed", "failed"] as const) {
+    const chip = ing("span", `ing-tally ing-tally-${key}`
+      + (tally[key] ? "" : " ing-tally-none"),
+      t(`assets.state.${key}`, { n: String(tally[key]) }));
+    states.appendChild(chip);
+  }
+  box.appendChild(states);
 
   for (const [i, item] of ingestDraft.items.entries()) {
     const row = document.createElement("div");
@@ -12257,11 +12679,24 @@ function ingestPublishBar(): HTMLElement {
   const bar = ing("div", "insp-actions");
   const pending = ingestDraft.items.filter((i) => i.status === "pending").length;
 
+  const problem = deliveryProblem();
   const publish = ing("button", "insp-btn",
     t("assets.publish", { n: String(pending) })) as HTMLButtonElement;
+  // NO MUTE NO-OP, the same rule the window menus follow: a button that refuses
+  // says why. Disabled only when there is genuinely nothing to send; an unsigned
+  // delivery stays clickable and the click states the missing statement, because
+  // «grey» is not a sentence somebody can act on.
   publish.disabled = !pending;
-  publish.title = t("assets.publishHint");
-  publish.addEventListener("click", () => { void publishQueue(); });
+  publish.title = problem ?? t("assets.publishHint");
+  if (problem) publish.classList.add("dd-disabled");
+  publish.addEventListener("click", () => {
+    const why = deliveryProblem();
+    if (why) {
+      toast(why);
+      return;
+    }
+    void runDelivery();
+  });
   bar.appendChild(publish);
 
   if (ingestDraft.items.some((i) => i.status !== "pending")) {
@@ -12276,15 +12711,31 @@ function ingestPublishBar(): HTMLElement {
 }
 
 /**
- * Publish the queue: bytes first, then the graph.
+ * F2 · Publish the queue — **the bytes first, and the row as the file lands.**
  *
- * The order is the point and it has not changed since the single-file version —
- * a crash leaves an orphan object in the store rather than a graph pointing at
- * nothing. What is new is the PLURAL: the digests come back one by one, the
- * resources are created as they land, and only at the end are they bucketed
- * into one acquisition and the lot's rights declared. Ordering it the other way
- * (a bucket first, filled as it goes) would leave an acquisition claiming
- * members that never arrived.
+ * The order inside one file has not changed and is the point: the object goes to
+ * the store, and only then does anything point at it. A crash leaves an orphan
+ * object rather than a graph citing bytes that are not there.
+ *
+ * WHAT CHANGED IS WHERE THE LOT'S PAPERWORK HAPPENS. It used to be at the end:
+ * upload all, then bucket, then `pushLotToRegister` once. Which means that a
+ * delivery of four hundred photographs interrupted at the two-hundredth left two
+ * hundred objects in the store that the register had never heard of — bytes
+ * without a story, and nothing on screen to say which two hundred. Now each file
+ * performs its own four acts as it arrives:
+ *
+ *   1. `PUT …/asset`                      the bytes
+ *   2. `append resource`                  the register knows this file
+ *   3. `append attribution`               and who says what about it
+ *   4. `append acquisition`               and which lot it arrived in
+ *
+ * All four are idempotent, so an interrupted delivery is resumed by dropping the
+ * same files again: nothing doubles. That is what makes writing early free.
+ *
+ * **A series is still a group.** Step 4 carries the DELIVERY's own
+ * `acquisition_id` (`ingestDraft.lotId`), minted once, so every act adds a member
+ * to the same event instead of minting a new one — see the note on `lotId`, which
+ * is the trap this would otherwise have fallen into.
  */
 async function publishQueue(): Promise<void> {
   const doc = store;
@@ -12293,6 +12744,10 @@ async function publishQueue(): Promise<void> {
   const base = getSettings().sync.hubUrl.replace(/\/+$/, "");
   const pending = ingestDraft.items.filter((i) => i.status === "pending");
   if (!pending.length) return;
+  // the lot this delivery belongs to. Minted here rather than at the drop, so a
+  // second drop after the queue drained joins the same lot as long as the panel
+  // is open — the person did not change what they are doing.
+  if (!ingestDraft.lotId) ingestDraft.lotId = crypto.randomUUID();
 
   const published: string[] = [];
   for (const item of pending) {
@@ -12320,6 +12775,8 @@ async function publishQueue(): Promise<void> {
         item.status = "referenced";
         item.note = t("assets.status.referenced");
         published.push(nodeId);
+        ingestDraft.stored += 1;
+        await landRow(doc, item);
         continue;
       }
 
@@ -12362,9 +12819,13 @@ async function publishQueue(): Promise<void> {
                                       + `/asset/${encodeURIComponent(info.ref)}`);
       item.status = info.created === false ? "same" : "done";
       published.push(item.nodeId);
+      ingestDraft.stored += 1;
       ingestLog(info.created === false
         ? t("storage.uploadSame", { sha: info.ref.slice(0, 19) })
         : t("storage.uploaded", { sha: info.ref.slice(0, 19) }));
+      // …AND ITS ROW, NOW. Not at the end of the lot: what has arrived already
+      // has its story.
+      await landRow(doc, item);
     } catch (err) {
       item.status = "failed";
       item.note = String(err instanceof Error ? err.message : err).slice(0, 120);
@@ -12386,7 +12847,13 @@ async function publishQueue(): Promise<void> {
       const node = doc.node(id);
       if (node) mirrorIntoCorpus(corpus, node);
     }
+    // The BUCKET and the lot's own attribution — both already performed per file
+    // by `landRow`, and repeated here over the whole set for one reason: this
+    // call is what makes `data.member_count` and the lot's own rights consistent
+    // in ONE step at the end, and it is idempotent, so it costs nothing. The
+    // per-file calls are what survive an interruption; this is the tidy-up.
     const lot = bucketAcquisition(corpus, {
+      acquisitionId: ingestDraft.lotId ?? undefined,
       resources: published,
       name: ingestDraft.lot || undefined,
       metadata: {
@@ -12411,13 +12878,6 @@ async function publishQueue(): Promise<void> {
       n: String(lot.count),
       lot: corpus.node(lot.acquisitionId)?.name ?? lot.acquisitionId,
     }));
-    // …AND IN THE REGISTER StratiGraph Server enforces from. Writing the licence only into
-    // the file corpus is exactly what was measured coming back as
-    // `x-em-license: null`: the statement existed and the server could not see
-    // it. Best-effort and awaited-but-not-blocking the UI: the file corpus keeps
-    // the statement either way, and a step that did not travel is logged.
-    void pushLotToRegister(published, ingestDraft.lot || undefined)
-      .then(() => renderStorage());
     // the selection stays on the STUDY's side (the asset), because that is the
     // node the inspector can show rights and usages for
     select(published[0]);
@@ -12478,73 +12938,88 @@ async function registerAppend(act: string, body: Record<string, unknown>):
   }
 }
 
+// `pushLotToRegister` lived here and is GONE: it was the end-of-lot version of
+// what `landRow` now does per file, and keeping both would have left two places
+// that know the order of the four acts. The per-file one is the one that
+// survives an interruption, so it is the one that stays.
+
 /**
- * Declare a published lot in the RESIDENT register: the files, the lot, the rights.
+ * F2 · ONE FILE'S ROW, written the moment its bytes are in.
  *
- * The order is the dependency and not a preference: a file has to be registered
- * before anything can be said about it (`enrich_asset_dtc` refuses to invent a
- * resource), and the lot has to exist before it can be attributed. Best-effort
- * and LOUD: every step that did not travel is logged, because the licence that
- * silently stayed at home is exactly the failure this whole arc is about.
+ * Four acts for one file, in the order that cannot leave a lie behind: the
+ * register learns the file, then what is claimed about it, then which lot it came
+ * in with. Every one of them idempotent — which is what allows this to run per
+ * file instead of per lot, and what makes «drop them again» a complete recovery.
+ *
+ * The local file corpus is written too, and FIRST: it is the truth offline, and a
+ * room that is unreachable must not cost the documentation. `registerAppend`
+ * never throws for the same reason — a register that is not there is a step that
+ * did not travel, logged, not an ingestion that failed.
+ *
+ * The ATTRIBUTOR is never sent. The server takes it from the token
+ * (`enrich_asset_dtc(attributor=…)`, which refuses an unsigned attribution as «a
+ * rumour»), and a field for it here would be a place to write somebody else's
+ * name — which is precisely why the depositor is not a box in the form either.
  */
-async function pushLotToRegister(published: string[], lotName?: string):
-    Promise<void> {
-  if (!registerBase()) return;
-  const doc = store;
-  const corpus = documentationCorpus({ create: false });
-  if (!doc || !corpus) return;
+async function landRow(doc: DocumentStore, item: IngestItem): Promise<void> {
+  const digest = item.digest;
+  const nodeId = item.nodeId;
+  if (!nodeId) return;
 
-  const digests: string[] = [];
-  for (const id of published) {
-    const node = doc.node(id) ?? corpus.node(id);
-    const data = (node?.data ?? {}) as Record<string, unknown>;
-    const digest = String(data.checksum ?? "");
-    if (!digest) continue;
-    // only a RESIDENT file: a reference lives outside this instance's store, and
-    // the register refuses to describe bytes it does not hold as resident
-    const residency = String(data.residency ?? "resident");
-    const answer = await registerAppend("resource", {
-      checksum: digest,
-      name: node?.name ?? id,
-      media_type: data.media_type ?? undefined,
-      residency,
-      url: residency === "reference" ? data.url ?? undefined : undefined,
+  // ── the file corpus, always ───────────────────────────────────────────────
+  const corpus = documentationCorpus();
+  const node = doc.node(nodeId);
+  if (corpus && node) {
+    mirrorIntoCorpus(corpus, node);
+    const lot = bucketAcquisition(corpus, {
+      acquisitionId: ingestDraft.lotId ?? undefined,
+      resources: [nodeId],
+      name: ingestDraft.lot || undefined,
+      metadata: { ingested_at: new Date().toISOString(), source: "EMStudio" },
     });
-    if (!answer.ok) {
-      ingestLog(t("assets.registerFailed", { detail: answer.detail ?? "" }), "warn");
-      continue;
-    }
-    digests.push(digest);
+    ingestDraft.lastAcquisition = lot.acquisitionId;
   }
-  if (!digests.length) return;
 
-  const lot = await registerAppend("acquisition", {
-    resources: digests, name: lotName || undefined,
-    metadata: { ingested_at: new Date().toISOString(), source: "EMStudio" },
+  // ── the register, when there is one ───────────────────────────────────────
+  if (!registerBase() || !digest) return;
+  const data = (node?.data ?? {}) as Record<string, unknown>;
+  const residency = String(data.residency ?? "resident");
+  const known = await registerAppend("resource", {
+    checksum: digest,
+    name: node?.name ?? nodeId,
+    media_type: data.media_type ?? undefined,
+    residency,
+    url: residency === "reference" ? data.url ?? undefined : undefined,
   });
-  if (!lot.ok) {
-    ingestLog(t("assets.registerFailed", { detail: lot.detail ?? "" }), "warn");
+  if (!known.ok) {
+    ingestLog(t("assets.registerFailed", { detail: known.detail ?? "" }), "warn");
     return;
   }
-  // …and the rights, per file, because the register attributes an ASSET by its
-  // digest (the lot-level attribution is the library's `attribute_batch`, which
-  // this endpoint does not expose yet — declared, not silently skipped)
-  let signed = 0;
-  if (ingestDraft.license || ingestDraft.authorOrcid || ingestDraft.authorName) {
-    for (const digest of digests) {
-      const answer = await registerAppend("attribution", {
-        checksum: digest,
-        license: ingestDraft.license || undefined,
-        author: ingestDraft.authorOrcid || ingestDraft.authorName || undefined,
-        author_name: ingestDraft.authorName || undefined,
-      });
-      if (answer.ok) signed += 1;
-      else ingestLog(t("assets.registerFailed", { detail: answer.detail ?? "" }), "warn");
-    }
+  const said = await registerAppend("attribution", {
+    checksum: digest,
+    license: ingestDraft.license || undefined,
+    author: ingestDraft.authorOrcid || ingestDraft.authorName || undefined,
+    author_name: ingestDraft.authorName || undefined,
+    embargo: ingestDraft.embargoUntil || undefined,
+    reason: ingestDraft.embargoReason || undefined,
+  });
+  if (!said.ok) {
+    ingestLog(t("assets.registerFailed", { detail: said.detail ?? "" }), "warn");
+    return;
   }
-  ingestLog(t("assets.registered", {
-    n: String(digests.length), signed: String(signed),
-  }));
+  item.signed = true;
+  ingestDraft.signed += 1;
+  // and LAST the lot, carrying the delivery's own id so this adds a member
+  // instead of minting a second event (see `lotId`)
+  const grouped = await registerAppend("acquisition", {
+    acquisition_id: ingestDraft.lotId ?? undefined,
+    resources: [digest],
+    name: ingestDraft.lot || undefined,
+    metadata: { ingested_at: new Date().toISOString(), source: "EMStudio" },
+  });
+  if (!grouped.ok) {
+    ingestLog(t("assets.registerFailed", { detail: grouped.detail ?? "" }), "warn");
+  }
 }
 
 /**
@@ -14579,13 +15054,77 @@ function buildHeaderStrip(win: Win): HTMLElement {
     return strip;
   }
 
-  // FOCUS-PARITY · the shelf's ENTRY COUNT belongs here too. Its secondary
-  // surface already looked for `.win-strip-count` in this strip
-  // (`renderShelfInto(win, body, count)`) and this builder never made one, so
-  // the lookup returned null and the count simply did not appear away from the
-  // focus — while the focused window showed it in `#shelf-bar`. A head that
-  // says one thing in one state is the whole defect this pass is about.
-  if (win.type === "table" || win.type === "shelf") {
+  // FOCUS-PARITY · THE SHELF, which was the last type with a declared
+  // difference. It had a bar of its own — `#shelf-bar`, nine controls — and that
+  // bar lived inside `#shelf-view`, the FOCUSED mount. So the same list sat 30px
+  // lower with the focus than without it, and no amount of levelling the box
+  // could fix that: the two mounts did not carry the same amount of chrome.
+  //
+  // The nine are here now, and they are here for BOTH mounts because this is the
+  // one builder both call. Where each went, and why:
+  //
+  //  · the NAME and the COUNT stay visible — they are what you read, not what
+  //    you do, and they are the two things that say WHICH shelf this is;
+  //  · `+ URI` opens a FORM (the address, the fence it comes from, how it is
+  //    reached, and the verb) — four controls that are one gesture, and one row
+  //    cannot hold two inputs and two selects and still be read;
+  //  · ⟳ only in Table mode, because only the table can be stale;
+  //  · Open / Save / Empty went into the Shelf menu, which is where a verb you
+  //    use once a session belongs.
+  if (win.type === "shelf") {
+    const name = document.createElement("input");
+    name.type = "text";
+    name.spellcheck = false;
+    name.className = "win-strip-shelfname";
+    name.title = t("shelf.nameTitle");
+    name.value = shelfMeta().name;
+    // a click in the box is not a gesture on the window under it
+    name.addEventListener("pointerdown", (e) => e.stopPropagation());
+    name.addEventListener("change", () => renameShelf(name.value));
+    const count = document.createElement("span");
+    count.className = "emdata-count win-strip-count";
+    // FILLED HERE, not left for the renderer. Measured: the header is rebuilt
+    // AFTER `mountWindow` has painted the surface (`transformWindowOf` ends with
+    // `renderAreaHeaders`), so a count written by `renderShelfInto` and then
+    // rebuilt empty simply did not appear — the same class of defect as the one
+    // this whole pass is about, one step further along. The count is a pure
+    // function of the list, so the builder can state it, and the renderer still
+    // writes it: two paths, one value.
+    count.textContent = t("shelf.count", { n: String(shelfEntries().length) });
+    strip.append(name, count);
+
+    const uri = document.createElement("button");
+    // `wi-chip`, not `win-act`: `.win-header .win-act` is a 30px SQUARE with no
+    // padding — a contract for one glyph (↑ ⤢ ⟳), and a two-word label put in
+    // one wraps onto two lines inside 28px (measured: the button came out 30px
+    // wide showing "+" over "URI"). A short text label is what `wi-chip` is.
+    uri.className = "wi-chip win-strip-uri";
+    uri.textContent = t("shelf.addUri");
+    uri.title = t("shelf.addUriTitle");
+    uri.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openShelfUriForm(uri);
+    });
+    strip.appendChild(uri);
+
+    if (winModeOf(win) === "table") {
+      // The LIST reads the shelf that is in memory: it cannot be out of date,
+      // and a ⟳ next to it would promise work it will not do. The table is
+      // s3Dgraphy's answer about these entries, and that answer ages.
+      const refresh = document.createElement("button");
+      refresh.className = "win-act win-strip-refresh";
+      refresh.textContent = "⟳";
+      refresh.title = t("shelf.refreshTitle");
+      refresh.addEventListener("click", (e) => {
+        e.stopPropagation();
+        void refreshShelfTable();
+      });
+      strip.appendChild(refresh);
+    }
+    return strip;
+  }
+
+  if (win.type === "table") {
     const count = document.createElement("span");
     count.className = "emdata-count win-strip-count";
     strip.appendChild(count);
@@ -14960,15 +15499,35 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
   // STORAGE · navigation is the double-click and the ↑; a menu repeating them
   // would be a second way to do the one thing the surface already does.
   storage: [],
-  // SHELF · save/open are in the bar, where a list's own verbs belong; the menu
-  // holds the one thing that is not a verb of this window — emptying it.
+  // SHELF · HDR2 · the list's own verbs, now that `#shelf-bar` is gone. Open and
+  // Save are here rather than in the header for one reason: they are punctuation
+  // — once when you sit down, once when you get up — while the name, the count
+  // and `+ URI` are what a session of shelving actually touches. Emptying it was
+  // already here.
+  //
+  // `disabledReason`, not `disabled`: the latter is not a field of `WinMenuItem`
+  // and the renderer never reads it, so this item has been permanently enabled
+  // and its reason has been unreachable since the day it was written. Found
+  // while moving in next door.
   shelf: [
     {
       label: "Shelf",
       items: () => [
         {
-          label: "Svuota lo shelf",
-          disabled: shelfEntries().length ? undefined : t("menu.shelfEmpty"),
+          label: "menu.shelfOpen",
+          run: () => openShelfFile(),
+        },
+        {
+          // no guard, deliberately: the button in the bar had none, and an empty
+          // ShelfGraph is a legal (if dull) file. This pass MOVES the nine; it
+          // does not take anything away from them.
+          label: "menu.shelfSave",
+          run: () => saveShelf(),
+        },
+        {
+          label: "menu.shelfClear",
+          disabledReason: () =>
+            shelfEntries().length ? null : t("menu.shelfEmpty"),
           run: () => {
             clearShelf();
             renderShelf();

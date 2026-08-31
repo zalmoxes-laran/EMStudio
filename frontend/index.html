@@ -395,21 +395,15 @@
              the disk — including what must never enter the documentation — while
              this holds what you CHOSE, with its digest and its two axes (which
              fence it comes from, where the bytes live). Filled by `renderShelf`. -->
+        <!-- HDR2 · no bar of its own. The nine controls that used to sit here
+             live in the WINDOW HEADER now (`buildHeaderStrip`), which both the
+             focused mount and every secondary area build with the same builder:
+             the name and the count in the strip, `+ URI` as a form behind one
+             chip, Open/Save/Empty in the Shelf menu. This was the last type the
+             focus-parity table still declared a difference for — the row
+             existed in the focused mount ONLY, so the list moved down 30px the
+             moment the window took the focus. -->
         <div id="shelf-view" class="hidden">
-          <div id="shelf-bar">
-            <input id="shelf-name" type="text" spellcheck="false" />
-            <span id="shelf-count"></span>
-            <span class="shelf-bar-spacer"></span>
-            <input id="shelf-url" type="text" spellcheck="false" placeholder="https://… (URI/LOD)" />
-            <select id="shelf-url-scope"></select>
-            <!-- how the pasted URI is REACHED (open / subscribe) — the vocabulary
-                 comes from s3Dgraphy and is filled in when the table answers -->
-            <select id="shelf-url-access"></select>
-            <button id="shelf-add-url" type="button">+ URI</button>
-            <button id="shelf-refresh" type="button" data-i18n-title="shelf.refreshTitle">⟳</button>
-            <button id="shelf-open" type="button">Apri…</button>
-            <button id="shelf-save" type="button">Salva</button>
-          </div>
           <div id="shelf-body"></div>
         </div>
         <!-- A2 · ANNOTATOR · the image, the regions traced on it, and the panel

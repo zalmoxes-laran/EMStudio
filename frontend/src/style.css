@@ -4725,8 +4725,25 @@ body.sync-active #footer-brand #em-version {
   gap: 4px;
   flex: 0 0 auto;
 }
-#window-header > * {
+/* FOCUS-PARITY · on the CLASS both bars carry, not on the id.
+   It was `#window-header > *`, so only the FOCUSED bar's children refused to
+   shrink — and under width pressure the two bars therefore gave way in
+   different places: measured on a 411px shelf window, the focused bar pushed
+   its arrangement chips off the right edge (it scrolls) while the secondary
+   squeezed the strip from 216px to 6px and kept them. Nobody had seen it
+   because until the shelf moved in, no strip was wide enough to force the
+   choice. Same rule the rest of this pass follows, and the one `.nv-view`
+   states: layout on the class, position and stacking on the id. */
+.win-header > * {
   flex: 0 0 auto;
+}
+/* …with ONE exception, stated rather than left to source order: the type's own
+   strip gives way first, exactly as the search box already does below. What a
+   window is SHOWING can be clipped; the verbs that rearrange it cannot, because
+   a chip you have to scroll to is a chip you cannot find. */
+.win-header > .win-strip {
+  flex: 0 1 auto;
+  min-width: 0;
 }
 .win-header .win-menu-toggle {
   height: 30px;
@@ -5882,57 +5899,10 @@ object.viewer-media {
 #shelf-view.hidden {
   display: none;
 }
-#shelf-bar {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  min-height: 30px;
-  box-sizing: border-box;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-panel);
-  font-size: 12px;
-}
-.shelf-bar-spacer {
-  flex: 1;
-}
-#shelf-name {
-  width: 18ch;
-  padding: 3px 6px;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  background: var(--bg-app);
-  color: var(--text);
-  font: inherit;
-  font-size: 12px;
-}
-#shelf-url {
-  width: 28ch;
-  padding: 3px 6px;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  background: var(--bg-app);
-  color: var(--text);
-  font: inherit;
-  font-size: 11.5px;
-}
-#shelf-count {
-  color: var(--text-faint);
-  font-size: 11px;
-  white-space: nowrap;
-}
-#shelf-bar button,
-#shelf-url-scope {
-  padding: 3px 8px;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  background: var(--bg-elevated);
-  color: var(--text);
-  font: inherit;
-  font-size: 11.5px;
-  cursor: pointer;
-}
+/* HDR2 · `#shelf-bar` and its nine controls are GONE from here: they are in the
+   window header, built by the one builder both mounts call. What is left of
+   their look lives on `.win-strip-shelfname` and in the `+ URI` popover below,
+   next to the other header furniture rather than in a second row. */
 /* FOCUS-PARITY · the BOX of the shelf, on the class BOTH mounts carry.
    It was on the id, so the secondary area — which carries `.shelf-body` and was
    written expecting these rules to reach it (see the note at `.tile-narrative`
@@ -6053,6 +6023,11 @@ object.viewer-media {
 .me-hidden-file { display: none; }
 /* the places menu under Storage's "+ 📁" — the list the machine has, so serving
    one more folder is a click and not an absolute path typed into a prompt */
+/* A panel a HEADER CHIP hangs open — the storage places picker was the first,
+   the shelf's `+ URI` form is the second. One box for both, because they are the
+   same thing: something too big to be a row of chrome, opened from the one row
+   there is. `.storage-places` keeps its name (nothing about storage moved). */
+.bar-popover,
 .storage-places {
   position: fixed; z-index: 200;
   background: var(--bg-panel); border: 1px solid var(--border-strong);
@@ -6824,6 +6799,73 @@ body.nv-standalone main.nv-standalone-main {
   border-color: var(--accent, var(--text));
   background: var(--bg-elevated);
 }
+
+/* F2 · THE FUNNEL — the one gesture of the tab, with the visual weight of one.
+   It had the weight of a paragraph. */
+.ing-funnel {
+  align-items: center;
+  text-align: center;
+  padding: 18px 12px;
+  border-width: 2px;
+}
+.ing-funnel-glyph { color: var(--text-faint); line-height: 0; }
+.ing-funnel:hover .ing-funnel-glyph,
+.ing-drop-over .ing-funnel-glyph { color: var(--accent, var(--text)); }
+/* an UNSIGNED delivery: the funnel still takes the drop (losing files because a
+   licence was missing would be worse than asking twice) and says what is missing
+   instead of what it will do */
+.ing-funnel-unsigned { border-style: dotted; }
+.ing-funnel-unsigned .ing-funnel-glyph { opacity: 0.45; }
+
+/* F1 · the delivery's verdict, said in the form rather than found at the funnel */
+.ing-signed, .ing-unsigned {
+  margin-top: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+.ing-signed { color: var(--text-faint); background: var(--bg-sunken); }
+.ing-unsigned {
+  color: var(--warn, var(--text));
+  background: var(--warn-soft, var(--bg-elevated));
+  border: 1px solid var(--warn, var(--border));
+}
+/* the DEPOSITOR is a line, never a box */
+.ing-depositor {
+  display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap;
+  font-size: 12.5px;
+}
+.ing-role-tag {
+  font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+
+/* F3 · the four states, and the debt that outlives a tidy-up */
+.ing-tallies {
+  display: flex; flex-wrap: wrap; gap: 4px; margin: 2px 0 6px;
+}
+/* NOT `.ing-state` — that one is a row's own status text, further down, and
+   sharing the name put a pill round every digest in the queue. */
+.ing-tally {
+  padding: 1px 7px; border-radius: 999px; font-size: 10.5px;
+  border: 1px solid var(--border); color: var(--text-faint);
+  background: var(--bg-sunken);
+}
+/* a state with nothing in it stays VISIBLE and quiet: showing only the non-empty
+   ones makes the row jump about, and hides that nothing has failed */
+.ing-tally-none { opacity: 0.4; }
+.ing-tally-signed { border-color: var(--ok, var(--border)); }
+.ing-tally-failed { border-color: var(--warn, var(--border)); }
+.ing-debt {
+  margin: 6px 0 2px; padding: 5px 8px; border-radius: 6px;
+  font-size: 11.5px; color: var(--text-faint); background: var(--bg-sunken);
+}
+.ing-debt-owed {
+  color: var(--warn, var(--text));
+  background: var(--warn-soft, var(--bg-elevated));
+  border: 1px solid var(--warn, var(--border));
+}
 .ing-field {
   display: flex;
   flex-direction: column;
@@ -6844,7 +6886,8 @@ body.nv-standalone main.nv-standalone-main {
   padding: 4px 6px;
   font-size: 12.5px;
 }
-.ing-queue, .ing-lots, .ing-derivation, .ing-trail, .ing-defaults {
+.ing-queue, .ing-lots, .ing-derivation, .ing-trail, .ing-defaults,
+.ing-delivery {
   display: flex;
   flex-direction: column;
 }
@@ -6930,6 +6973,55 @@ body.nv-standalone main.nv-standalone-main {
   padding: 2px 7px;
 }
 .win-strip-count { font-size: 11px; color: var(--text-faint); }
+/* SHELF · the list's NAME, in the header. One input in a row of chrome has a
+   precedent (`win-search-input`); two inputs and two selects would not, which is
+   why the URI form is a popover and this is not. Narrow on purpose: it names a
+   shelf, it does not hold a sentence. */
+.win-strip-shelfname {
+  flex: 0 1 16ch;
+  width: 16ch;
+  min-width: 0;
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-app);
+  color: var(--text);
+  font: inherit;
+  font-size: 11.5px;
+}
+/* …and the `+ URI` form it opens: a FORM, so its controls are stacked with the
+   words that say what they are. The two labels are the table's own column names
+   (`shelf.col.SCOPE`, `shelf.col.ACCESS`) — the same two facts, named the same
+   way in both places. */
+.shelf-uri-form { min-width: 17rem; gap: 5px; padding: 7px; }
+.shelf-uri-form input,
+.shelf-uri-form select {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-app);
+  color: var(--text);
+  font: inherit;
+  font-size: 11.5px;
+}
+.shelf-uri-field { display: flex; flex-direction: column; gap: 2px; }
+.shelf-uri-field > span {
+  font-size: 9px; text-transform: uppercase; letter-spacing: .05em;
+  color: var(--text-muted);
+}
+.shelf-uri-go {
+  align-self: flex-end;
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
 /* the strips that used to be a second row: kept in the DOM (the surfaces keep
    their shape), emptied and out of the way */
 #storage-bar, #table-view-head { display: none; }
@@ -6946,6 +7038,10 @@ body.nv-standalone main.nv-standalone-main {
 .win-header .win-mode-label,
 .win-header .win-menu-toggle,
 .win-strip-tab { white-space: nowrap; }
+/* the shelf's `+ URI` chip is a two-word label: it must not wrap, and it must
+   not be the thing that gives way — the name beside it is (see the flex above).
+   A verb you have to scroll to is a verb you cannot find. */
+.win-header .win-strip-uri { white-space: nowrap; flex: 0 0 auto; }
 /* …and when the room is tight the SEARCH gives way first: a crumb and the
    window's verbs matter more than an input nobody is typing in */
 .win-header .win-search { flex: 0 1 12ch; min-width: 0; }

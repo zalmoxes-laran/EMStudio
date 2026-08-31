@@ -180,10 +180,14 @@ function boxOf(selectors) {
         "and that information silently disappears away from the focus");
   }
   void wanted;
-  // the shelf is the type this caught: it asked for a count the strip never made
-  ok(/win\.type === "table" \|\| win\.type === "shelf"/.test(stripBody),
-    "the shelf's count is built in the strip (it asks for it in its secondary " +
-      "surface, and the focused window shows it in `#shelf-bar`)");
+  // the shelf is the type this caught: it asked for a count the strip never
+  // made. It now builds its WHOLE row of chrome here — see §5 — which is what
+  // finally levelled it.
+  ok(/win\.type === "shelf"/.test(stripBody),
+    "the shelf's own chrome is built in the STRIP, by the one builder both " +
+      "mounts call. While it lived in `#shelf-bar` — inside `#shelf-view`, the " +
+      "focused mount — no amount of levelling the box could help: the two " +
+      "mounts did not carry the same amount of furniture.");
 }
 
 // ── 3 · the box of each type, both mounts ────────────────────────────────────
@@ -226,6 +230,25 @@ function boxOf(selectors) {
       "its panel open would be a different size in the two states");
 }
 
+// ── the nine of `#shelf-bar`, and where each of them went ───────────────────
+//
+// THE TRAP, closed by naming it: the fastest way to turn `shelf ⚠` green is to
+// DELETE the bar and the nine controls with it. So the inventory is data here,
+// each entry asserted at its new address and printed at the end. A function that
+// quietly disappeared fails this check, rather than being discovered in six
+// months in a trench.
+const NINE = [
+  ["the list's NAME",   /win-strip-shelfname/, "header strip"],
+  ["its entry COUNT",   /win-strip-count/,     "header strip"],
+  ["⟳ refresh",         /win-strip-refresh/,   "header strip · Table mode only"],
+  ["the URI field",     /shelf-uri-input/,     "+ URI form"],
+  ["the FENCE select",  /shelf-uri-scope/,     "+ URI form"],
+  ["the ACCESS select", /shelf-uri-access/,    "+ URI form"],
+  ["the ADD verb",      /shelf-uri-go/,        "+ URI form"],
+  ["OPEN…",             /"menu\.shelfOpen"/,   "Shelf menu"],
+  ["SAVE",              /"menu\.shelfSave"/,   "Shelf menu"],
+];
+
 // ── 5 · a chrome row that exists in ONE state only ───────────────────────────
 //
 // The repair pattern is HDR2's: what a per-type bar DECLARES moves into the
@@ -236,20 +259,42 @@ function boxOf(selectors) {
   const hidden = /#storage-bar,\s*#table-view-head \{ display: none; \}/.test(CSS);
   ok(hidden, "`#storage-bar` and `#table-view-head` are neutralised in BOTH " +
              "states (HDR2), so neither mount carries a second row");
-  // `#shelf-bar` is NOT hidden, and that is a KNOWN structural difference: it
-  // holds nine interactive controls (a name, a URL, two selects, four buttons)
-  // and hiding it would remove function, while moving them into the header is
-  // the HDR2 treatment and a slice of its own. Reported, not chased — see the
-  // end-of of 2026-09-02.
-  ok(/id="shelf-bar"/.test(HTML),
-    "`#shelf-bar` still exists — the one declared structural difference");
-  rows.push(["shelf ⚠", "the focused mount carries #shelf-bar, a row of nine " +
-                        "tools the secondary has not (declared, structural)"]);
+  // `#shelf-bar` WAS the one declared structural difference: nine controls in a
+  // row that existed in the focused mount only. It is gone, and so is the
+  // declaration — an exception left standing after its cause has been removed is
+  // worse than the exception, because it teaches people not to trust this table.
+  ok(!/id="shelf-bar"/.test(HTML),
+    "`#shelf-bar` is gone from the markup (HDR2): the shelf's chrome is in the " +
+      "window header, which both mounts build");
+  ok(!/#shelf-bar/.test(CSS),
+    "…and so are its rules — a row that no longer exists must not keep a box");
+  // THE TRAP, closed by naming it: the fastest way to make the check above pass
+  // is to DELETE the bar and its nine controls. So each of the nine is asserted
+  // at its new address. A function that quietly disappeared would fail here, not
+  // in six months in a trench.
+  for (const [what, pattern, where] of NINE) {
+    ok(pattern.test(TS),
+      `${what} must still be reachable — it lives in ${where} now. Nothing of ` +
+        "the nine was allowed to go missing on the way out of `#shelf-bar`.");
+  }
+  // …and the form is a FORM, not four more boxes in the row: one chip opens it
+  ok(/function openShelfUriForm\(/.test(TS),
+    "the four controls that make one gesture (address · fence · access · add) " +
+      "are a popover behind one chip. The invariant is a single row of CHROME, " +
+      "not a single row that contains everything: two inputs and two selects " +
+      "in one row is a row nobody reads.");
 }
 
 // ── the table, which is the point of the exercise ────────────────────────────
 console.log("\n  type × parity");
 for (const [type, verdict] of rows) {
   console.log(`    ${type.padEnd(12)} ${verdict}`);
+}
+
+// …and the nine, one per line, because "nothing was lost" is a claim that has to
+// be readable rather than trusted.
+console.log("\n  the nine of #shelf-bar × where they went");
+for (const [what, , where] of NINE) {
+  console.log(`    ${what.padEnd(18)} ${where}`);
 }
 console.log(`\nfocus-parity: ${checks} checks passed`);

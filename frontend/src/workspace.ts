@@ -158,7 +158,9 @@ export interface Arrangement {
   wins: Array<{
     name: string;
     type: WindowType;
-    /** per-instance state, e.g. `{ "mode.graph": "dtc" }` */
+    /** per-instance state, e.g. `{ mode: "dtc" }` for a graph window or
+     *  `{ "mode.storage": "minio" }` for any other type — see `modeKey`, which
+     *  is the one place that knows a graph's slot is the bare `mode`. */
     state?: Record<string, unknown>;
   }>;
   /** which window has the focus when the tab opens (default: the first) */
@@ -196,22 +198,46 @@ export type ArrangementNode =
  * part that changed — and they are English by default now (see `i18n.ts`).
  */
 const BUILTIN_WORKSPACES: WorkspacePreset[] = [
-  // 1 · DOCUMENTATION — the material comes in: the disk, the room's store, and
-  // what was just said about what arrived.
+  // 1 · ACQUISITION — the material comes in: the disk, the room's store, what was
+  // just said about what arrived, and the chain being written.
+  //
+  // F4 · IT WAS CALLED «DOCUMENTATION», and the rename is not cosmetic.
+  // `DTCAcquisitionNode` (crmdig:D12_Data_Transfer_Event) is already the name the
+  // MODEL gives this moment, and using the data's own word on the screen is what
+  // makes the person reading a graph in a year and the person looking at the tab
+  // speak the same language. «Documentation» also collided with EM's **Document**
+  // nodes — a tab and a node type with one name is a trap that costs explanations
+  // for years.
+  //
+  // The ID stays `assets`: every saved arrangement, every persisted active window
+  // and the tiling checks are keyed by it, and renaming an id to match a label
+  // would throw away somebody's layouts for a word nobody sees.
   {
-    id: "assets", labelKey: "ws.documentation", hintKey: "ws.documentationHint",
-    icon: "⬗", windowType: "storage", builtin: true,
+    id: "assets", labelKey: "ws.acquisition", hintKey: "ws.acquisitionHint",
+    // the funnel is the ICON, not the label
+    icon: "⌵", windowType: "storage", builtin: true,
     arrangement: {
       wins: [
         { name: "disk", type: "storage", state: { "mode.storage": "filesystem" } },
         { name: "store", type: "storage", state: { "mode.storage": "minio" } },
         { name: "inspector", type: "inspector" },
+        // …and the CHAIN, so the story being written is visible while it is
+        // written. It is how one checks that the funnel wrote the right one:
+        // yesterday we learned to read a neighbourhood, and this is the other
+        // half of the same gesture.
+        // `mode`, NOT `mode.graph`: a graph window's slot is the bare key and has
+        // always been (`modeKey`, which says so — renaming it would reset every
+        // saved arrangement). Measured: with `mode.graph` this window opened in
+        // Matrix Mode, silently, because `applyArrangement` only spreads
+        // `w.state` and never consults the preset's `graphMode`.
+        { name: "chain", type: "graph", state: { mode: "dtc" } },
       ],
       // the STORE is where the act happens: the tab opens on it
       active: "store",
-      layout: { dir: "row", ratio: 0.28, a: { win: "disk" },
-                b: { dir: "row", ratio: 0.62, a: { win: "store" },
-                     b: { win: "inspector" } } },
+      layout: { dir: "row", ratio: 0.24, a: { win: "disk" },
+                b: { dir: "row", ratio: 0.44, a: { win: "store" },
+                     b: { dir: "col", ratio: 0.52, a: { win: "chain" },
+                          b: { win: "inspector" } } } },
     },
   },
   // 2 · GRAPH — the cockpit of interpretation, and the old IDE arrangement made
@@ -223,7 +249,7 @@ const BUILTIN_WORKSPACES: WorkspacePreset[] = [
     icon: "▦", windowType: "graph", graphMode: "matrix", builtin: true,
     arrangement: {
       wins: [
-        { name: "canvas", type: "graph", state: { "mode.graph": "matrix" } },
+        { name: "canvas", type: "graph", state: { mode: "matrix" } },
         { name: "table", type: "table" },
         { name: "emtree", type: "emtree" },
         { name: "inspector", type: "inspector" },
@@ -243,7 +269,12 @@ const BUILTIN_WORKSPACES: WorkspacePreset[] = [
     icon: "⌗", windowType: "graph", graphMode: "dtc", builtin: true,
     arrangement: {
       wins: [
-        { name: "dag", type: "graph", state: { "mode.graph": "dtc" } },
+        // same correction: this one HAPPENED to work because `dag` is the anchor
+        // window, which `seedWindows` gives `{mode: preset.graphMode}` — so the
+        // dead key was invisible until a graph window appeared somewhere other
+        // than first in an arrangement. Reordering these two would have opened
+        // the DTC tab in Matrix mode with nothing to explain it.
+        { name: "dag", type: "graph", state: { mode: "dtc" } },
         { name: "inspector", type: "inspector" },
       ],
       layout: { dir: "row", ratio: 0.74, a: { win: "dag" },
