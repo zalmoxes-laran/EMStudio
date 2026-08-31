@@ -4862,13 +4862,13 @@ body.sync-active #footer-brand #em-version {
    la faceva leggere come una linea spessa e sparata. Un pixel è già il minimo,
    quindi ad abbassarsi è il COLORE — e si abbassano entrambi i valori insieme,
    perché ciò che dice quale finestra prende le modifiche è il RAPPORTO fra i
-   due, non la luminosità dell'uno. Sul fondo scuro 0.42 legge come un grigio
-   medio, e il triplo di 0.14 tiene la profondità che il commento qui sotto
+   due, non la luminosità dell'uno. Sul fondo scuro 0.30 legge come un grigio
+   medio, e il triplo di 0.10 tiene la profondità che il commento qui sotto
    descrive. Due token e non due letterali, così il giorno in cui EMStudio
    adotta il tema condiviso questo è un punto di sutura e non una caccia. */
 :root {
-  --win-frame: rgba(255, 255, 255, 0.14);
-  --win-frame-active: rgba(255, 255, 255, 0.42);
+  --win-frame: rgba(255, 255, 255, 0.10);
+  --win-frame-active: rgba(255, 255, 255, 0.30);
 }
 #tile-root .tile-area,
 #tile-root > #canvas-wrap,
