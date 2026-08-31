@@ -900,6 +900,23 @@ const EN: Dict = {
   "doc.description": "Description",
   "doc.extractors": "{n} extraction(s) hang from this document",
   "doc.reveal": "Show on the canvas",
+  // 2026-09-03 · the NODE's answer, and its three states. Three sentences and
+  // not one spinner: empty-because-asking, empty-because-the-node-never-saw-
+  // these-bytes and empty-because-the-node-is-off are three different facts.
+  "dtc.asking": "Asking the node about {name}…",
+  "dtc.fromNode":
+    "{n} node(s) — the chain the node holds for {digest}… Replaces the corpus picture: they are two documents, and a highlight only means something inside one graph.",
+  "dtc.unknownAsset":
+    "The node has never seen {digest}… — which is not «this file has no story»: publish it, and its chain starts here.",
+  "dtc.failed": "The node did not answer about {name} — {why}",
+  // AN INVITATION and not a fault. «Unreachable» to somebody who has simply not
+  // signed in sends them to look at the network instead of at the button.
+  "dtc.signIn":
+    "Sign in to see the story of {name} — the node holds it and asked who is asking. Mode ▸ Hub, or open a room's link.",
+  "dtc.noDigest":
+    "The bridge could not hash this file, so there is no digest to ask about. A reference without one is weaker, and inventing it would be worse.",
+  "dtc.noNode":
+    "No node is configured (Mode ▸ Hub), so there is nobody to ask. The chain of a file lives on the node that holds the corpus.",
   "dtc.empty":
     "DTC — no digital-twin chain in this graph yet (no dtc_ relation, no linked resource).",
   // DAG · the view reads the DOCUMENTATION member now, so the empty state is
@@ -1867,6 +1884,18 @@ const IT: Dict = {
   "doc.description": "Descrizione",
   "doc.extractors": "{n} estrazione/i pendono da questo documento",
   "doc.reveal": "Mostra sul canvas",
+  "dtc.asking": "Sto chiedendo al nodo di {name}…",
+  "dtc.fromNode":
+    "{n} nodi — la catena che il nodo tiene per {digest}… Sostituisce il disegno del corpus: sono due documenti, e un'evidenziazione ha senso solo dentro un grafo solo.",
+  "dtc.unknownAsset":
+    "Il nodo non ha mai visto {digest}… — che non è «questo file non ha storia»: pubblicalo, e la sua catena comincia qui.",
+  "dtc.failed": "Il nodo non ha risposto su {name} — {why}",
+  "dtc.signIn":
+    "Firma per vedere la storia di {name} — il nodo la tiene e ha chiesto chi sta chiedendo. Modo ▸ Hub, o apri il link di una stanza.",
+  "dtc.noDigest":
+    "Il bridge non ha potuto calcolare l'impronta di questo file, quindi non c'è un digest su cui chiedere. Un riferimento senza impronta è più debole, e inventarla sarebbe peggio.",
+  "dtc.noNode":
+    "Nessun nodo configurato (Modo ▸ Hub), quindi non c'è nessuno a cui chiedere. La catena di un file vive sul nodo che tiene il corpus.",
   "dtc.empty":
     "DTC — questo grafo non ha ancora una catena di gemello digitale (nessuna relazione dtc_, nessuna risorsa collegata).",
   "dtc.corpusEmpty":

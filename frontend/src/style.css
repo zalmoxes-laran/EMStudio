@@ -5498,6 +5498,13 @@ object.viewer-media {
   display: flex;
   flex-direction: column;
 }
+/* WHAT IS SELECTED. A wash and a rule on the leading edge — not a border on
+   four sides, which would move the row by a pixel and make selecting something
+   look like the list twitching. */
+.storage-row.storage-selected {
+  background: var(--bg-accent-soft);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
 .storage-row {
   display: grid;
   grid-template-columns: 22px 1fr auto;

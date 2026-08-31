@@ -32,7 +32,7 @@
 // Arrows still point DOWN (invariant 3): a process is below what it consumed
 // and above what it produced.
 import { t } from "../i18n";
-import { isDtcNodeType } from "../rules";
+import { isDtcChainEdge, isDtcNodeType } from "../rules";
 import type { Lane, Scene, SceneNode } from "../scene";
 import type { EmEdge, EmNode } from "../types";
 
@@ -42,11 +42,14 @@ import type { EmEdge, EmNode } from "../types";
  *  the story. */
 const BRIDGE_EDGE = "has_linked_resource";
 
-/** The chain relations of the substrate (`dtc_had_input`, `dtc_had_output`,
- *  `dtc_derived_from`, and whatever the datamodel adds next). */
-export function isDtcEdge(edgeType: string | undefined): boolean {
-  return (edgeType ?? "").startsWith("dtc_");
-}
+/** The chain relations of the substrate — asked of the DATAMODEL, which marks
+ *  them, and never derived from the name.
+ *
+ *  It was `startsWith("dtc_")`, and the comment beside it said «and whatever the
+ *  datamodel adds next» — which was hoped rather than true: it presumed every
+ *  future `dtc_*` edge would be chain. Now it is true. See
+ *  `rules.isDtcChainEdge`. */
+export const isDtcEdge = isDtcChainEdge;
 
 /** A node that is DTC by its own nature: a `dtc_nodes` class, or any node
  *  stamped with a DTC kind — the DTC OUTPUT is a plain ResourceNode, so the kind

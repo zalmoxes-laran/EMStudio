@@ -376,11 +376,14 @@ import {
   doorTo, fallbackPage, otherSurface, roomHandoff, RoundTripError,
 } from "./roundtrip";
 import {
-  authorizeUrl, completeSignIn, loadAuthConfig, returningFromIdp,
+  authorizeUrl, completeSignIn, loadAuthConfig, refresh as refreshSession,
+  returningFromIdp,
   type AuthConfig,
 } from "./oidc";
 import { buildDtcGenesisScene, buildGroupScene } from "./views/context";
 import { buildDtcScene } from "./views/dtc";
+import { adaptNeighbourhood } from "./views/neighbourhood";
+import type { NeighbourhoodAnswer } from "./views/neighbourhood";
 import { buildGraphScene, type GraphAlgorithm } from "./views/graph";
 import { buildMatrixScene } from "./views/matrix";
 
@@ -500,7 +503,11 @@ const framedViews = new Set<string>();
 /** DAG · which document the DTC view was last built from — the corpus or the
  *  study graph. Kept so a change of SOURCE re-frames the camera (see
  *  `buildScenes`); it is not state anybody else reads. */
-let lastDtcSource: "corpus" | "study" | null = null;
+//: WHICH document the DTC view is drawing. `neighbourhood` joined the two on
+//: 2026-09-03: an answer from the node is a third source, and the camera has to
+//: be re-framed when the source changes for the same reason it always did — the
+//: camera it was left with belonged to a different picture.
+let lastDtcSource: "corpus" | "study" | "neighbourhood" | null = null;
 /**
  * WIN7 · (window, mode) pairs whose camera the USER has moved — a pan, a zoom, a
  * fit they asked for. The app may re-frame a view it framed itself (see
@@ -2132,8 +2139,21 @@ function buildScenes(): void {
   // the filtered study view otherwise.
   const corpusForView = documentationCorpus({ create: false });
   const corpusNodes = corpusForView?.liveNodes() ?? [];
-  const dtcSource = corpusNodes.length ? "corpus" : "study";
-  scenes.dtc = corpusNodes.length
+  // ── an asset is selected: the NODE's answer REPLACES the picture ───────────
+  //
+  // Replaces, and does not highlight — and the reason is not that the screen
+  // cannot take it. **They are two different documents.** The corpus lives on
+  // the node; the nodes of that chain do not exist inside the study document at
+  // all, and a highlight only means something inside ONE graph. So the window
+  // shows the answer and says whose it is (`dtcNote`), rather than pretending
+  // the two pictures are one.
+  const neighbour = dtcNeighbourhood.status === "answered"
+    ? adaptNeighbourhood(dtcNeighbourhood.answer) : null;
+  const dtcSource = neighbour ? "neighbourhood"
+    : corpusNodes.length ? "corpus" : "study";
+  scenes.dtc = neighbour
+    ? buildDtcScene(neighbour.nodes, neighbour.edges, dtcOverrides)
+    : corpusNodes.length
     ? buildDtcScene(corpusNodes, corpusForView!.liveEdges(), dtcOverrides)
     : buildDtcScene(fview.nodes, fview.edges, dtcOverrides);
   // …and when the SOURCE changes (a project with a corpus opens, or its first
@@ -2382,6 +2402,30 @@ function applyCanvasView(v: ViewKind): void {
   if (scenes[v] === null && v === "matrix") {
     info.textContent =
       "no layout section — run: emstudio layout file.em.json -o out.em.json";
+  } else if (v === "dtc" && dtcNeighbourhood.status !== "idle") {
+    // THE THREE STATES, and the reason they are three sentences and not one
+    // spinner: a picture that is empty because a request is in flight, one that
+    // is empty because the node has never seen these bytes, and one that is
+    // empty because the node is off are three different facts. An interface that
+    // shows the same box for all three teaches people to distrust it.
+    info.textContent = dtcNeighbourhood.status === "asking"
+      ? t("dtc.asking", { name: baseName(dtcNeighbourhood.path) })
+      // AN INVITATION, not a fault: the node answered, and asked who is asking.
+      // `nodeFetch` has already tried a refresh by the time we are here, so this
+      // is «there is no session» and the remedy is a signature.
+      : dtcNeighbourhood.status === "unauthorised"
+      ? t("dtc.signIn", { name: baseName(dtcNeighbourhood.path) })
+      : dtcNeighbourhood.status === "failed"
+      // the NODE's own sentence, carried through: a 403 and a 502 send somebody
+      // to two different places, and «could not load» sends them nowhere
+      ? t("dtc.failed", { name: baseName(dtcNeighbourhood.path),
+                          why: dtcNeighbourhood.why })
+      : dtcNeighbourhood.answer.start
+      ? t("dtc.fromNode", {
+          n: String(dtcNeighbourhood.answer.nodes?.length ?? 0),
+          digest: dtcNeighbourhood.digest.slice(0, 19),
+        })
+      : t("dtc.unknownAsset", { digest: dtcNeighbourhood.digest.slice(0, 19) });
   } else if (v === "dtc" && (scenes.dtc?.nodes.length ?? 0) === 0) {
     // An empty canvas has to say WHY, and WHICH emptiness it is: a project with
     // no documentation member at all gets the sentence that says how one starts
@@ -3411,7 +3455,9 @@ export async function openHandoff(handoff: Handoff): Promise<void> {
   window.location.assign(await authorizeUrl(handoffAuth));
 }
 
-function joinFromHandoff(handoff: Handoff, token: string | null): void {
+function joinFromHandoff(handoff: Handoff, token: string | null,
+                        session?: { refresh_token?: string;
+                                    config?: AuthConfig | null }): void {
   // The settings are UPDATED from the link, not consulted: the whole point is
   // that nobody types them. They are still written down so the next launch
   // reconnects without the link.
@@ -3419,6 +3465,8 @@ function joinFromHandoff(handoff: Handoff, token: string | null): void {
   saveSettings({ ...s, sync: { ...s.sync, hubUrl: handoff.server,
                                hubRoom: handoff.room } });
   hubToken = token;
+  hubRefreshToken = session?.refresh_token || null;
+  hubAuthConfig = session?.config ?? null;
   logInfo(t("handoff.joining", { room: handoff.room, server: handoff.server }));
   connectToHub(handoff.server, handoff.room, token);
 }
@@ -3514,7 +3562,8 @@ async function followHandoff(): Promise<void> {
         toast(t("handoff.signInFailed", { why: String(result.error) }));
         return;
       }
-      joinFromHandoff(handoff, result.token || null);
+      joinFromHandoff(handoff, result.token || null,
+                      { refresh_token: result.refresh_token, config });
       return;
     }
   }
@@ -6083,6 +6132,16 @@ document.getElementById("btn-mode-hub")?.addEventListener("click", () => {
 /** The access token for this session. In MEMORY: never localStorage, never the
  *  settings file — a token on disk outlives the reason it was issued. */
 let hubToken: string | null = null;
+//: …and the REFRESH token beside it, which `completeSignIn` has always returned
+//: and `joinFromHandoff` used to drop on the floor. One place, one more field —
+//: not a second place: at the third nobody knows which is the good one.
+//:
+//: In MEMORY only, like the access token: EMStudio is a desktop app and a browser
+//: build, and a refresh token in web storage outlives the person at the keyboard.
+let hubRefreshToken: string | null = null;
+//: the node's sign-in configuration, kept from the handoff so a refresh has a
+//: token endpoint to go to without asking the node twice
+let hubAuthConfig: AuthConfig | null = null;
 
 // ---------- MENU1 · Help menu (About / Updates / Ontology models) ----------
 const RELEASES_URL = "https://github.com/EmanuelDemetrescu/EMStudio/releases";
@@ -11444,7 +11503,188 @@ function storagePath(win: Win): string | null {
 
 function setStoragePath(win: Win, path: string | null): void {
   setWinCurrent(win, "fsPath", path);
+  // Entering a folder drops the selection: a file selected in another folder is
+  // not what this window is showing any more, and a chip naming something
+  // off-screen is the kind of half-truth that survives for months.
+  setWinCurrent(win, "fsSelected", null);
   renderStorage();
+}
+
+// ── the neighbourhood of the selected asset, from the NODE ──────────────────
+//
+// The chain around a file lives in the node's resident corpus, not in the open
+// document, so this is a fetch and not a walk. And it must be a fetch: the
+// classification of a chain edge now travels with the datamodel (F1), but the
+// EXPANSION is the library's, and re-walking it in TypeScript would be a second
+// implementation of the one thing this pass exists to unify.
+//
+// FOUR STATES, all four visible. A picture that is empty because a request is in
+// flight, one that is empty because the node never saw these bytes, one that is
+// empty because nobody has signed in, and one that is empty because the node is
+// off are four different facts with four different remedies. An interface that
+// shows one box for all of them teaches people to distrust it — and showing
+// «unreachable» to somebody who has simply not signed in is the same species of
+// lie as a fallback answering 200.
+type NeighbourhoodState =
+  | { status: "idle" }
+  | { status: "asking"; digest: string | null; path: string }
+  | { status: "answered"; digest: string; answer: NeighbourhoodAnswer }
+  //: the node answered, and said WHO ARE YOU. A fourth state and not a flavour
+  //: of the third: the remedy is a signature, not a network.
+  | { status: "unauthorised"; path: string }
+  | { status: "failed"; path: string; why: string };
+
+let dtcNeighbourhood: NeighbourhoodState = { status: "idle" };
+
+
+/** The DTC picture is the only thing that changed, so this rebuilds and draws —
+ *  the pair every other state change in this module uses. */
+function redrawNeighbourhood(): void {
+  if (!store) return;
+  buildScenes();
+  draw();
+}
+//: which request is current. An answer to a question nobody is asking any more
+//: must not overwrite the screen — the same guard the storage listing keeps.
+let neighbourhoodSeq = 0;
+
+/** A call to THIS NODE's API, signed the way every other one is.
+ *
+ *  ONE road, and it is the road that already existed: `hubToken`, in the
+ *  `Authorization` header. **Never in the URL** — `handoff.ts` keeps a
+ *  `FORBIDDEN` list that refuses `token`, `access_token`, `bearer` and their
+ *  companions in a link, because a handoff names a place and never a permission,
+ *  and putting a token in a query string right here would contradict that inside
+ *  the same codebase. A check reads this file to keep it so.
+ *
+ *  AND IT REFRESHES, once. `completeSignIn` has always returned a refresh token
+ *  and `joinFromHandoff` used to drop it on the floor; it is kept beside the
+ *  access token now (same place, one more field) and a 401 is retried after
+ *  asking the realm for a new one. An expired token is not a reason to make
+ *  somebody sign in again — it is the one failure the protocol has an answer for.
+ *
+ *  Returns the Response whatever it says, and `null` when no node is configured.
+ *  Deciding what a 401 MEANS is the caller's: for the neighbourhood it is «sign
+ *  in to see this file's story», which is an invitation and not a fault.
+ */
+async function nodeFetch(path: string): Promise<Response | null> {
+  const base = (getSettings().sync.hubUrl || "").replace(/\/+$/, "");
+  if (!base) return null;
+  const url = `${base}/v1${path}`;
+  const send = (): Promise<Response> => fetch(url, {
+    headers: hubToken ? { Authorization: `Bearer ${hubToken}` } : {},
+  });
+  let answer = await send();
+  if (answer.status !== 401 || !hubRefreshToken || !hubAuthConfig) return answer;
+  // …the one retry. Silent on purpose: somebody whose token turned over while
+  // they were reading should see nothing at all.
+  const renewed = await refreshSession(hubAuthConfig, hubRefreshToken);
+  if (!renewed.ok || !renewed.token) return answer;
+  hubToken = renewed.token;
+  hubRefreshToken = renewed.refresh_token || hubRefreshToken;
+  return await send();
+}
+
+/**
+ * Ask the node what it knows about the selected file.
+ *
+ * Two hops, and both are things that already exist: the BRIDGE hashes the file
+ * (`/fs/checksum` — it is the only side that can, since the disk is its side of
+ * the wire), and the NODE answers for that digest. A file the node has never
+ * seen gets `start: null`, which is a real answer and not an error: «I do not
+ * know these bytes» is different from «this file has no story».
+ */
+async function askNeighbourhood(path: string | null): Promise<void> {
+  const seq = ++neighbourhoodSeq;
+  if (!path) {
+    dtcNeighbourhood = { status: "idle" };
+    redrawNeighbourhood();
+    return;
+  }
+  dtcNeighbourhood = { status: "asking", digest: null, path };
+  redrawNeighbourhood();
+  const digest = await bridgeChecksum(path);
+  if (seq !== neighbourhoodSeq) return;
+  if (!digest) {
+    dtcNeighbourhood = {
+      status: "failed", path,
+      why: t("dtc.noDigest"),
+    };
+    redrawNeighbourhood();
+    return;
+  }
+  try {
+    const res = await nodeFetch(
+      `/corpus/neighbourhood?sha256=${encodeURIComponent(digest)}`);
+    if (seq !== neighbourhoodSeq) return;
+    if (!res) {
+      // NOT «loading forever»: a node nobody named cannot be asked, and saying
+      // so is the difference between a bug and a setting.
+      dtcNeighbourhood = { status: "failed", path, why: t("dtc.noNode") };
+      redrawNeighbourhood();
+      return;
+    }
+    if (res.status === 401 || res.status === 403) {
+      // NOT «unreachable». Not signed in and not reachable are two different
+      // facts with two different remedies, and showing the second to somebody
+      // who simply has not signed in is the same species of lie as the fallback
+      // that used to answer 200: it sends them looking in the wrong place.
+      //
+      // Reached only after `nodeFetch` has already tried a refresh, so this is
+      // «there is no session», not «the session lapsed».
+      dtcNeighbourhood = { status: "unauthorised", path };
+      redrawNeighbourhood();
+      return;
+    }
+    if (!res.ok) {
+      // The node's OWN sentence, not an icon: a 404 and a 502 send somebody to
+      // two different places, and «could not load» sends them nowhere.
+      let why = `HTTP ${res.status}`;
+      try {
+        const body = (await res.json()) as { detail?: string };
+        if (body?.detail) why = String(body.detail);
+      } catch { /* not JSON: the status is what there is */ }
+      if (seq !== neighbourhoodSeq) return;
+      dtcNeighbourhood = { status: "failed", path, why };
+      redrawNeighbourhood();
+      return;
+    }
+    const answer = (await res.json()) as NeighbourhoodAnswer;
+    if (seq !== neighbourhoodSeq) return;
+    dtcNeighbourhood = { status: "answered", digest, answer };
+  } catch (err) {
+    if (seq !== neighbourhoodSeq) return;
+    dtcNeighbourhood = { status: "failed", path, why: String((err as Error).message) };
+  }
+  redrawNeighbourhood();
+}
+
+/** WHAT IS SELECTED in this Storage window — a path, per window, persisted.
+ *
+ *  There was no selection at all: a double click entered a folder and that was
+ *  the whole vocabulary. A selection is a different act from navigation, it has
+ *  to survive the focus moving away (the surface is a NEW element after a tree
+ *  rebuild, so per-element state would evaporate — the same reason the scroll
+ *  position is kept per window), and the window has to SAY what it is.
+ *
+ *  And it is not throwaway: it is the selection the acquisition funnel will
+ *  consume, where a delivery gets signed. Built as that from the start rather
+ *  than as a highlight to be replaced.
+ *
+ *  FILES only, and deliberately: the two things that read a selection — the DTC
+ *  neighbourhood and the funnel — both act on bytes. A selected folder would be
+ *  a selection neither of them could use, offered anyway. */
+function storageSelected(win: Win): string | null {
+  const value = winCurrent(win, "fsSelected");
+  return typeof value === "string" ? value : null;
+}
+
+function setStorageSelected(win: Win, path: string | null): void {
+  if (storageSelected(win) === path) return;
+  setWinCurrent(win, "fsSelected", path);
+  renderStorage();
+  renderAreaHeaders();            // the window says what it is holding
+  void askNeighbourhood(path);
 }
 
 /**
@@ -12678,6 +12918,16 @@ function storageRow(win: Win, entry: FsEntry): HTMLElement {
     return row;
   }
 
+  if (entry.type === "file" && storageSelected(win) === entry.path) {
+    row.classList.add("storage-selected");
+  }
+  row.addEventListener("click", () => {
+    // ONE click selects a file; a folder is navigated and never selected (see
+    // `storageSelected`). Clicking the selected one again clears it, so there is
+    // a way back to «nothing is selected» that is not a keyboard secret.
+    if (entry.type !== "file") return;
+    setStorageSelected(win, storageSelected(win) === entry.path ? null : entry.path);
+  });
   row.addEventListener("dblclick", () => {
     if (entry.type === "dir") setStoragePath(win, entry.path);
   });

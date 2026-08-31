@@ -3,6 +3,7 @@
 // layout.group_spaces[groupId]; members without a stored position get a
 // deterministic layered layout as the starting arrangement.
 import { buildMembership, groupMembers } from "../folding";
+import { isDtcChainEdge } from "../rules";
 import type { Scene } from "../scene";
 import type { EmDocument } from "../types";
 import { layoutLayered } from "./graph";
@@ -31,18 +32,24 @@ export function buildGroupScene(doc: EmDocument, groupId: string): Scene {
 
 /** The DTC genesis context: the upstream provenance subgraph of a produced
  *  Resource — its process and input resources — collected by a BFS over the DTC
- *  chain edges (`dtc_`-prefixed) from the Resource. Reuses the same layered
- *  layout + per-context position persistence as group folding. The EM-side
- *  facets (RepresentationModel / Document that reference the Resource) are NOT
- *  part of the genesis and are intentionally excluded. */
+ *  CHAIN edges from the Resource. Reuses the same layered layout + per-context
+ *  position persistence as group folding. The EM-side facets
+ *  (RepresentationModel / Document that reference the Resource) are NOT part of
+ *  the genesis and are intentionally excluded.
+ *
+ *  This walks the STUDY document, and it is not a duplicate of the node's
+ *  expansion (`s3dgraphy.dtc.neighbourhood`): a different graph, on this side of
+ *  the wire. What it must share is the CLASSIFICATION — which edges are chain —
+ *  and it does: `isDtcChainEdge` reads the datamodel's marker. It used to carry
+ *  its own `startsWith("dtc_")`, a third copy of a rule that had already been
+ *  written twice. */
 export function buildDtcGenesisScene(doc: EmDocument, resourceId: string): Scene {
   const keep = new Set<string>([resourceId]);
   let frontier = new Set<string>([resourceId]);
-  const isDtc = (t: string | undefined): boolean => (t ?? "").startsWith("dtc_");
   while (frontier.size) {
     const next = new Set<string>();
     for (const e of doc.graph.edges) {
-      if (!isDtc(e.edge_type)) continue;
+      if (!isDtcChainEdge(e.edge_type)) continue;
       if (frontier.has(e.source) && !keep.has(e.target)) {
         keep.add(e.target);
         next.add(e.target);
@@ -56,7 +63,7 @@ export function buildDtcGenesisScene(doc: EmDocument, resourceId: string): Scene
   }
   const nodes = doc.graph.nodes.filter((n) => keep.has(n.id));
   const edges = doc.graph.edges.filter(
-    (e) => isDtc(e.edge_type) && keep.has(e.source) && keep.has(e.target),
+    (e) => isDtcChainEdge(e.edge_type) && keep.has(e.source) && keep.has(e.target),
   );
   return applyStored(doc, resourceId, layoutLayered(nodes, edges));
 }

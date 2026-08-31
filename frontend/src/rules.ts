@@ -17,6 +17,10 @@ interface EdgeTypeDef {
   label?: string;
   description?: string;
   allowed_connections?: { source?: string[]; target?: string[] };
+  /** `"chain"` on the DTC edges a provenance walk may traverse — connections
+   *  datamodel 1.6.13. Absent means CONTEXT, which is what makes a new edge
+   *  born non-traversable. */
+  dtc_role?: string;
 }
 
 interface NodeTypeEntry {
@@ -222,6 +226,43 @@ function dtcNodeTypes(): Set<string> {
  *  class in the datamodel joins the view with no code change. */
 export function isDtcNodeType(nodeType: string | undefined): boolean {
   return !!nodeType && dtcNodeTypes().has(nodeType);
+}
+
+/** The DTC CHAIN edges — the ones a provenance walk may traverse — READ from the
+ *  datamodel, which marks them `"dtc_role": "chain"` (connections 1.6.13).
+ *
+ *  This used to be `startsWith("dtc_")` in `views/dtc.ts`, with the comment «and
+ *  whatever the datamodel adds next». That comment was the good intention that
+ *  held the defect: it PRESUMED every future `dtc_*` edge would be chain. A
+ *  `dtc_annotated_by` that was context would have been a corridor on the client
+ *  and not on the node — two rules with one name, and the client's the one
+ *  nobody would have thought to check.
+ *
+ *  The fix was not to align the prefix to the three names. It was to take the
+ *  decision away from the client: the list travels with the datamodel, like
+ *  everything else here, and both sides read it. Same discipline
+ *  `isDtcNodeType` above already follows for classes.
+ *
+ *  The fallback is the historical three and never NOTHING: a vendored datamodel
+ *  from before the marker would otherwise make the projection draw no chain at
+ *  all, and a view that quietly shows one node is worse than one that draws what
+ *  it always drew. */
+const DTC_CHAIN_EDGES: Set<string> = (() => {
+  const marked = new Set<string>();
+  for (const [name, def] of Object.entries(EDGE_TYPES)) {
+    if (def?.dtc_role === "chain") marked.add(name);
+  }
+  if (marked.size) return marked;
+  return new Set(["dtc_had_input", "dtc_had_output", "dtc_derived_from"]);
+})();
+
+export function isDtcChainEdge(edgeType: string | undefined): boolean {
+  return !!edgeType && DTC_CHAIN_EDGES.has(edgeType);
+}
+
+/** For a check that wants to see the list rather than ask about one name. */
+export function dtcChainEdges(): string[] {
+  return [...DTC_CHAIN_EDGES].sort();
 }
 
 const DTC_KINDS =
