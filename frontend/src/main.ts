@@ -14329,7 +14329,13 @@ function buildHeaderStrip(win: Win): HTMLElement {
     return strip;
   }
 
-  if (win.type === "table") {
+  // FOCUS-PARITY · the shelf's ENTRY COUNT belongs here too. Its secondary
+  // surface already looked for `.win-strip-count` in this strip
+  // (`renderShelfInto(win, body, count)`) and this builder never made one, so
+  // the lookup returned null and the count simply did not appear away from the
+  // focus — while the focused window showed it in `#shelf-bar`. A head that
+  // says one thing in one state is the whole defect this pass is about.
+  if (win.type === "table" || win.type === "shelf") {
     const count = document.createElement("span");
     count.className = "emdata-count win-strip-count";
     strip.appendChild(count);

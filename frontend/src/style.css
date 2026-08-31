@@ -4950,6 +4950,12 @@ body.sync-active #footer-brand #em-version {
    focus states, because the area's width is. */
 #doc-view,
 .doc-surface {
+  /* FOCUS-PARITY · `display: flex` belongs HERE and not only on the id. Without
+     it `flex-direction` — and therefore `.doc-wide` below — was inert on the
+     secondary mount: a wide window put its list and its source side by side
+     when focused and stacked them when not, which is the largest reflow of any
+     type measured tonight. */
+  display: flex;
   flex-direction: column;
 }
 #doc-view.doc-wide,
@@ -5239,14 +5245,25 @@ body.sync-active #footer-brand #em-version {
 /* VIEWER · one resource, shown as itself. A neutral stage so the thing on it is
    the only thing you look at, and the SAME box whether it holds an image or a
    PDF — "what does this source look like" is one question, not two. */
+/* FOCUS-PARITY · the BOX of the viewer, on the class both mounts carry — the
+   column that puts the stage above the caption, and the ground behind it. The
+   secondary mount carries `.viewer-view` and had neither: its two boxes were
+   block-stacked (which looks the same until one of them grows) over a different
+   background. `overflow` stays off this rule: the focused mount clips, an area
+   scrolls, and that difference is the area's job (`.tile-viewer`). */
+#viewer-view,
+.viewer-view {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-sunken);
+}
+/* …and what is true only of the FOCUSED mount: it is an overlay over the
+   canvas. Position and stacking, nothing that decides the column. */
 #viewer-view {
   position: absolute;
   inset: var(--winbar-h, 0px) 0 0 var(--palette-w, 0px);
   z-index: 5;
-  display: flex;
-  flex-direction: column;
   overflow: hidden;
-  background: var(--bg-sunken);
 }
 #viewer-view.hidden {
   display: none;
@@ -5909,7 +5926,15 @@ object.viewer-media {
   font-size: 11.5px;
   cursor: pointer;
 }
-#shelf-body {
+/* FOCUS-PARITY · the BOX of the shelf, on the class BOTH mounts carry.
+   It was on the id, so the secondary area — which carries `.shelf-body` and was
+   written expecting these rules to reach it (see the note at `.tile-narrative`
+   above) — got neither the padding nor the column: measured 8px/10px of inset
+   missing and `align-items` inert, so the same list sat higher and further left
+   there than in the focused window. Same repair as `.nv-view`, which states the
+   rule: the box goes on the class, position and stacking on the id. */
+#shelf-body,
+.shelf-body {
   flex: 1;
   min-height: 0;
   overflow: auto;
