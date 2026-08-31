@@ -4857,17 +4857,30 @@ body.sync-active #footer-brand #em-version {
    A border reserves space instead: the header begins inside it, and the frame
    stays visible all the way round. Everything positioned against the area is
    laid out from the padding box, so nothing else had to move. */
+/* FRAME-QUIET (2 set 2026) · la cornice era un bianco pieno sulla finestra a
+   fuoco e un 35% sulle altre: 1px in entrambi i casi, ma il salto di contrasto
+   la faceva leggere come una linea spessa e sparata. Un pixel è già il minimo,
+   quindi ad abbassarsi è il COLORE — e si abbassano entrambi i valori insieme,
+   perché ciò che dice quale finestra prende le modifiche è il RAPPORTO fra i
+   due, non la luminosità dell'uno. Sul fondo scuro 0.42 legge come un grigio
+   medio, e il triplo di 0.14 tiene la profondità che il commento qui sotto
+   descrive. Due token e non due letterali, così il giorno in cui EMStudio
+   adotta il tema condiviso questo è un punto di sutura e non una caccia. */
+:root {
+  --win-frame: rgba(255, 255, 255, 0.14);
+  --win-frame-active: rgba(255, 255, 255, 0.42);
+}
 #tile-root .tile-area,
 #tile-root > #canvas-wrap,
 #tile-root .tile-split > #canvas-wrap {
-  border: 1px solid rgba(255, 255, 255, 0.35);
+  border: 1px solid var(--win-frame);
   box-sizing: border-box;
 }
 /* the focused one at full strength — specific enough to beat the id selectors
    above (a class alone lost to `#tile-root > #canvas-wrap`) */
 #tile-root .tile-area.tile-active,
 #tile-root #canvas-wrap.tile-active {
-  border-color: #fff;
+  border-color: var(--win-frame-active);
 }
 /* the divider between two areas */
 .tile-div {

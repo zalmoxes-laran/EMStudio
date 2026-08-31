@@ -29,10 +29,28 @@
 name: nightly (dev channel)
 
 on:
-  schedule:
-    # 03:17 UTC — a few minutes off the hour, where the runner queue is shorter,
-    # and late enough that a European evening's commits are all in.
-    - cron: "17 3 * * *"
+  # ── LA PIANIFICAZIONE È SPENTA (2 set 2026, decisione di E.D.) ──────────────
+  #
+  # Il canale dev non esce più da solo ogni notte: si pubblica A MANO, quando
+  # qualcuno decide che c'è qualcosa da pubblicare. La ragione non è tecnica ed
+  # è bene che stia scritta qui invece che nella memoria di qualcuno: una
+  # release che parte da sola è una release che qualcuno deve poi sorvegliare,
+  # e il costo di sorvegliarla ogni notte non è ripagato dal ritmo di lavoro di
+  # adesso.
+  #
+  # NON è stato tolto nient'altro. `workflow_dispatch` qui sotto fa partire
+  # esattamente lo stesso giro — stesso `./em.sh devrel`, stesso gate
+  # s3dgraphy, stessa verifica fra tag e `package.json`, stessi quattro
+  # installer costruiti sui runner. Quindi «a mano» significa un bottone, non
+  # una build sul portatile: gli installer cross-platform restano.
+  #
+  # Per riaccenderla: togliere il commento alle due righe qui sotto. (Nota che
+  # GitHub disattiva da sé i workflow pianificati in un repo fermo da 60
+  # giorni, quindi la loro assenza non è mai una prova che qualcuno abbia
+  # deciso — questo commento sì.)
+  #
+  # schedule:
+  #   - cron: "17 3 * * *"   # 03:17 UTC
   workflow_dispatch:
     inputs:
       force:
