@@ -34,10 +34,25 @@
  * against the same links the server's own parser is measured against.
  */
 
-/** What a handoff names, and all it names. */
-export interface Handoff {
-  server: string;
-  room: string;
+/** What a handoff names, and all it names.
+ *
+ *  TWO ACTIONS ON ONE NAMESPACE, and that is the design the scheme was renamed
+ *  for: `stratigraph://` is the ecosystem's, so the Catalog opens a STUDY and the
+ *  room browser opens a ROOM through the same handler. A consumer registers one
+ *  scheme and reads which of the two it was handed.
+ *
+ *  Before this, a study link could not work by construction: the catalogue
+ *  emitted `stratigraph://open?study=<id>` and this parser refused it with «the
+ *  link names no room» — into `logWarn`, i.e. the app's console, not in front of
+ *  whoever had pressed the button. Measured in Chrome on 4 September. */
+export type Handoff =
+  | { kind: "room"; server: string; room: string }
+  | { kind: "study"; catalog: string; study: string };
+
+/** A room handoff, when that is what it is — for the callers that only join. */
+export function asRoom(handoff: Handoff): { server: string; room: string } | null {
+  return handoff.kind === "room"
+    ? { server: handoff.server, room: handoff.room } : null;
 }
 
 /** The ecosystem's scheme — not `emstudio://`. One namespace, two actions: the
@@ -92,14 +107,52 @@ export function parseHandoff(link: string): Handoff {
   }
 
   const room = (url.searchParams.get("room") || "").trim();
-  if (!room) throw new HandoffError("the link names no room");
+  const study = (url.searchParams.get("study") || "").trim();
+
+  // AMBIGUITY FIRST. One namespace with two actions needs exactly one rule for
+  // "which one is this", and a link naming both is not a link with a preference
+  // — it is a link somebody built wrong, and guessing would make the guess the
+  // contract. (Unknown keys are still ignored, which is what keeps `focus=` and
+  // whatever comes next backward compatible: `study` is not unknown any more.)
+  if (room && study) {
+    throw new HandoffError(
+      "this link names both a room and a study; a handoff is one action. "
+      + `Send ${SCHEME}://${ACTION}?server=…&room=… to open a room, or `
+      + "?study=…&catalog=… to open a study.");
+  }
+
+  // A STUDY. Read before the room's error, so a link that names one is answered
+  // rather than refused for missing the other half.
+  if (study) {
+    let catalog = (url.searchParams.get("catalog") || "").trim().replace(/\/+$/, "");
+    if (!catalog && (scheme === "http" || scheme === "https")) {
+      // the web form may leave it implicit: the page IS on the catalogue
+      catalog = url.origin;
+    }
+    if (!catalog) {
+      throw new HandoffError(
+        "this link names a study but no catalogue, so there is nowhere to fetch "
+        + "it from. The catalogue's address is part of the link "
+        + `(${SCHEME}://${ACTION}?study=…&catalog=…) and it comes from that `
+        + "deployment's configuration, never from whoever built the link.");
+    }
+    return { kind: "study", catalog, study };
+  }
+
+  // A ROOM.
+  if (!room) {
+    throw new HandoffError(
+      "the link names neither a room nor a study. A handoff opens one of the "
+      + `two: ${SCHEME}://${ACTION}?server=…&room=… for a room, or `
+      + `?study=…&catalog=… for a study.`);
+  }
   let server = (url.searchParams.get("server") || "").trim().replace(/\/+$/, "");
   if (!server) {
     // the web form may leave it implicit: the page IS on the server
     if (scheme === "http" || scheme === "https") server = url.origin;
     else throw new HandoffError("the link names no server");
   }
-  return { server, room };
+  return { kind: "room", server, room };
 }
 
 /** A handoff on THIS page's URL, if there is one.
@@ -128,6 +181,13 @@ export function handoffFromLocation(search?: string): Handoff | null {
   }
 }
 
+// A STUDY on this page's URL is NOT read here, and that is deliberate. The web
+// form of a study link is `?study=&emjson=` — the two parameters the Catalog's
+// `web` door writes and `studylink.ts` reads — and it is a page load rather than
+// a handoff. This function exists for the room form, where the same parameters
+// mean a join. Reading both here would have made one reader answer two questions
+// with one shape.
+
 /** Take the handoff off the address bar once it has been read.
  *
  *  Not a secret — there is nothing secret in it — but a URL that still says
@@ -142,9 +202,19 @@ export function clearHandoffFromLocation(): void {
 
 /** Build one — for a test, and for the day EMStudio hands a room to something
  *  else. The same grammar in both directions is what keeps the reader honest. */
-export function buildHandoff({ server, room }: Handoff): string {
-  if (!room) throw new HandoffError("a handoff needs a room");
-  if (!server) throw new HandoffError("a handoff needs a server");
-  const query = new URLSearchParams({ server: server.replace(/\/+$/, ""), room });
+export function buildHandoff(handoff: Handoff): string {
+  if (handoff.kind === "study") {
+    if (!handoff.study) throw new HandoffError("a study handoff needs a study");
+    if (!handoff.catalog) throw new HandoffError("a study handoff needs a catalogue");
+    const query = new URLSearchParams({
+      study: handoff.study, catalog: handoff.catalog.replace(/\/+$/, ""),
+    });
+    return `${SCHEME}://${ACTION}?${query.toString()}`;
+  }
+  if (!handoff.room) throw new HandoffError("a handoff needs a room");
+  if (!handoff.server) throw new HandoffError("a handoff needs a server");
+  const query = new URLSearchParams({
+    server: handoff.server.replace(/\/+$/, ""), room: handoff.room,
+  });
   return `${SCHEME}://${ACTION}?${query.toString()}`;
 }

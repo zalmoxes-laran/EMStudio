@@ -32,6 +32,7 @@
  */
 
 import { t } from "./i18n";
+import { studyDocumentUrl } from "./studylink";
 import { renderNarrativeView } from "./narrative";
 import { mount3dViewer } from "./embed3d-native";
 import { applyTheme, storedMode } from "./theme";
@@ -69,19 +70,14 @@ function problem(title: string, detail: string, hint = ""): void {
   container.appendChild(box);
 }
 
-/** Where the document is. `?emjson=` wins because it is what the Catalog's
- *  "open in…" hands out; `?study=` is the friendlier form of the same thing. */
-function documentUrl(): string | null {
-  const direct = params.get("emjson");
-  if (direct) return direct;
-  const study = params.get("study");
-  if (!study) return null;
-  const catalog = (params.get("catalog") ?? "").replace(/\/+$/, "");
-  return `${catalog}/catalog/study/${encodeURIComponent(study)}/emjson`;
-}
+// Where the document is — `studylink.ts`, which the EDITOR reads too. It used to
+// be a function here, and the editor could not read the Catalog's own link at
+// all: it answered «Drop an .em.json file here» over a perfectly good
+// `?emjson=`. Copying this into `main.ts` would have made two grammars for one
+// query string, which diverge the first time somebody adds a parameter.
 
 async function load(): Promise<void> {
-  const url = documentUrl();
+  const url = studyDocumentUrl(params);
   if (!url) {
     problem(t("read.noStudy"), t("read.noStudyWhy"), t("read.noStudyHow"));
     return;

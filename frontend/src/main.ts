@@ -373,6 +373,9 @@ import {
   clearHandoffFromLocation, handoffFromLocation, parseHandoff, type Handoff,
 } from "./handoff";
 import {
+  clearStudyLinkFromLocation, readStudyLink, type StudyLink,
+} from "./studylink";
+import {
   doorTo, fallbackPage, otherSurface, roomHandoff, RoundTripError,
 } from "./roundtrip";
 import {
@@ -2610,6 +2613,76 @@ function activateSlot(id: string, opts: { rebuildOnly?: boolean } = {}): void {
 }
 
 /**
+ * THE CATALOG'S DOOR, from the editor's side — «open this study in EMStudio».
+ *
+ * What was broken, measured in Chrome on 4 September: the button worked and the
+ * door did not. It opened the editor's own root with `?study=…&emjson=…` on it —
+ * the two parameters only `reader.html` had ever read — and the editor answered
+ * «Drop an .em.json file here · No graph open yet». A door that opens onto a
+ * page which does not know what it was given.
+ *
+ * Now the editor reads the same link, with the same resolver
+ * (`studylink.ts`), and loads the container into the workspace exactly as if it
+ * had been dragged in — `loadContainerDocument`, so a study opens with its
+ * members, its shelf and its documentation, not through a second import path
+ * that would drift from the one people actually use.
+ *
+ * **Opening a study means WORKING on it.** That is the difference from
+ * `/em/read/`: the reader is the dissemination page and keeps its own door and
+ * its own verb. Two doors, two verbs, both honest.
+ *
+ * A failure SAYS SO on the canvas rather than in the console. The reader has
+ * spent a while learning that lesson — «Study unreachable», «restricted», «not
+ * found» are three different sentences and a reader who is told the right one
+ * logs in instead of filing a bug.
+ */
+async function openStudyFromLink(link: StudyLink): Promise<void> {
+  info.textContent = t("study.opening", { what: link.study ?? link.url });
+  let answer: Response;
+  try {
+    answer = await fetch(link.url, {
+      headers: link.token ? { Authorization: `Bearer ${link.token}` } : {},
+    });
+  } catch (exc) {
+    // The one that bit: a cross-origin fetch the browser refuses looks exactly
+    // like a service that is down, and the sentence has to name the real
+    // suspect. Same-origin (`/em/studio/`) is what removed the cause; this is
+    // what says so if it comes back.
+    studyFailed(t("study.unreachable", { url: link.url }), String(exc));
+    return;
+  }
+  if (answer.status === 401 || answer.status === 403) {
+    studyFailed(t("study.restricted", { what: link.study ?? link.url }),
+                t("study.restrictedWhy"));
+    return;
+  }
+  if (!answer.ok) {
+    studyFailed(t("study.notFound", { status: String(answer.status) }), link.url);
+    return;
+  }
+  let doc: unknown;
+  try {
+    doc = await answer.json();
+  } catch (exc) {
+    studyFailed(t("study.unreadable"), String(exc));
+    return;
+  }
+  loadContainerDocument(doc, link.study ?? link.url);
+  // …and the parameters come off the address bar, the token first: a reload must
+  // not re-fetch the study over whatever has been done since, and a credential
+  // in an address bar outlives the tab it was useful in.
+  clearStudyLinkFromLocation();
+  logInfo(t("study.opened", { what: link.study ?? link.url }));
+}
+
+/** A study that would not open, said where somebody is looking. */
+function studyFailed(what: string, why: string): void {
+  info.textContent = what;
+  toast(what);
+  logWarn(`${what} — ${why}`);
+}
+
+/**
  * MULTIGRAPH · open a PROJECT — a container with 1..N graphs plus its shelf.
  *
  * An em.json is always a container now, and a legacy single-graph file is a
@@ -3440,8 +3513,29 @@ function recallHandoff(): Handoff | null {
   }
 }
 
-/** Follow a handoff: sign in if the node asks for it, then join. */
+/**
+ * Follow a handoff — a ROOM to join, or a STUDY to open.
+ *
+ * Two actions on one scheme (`handoff.ts`), so this is where they part company,
+ * and they part cleanly: a room needs a sign-in against that server before there
+ * is anything to see, a study is a document to fetch. Neither is a fallback for
+ * the other.
+ *
+ * The study path deliberately does NOT sign in first. The catalogue answers 401
+ * for a study that is not published, and `openStudyFromLink` turns that into a
+ * sentence about signing in — which is the right order, because most studies a
+ * link is sent about are public and a login nobody needed is friction charged to
+ * everybody.
+ */
 export async function openHandoff(handoff: Handoff): Promise<void> {
+  if (handoff.kind === "study") {
+    await openStudyFromLink({
+      url: `${handoff.catalog.replace(/\/+$/, "")}`
+           + `/catalog/study/${encodeURIComponent(handoff.study)}/emjson`,
+      study: handoff.study, narrative: null, token: null,
+    });
+    return;
+  }
   handoffAuth = await loadAuthConfig(handoff.server);
 
   if (!handoffAuth) {
@@ -3455,7 +3549,8 @@ export async function openHandoff(handoff: Handoff): Promise<void> {
   window.location.assign(await authorizeUrl(handoffAuth));
 }
 
-function joinFromHandoff(handoff: Handoff, token: string | null,
+function joinFromHandoff(handoff: { server: string; room: string },
+                        token: string | null,
                         session?: { refresh_token?: string;
                                     config?: AuthConfig | null }): void {
   // The settings are UPDATED from the link, not consulted: the whole point is
@@ -3551,7 +3646,9 @@ function reflectRoundTrip(): void {
 async function followHandoff(): Promise<void> {
   if (returningFromIdp()) {
     const handoff = recallHandoff();
-    if (handoff) {
+    // only a ROOM is ever remembered across a sign-in: the study path does not
+    // sign in first (see `openHandoff`), so there is nothing to come back to
+    if (handoff && handoff.kind === "room") {
       const config = await loadAuthConfig(handoff.server);
       const result = config
         ? await completeSignIn(config)
@@ -3597,7 +3694,14 @@ async function wireDesktopDeepLink(): Promise<void> {
           void openHandoff(parseHandoff(url));
           return;
         } catch (error) {
-          logWarn(String((error as Error).message));
+          // …AND IN FRONT OF WHOEVER PRESSED. This was `logWarn` alone, which is
+          // the app's console: a study link the parser could not read (and until
+          // tonight it could not read any of them) failed with nothing on
+          // screen. A button that cannot work is bad; one that cannot work
+          // silently is what makes people doubt their own machine.
+          const why = String((error as Error).message);
+          logWarn(why);
+          toast(why);
         }
       }
     };
@@ -17024,6 +17128,14 @@ void acceptPendingInvite();
 // ACL; a handoff carries a PLACE and carries nothing else.
 void followHandoff();
 void wireDesktopDeepLink();
+// …and a STUDY on this page's URL (`?emjson=`, or `?study=&catalog=`) — the
+// Catalog's own «open in EMStudio». A room and a study are two different things
+// a session can be about, so they are two readers; neither is a fallback for the
+// other, and a URL that names neither leaves the canvas empty as it always did.
+{
+  const study = readStudyLink();
+  if (study) void openStudyFromLink(study);
+}
 // Language FIRST: `initI18n` sets `dir`/`lang` on <html> and translates the
 // static chrome before anything is rendered. Doing it after the first render
 // would show a frame of English (or an LTR frame in Hebrew) and then flip.

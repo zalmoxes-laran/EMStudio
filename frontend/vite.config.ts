@@ -29,7 +29,40 @@ const pkg = JSON.parse(
 // never a second implementation.
 const entry = process.env.EM_ENTRY === "reader" ? "reader" : "index";
 
-export default defineConfig({
+// ── WHERE THE DEV SERVER LIVES, and why it is not `/` ───────────────────────
+//
+// In development EMStudio is reached THROUGH the node's own origin, at
+// `/em/studio/` (`stratigraph-server/dev-stack/Caddyfile.dev`), and the reason is
+// not tidiness: served on a port of its own, the editor cannot fetch a study
+// container from the Catalog at all — the browser refuses it as cross-origin and
+// the Catalog sends no CORS headers, measured in Chrome on 4 September as
+// «Study unreachable — TypeError: Failed to fetch». Same origin, and the question
+// does not arise. (The alternative was `Access-Control-Allow-Origin: *` on the
+// Catalog, which is not the repair of a missing permission but a permission
+// given to everybody.)
+//
+// So the dev server's `base` is that path, and the asset URLs Vite writes into
+// its HTML carry it. Vite redirects `/` to the base, so `localhost:5173` still
+// works for anybody who prefers the port.
+//
+// `EM_DEV_BASE=/` restores the old behaviour for a run that wants it.
+// PRODUCTION is untouched: there the base stays `./` (see below), which is the
+// property that lets the editor open from `file://` and the reader be served
+// from any prefix.
+const devBase = process.env.EM_DEV_BASE || "/em/studio/";
+
+export default defineConfig(({ command }) => {
+  return ({
+  // The dev server is reached through Caddy, which forwards the ORIGINAL Host —
+  // so Vite's host check has to know the names it will see. Without this it
+  // answers 403 to the proxy and the route looks broken: measured from inside
+  // the container (`wget http://host.docker.internal:5173/` → 403 Forbidden)
+  // before it was added.
+  server: {
+    // 0.0.0.0, because the proxy dials in from the container network
+    host: true,
+    allowedHosts: ["em.localhost", "host.docker.internal", "localhost"],
+  },
   // RELATIVE, and for the reader that is a contract with whoever serves it.
   //
   // The editor is one file, so its base is moot. The reader is a shell that
@@ -46,7 +79,13 @@ export default defineConfig({
   // that the shell and its assets stay together, which is what a dist IS.
   // `scripts/check-narrative.mjs` asserts it against the built shell, so this
   // is a checked promise rather than a comment.
-  base: "./",
+  //
+  // …in a BUILD (`command === "build"`, which is Vite's own answer and not an
+  // env var of ours). The dev server takes `devBase` instead: it is served
+  // under a path on the node's origin, and a relative base there would make
+  // every module request resolve against whatever directory the page was asked
+  // for. Two situations, two answers, one line each.
+  base: command === "serve" ? devBase : "./",
   define: { __EMSTUDIO_VERSION__: JSON.stringify(pkg.version) },
   // The EDITOR is one file you can double-click, and that is a product
   // property: it opens from a USB stick, in a trench, with no server. The
@@ -55,7 +94,14 @@ export default defineConfig({
   // of inlined base64 instead of a chunk fetched only when a model appears.
   //
   // So: single-file for the editor, ordinary assets for the reader.
-  plugins: entry === "reader" ? [] : [viteSingleFile()],
+  // …and NOT on the dev server, which is the line that made the base above
+  // actually take effect: `viteSingleFile` sets `base: "./"` itself (it has to —
+  // inlining is what a relative base is for), and it does it in a `config` hook,
+  // i.e. AFTER ours. Measured: the config computed `/em/studio/` and Vite printed
+  // `Local: http://localhost:5173/`, serving the editor at the root with
+  // `/@vite/client` beside it. There is nothing to inline in a dev server, so the
+  // plugin belongs to the build alone.
+  plugins: entry === "reader" || command === "serve" ? [] : [viteSingleFile()],
   build: {
     outDir: "dist",
     rollupOptions: {
@@ -70,4 +116,5 @@ export default defineConfig({
     assetsInlineLimit: entry === "reader" ? 4096 : 100000000,
     chunkSizeWarningLimit: 6000,
   },
+});
 });
