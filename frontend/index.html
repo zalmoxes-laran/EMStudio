@@ -47,6 +47,13 @@
         <div class="dd-menu hidden">
           <button id="btn-new" title="New empty .em.json" data-i18n="toolbar.new">New</button>
           <button id="btn-open" title="Open an .em.json file" data-i18n="toolbar.open">Open…</button>
+          <!-- THE THREE VERBS in one place (design note `EM_design_aprire-entrare-creare.md`):
+               APRI is the line above — a file, yours, on your disk. These two are
+               CREA: a room, empty, or carrying the container in your hands. ENTRA
+               stays in Mode ▸ Hub, where the room and its link already live.
+               No server-address field: this page is served BY the node. -->
+          <button id="btn-create-room" data-i18n="room.createItem" data-i18n-title="room.createItemTitle">Create a room…</button>
+          <button id="btn-bring-into-room" data-i18n="room.bringItem" data-i18n-title="room.bringItemTitle">Bring this into a new room…</button>
           <!-- MULTIGRAPH · the offline "integrate later": another emj's graphs are
                TAKEN INTO this project (shared nodes merge by UUID). No server, no
                session — the whole collaboration story for async work by sector. -->

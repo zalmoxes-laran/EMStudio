@@ -363,7 +363,7 @@ const EN: Dict = {
   "members.linkRevoked": "That link no longer works",
   "members.noRoom": "Members live in a room: join one first (Mode ▸ Hub).",
   "members.joinNoHub": "This invitation needs an StratiGraph Server address — set one in Settings ▸ Live sync.",
-  "members.joinNeedsIdentity": "The link opened the door; you still have to say who you are. Sign in and follow it again.",
+  "members.joinNeedsIdentity": "The link opened the door; you still have to say who you are.",
   "members.joined": "You are in «{room}» as {role}",
   "conn.consumer": "Consumer «{name}» is being served — {caps}",
   "conn.starved": "«{name}» subscribed to the changes, but this session is not sending them (Sync {dir}) — it would show a study that never moves.",
@@ -401,6 +401,34 @@ const EN: Dict = {
   "toolbar.export": "Export",
   // The six ARRANGEMENTS. Each tab opens a set of windows in a shape, so the
   // tooltip says which windows you get and what the place is for.
+  "ident.otherPerson": "{node} signed you in as {them} ({orcid}) — NOT as «{who}», the signature you declared. So this node has not confirmed YOUR name, and the chip does not pretend it has. Either the declared iD is wrong, or you are signed in as somebody else. Click to look at both.",
+  // THE GESTURE THIS SESSION HAS, appended to a refusal. One per rung, because a
+  // refusal that names a step you cannot take is a refusal that reads as a wall.
+  // ── THE TWO GESTURES · create a room, and put this file on it ──────────────
+  // The design note's three verbs: APRI (File ▸ Open), ENTRA (Mode ▸ Hub), CREA
+  // (these). A room with one member is not a degenerate room, it is YOUR TABLE.
+  "common.cancel": "Cancel",
+  "room.createItem": "Create a room…",
+  "room.createItemTitle": "A room on this node, yours, empty. Whoever creates it is its owner.",
+  "room.bringItem": "Bring this into a new room…",
+  "room.bringItemTitle": "Put the graph you have open on a table on this node. From that moment the live copy is the node's.",
+  "room.createHead": "Create a room",
+  "room.bringHead": "Bring this into a new room",
+  "room.namePlaceholder": "A name — «Sarmizegetusa 1978»",
+  "room.createWhy": "A room on this node, and you are its owner. It can have one member: that is not a degenerate room, it is your table.",
+  "room.bringWhy": "The graph you have open goes onto a table on this node. Entering does not take the file away — from that moment the live copy is the node's, and «Export a copy» is a separate verb.",
+  "room.createDo": "Create",
+  "room.bringDo": "Create and put it there",
+  "room.bringNeedsDocument": "There is no graph open to put on a table. Open an .em.json first, or create an empty room.",
+  "room.createFailed": "{status} — {why}",
+  "room.createUnreachable": "{server} did not answer about creating a room — {why}",
+  "room.alreadyHasAGraph": "«{room}» exists on this node and already holds a graph, so the file was not put there: two graphs on one table is the ambiguity a room exists to prevent. Enter it instead, or use another name.",
+  "room.livesOnTheNodeNow": "On the table in «{room}». From now the live copy is the node's — what you edit here is what the room holds. Entering did not take your file away, and «Export a copy» is still a separate verb.",
+  "room.onlyOneGraph": "A room holds one graph, so «{graph}» went on the table and {n} other graph(s) stayed in this local project.",
+  "ident.next.none": "You have not said who you are yet: the next step is not a login, it is a signature. Declare one from the chip at the bottom left — a name, and an ORCID iD if you have one. It works offline, and nobody has to confirm it for you to start.",
+  "ident.next.signature": "You have a declared signature and this node has not confirmed it yet. Use the chip at the bottom left to sign in, then follow the link again.",
+  "ident.next.confirmed": "This node already knows who you are, so this is not about identity: it is access you have not been given. Whoever owns it can add you.",
+  "ident.otherPersonNext": "This node knows you as {them}, not as the name you declared. Signing in again would give the same answer — one of the two names has to change.",
   "ident.signatureTitle": "Signed as {who} ({orcid}) — NOT verified. You declared this yourself and nobody has checked it. Click to have this node confirm it.",
   "ident.identityTitle": "{who}, confirmed by {node}. The login did not give you another name: it confirmed the one you had already written. Click to join a room.",
   "ident.presenceTitle": "{who} — in {room}, on {node}. Confirmed, and seated somewhere with a role.",
@@ -413,7 +441,7 @@ const EN: Dict = {
   "study.opening": "Opening {what} from the catalogue…",
   "study.opened": "{what} opened from the catalogue",
   "study.unreachable": "The catalogue did not answer for this study ({url}). If the address is on another origin, the browser refused the request before it was sent — EMStudio and the catalogue are meant to be served by the same node.",
-  "study.restricted": "{what} is not published: the catalogue asked who is asking. Sign in and open it again.",
+  "study.restricted": "{what} is not published: the catalogue asked who is asking.",
   "study.restrictedWhy": "A restricted study is not broken — it is not public. The link named the place; the permission is a separate question.",
   "study.notFound": "The catalogue answered {status} for this study.",
   "study.unreadable": "The catalogue answered something that is not an em.json container.",
@@ -961,7 +989,7 @@ const EN: Dict = {
   // AN INVITATION and not a fault. «Unreachable» to somebody who has simply not
   // signed in sends them to look at the network instead of at the button.
   "dtc.signIn":
-    "Sign in to see the story of {name} — the node holds it and asked who is asking. Mode ▸ Hub, or open a room's link.",
+    "The story of {name} is on the node, and it asked who is asking.",
   "dtc.noDigest":
     "The bridge could not hash this file, so there is no digest to ask about. A reference without one is weaker, and inventing it would be worse.",
   "dtc.noNode":
@@ -1427,7 +1455,7 @@ const IT: Dict = {
   "members.linkRevoked": "Quel link non funziona più",
   "members.noRoom": "I membri vivono in una stanza: entra prima in una (Modo ▸ Hub).",
   "members.joinNoHub": "Questo invito ha bisogno dell'indirizzo di un StratiGraph Server — impostalo in Impostazioni ▸ Live sync.",
-  "members.joinNeedsIdentity": "Il link ha aperto la porta; devi ancora dire chi sei. Accedi e riaprilo.",
+  "members.joinNeedsIdentity": "Il link ha aperto la porta; devi ancora dire chi sei.",
   "members.joined": "Sei in «{room}» come {role}",
   "conn.consumer": "Consumer «{name}» servito — {caps}",
   "conn.starved": "«{name}» si è iscritto ai cambiamenti, ma questa sessione non li manda (Sync {dir}) — vedrebbe uno studio che non si muove mai.",
@@ -1456,6 +1484,29 @@ const IT: Dict = {
   "menu.exportLive": "(vivo)",
   "menu.exportZip": "+ figure (.zip)",
   "menu.ai": "IA",
+  "ident.otherPerson": "{node} ti ha fatto entrare come {them} ({orcid}) — NON come «{who}», la firma che hai dichiarato. Quindi questo nodo non ha confermato il TUO nome, e il chip non finge che l'abbia fatto. O l'iD dichiarato è sbagliato, o sei entrato come qualcun altro. Clicca per guardarli entrambi.",
+  "common.cancel": "Annulla",
+  "room.createItem": "Crea una stanza…",
+  "room.createItemTitle": "Una stanza su questo nodo, tua, vuota. Chi la crea ne è proprietario.",
+  "room.bringItem": "Porta questo in una stanza nuova…",
+  "room.bringItemTitle": "Metti il grafo che hai aperto su un tavolo di questo nodo. Da quel momento la copia viva è quella del nodo.",
+  "room.createHead": "Crea una stanza",
+  "room.bringHead": "Porta questo in una stanza nuova",
+  "room.namePlaceholder": "Un nome — «Sarmizegetusa 1978»",
+  "room.createWhy": "Una stanza su questo nodo, e ne sei proprietario. Può avere un membro solo: non è una stanza degenere, è il tuo tavolo.",
+  "room.bringWhy": "Il grafo che hai aperto va su un tavolo di questo nodo. Entrare non porta via il file — da quel momento la copia viva è quella del nodo, ed «esporta una copia» è un verbo separato.",
+  "room.createDo": "Crea",
+  "room.bringDo": "Crea e mettilo lì",
+  "room.bringNeedsDocument": "Non c'è nessun grafo aperto da mettere su un tavolo. Apri un .em.json, o crea una stanza vuota.",
+  "room.createFailed": "{status} — {why}",
+  "room.createUnreachable": "{server} non ha risposto sulla creazione della stanza — {why}",
+  "room.alreadyHasAGraph": "«{room}» esiste su questo nodo e ha già un grafo, quindi il file non è stato messo lì: due grafi su un tavolo sono l'ambiguità che la stanza esiste per impedire. Entraci, o usa un altro nome.",
+  "room.livesOnTheNodeNow": "Sul tavolo in «{room}». Da adesso la copia viva è quella del nodo — quello che modifichi qui è quello che la stanza tiene. Entrare non ha portato via il tuo file, ed «esporta una copia» resta un verbo separato.",
+  "room.onlyOneGraph": "Una stanza tiene un grafo, quindi «{graph}» è andato sul tavolo e {n} altro/i grafo/i è restato in questo progetto locale.",
+  "ident.next.none": "Non hai ancora detto chi sei: il passo successivo non è un login, è una firma. Dichiarala dal chip in basso a sinistra — un nome, e un ORCID iD se ce l'hai. Funziona offline, e non serve che nessuno la confermi per cominciare.",
+  "ident.next.signature": "Hai una firma dichiarata e questo nodo non l'ha ancora confermata. Usa il chip in basso a sinistra per firmarti, poi risegui il link.",
+  "ident.next.confirmed": "Questo nodo sa già chi sei, quindi non è una questione di identità: è un accesso che non ti è stato dato. Può aggiungerti chi ne è proprietario.",
+  "ident.otherPersonNext": "Questo nodo ti conosce come {them}, non come il nome che hai dichiarato. Rifirmare darebbe la stessa risposta — uno dei due nomi deve cambiare.",
   "ident.signatureTitle": "Firmato come {who} ({orcid}) — NON verificata. L'hai dichiarata tu e nessuno l'ha controllata. Clicca per farla confermare da questo nodo.",
   "ident.identityTitle": "{who}, confermato da {node}. Il login non ti ha dato un altro nome: ha confermato quello che avevi già scritto. Clicca per entrare in una stanza.",
   "ident.presenceTitle": "{who} — in {room}, su {node}. Riconosciuto, e seduto da qualche parte con un ruolo.",
@@ -1468,7 +1519,7 @@ const IT: Dict = {
   "study.opening": "Apro {what} dal catalogo…",
   "study.opened": "{what} aperto dal catalogo",
   "study.unreachable": "Il catalogo non ha risposto per questo studio ({url}). Se l'indirizzo è su un'altra origine, il browser ha rifiutato la richiesta prima di mandarla — EMStudio e il catalogo devono stare sullo stesso nodo.",
-  "study.restricted": "{what} non è pubblicato: il catalogo ha chiesto chi sta chiedendo. Firma e riaprilo.",
+  "study.restricted": "{what} non è pubblicato: il catalogo ha chiesto chi sta chiedendo.",
   "study.restrictedWhy": "Uno studio riservato non è rotto — non è pubblico. Il link nomina il luogo; il permesso è un'altra domanda.",
   "study.notFound": "Il catalogo ha risposto {status} per questo studio.",
   "study.unreadable": "Il catalogo ha risposto qualcosa che non è un container em.json.",
@@ -1989,7 +2040,7 @@ const IT: Dict = {
     "Il nodo non ha mai visto {digest}… — che non è «questo file non ha storia»: pubblicalo, e la sua catena comincia qui.",
   "dtc.failed": "Il nodo non ha risposto su {name} — {why}",
   "dtc.signIn":
-    "Firma per vedere la storia di {name} — il nodo la tiene e ha chiesto chi sta chiedendo. Modo ▸ Hub, o apri il link di una stanza.",
+    "La storia di {name} è sul nodo, e il nodo ha chiesto chi sta chiedendo.",
   "dtc.noDigest":
     "Il bridge non ha potuto calcolare l'impronta di questo file, quindi non c'è un digest su cui chiedere. Un riferimento senza impronta è più debole, e inventarla sarebbe peggio.",
   "dtc.noNode":

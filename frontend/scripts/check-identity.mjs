@@ -178,4 +178,54 @@ const reset = () => mem.clear();
   eq(Object.keys(result).sort(), ["orcid"], "a verification result carries the CLAIM, never a token");
 }
 
+// ── is a node's answer a confirmation OF THE SIGNATURE THIS SESSION DECLARED? ─
+//
+// Measured in Chrome, 5 September 2026, and the reason this function exists:
+// declared `0000-0002-5065-7970` «Emanuel Demetrescu», signed in against the dev
+// node, and the node confirmed `0000-0002-1825-0097` «Dev User» — because the dev
+// realm's seeded user carries a sample iD, not his. The chip read «Emanuel
+// Demetrescu · em.localhost:8443»: the declared name presented as confirmed by a
+// node that had confirmed somebody else. Same species as a tick beside a name
+// nobody checked, one rung further up.
+//
+// The three answers are the whole point. `false` is «a different person», and it
+// must not be reachable from «cannot tell» — a realm that answers with a username
+// instead of an iD is not a mismatch, and refusing the rung there would break
+// every deployment that does not put ORCID in the token.
+{
+  const A = "0000-0002-5065-7970";           // the signature E.D. declares
+  const B = "0000-0002-1825-0097";           // what the dev realm actually says
+
+  eq(I.sameSignature(A, A), true, "the same iD is a confirmation of the signature");
+  eq(I.sameSignature(A, B), false,
+     "the two iDs that disagreed on 5 September are NOT a confirmation");
+  eq(I.sameSignature(B, A), false, "…and it does not depend on which side you ask");
+
+  // spelling is not identity
+  eq(I.sameSignature("0000-0002-5065-7970", "https://orcid.org/0000-0002-5065-7970"),
+     true, "the same iD written as a URL is still the same person");
+  eq(I.sameSignature("0000-0002-5065-7970", " 0000-0002-5065-7970 "),
+     true, "…and whitespace is not a second person");
+
+  // the third answer, which is not `false`
+  for (const [declared, said, why] of [
+    [A, undefined, "a node that has not answered yet"],
+    [undefined, A, "a signature nobody declared"],
+    ["", "", "two absences"],
+    [A, "dev", "a realm that answers with a username"],
+    [A, "e9a4c1f2-0000-4000-8000-000000000000", "…or with a subject id"],
+    ["not-an-orcid", A, "a declaration that is not an iD"],
+  ]) {
+    eq(I.sameSignature(declared, said), null,
+       `${why} is «cannot tell», not «a different person»`);
+  }
+
+  // and «cannot tell» must not be mistakable for a confirmation by a caller that
+  // only checks truthiness — this is why the value is `null` and not `false`
+  ok(I.sameSignature(A, "dev") !== false,
+     "«cannot tell» is not the same value as «a different person»");
+  ok(I.sameSignature(A, "dev") !== true,
+     "…and it is not a confirmation either");
+}
+
 console.log(`identity: ${checks} checks passed`);

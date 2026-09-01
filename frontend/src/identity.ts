@@ -77,6 +77,40 @@ export function normalizeOrcid(input: string): string {
  * at a REAL OTHER PERSON. An identity that is validated only by its shape is
  * not validated.
  */
+/**
+ * Is the iD a node just confirmed THE SAME ONE this session declared?
+ *
+ *  `true`  — the same person, so a confirmation of the signature;
+ *  `false` — a different person, so NOT a confirmation of it;
+ *  `null`  — cannot tell, and that is a third answer rather than a `false`.
+ *
+ * The middle rung of the identity ladder is defined by that sameness: «un nodo ha
+ * validato **quella stessa firma**» — a login does not give you another name, it
+ * confirms the one you had already written. So this question is what decides
+ * whether the rung was reached, and it lives here rather than in the chip because
+ * it is a question about two identities and not about a piece of chrome.
+ *
+ * Found by measuring, 5 September 2026: declared `0000-0002-5065-7970` «Emanuel
+ * Demetrescu», signed in against the dev node, and the node confirmed
+ * `0000-0002-1825-0097` «Dev User». The chip read «Emanuel Demetrescu ·
+ * em.localhost:8443» — the declared name presented as confirmed by a node that
+ * had confirmed somebody else. The same species as a tick beside a name nobody
+ * checked, one rung further up.
+ *
+ * `null` when either side is not an ORCID: a realm that answers with a
+ * `preferred_username` or a `sub` is not a reason to refuse the rung, and
+ * refusing it there would break every such deployment. «I cannot tell» is the
+ * honest answer, and the caller keeps the rung while saying what was confirmed.
+ */
+export function sameSignature(declared: unknown, said: unknown): boolean | null {
+  const a = String(declared ?? "").trim();
+  const b = String(said ?? "").trim();
+  if (!a || !b) return null;
+  if (!isValidOrcid(a) || !isValidOrcid(b)) return null;
+  return normalizeOrcid(a) === normalizeOrcid(b);
+}
+
+
 export function isValidOrcid(input: string): boolean {
   const id = normalizeOrcid(input);
   const m = ORCID_SHAPE.exec(id);

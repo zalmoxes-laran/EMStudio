@@ -182,7 +182,7 @@ console.log("\n6 · THE RING IS BROKEN — the link survives the login");
   ok(!/searchParams\.set\("state", .*returnTo/.test(oidc),
      "…and NOT inside the `state` parameter: that travels through the IdP and "
      + "into its logs, and the address may legitimately carry `?token=`");
-  ok(/restoreAfterSignIn\(result\.returnTo\)/.test(main),
+  ok(/restoreAfterSignIn\(remembered\.returnTo \?\? result\.returnTo\)/.test(main),
      "the address is put back BEFORE anything reads the link");
   // …on every exit, success or not
   ok(/const where = \{ returnTo: saved\?\.returnTo/.test(oidc),
@@ -204,13 +204,151 @@ console.log("\n6 · THE RING IS BROKEN — the link survives the login");
      + "Without it the silent attempt worked, the chip firmed up to «confirmed» "
      + "and the study still said «is not published» — measured, and it made "
      + "everything else look broken");
-  ok(/if \(result\.silent\)/.test(main),
+  ok(/if \(wasSilent\)/.test(main),
      "a silent attempt that finds no session is NOT reported as a failure: "
      + "`login_required` is the expected answer, and shouting about it would be "
      + "an error message for something that went exactly as designed");
   ok(/return true;\s*\/\/ no session/.test(main)
      || /logInfo\(`identity: no session on this node yet/.test(main),
      "…it is logged, not toasted");
+}
+
+console.log("\n6c · A MARKER BELONGS TO THE IDENTITY THAT FAILED");
+{
+  const main = readFileSync(join(SRC, "main.ts"), "utf8");
+  ok(/function forgetSilentSignInAttempts/.test(main),
+     "there is one place that drops the silent-attempt markers");
+  // …and it is called when a sign-in SUCCEEDS, before the identity is used
+  const at = main.indexOf("async function completeNodeSignIn");
+  const body = main.slice(at, main.indexOf("\n}\n", at));
+  ok(/forgetSilentSignInAttempts\(\)/.test(body),
+     "…and a successful sign-in calls it. WITHOUT this the human sequence fails "
+     + "on the half everybody does: open the study → refused, no session → sign "
+     + "in → reopen in the same tab → refused AGAIN, without even trying. "
+     + "Measured in Chrome with a live session: markers 1, chip still ◌.");
+  const tokenAt = body.indexOf("hubToken = result.token");
+  const forgetAt = body.indexOf("forgetSilentSignInAttempts()");
+  ok(tokenAt > 0 && forgetAt > tokenAt,
+     "…after the token is in hand, so a failed exchange does not clear a marker "
+     + "it has not earned the right to clear");
+  ok(/startsWith\("emstudio\.silenttry:"\)/.test(main),
+     "the markers are ENUMERATED, not tracked in a second list that would drift");
+}
+
+console.log("\n6d · ONE return path for both rounds");
+{
+  const main = readFileSync(join(SRC, "main.ts"), "utf8");
+  ok(/interface PendingNodeSignIn/.test(main),
+     "what a sign-in needs on the way back is one shape");
+  // written by the ONE place both rounds go through…
+  const at = main.indexOf("async function signIntoNode");
+  const body = main.slice(at, main.indexOf("\n}\n", at));
+  ok(/returnTo: window\.location\.href/.test(body)
+     && /sessionStorage\.setItem\(SIGNIN_KEY/.test(body),
+     "…written by `signIntoNode`, which is where BOTH rounds pass — silent and "
+     + "interactive are two ways of asking the same question");
+  // …and read back with OUR copy preferred over the PKCE record's
+  ok(/restoreAfterSignIn\(remembered\.returnTo \?\? result\.returnTo\)/.test(main),
+     "…and preferred on the way back. The record in `oidc.ts` is deleted on read "
+     + "and read once, so a return that arrives without it reached "
+     + "`restoreAfterSignIn(undefined)` — and a bare `/em/studio/` is all that is "
+     + "left, because the realm's return REPLACED the query. Chip full, bar "
+     + "clean, study gone.");
+  ok(/const wasSilent = remembered\.silent \|\| result\.silent/.test(main),
+     "…including whether the round was silent, so a `login_required` is never "
+     + "shouted about even if the record is missing");
+  // still NOT in `state`
+  const oidc = readFileSync(join(SRC, "oidc.ts"), "utf8");
+  ok(!/searchParams\.set\("state", .*returnTo/.test(oidc),
+     "and still not inside `state`: that travels through the IdP and into its "
+     + "logs, and a study link may carry a `?token=`");
+}
+
+console.log("\n6e · THE MIDDLE RUNG HAS TO BE EARNED");
+{
+  const main = readFileSync(join(SRC, "main.ts"), "utf8");
+  const identity = readFileSync(join(SRC, "identity.ts"), "utf8");
+
+  // the comparison lives in `identity.ts`, because it is a question about two
+  // identities and not about a piece of chrome — and `check-identity.mjs` puts
+  // real values to it there, including the two that disagreed on E.D.'s screen
+  ok(/export function sameSignature/.test(identity),
+     "there is one question, and it lives with the identities: did the node "
+     + "confirm THE SAME signature?");
+  const at = identity.indexOf("export function sameSignature");
+  const body = identity.slice(at, identity.indexOf("\n}\n", at));
+  ok(/normalizeOrcid\(a\) === normalizeOrcid\(b\)/.test(body),
+     "…compared as ORCIDs, normalised, so a URL form and a bare iD are one person");
+  ok(/if \(!isValidOrcid\(a\) \|\| !isValidOrcid\(b\)\) return null/.test(body),
+     "…and `null` — «cannot tell» — when either side is not an ORCID: a realm "
+     + "that answers with a username is not a reason to refuse the rung, and "
+     + "refusing it there would break every such deployment");
+  ok(/sameSignature\(currentIdentity\(\)\?\.orcid, nodeIdentity\?\.orcid\)/.test(main),
+     "…and the chip asks it of the DECLARED signature against what the node said, "
+     + "in that order");
+
+  const rung = main.slice(main.indexOf("function identityRung"),
+                          main.indexOf("function servingNode"));
+  ok(/nodeConfirmsTheSignature\(\) === false/.test(rung),
+     "a node that confirmed SOMEBODY ELSE has not confirmed you: neither rung "
+     + "above Firma is reached. Measured on E.D.'s screen — declared "
+     + "0000-0002-5065-7970, the node said 0000-0002-1825-0097, and the chip "
+     + "showed the DECLARED name as confirmed. A tick nobody earned, one rung up.");
+  ok(/ident\.otherPerson/.test(main),
+     "…and it is SAID, not silently dropped: a mute degradation is the failure "
+     + "that looks like a success");
+  ok(/ident\.otherPersonNext/.test(main),
+     + "answer, so one of the two names has to change");
+}
+
+console.log("\n6f · THE ZERO RUNG: a refusal names the gesture you HAVE");
+{
+  const main = readFileSync(join(SRC, "main.ts"), "utf8");
+  const i18n = readFileSync(join(SRC, "i18n.ts"), "utf8");
+
+  ok(/function nextRungInvitation/.test(main),
+     "one function decides what a refusal invites you to do, so the three "
+     + "refusals cannot drift apart");
+  const at = main.indexOf("function nextRungInvitation");
+  const body = main.slice(at, main.indexOf("\n}\n", at));
+
+  // the bug: the sentence was STATIC while the gesture is dynamic. E.D. on a
+  // clean profile — chip «no author», refusal «Sign in and open it again» —
+  // asked «dove devo cliccare?». Two roads described where there is one.
+  for (const [rung, key] of [["none", "ident.next.none"],
+                             ["signature", "ident.next.signature"]]) {
+    ok(new RegExp(`case "${rung}":\\s*return t\\("${key}"`).test(body),
+       `rung «${rung}» invites its OWN gesture (${key})`);
+  }
+  ok(/default:\s*return t\("ident\.next\.confirmed"\)/.test(body),
+     "…and a session the node ALREADY confirmed is not sent to sign in again: "
+     + "a refusal there is access it was not given, which is a different place "
+     + "to go and a different person to ask");
+  ok(body.indexOf("nodeConfirmsTheSignature() === false") < body.indexOf("switch"),
+     "…and the mismatch is answered BEFORE the rung, because at rung «signature» "
+     + "with the node naming somebody else, «sign in» is the one instruction "
+     + "that cannot help");
+
+  // the ladder's first step needs nobody
+  const none = i18n.match(/"ident\.next\.none": "([^"]*)"/);
+  ok(none, "the zero rung has a sentence");
+  ok(/not a login/i.test(none[1]) && /signature/i.test(none[1]),
+     "…and it says the step is a SIGNATURE and not a login: asking somebody to "
+     + "sign in on a node before they have said who they claim to be says that "
+     + "without that node they do not exist");
+  ok(/offline/i.test(none[1]),
+     "…and that it needs nobody, which is the property that makes the ladder a "
+     + "ladder rather than a gate");
+
+  // and no refusal may still carry the contradicting instruction
+  for (const key of ["study.restricted", "members.joinNeedsIdentity"]) {
+    const found = i18n.match(new RegExp(`"${key}": "([^"]*)"`));
+    ok(found, `${key} exists`);
+    ok(!/sign in/i.test(found[1]),
+       `${key} states the FACT and leaves the instruction to the rung — it used `
+       + "to end «Sign in and open it again», which on a clean profile named a "
+       + "step the chip was not offering");
+  }
 }
 
 console.log("\n7 · the bar keeps NOTHING from the round trip");

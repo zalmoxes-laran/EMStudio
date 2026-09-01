@@ -13,6 +13,9 @@ import {
 } from "./container";
 import type { Conflict, ProjectVersion } from "./container";
 import {
+  nameIsUsable, roomIdFromName, seedOpsForContainer, whatBlocksTheGesture,
+} from "./rooms";
+import {
   addToShelf,
   clearShelf,
   effectiveResidency,
@@ -62,6 +65,7 @@ import {
   forgetIdentity,
   knownIdentities,
   MockIdentityProvider,
+  sameSignature,
   publishGate,
   useIdentity,
   verifyCurrentIdentity,
@@ -2423,7 +2427,9 @@ function applyCanvasView(v: ViewKind): void {
       // `nodeFetch` has already tried a refresh by the time we are here, so this
       // is «there is no session» and the remedy is a signature.
       : dtcNeighbourhood.status === "unauthorised"
-      ? t("dtc.signIn", { name: baseName(dtcNeighbourhood.path) })
+      // …and the remedy is whatever rung this session is actually on: on a clean
+      // profile that is a signature, not a login
+      ? `${t("dtc.signIn", { name: baseName(dtcNeighbourhood.path) })} ${nextRungInvitation()}`
       : dtcNeighbourhood.status === "failed"
       // the NODE's own sentence, carried through: a 403 and a 502 send somebody
       // to two different places, and «could not load» sends them nowhere
@@ -2694,7 +2700,7 @@ async function openStudyFromLink(link: StudyLink): Promise<void> {
       return;   // navigating; the page comes back with the study still on it
     }
     studyFailed(t("study.restricted", { what: link.study ?? link.url }),
-                t("study.restrictedWhy"));
+                `${t("study.restrictedWhy")} ${nextRungInvitation()}`);
     return;
   }
   if (!answer.ok) {
@@ -3880,8 +3886,10 @@ async function acceptPendingInvite(): Promise<void> {
     hubToken = window.prompt(t("hub.tokenPrompt")) || null;
   }
   if (!hubToken) {
-    logWarn(t("members.joinNeedsIdentity"));
-    toast(t("members.joinNeedsIdentity"));
+    // the same rule as the study's refusal: name the gesture this session HAS
+    const why = `${t("members.joinNeedsIdentity")} ${nextRungInvitation()}`;
+    logWarn(why);
+    toast(why);
     return;
   }
   try {
@@ -3946,6 +3954,237 @@ function renderHubRoster(): void {
  * `op_result` that says `stale` becomes awareness rather than an error, and
  * presence is a roster nobody can turn into a lock.
  */
+/**
+ * THE TWO GESTURES EMStudio LACKED: create a room, and put this file on it.
+ *
+ * Design note `EM_design_aprire-entrare-creare.md`: not modes but three verbs —
+ * APRI (a file, yours, on your disk), ENTRA (a room, the graph is already
+ * there), CREA (a room, empty or carrying the container in your hands). Whoever
+ * creates it is its owner: the ownership comes from the gesture and not from a
+ * form.
+ *
+ * NO SERVER-ADDRESS FIELD, and the note is explicit that drawing one means you
+ * got lost: EMStudio web is served BY the node, so `servingNode()` already knows,
+ * and the desktop learns it from the link.
+ */
+
+/** The document waiting to be seated on a table it does not know about yet. */
+let seedingRoom: { room: string; container: Record<string, unknown> } | null = null;
+
+/** One field, and the verb it is for. Reuses the modal the sidecar warning uses
+ *  rather than a second idea of what a dialog looks like. */
+function askRoomName(seeding: boolean): Promise<string | null> {
+  return new Promise((resolve) => {
+    const modal = document.createElement("div");
+    modal.className = "modal";
+    const card = document.createElement("div");
+    card.className = "modal-card";
+    card.innerHTML =
+      `<div class="modal-head"><span>${
+        seeding ? t("room.bringHead") : t("room.createHead")}</span></div>` +
+      `<div class="modal-body">` +
+      `<p><input id="room-name" type="text" maxlength="120" autocomplete="off" ` +
+      `placeholder="${t("room.namePlaceholder")}" style="width:100%"></p>` +
+      `<p class="settings-hint">${
+        seeding ? t("room.bringWhy") : t("room.createWhy")}</p>` +
+      `</div>` +
+      `<div class="modal-foot">` +
+      `<button data-a="cancel">${t("common.cancel")}</button>` +
+      `<button data-a="ok" class="primary">${
+        seeding ? t("room.bringDo") : t("room.createDo")}</button>` +
+      `</div>`;
+    modal.appendChild(card);
+    const field = () => card.querySelector("#room-name") as HTMLInputElement;
+    const finish = (value: string | null): void => {
+      modal.remove();
+      document.removeEventListener("keydown", onKey, true);
+      resolve(value);
+    };
+    const accept = (): void => {
+      const name = field().value.trim();
+      // A NAME OF ONLY PUNCTUATION derives an empty id. The front door falls back
+      // to `room-<timestamp>`; here we ask again, because this room becomes the
+      // live copy of the document on screen and being sent to work in
+      // `room-lz4f9k` is worse than one more keystroke.
+      if (!nameIsUsable(name)) { field().focus(); return; }
+      finish(name);
+    };
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === "Escape") { e.stopPropagation(); finish(null); }
+      if (e.key === "Enter" && document.activeElement === field()) {
+        e.stopPropagation(); accept();
+      }
+    };
+    card.querySelector('[data-a="cancel"]')!
+      .addEventListener("click", () => finish(null));
+    card.querySelector('[data-a="ok"]')!.addEventListener("click", accept);
+    document.addEventListener("keydown", onKey, true);
+    document.body.appendChild(modal);
+    field().focus();
+  });
+}
+
+/**
+ * Create a room on the node that served this page, and optionally seat the open
+ * container on it.
+ *
+ * THE LADDER FIRST, AND NOT A FORM. Creating a room writes an ACL naming its
+ * owner, so the node has to know who that is — `POST /v1/rooms` answers 401 for
+ * exactly that reason. When a rung is missing the gesture does what the CHIP
+ * would do, which is the point: one ladder, not a second login prompt bolted to
+ * a menu item.
+ */
+async function createRoomHere(seed: boolean): Promise<void> {
+  // THE CHEAP, LOCAL, CERTAIN REFUSAL FIRST. Measured in the browser: with a
+  // declared-but-unconfirmed signature and no document open, this sent the
+  // person through a whole sign-in against the realm — and would have greeted
+  // them on the way back with «there is no graph open to put on a table».
+  // A round trip through an identity provider to learn something that was true
+  // before it started.
+  if (seed && !store) { toast(t("room.bringNeedsDocument")); return; }
+
+  const blocked = whatBlocksTheGesture(Boolean(currentIdentity()), Boolean(hubToken));
+  if (blocked) {
+    toast(nextRungInvitation());
+    identityChipClicked();          // declare a signature, or sign in — its rung
+    return;
+  }
+
+  const name = await askRoomName(seed);
+  if (!name) return;
+  const roomId = roomIdFromName(name);
+  const server = servingNode();
+
+  // CAPTURED BEFORE CONNECTING, and the order is the whole repair. Measured on
+  // the dev stack: a room created a second ago still SENDS a snapshot — a
+  // container holding one empty graph — so joining it would call
+  // `loadContainerDocument` with nothing in it and the document on screen would
+  // be gone. Same class as the bug STEP 4 fixed in the other direction: the
+  // snapshot arriving after the re-send overwrote it.
+  const container = seed ? shelfContainerDoc() : null;
+
+  let created: Record<string, unknown>;
+  try {
+    const answer = await fetch(`${server}/v1/rooms`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json",
+                 Authorization: `Bearer ${hubToken}` },
+      body: JSON.stringify({ room_id: roomId, title: name }),
+    });
+    if (!answer.ok) {
+      // THE NODE'S OWN SENTENCE. A 409 («already declared») and a 401 send
+      // somebody to two different places, and «could not create» sends them
+      // nowhere. The collision is the server's to refuse — asking first and
+      // creating second is two answers where one is authoritative.
+      const detail = await answer.json().catch(() => null) as { detail?: string } | null;
+      toast(t("room.createFailed", { status: String(answer.status),
+                                     why: String(detail?.detail ?? "") }));
+      logWarn(`room: ${server} refused «${roomId}» — ${answer.status} `
+              + String(detail?.detail ?? ""));
+      return;
+    }
+    created = await answer.json() as Record<string, unknown>;
+  } catch (exc) {
+    toast(t("room.createUnreachable", { server, why: String(exc) }));
+    return;
+  }
+  logInfo(`room: created «${roomId}» on ${server} as `
+          + String(created.your_role ?? "?"));
+
+  if (seed && container) {
+    // …AND ONLY INTO A ROOM THE NODE SAYS IS EMPTY. `POST /v1/rooms` refuses a
+    // room already DECLARED, but it will happily declare one that exists in the
+    // snapshot store and was never declared — and seeding that would write our
+    // file over somebody's undeclared work. The node hands us the answer in the
+    // same response: `missing_refs` naming this room's own container means it has
+    // nothing to lose.
+    const missing = (created.missing_refs as string[] | undefined) ?? [];
+    const refs = (created.container_refs as string[] | undefined) ?? [roomId];
+    const empty = refs.every((ref) => missing.includes(ref));
+    if (!empty) {
+      toast(t("room.alreadyHasAGraph", { room: name }));
+      logWarn(`room: «${roomId}» already holds a graph — not seeding it`);
+      return;                       // the room exists; it is not seeded
+    }
+    seedingRoom = { room: roomId, container };
+  }
+  connectToHub(server, roomId, hubToken);
+}
+
+/**
+ * Seat the captured container on the table, once the room has spoken.
+ *
+ * WHY OPERATIONS AND NOT A NEW ENDPOINT: the relay has five idempotent verbs and
+ * a merge that arbitrates them. A seeding endpoint would be a sixth way for a
+ * graph to enter a room, writing straight past the convergence rules — and the
+ * first time it raced a connected client the room would have two truths and no
+ * ledger saying which came first.
+ *
+ * WHY IT ALSO LOADS LOCALLY: the relay does NOT echo the sender its own work
+ * (`ws.py::_fanout(skip=origin)` — «a client must not have to recognise its own
+ * work coming back»), and it had just handed us an empty snapshot. So the room
+ * gets the operations and this screen gets the document, and both are the same
+ * container — read once, from the copy taken before the socket opened.
+ *
+ * ONE GRAPH, DECLARED. An operation does not name a graph, so a room holds one
+ * (P4.2). A project with several graphs cannot be seated whole, and this says so
+ * rather than dropping the rest quietly.
+ */
+function seatSeededContainer(room: string): boolean {
+  if (!seedingRoom || seedingRoom.room !== room) return false;
+  const { container } = seedingRoom;
+  seedingRoom = null;
+
+  loadContainerDocument(container, `${room} (hub)`);
+  const graphs = (container.graphs ?? {}) as Record<string, { nodes?: unknown[] }>;
+  const ids = Object.keys(graphs);
+  const activeId = String(container.active_graph_id ?? ids[0] ?? "");
+  const active = graphs[activeId] as
+    { nodes?: EmNode[]; edges?: Array<Record<string, unknown>> } | undefined;
+
+  const ops = seedOpsForContainer(active ?? null);
+  for (const op of ops) {
+    hubUnconfirmed.set(hubKey(op), op);
+    sync.sendCommand(wireEnvelope("op", op as unknown as Record<string, unknown>));
+  }
+  logInfo(`room: seated ${ops.length} operation(s) on «${room}»`);
+
+  // …AND ASK THE ROOM TO WRITE IT, because seating is not keeping.
+  //
+  // MEASURED on the dev stack, both halves, because the first version of this
+  // comment asserted more than was true and the measurement corrected it:
+  //
+  //   seeded WITHOUT a save → a new connection sees (206, 526). The room holds
+  //     it in memory, so nothing looks wrong. And on disk: `<room>.acl.json`
+  //     and `<room>.room.json`, and NO `<room>.em.json`.
+  //   seeded WITH a save    → the same (206, 526), and 304 066 bytes of
+  //     `<room>.em.json` beside them.
+  //
+  // So the failure this line prevents is not visible in the session that made
+  // it: it is the RESTART. `ws.py` writes the snapshot in exactly one place
+  // (`request_save`) and a disconnect deliberately does not — a relay that saved
+  // on every parting would rewrite a room whenever somebody's wifi dropped.
+  //
+  // Which makes an unsaved seeding the worst shape a failure can have: the
+  // sentence below says the live copy is the node's, the screen agrees, the
+  // person closes the file believing it is kept, and the node loses it the next
+  // time it comes up. The save is what makes the sentence true before it is said.
+  sync.sendRequestSave();
+  logInfo(`room: asked «${room}» to write its snapshot`);
+
+  // THE SENTENCE THE PROMPT ASKS FOR, at the moment it becomes true: from here
+  // the live copy is the node's. Saying it later, or not at all, is how somebody
+  // keeps editing what they think is their file.
+  toast(t("room.livesOnTheNodeNow", { room }));
+  if (ids.length > 1) {
+    // not a silent truncation: a room holds one graph, and this project had more
+    toast(t("room.onlyOneGraph", { n: String(ids.length - 1), graph: activeId }));
+    logWarn(`room: «${room}» holds ONE graph — ${ids.length - 1} other(s) `
+            + "stayed in the local project");
+  }
+  return true;
+}
+
 function connectToHub(url: string, room: string, token: string | null): void {
   sync.connectHub({ url, room, token, since: hubBase }, {
     // In a room a peer's selection is AWARENESS: it marks their node, it does
@@ -3959,6 +4198,16 @@ function connectToHub(url: string, room: string, token: string | null): void {
     },
     onOp: (op) => hubApplyRemote(op as unknown as Record<string, unknown>),
     onSnapshot: (doc) => {
+      // SEEDING COMES FIRST, because this snapshot is the thing it has to
+      // survive. A room created a second ago still sends one — a container with
+      // one empty graph — and loading it here would blank the document the
+      // gesture exists to seat. So a room we are seeding never loads it: it
+      // loads the copy taken before the socket opened, and sends the operations.
+      if (seatSeededContainer(room)) {
+        info.textContent = t("hub.joined", { room });
+        renderStorage();
+        return;
+      }
       // A ROOM is a project: the relay sends a CONTAINER (P4.2 decided a room =
       // one em.json), so it is opened by the door that reads containers. Handing
       // it to the single-graph loader was the first thing that broke here — the
@@ -6370,6 +6619,13 @@ document.getElementById("btn-mode-sidecar")?.addEventListener("click", () => {
 document.getElementById("btn-open-other")
   ?.addEventListener("click", () => void openRoomElsewhere());
 
+// THE THREE VERBS, all reachable from the same place (design note): APRI is
+// File ▸ Open, and these are the two that were missing.
+document.getElementById("btn-create-room")
+  ?.addEventListener("click", () => void createRoomHere(false));
+document.getElementById("btn-bring-into-room")
+  ?.addEventListener("click", () => void createRoomHere(true));
+
 document.getElementById("btn-mode-hub")?.addEventListener("click", () => {
   const s = getSettings().sync;
   if (!s.hubUrl || !s.hubRoom) {
@@ -6754,11 +7010,45 @@ let nodeIdentity: { orcid: string | null; name: string | null;
  *  property (fallback continuity, D2.2), pretending to still be verified is not. */
 let nodeIdentityLost: string | null = null;
 
+/**
+ * Did the node confirm THE SAME signature this session declared?
+ *
+ * The middle rung is defined by that word: «un nodo ha validato **quella stessa
+ * firma**» — the login does not give you another name, it confirms the one you
+ * had already written. So when the node names somebody ELSE, this session has not
+ * reached Identità, whatever the sign-in did.
+ *
+ * Found by measuring, on E.D.'s own screen (5 September, incognito): declared
+ * `0000-0002-5065-7970` «Emanuel Demetrescu», signed in, and the node confirmed
+ * `0000-0002-1825-0097` «Dev User» — the dev realm's user. The chip showed
+ * «Emanuel Demetrescu · em.localhost:8443», i.e. presented the DECLARED name as
+ * confirmed by a node that had confirmed a different person. That is the same
+ * species as a tick beside a name nobody checked, one rung higher up: an
+ * assertion nobody made.
+ *
+ * Compared ONLY when both sides are ORCIDs. A realm without ORCID answers with a
+ * `preferred_username` or a `sub`, and refusing the rung there would break every
+ * such deployment — so the answer is `null` («cannot tell»), the session keeps
+ * the rung it had, and the tooltip says the confirmation is of the session rather
+ * than of the iD.
+ */
+function nodeConfirmsTheSignature(): boolean | null {
+  // the comparison itself lives in `identity.ts` (`sameSignature`), where it is a
+  // question about two identities rather than about a piece of chrome — and where
+  // `check-identity.mjs` can put real values to it
+  return sameSignature(currentIdentity()?.orcid, nodeIdentity?.orcid);
+}
+
 /** Which rung this session is on. Read, never stored: every input is already
  *  somewhere else, and a copy would be the thing that goes stale. */
 type IdentityRung = "none" | "signature" | "identity" | "presence";
 
 function identityRung(): IdentityRung {
+  // A node that confirmed SOMEBODY ELSE has not confirmed you. Neither rung above
+  // Firma is reached — presence contains identity, so it goes with it.
+  if (nodeConfirmsTheSignature() === false) {
+    return currentIdentity() ? "signature" : "none";
+  }
   if (sync.room && sync.connected && nodeIdentity) return "presence";
   if (nodeIdentity) return "identity";
   return currentIdentity() ? "signature" : "none";
@@ -6778,7 +7068,34 @@ function servingNode(): string {
   return window.location.origin;
 }
 
+/**
+ * What a sign-in this page started needs when it comes back — ONE entry, written
+ * by `signIntoNode` and read by `completeNodeSignIn`, and therefore identical for
+ * the two rounds. Silent and interactive are two ways of asking the same
+ * question, so there is one return path.
+ *
+ * `returnTo` used to ride ONLY in the PKCE record (`oidc.ts`). That worked, and
+ * it was a single point of failure: the record is deleted on read and read
+ * exactly once, so any return that arrives without it — a second tab, a cleared
+ * storage, a code that comes back where none was started — reaches
+ * `restoreAfterSignIn(undefined)`, and a bare `/em/studio/` is all that is left,
+ * because the realm's return REPLACED the query. That is the shape of the
+ * failure E.D. measured after a real password: chip full, bar clean, study gone.
+ *
+ * So the address is remembered here too, beside the server. Still not in `state`
+ * — that travels through the IdP and into its logs, and a study link may carry a
+ * `?token=`. `oidc.ts` keeps carrying it as well, for callers that use it
+ * directly; this is the copy that does not depend on the record surviving.
+ */
 const SIGNIN_KEY = "emstudio.signin";
+
+interface PendingNodeSignIn {
+  server: string;
+  /** where the person was, with whatever they were doing still on it */
+  returnTo?: string;
+  /** `prompt=none` — a failed one is not a failure, and must not be shouted */
+  silent?: boolean;
+}
 
 /**
  * Sign in against the node this page came from — OIDC + PKCE, token in memory.
@@ -6791,15 +7108,21 @@ const SIGNIN_KEY = "emstudio.signin";
  */
 async function signIntoNode(opts: { silent?: boolean } = {}): Promise<boolean> {
   const server = servingNode();
+  logInfo(`identity: signing in against ${server}`
+          + (opts.silent ? " (silently)" : ""));
   const config = await loadAuthConfig(server);
   if (!config) {
+    logWarn(`identity: ${server} offers no sign-in — nothing to do`);
     // a node running open: there is nobody to be, and saying so beats a button
     // that appears to do nothing
     if (!opts.silent) toast(t("ident.nodeOpen", { server }));
     return false;
   }
+  const pending: PendingNodeSignIn = {
+    server, returnTo: window.location.href, silent: opts.silent || undefined,
+  };
   try {
-    sessionStorage.setItem(SIGNIN_KEY, JSON.stringify({ server }));
+    sessionStorage.setItem(SIGNIN_KEY, JSON.stringify(pending));
   } catch { /* a private window: the sign-in simply cannot be resumed */ }
   handoffAuth = config;
   // THE ADDRESS COMES WITH US. Somebody who signs in from a page that was
@@ -6816,11 +7139,11 @@ async function signIntoNode(opts: { silent?: boolean } = {}): Promise<boolean> {
 
 /** Finish a sign-in this page started, if it did. Returns whether it was ours. */
 async function completeNodeSignIn(): Promise<boolean> {
-  let remembered: { server?: string } | null = null;
+  let remembered: PendingNodeSignIn | null = null;
   try {
     const raw = sessionStorage.getItem(SIGNIN_KEY);
     sessionStorage.removeItem(SIGNIN_KEY);
-    remembered = raw ? JSON.parse(raw) : null;
+    remembered = raw ? JSON.parse(raw) as PendingNodeSignIn : null;
   } catch { remembered = null; }
   if (!remembered?.server) return false;
   const config = await loadAuthConfig(remembered.server);
@@ -6829,14 +7152,19 @@ async function completeNodeSignIn(): Promise<boolean> {
     : { ok: false, error: "that node no longer offers a sign-in" };
   clearHandoffFromLocation();
   // …and the address comes back BEFORE anything reads it, so whatever this page
-  // was doing is on the URL again.
-  restoreAfterSignIn(result.returnTo);
+  // was doing is on the URL again. OUR copy first: it is the one that does not
+  // depend on the PKCE record having survived, and the two are the same value
+  // written by the same line.
+  restoreAfterSignIn(remembered.returnTo ?? result.returnTo);
+  // a SILENT round is one we started silently — read from our own record, so it
+  // is known even when `completeSignIn` could not tell us
+  const wasSilent = remembered.silent || result.silent;
   if (!result.ok || !result.token) {
     // A SILENT attempt that failed is not a failure. `prompt=none` answering
     // `login_required` is the expected reply when there is no session, and
     // shouting about it would be an error message for something that went
     // exactly as designed — the study fetch will now ask properly.
-    if (result.silent) {
+    if (wasSilent) {
       logInfo(`identity: no session on this node yet (${result.error})`);
       return true;
     }
@@ -6847,8 +7175,36 @@ async function completeNodeSignIn(): Promise<boolean> {
   hubToken = result.token;
   hubRefreshToken = result.refresh_token || null;
   hubAuthConfig = config ?? null;
+  // A MARKER BELONGS TO THE IDENTITY THAT FAILED, and this session has just
+  // stopped being that identity.
+  //
+  // Without this line the human sequence fails on its second half, which is the
+  // half everybody does: open the study → refused, no session → sign in →
+  // reopen in the same tab → refused AGAIN, and this time without even trying,
+  // because the marker from the first attempt is still there. Measured in
+  // Chrome with a live SSO session: `markers: 1`, chip still `◌`, study refused
+  // — with a session sitting right there that would have carried it.
+  forgetSilentSignInAttempts();
   await askNodeWhoIAm(remembered.server);
   return true;
+}
+
+/** Every silent-attempt marker in this tab, dropped.
+ *
+ *  Called when a sign-in SUCCEEDS — silently or interactively — because the
+ *  markers exist to prevent a redirect loop for one identity, and the identity
+ *  has changed. Keyed per URL, so they are enumerated rather than remembered in
+ *  a list nobody would keep in step. */
+function forgetSilentSignInAttempts(): void {
+  try {
+    const stale = Object.keys(sessionStorage)
+      .filter((key) => key.startsWith("emstudio.silenttry:"));
+    for (const key of stale) sessionStorage.removeItem(key);
+    if (stale.length) {
+      logInfo(`identity: signed in — ${stale.length} refused attempt(s) `
+              + "may be retried");
+    }
+  } catch { /* no sessionStorage: there were no markers to begin with */ }
 }
 
 /**
@@ -6979,9 +7335,20 @@ function refreshIdentityChip(): void {
   chip.classList.add("id-signature");
   if (nodeIdentityLost) chip.classList.add("id-lost");
   chip.textContent = `◌ ${who}`;
-  chip.title = nodeIdentityLost
-    ? t("ident.lostTitle", { who, why: nodeIdentityLost })
-    : t("ident.signatureTitle", { who, orcid: identity?.orcid ?? "" });
+  // A DEGRADATION IS SAID, and «the node knows you as somebody else» is one. A
+  // chip that simply stayed dashed would be right and mute, and a mute
+  // degradation is the failure that looks like a success.
+  const mismatch = nodeConfirmsTheSignature() === false;
+  if (mismatch) chip.classList.add("id-lost");
+  chip.title = mismatch
+    ? t("ident.otherPerson", {
+        who, node: nodeIdentity!.node,
+        them: nodeIdentity!.name || nodeIdentity!.orcid || "",
+        orcid: nodeIdentity!.orcid ?? "",
+      })
+    : nodeIdentityLost
+      ? t("ident.lostTitle", { who, why: nodeIdentityLost })
+      : t("ident.signatureTitle", { who, orcid: identity?.orcid ?? "" });
 }
 
 /**
@@ -6992,12 +7359,60 @@ function refreshIdentityChip(): void {
  * identity → join a room
  * presence → what your role is there, and how to leave
  */
+/**
+ * The sentence a refusal ends with — and it must name THE GESTURE THIS SESSION
+ * ACTUALLY HAS, which is the chip's next rung and nothing else.
+ *
+ * Found by E.D. on a clean profile: a restricted study refused with «Sign in and
+ * open it again», the chip at the bottom left read «no author», and his question
+ * was «dove devo cliccare?». Both sentences were defensible on their own and
+ * together they described two roads where there is one: the chip's next rung at
+ * an empty signature is not a login, it is DECLARING A SIGNATURE — which needs
+ * nobody, works offline, and is the step that makes the ladder a ladder.
+ *
+ * Asking somebody to sign in on a node before they have said who they claim to
+ * be says that without that node they do not exist. That is false, and it
+ * contradicts the continuity this ladder exists to show.
+ *
+ * The third case is the one the static sentence got wrong in the other
+ * direction: a session the node has ALREADY confirmed, refused anyway, is not an
+ * identity problem at all — it is a permission it was not given, and sending
+ * that person to sign in again sends them to the wrong place entirely.
+ */
+function nextRungInvitation(): string {
+  if (nodeConfirmsTheSignature() === false) {
+    // signing in again would return the same other person
+    return t("ident.otherPersonNext", {
+      them: nodeIdentity!.name || nodeIdentity!.orcid || "",
+    });
+  }
+  switch (identityRung()) {
+    case "none":      return t("ident.next.none");
+    case "signature": return t("ident.next.signature");
+    default:          return t("ident.next.confirmed");
+  }
+}
+
 function identityChipClicked(): void {
+  // INSTRUMENTED, and it stays: this chip is the one control whose job is to
+  // move a session up a rung, and a click that quietly does nothing is exactly
+  // the failure that is impossible to tell from a click that did something.
+  logInfo(`identity: chip clicked at rung «${identityRung()}»`);
   switch (identityRung()) {
     case "none":
       openSettings("settings-sect-identity");
       return;
     case "signature":
+      // …unless the node has already answered with a different person: signing in
+      // again would produce the same answer. What has to change is one of the two
+      // names, and both live in Settings ▸ Identity.
+      if (nodeConfirmsTheSignature() === false) {
+        toast(t("ident.otherPersonNext", {
+          them: nodeIdentity!.name || nodeIdentity!.orcid || "",
+        }));
+        openSettings("settings-sect-identity");
+        return;
+      }
       void signIntoNode();
       return;
     case "identity":
