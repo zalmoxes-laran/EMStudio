@@ -1,56 +1,59 @@
-// MEMBERS · executable check of src/members.ts — the owner's face on StratiGraph Server's
-// user management.
+// MEMBERS · executable check of src/members.ts — what is LEFT after the panel
+// was retired, and a fence so it does not come back.
 //
 //   node scripts/check-members.mjs
 //
-// The policy is StratiGraph Server's (`app/access.py`: four ordered roles, the owner
-// untouchable by an admin) and the node's tests hold it. What is checked HERE is
-// what a client can get wrong on its own, and each case is a way the panel could
-// lie to somebody:
+// ## What this file used to check, and what happened to it
 //
-//   * a VIEWER shown controls it does not have would send an action the server
-//     refuses — so a viewer sees the roster and nothing to click, and the refusal
-//     the server gives for the roster itself is SHOWN rather than swallowed;
-//   * an OWNER with a role dropdown on their own row invites a demotion the
-//     server will refuse: the row says "transfer only" instead;
-//   * an invite token rendered twice is a token somebody thinks they can come
-//     back for — the server keeps a digest, so it is shown once, with a link;
-//   * and every action is one call to the room's OWN endpoint, with the verb the
-//     server declares (a role is a PUT, a revocation a DELETE): a panel that
-//     invented a verb would fail at the first click.
+// It checked a PANEL: a viewer shown no controls, an owner's row with no role
+// dropdown, an invite token rendered once, a role as a PUT and a revocation as a
+// DELETE. Twenty-nine assertions about a surface that was retired on 8 September
+// 2026 — `EM_design_condividi-e-firma.md`, Regola IV: «EMStudio, il chatbot e il
+// catalogo ci portano un link, mai una copia del pannello».
 //
-// `fetch` is stubbed, so this runs with no node and no network: what is measured
-// is the panel's behaviour, not StratiGraph Server's — the server has its own suite and
-// four live smokes.
+// Those assertions are NOT deleted. They became the test of absence below, with
+// the reason beside each one, so whoever puts the panel back has to read why it
+// left before their diff goes green. Two measured reasons:
+//
+//   1. it showed HALF THE ACL. Teams can hold a role in a room since
+//      7 September (`PUT /v1/rooms/{id}/groups/{gid}`) and this surface never
+//      drew one. A panel that tells you it is showing half is still a panel
+//      somebody decides an access on;
+//   2. it minted a DIFFERENT invite link. `inviteUrl()` pointed at this build;
+//      the node's panel takes the link from the door the node declares. Two
+//      addresses for one door, and which one an invited person got depended on
+//      where the inviter was standing. Not an incompleteness — an ambiguity.
+//
+// ## What is checked now
+//
+// The half that STAYS, because it is the other end of the same gesture: minting
+// and managing were the copy, RECEIVING an invite lives here by construction —
+// a link arrives at an app, and the app has to honour it. So: `POST /v1/join`
+// with the identity attached, and the server's own sentence when it refuses.
+//
+// Plus the link that replaced the panel, and the fence.
+//
+// `fetch` is stubbed, so this runs with no node and no network.
 import assert from "node:assert/strict";
 import * as esbuild from "esbuild";
-import { parseHTML } from "linkedom";
 
 const SRC = new URL("../src/", import.meta.url).pathname;
 
-// The DOM first: `members.ts` builds elements at import-independent call time,
-// but `inviteUrl` reads `window.location`, so both have to exist before the
-// module is evaluated.
-const { window, document } = parseHTML(
-  "<html><body><div id='panel'></div></body></html>");
-globalThis.window = window;
-globalThis.document = document;
-// `navigator` is a getter on modern Node's globalThis: defining it is the only
-// way in, and the panel only ever touches `navigator.clipboard?.writeText`.
-Object.defineProperty(globalThis, "navigator", {
-  configurable: true,
-  value: { clipboard: { writeText() {} } },
-});
-setLocation("https://emstudio.example/app/?x=1");
-
-/** The panel reads `window.location` for the invite URL, so the test drives it
- *  the way a browser would — by navigating, not by patching a string. */
+// NO DOM ANY MORE, and its absence is the measure: `members.ts` no longer
+// builds an element. What is left reads `window.location` (`pendingJoin`) and
+// calls `fetch` (`acceptInvite`) — so a location and a stub, and nothing that
+// pretends to be a browser.
+//
+// (`linkedom`, `navigator.clipboard` and the `settle()` helper went with the
+// panel: 40 lines of scaffolding for a surface that is not there.)
 function setLocation(href) {
-  window.location = new URL(href);
+  const url = new URL(href);
   Object.defineProperty(globalThis, "location", {
-    configurable: true, value: window.location,
+    configurable: true, value: url,
   });
+  globalThis.window = { location: url };
 }
+setLocation("https://emstudio.example/app/?x=1");
 
 // ── the stub: every call recorded, every answer scripted ────────────────────
 const calls = [];
@@ -98,196 +101,9 @@ const ACCESS = { base: "https://node.example/em", room: "cantiere", token: "T" }
 const ANNA = "0000-0002-1825-0097";
 const BRUNO = "0000-0001-5109-3700";
 
-const roster = (yourRole, members = [{ orcid: BRUNO, role: "editor" }]) => ({
-  room: "cantiere", owner: ANNA, members, your_role: yourRole,
-});
-
-function panel() {
-  const root = document.getElementById("panel");
-  root.innerHTML = "";
-  return root;
-}
-
-const notes = [];
-const hooks = (role) => ({
-  access: ACCESS, role,
-  note: (message, kind) => notes.push({ message, kind }),
-});
-
-/** The panel renders asynchronously (it fetches first); wait for the DOM to
- *  settle rather than guessing a timeout. */
-async function settle() {
-  for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 0));
-}
-
-// ── 1 · the API surface is the server's, verb for verb ──────────────────────
-{
-  calls.length = 0;
-  script = {
-    "GET /em/v1/rooms/cantiere/members": reply(200, roster("owner")),
-    "PUT /em/v1/rooms/cantiere/members/0000-0001-5109-3700":
-      reply(200, roster("owner")),
-    "DELETE /em/v1/rooms/cantiere/members/0000-0001-5109-3700":
-      reply(200, roster("owner", [])),
-    "GET /em/v1/rooms/cantiere/invites": reply(200, []),
-    "POST /em/v1/rooms/cantiere/invites":
-      reply(201, { token_id: "abc", role: "editor", state: "live", uses: 0,
-                   max_uses: null, accepted_by: [], expires_at: null,
-                   token: "abc.secret" }),
-    "DELETE /em/v1/rooms/cantiere/invites/abc":
-      reply(200, { token_id: "abc", role: "editor", state: "revoked", uses: 0,
-                   max_uses: null, accepted_by: [], expires_at: null }),
-  };
-
-  await M.fetchRoster(ACCESS);
-  eq(calls.at(-1), { method: "GET", path: "/em/v1/rooms/cantiere/members",
-                     body: null, auth: "Bearer T" },
-     "api · the roster is a GET on the room's own endpoint, with the token");
-
-  await M.setRole(ACCESS, BRUNO, "viewer");
-  eq(calls.at(-1).method, "PUT", "api · a role is a PUT (state it, idempotently)");
-  eq(calls.at(-1).body, { role: "viewer" }, "api · …with the role in the body");
-
-  await M.revokeMember(ACCESS, BRUNO);
-  eq(calls.at(-1).method, "DELETE", "api · a revocation is a DELETE");
-
-  const minted = await M.mintInvite(ACCESS, "editor");
-  eq(calls.at(-1).method, "POST", "api · minting a link is a POST");
-  eq(minted.token, "abc.secret", "api · …and the token comes back once");
-
-  await M.revokeInvite(ACCESS, "abc");
-  eq(calls.at(-1).path, "/em/v1/rooms/cantiere/invites/abc",
-     "api · revoking a link names the token id, never the secret");
-}
-
-// ── 2 · the refusal is the server's sentence ───────────────────────────────
-{
-  script = { "GET /em/v1/rooms/cantiere/members":
-    reply(403, { detail: "reading the member list needs admin or owner" }) };
-  let message = "";
-  try {
-    await M.fetchRoster(ACCESS);
-  } catch (error) {
-    message = error.message;
-  }
-  eq(message, "reading the member list needs admin or owner",
-     "refusal · the server's words, not a status code");
-
-  const root = panel();
-  M.renderMembersPanel(root, hooks("viewer"));
-  await settle();
-  ok(root.textContent.includes("needs admin or owner"),
-     "refusal · …and the panel SHOWS them instead of an empty box");
-  eq(root.querySelectorAll("select").length, 0,
-     "refusal · nothing to click when there is nothing to act on");
-}
-
-// ── 3 · a viewer sees the roster and no controls ───────────────────────────
-{
-  script = {
-    "GET /em/v1/rooms/cantiere/members": reply(200, roster("viewer")),
-    "GET /em/v1/rooms/cantiere/invites": reply(200, []),
-  };
-  const root = panel();
-  M.renderMembersPanel(root, hooks("viewer"));
-  await settle();
-  ok(root.textContent.includes(BRUNO), "viewer · the roster is visible");
-  eq(root.querySelectorAll("select").length, 0,
-     "viewer · no role dropdown anywhere");
-  eq(root.querySelectorAll("button").length, 0,
-     "viewer · and no buttons: not even a revoke it could not do");
-  ok(/admin or owner/.test(root.textContent),
-     "viewer · …and it SAYS why, rather than looking broken");
-  eq(M.canManage("viewer"), false, "viewer · canManage says so too");
-  eq(M.canManage("editor"), false, "editor · an editor is not a manager either");
-}
-
-// ── 4 · an admin acts, and the owner's row is not a dropdown ───────────────
-{
-  script = {
-    "GET /em/v1/rooms/cantiere/members": reply(200, roster("admin")),
-    "GET /em/v1/rooms/cantiere/invites": reply(200, []),
-    "PUT /em/v1/rooms/cantiere/members/0000-0001-5109-3700":
-      reply(200, roster("admin", [{ orcid: BRUNO, role: "viewer" }])),
-  };
-  const root = panel();
-  M.renderMembersPanel(root, hooks("admin"));
-  await settle();
-  const rows = [...root.querySelectorAll("tr")];
-  const ownerRow = rows.find((r) => r.textContent.includes(ANNA));
-  const otherRow = rows.find((r) => r.textContent.includes(BRUNO));
-  ok(ownerRow && otherRow, "admin · both rows are drawn");
-  eq(ownerRow.querySelectorAll("select").length, 0,
-     "admin · the OWNER's row has no role dropdown (a transfer is not a list "
-     + "action, and the server would refuse it)");
-  ok(/transfer only/i.test(ownerRow.textContent),
-     "admin · …and it says what the owner's row is instead");
-  eq(otherRow.querySelectorAll("select").length, 1,
-     "admin · the other row does have one");
-  ok([...otherRow.querySelectorAll("option")].map((o) => o.value)
-     .every((v) => v !== "owner"),
-     "admin · and `owner` is not among the choices");
-
-  calls.length = 0;
-  const select = otherRow.querySelector("select");
-  // linkedom's <select> has a getter-only `value`; a browser sets it by marking
-  // the option selected, which is what the panel's `select.value` then reads.
-  for (const option of select.querySelectorAll("option")) {
-    if (option.value === "viewer") option.setAttribute("selected", "");
-    else option.removeAttribute("selected");
-  }
-  select.dispatchEvent(new window.Event("change", { bubbles: true }));
-  await settle();
-  const put = calls.find((c) => c.method === "PUT");
-  ok(put && put.body.role === "viewer",
-     "admin · changing the dropdown sends exactly one PUT with the new role");
-}
-
-// ── 5 · the invite link: once, and as a URL somebody can follow ────────────
-{
-  script = {
-    "GET /em/v1/rooms/cantiere/members": reply(200, roster("owner")),
-    "GET /em/v1/rooms/cantiere/invites": reply(200, []),
-    "POST /em/v1/rooms/cantiere/invites":
-      reply(201, { token_id: "abc", role: "editor", state: "live", uses: 0,
-                   max_uses: null, accepted_by: [], expires_at: null,
-                   token: "abc.secret" }),
-  };
-  notes.length = 0;
-  const root = panel();
-  M.renderMembersPanel(root, hooks("owner"));
-  await settle();
-  const mint = [...root.querySelectorAll("button")]
-    .find((b) => /new link|nuovo link/i.test(b.textContent));
-  ok(mint, "invite · the owner has a way to mint one");
-  mint.dispatchEvent(new window.Event("click", { bubbles: true }));
-  await settle();
-  const shown = root.querySelector(".mem-token code")?.textContent ?? "";
-  ok(shown.includes("join=abc.secret"),
-     `invite · what is shown is a LINK carrying the token (${shown.slice(0, 60)})`);
-  ok(shown.startsWith("https://emstudio.example/app/"),
-     "invite · …pointing at this build of EMStudio, so following it lands in the app");
-  // The CLAIM, not a word I hoped was in it: the sentence has to tell somebody
-  // that this is their only chance to copy it. (First run matched on "once",
-  // which is in the code and not in the string — the check was testing my
-  // memory of the message.)
-  ok(notes.some((n) => /shown again|digest|rimostrarlo|impronta/i.test(n.message)),
-     `invite · and the panel says it cannot be shown again `
-     + `(${notes.map((n) => n.message).join(" | ").slice(0, 90)})`);
-
-  // the URL helper, and its inverse
-  const url = M.inviteUrl("tok.secret", "cantiere");
-  ok(url.includes("join=tok.secret") && url.includes("room=cantiere"),
-     "invite · the link carries the token and the room in the QUERY (a fragment "
-     + "would not survive an identity provider's redirect)");
-  setLocation(url);
-  eq(M.pendingJoin(), { token: "tok.secret", room: "cantiere" },
-     "invite · …and the app reads them back when the link opens it");
-  setLocation("https://emstudio.example/app/");
-  eq(M.pendingJoin(), null, "invite · no token in the URL: nothing pending");
-}
-
-// ── 6 · joining is a POST /v1/join, and needs the identity ─────────────────
+// ── 1 · THE HALF THAT STAYS · joining is a POST /v1/join, with an identity ──
+//
+// Unchanged from the day it was written, because this round is what stayed.
 {
   calls.length = 0;
   script = { "POST /em/v1/join": reply(200, { room_id: "cantiere",
@@ -311,5 +127,130 @@ async function settle() {
   ok(/who you are/.test(refusal),
      "join · without an identity the server's 401 sentence is what surfaces");
 }
+
+// ── 2 · THE LINK that replaced it, from every app and from the chip ──────────
+//
+// Design note `EM_design_condividi-e-firma.md`, Regola IV: «il pannello sta sul
+// nodo che ospita la stanza… EMStudio, il chatbot e il catalogo ci portano un
+// link, mai una copia del pannello». The ACL and the owner live on the node;
+// a second panel here is a second thing to keep in step, and the one that goes
+// stale is whichever nobody is looking at.
+//
+// AND THIS FILE'S SUBJECT *IS* THE COPY, which is why the checks live here: the
+// panel `members.ts` draws predates the node's, and it reads people only.
+{
+  const { readFileSync } = await import("node:fs");
+  const main = readFileSync(new URL("../src/main.ts", import.meta.url).pathname, "utf8");
+  const members = readFileSync(new URL("../src/members.ts", import.meta.url).pathname, "utf8");
+  const html = readFileSync(new URL("../index.html", import.meta.url).pathname, "utf8");
+
+  ok(/id="btn-share-room"/.test(html), "there is a «Share this room…» entry");
+  ok(/function shareThisRoom\(\): void/.test(main),
+     "…and it is a function, not a panel");
+
+  const body = main.slice(main.indexOf("function shareThisRoom"));
+  const end = body.indexOf("\n}\n");
+  const share = body.slice(0, end);
+
+  // A LINK, and nothing else: no fetch, no roster, no ACL read.
+  ok(/window\.open\(/.test(share), "it opens the node's page");
+  ok(!/fetch\(|request\(|renderMembersPanel/.test(share),
+     "…and reads nothing itself: a copy of the panel would start here, with one "
+     + "fetch that seemed harmless");
+  ok(/\/work\/\?room=/.test(share),
+     "…at the stable per-room address the node serves (`/work/?room=<id>`), "
+     + "which is the one the note asks every app to bring a link to");
+
+  // NO FIELD FOR A SERVER ADDRESS — the note says drawing one means you got lost
+  ok(/getSettings\(\)\.sync\.hubUrl/.test(share),
+     "the server is the one this session is connected to");
+  ok(!/localhost|https?:\/\//.test(share),
+     "…and no address is written into the code: a URL spelled here is a URL that "
+     + "goes wrong on the first node whose EMStudio lives somewhere else");
+
+  // …AND THE ENTRY IS GOVERNED BY THE SAME FACT AS ITS SIBLING
+  const reflect = main.slice(main.indexOf("function reflectRoundTrip"));
+  const reflectBody = reflect.slice(0, reflect.indexOf("\n}\n"));
+  ok(/const inRoom = /.test(reflectBody) &&
+     /btn-share-room[\s\S]{0,80}!inRoom/.test(reflectBody),
+     "one `inRoom` governs both menu entries — two of them would drift, and the "
+     + "one that drifts offers to share a table that is not there");
+
+  // …AND THE CHIP LEADS THERE TOO, which is why the click was repointed rather
+  // than deleted: the roster chip is where somebody already looks to see who is
+  // in the room, and taking the click away would have retired an affordance
+  // people use in order to retire a panel.
+  ok(/chip\.addEventListener\("click", \(\) => shareThisRoom\(\)\)/.test(main),
+     "the roster chip opens the NODE's panel — one road, not two");
+  ok(!/openMembersPanel\(\)/.test(main.replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, "")),
+     "…and the local one is not mounted from anywhere");
+
+}
+
+// ── 3 · THE FENCE · the panel does not come back without somebody reading why ─
+//
+// The twenty-nine assertions that used to check the panel are here, turned
+// inside out. Each one names what it forbade and why the surface left: a diff
+// that re-adds one of these goes red, and the message is the argument.
+{
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync(new URL("../src/members.ts", import.meta.url).pathname,
+                              "utf8");
+  const code = source.replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, "");
+
+  // 1 · THE WRITES. Each was one call to the room's own endpoint with the verb
+  // the server declares. They still are — on the node's panel, which also draws
+  // the team grants this one never did.
+  for (const [symbol, why] of [
+    ["setRole", "granting a role"],
+    ["revokeMember", "revoking one"],
+    ["mintInvite", "minting an invitation"],
+    ["revokeInvite", "revoking one"],
+    ["fetchInvites", "listing them"],
+    ["fetchRoster", "reading the roster"],
+  ]) {
+    ok(!new RegExp(`export (function|const) ${symbol}\\b`).test(code),
+       `${symbol} · ${why} belongs to the node's panel (/em/work/?room=<id>), `
+       + "which shows people AND teams. This file showed people only, so it was "
+       + "retired — see the header. If you are bringing it back, the question to "
+       + "answer first is what happens to the team grants.");
+  }
+
+  // 2 · THE PANEL ITSELF, and the types that existed only to draw it.
+  for (const symbol of ["renderMembersPanel", "PanelHooks", "ASSIGNABLE",
+                        "Roster", "MemberRow", "InviteRow"]) {
+    ok(!new RegExp(`export (function|const|interface|type) ${symbol}\\b`).test(code),
+       `${symbol} · the panel is on the NODE. Regola IV: every app brings a `
+       + "link, never a copy — a copy is a second thing to keep in step, and the "
+       + "one that goes stale is whichever nobody is looking at.");
+  }
+  ok(!/document\.createElement|innerHTML/.test(code),
+     "and nothing here builds a DOM at all: this module is a client of two "
+     + "endpoints now, not a surface");
+
+  // 3 · THE SECOND INVITE LINK, which was the sharper of the two reasons.
+  ok(!/export function inviteUrl/.test(code),
+     "inviteUrl · it pointed at THIS build while the node's panel takes the "
+     + "link from the door the node declares (`/v1/rooms/{id}/open`). Two "
+     + "addresses for one door, and which one an invited person received "
+     + "depended on where the inviter was standing. That is not an "
+     + "incompleteness, it is an ambiguity — and the reason the retirement was "
+     + "worth doing today rather than later.");
+  ok(!/searchParams\.set\("join"/.test(code),
+     "…and no second form of the invite link is coined here by another name");
+
+  // 4 · WHAT MUST STAY, because a fence around everything would take the other
+  // half with it: receiving is the other end of the same gesture.
+  for (const symbol of ["pendingJoin", "acceptInvite", "canManage"]) {
+    ok(new RegExp(`export function ${symbol}\\b`).test(code),
+       `${symbol} · this half stays: a link arrives at an app, and the app has `
+       + "to be able to honour it. Removing it would land an invitation in a "
+       + "program that cannot redeem it — a worse defect than the one repaired.");
+  }
+  ok(/export interface RoomAccess/.test(code) && /async function call</.test(code),
+     "…and `RoomAccess` with the private `call`, because `acceptInvite` is built "
+     + "on them — measured, not assumed: they have no other caller");
+}
+
 
 console.log(`members: ${checks} checks passed`);

@@ -98,7 +98,7 @@ import {
 } from "./connectors";
 import type { ConnectorVersions } from "./connectors";
 import { narrativesIn, renderNarrativeView, VIEW_TYPE_MIME } from "./narrative";
-import { acceptInvite, canManage, pendingJoin, renderMembersPanel } from "./members";
+import { acceptInvite, canManage, pendingJoin } from "./members";
 
 import {
   addEpochChapter,
@@ -3523,62 +3523,23 @@ function replayAfterResync(): void {
 }
 
 /**
- * MEMBERS · the owner's face on StratiGraph Server's user management.
+ * MEMBERS · the panel is on the NODE, and this is the way to it.
  *
- * The panel itself is `members.ts` and it holds no rule: every action is one call
- * to the room's own endpoints, and the sentence the server answers with is what
- * the user reads. This is the wiring — where it opens from, and who is asking.
+ * `openMembersPanel` and `membersAccess` lived here to mount `members.ts`'s panel
+ * — the copy Regola IV of `EM_design_condividi-e-firma.md` forbids — and went
+ * with it on 8 September 2026. What replaced them is not a smaller panel: it is
+ * the link, which already existed (`shareThisRoom`, added the same week) and is
+ * now the only road.
  *
- * It opens from the roster chip, which is where somebody already looks to see who
- * is in the room. A viewer clicking it gets the panel too: the server refuses the
- * member list to anybody below admin, and the panel shows that refusal rather
- * than a blank box (a membership list is a list of the people working on an
- * unpublished study — that is the rule, and it is StratiGraph Server's).
+ * THE ROSTER CHIP STILL OPENS IT, and that is the whole reason this comment is
+ * here rather than the wiring simply being deleted: the chip is where somebody
+ * already looks to see who is in the room, and taking away the click would have
+ * retired an affordance people use in order to retire a panel. So the click
+ * leads to the node's panel instead — same gesture, one place.
+ *
+ * The chip itself is LIVE PRESENCE (`hub.ts`, `crdt.ts`): who is at the table
+ * right now, which is a different question from who MAY be, and it stays here.
  */
-function membersAccess(): { base: string; room: string; token: string | null } | null {
-  if (!sync.room) return null;
-  return { base: getSettings().sync.hubUrl, room: sync.room, token: hubToken };
-}
-
-function openMembersPanel(): void {
-  const access = membersAccess();
-  if (!access) {
-    toast(t("members.noRoom"));
-    return;
-  }
-  let panel = document.getElementById("members-panel");
-  if (panel) {
-    // second click closes: the chip is a toggle, like every other footer chip
-    panel.remove();
-    return;
-  }
-  panel = document.createElement("div");
-  panel.id = "members-panel";
-  panel.className = "members-panel";
-  const head = document.createElement("div");
-  head.className = "mem-titlebar";
-  const title = document.createElement("span");
-  title.textContent = t("members.title");
-  const close = document.createElement("button");
-  close.className = "mem-ghost";
-  close.textContent = "✕";
-  close.addEventListener("click", () => panel?.remove());
-  head.append(title, close);
-  const body = document.createElement("div");
-  body.className = "mem-body";
-  panel.append(head, body);
-  document.body.appendChild(panel);
-
-  renderMembersPanel(body, {
-    access,
-    role: hostInfo.role ?? null,
-    note: (message, kind) => {
-      if (kind === "bad") logWarn(message);
-      else logInfo(message);
-      toast(message);
-    },
-  });
-}
 
 /**
  * An invite link opened this app: `?join=<token>`.
@@ -3697,6 +3658,44 @@ function joinFromHandoff(handoff: { server: string; room: string },
  * on the server, measured against every consumer's copy of it. And it carries no
  * token — the other surface signs itself in.
  */
+/**
+ * CONDIVIDI — open the NODE's panel for the room this session is in.
+ *
+ * A LINK, and this function is the whole of it. Design note
+ * `EM_design_condividi-e-firma.md`, Regola IV: «il pannello sta sul nodo che
+ * ospita la stanza… EMStudio, il chatbot e il catalogo ci portano un link, mai
+ * una copia del pannello.» The ACL and the owner live there; a second panel here
+ * would be a second thing to keep in step, and the one that goes stale is
+ * whichever nobody is looking at.
+ *
+ * NO FIELD FOR A SERVER ADDRESS, and the note says drawing one means you got
+ * lost: the room's server is the one this session is connected to, and the
+ * desktop learned it from the link it was opened with.
+ *
+ * DECLARED, because it is the honest half of this gesture: `src/members.ts`
+ * already draws a members-and-invites panel inside EMStudio — 420 lines, and
+ * measured on 8 September 2026 it contains the word «group» exactly ZERO times,
+ * so now that a team can hold a role in a room it shows half the ACL. That is
+ * the note's argument, measured: a copy drifts. Removing it is not this change's
+ * to make, so the panel says so instead — see `members.ts`.
+ */
+function shareThisRoom(): void {
+  const base = getSettings().sync.hubUrl;
+  const room = sync.room || getSettings().sync.hubRoom;
+  if (!base || !room || !sync.connected) {
+    toast(t("share.noRoom"));
+    return;
+  }
+  // The node's API lives at `<base>/v1`; its faces are its siblings, and the
+  // work page is where the panel is (sharing is part of *lavorare*, not a fifth
+  // verb). Derived from the base this session is already talking to, so nothing
+  // is written down twice.
+  const node = base.replace(/\/+$/, "");
+  const url = `${node}/work/?room=${encodeURIComponent(room)}`;
+  logInfo(`share: opening ${url}`);
+  window.open(url, "_blank", "noopener");
+}
+
 async function openRoomElsewhere(): Promise<void> {
   const settings = getSettings();
   const base = settings.sync.hubUrl;
@@ -3754,6 +3753,11 @@ function reflectRoundTrip(): void {
   if (!button) return;
   const inRoom = Boolean(sync.room && sync.connected);
   button.classList.toggle("hidden", !inRoom);
+  // …AND «CONDIVIDI», by the same condition and in the same place, because it is
+  // the same fact that governs both: there is nothing to share when there is no
+  // table. One `inRoom` for two menu entries — two of them would drift.
+  document.getElementById("btn-share-room")
+    ?.classList.toggle("hidden", !inRoom);
   if (!inRoom) return;
   const target = otherSurface();
   const label = button.querySelector("span") || button;
@@ -3877,7 +3881,21 @@ async function acceptPendingInvite(): Promise<void> {
   const settings = getSettings();
   const base = settings.sync.hubUrl;
   if (!base) {
-    logWarn(t("members.joinNoHub"));
+    // SAID, not only logged — measured on 8 September 2026 and it was the mute
+    // one of the two guards: an invitation that arrived with no node configured
+    // wrote a line in a panel nobody had open and did nothing else. Somebody
+    // clicks a link, EMStudio opens, and nothing happens. Its sibling below
+    // («no identity») already toasted; this one did not.
+    //
+    // AND THE RETIREMENT REMOVED THE SOURCE OF THIS CASE, which is why it turned
+    // up now: a link minted by the NODE's panel carries `server=` (it is the
+    // node's own door plus the token), so the handoff configures the hub before
+    // this runs. The link the retired `inviteUrl()` minted carried only `join`
+    // and `room` — no server — so it was exactly the one that landed here. The
+    // guard stays for a hand-typed or a legacy link.
+    const why = t("members.joinNoHub");
+    logWarn(why);
+    toast(why);
     return;
   }
   if (!hubToken) {
@@ -3932,7 +3950,9 @@ function renderHubRoster(): void {
     // wired ONCE: `renderHubRoster` runs on every presence frame, and a listener
     // added per frame is a click that fires eleven times by the afternoon
     chip.dataset.membersWired = "1";
-    chip.addEventListener("click", () => openMembersPanel());
+    // …AND IT LEADS TO THE NODE'S PANEL, not to a copy: one place, and a link
+    // from every app. Same function the Mode menu uses, so there is one road.
+    chip.addEventListener("click", () => shareThisRoom());
   }
   chip.classList.toggle("can-manage", canManage(hostInfo.role));
   chip.title = [
@@ -6618,6 +6638,8 @@ document.getElementById("btn-mode-sidecar")?.addEventListener("click", () => {
 // disk is a token that leaks.
 document.getElementById("btn-open-other")
   ?.addEventListener("click", () => void openRoomElsewhere());
+document.getElementById("btn-share-room")
+  ?.addEventListener("click", () => shareThisRoom());
 
 // THE THREE VERBS, all reachable from the same place (design note): APRI is
 // File ▸ Open, and these are the two that were missing.

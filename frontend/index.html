@@ -135,6 +135,14 @@
                a new join. Hidden until there IS a room, because an "open the
                other editor" that opens nothing is worse than an absent one. -->
           <button id="btn-open-other" class="hidden" data-i18n-title="roundtrip.title"><span data-i18n="roundtrip.item">Open this room in…</span></button>
+          <!-- CONDIVIDI · A LINK, and deliberately not a panel.
+               Design note `EM_design_condividi-e-firma.md`, Regola IV: the panel
+               lives on the node that hosts the room — that is where the ACL and
+               the owner are, and there is no second copy to keep in step. Every
+               app brings a link here; none brings a copy.
+               Hidden outside a room for the same reason as the line above: there
+               is nothing to share when there is no table. -->
+          <button id="btn-share-room" class="hidden" data-i18n-title="share.openTitle"><span data-i18n="share.open">Share this room…</span></button>
         </div>
       </div>
       <!-- WIN7 · Tools: the one-shot instruments. They are not editors and never
