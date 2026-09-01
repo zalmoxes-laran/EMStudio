@@ -198,6 +198,12 @@ console.log("\n6 · THE RING IS BROKEN — the link survives the login");
   ok(/sessionStorage\.setItem\(`emstudio\.silenttry:/.test(main),
      "…and the marker is in sessionStorage, because it has to survive the very "
      + "redirect it guards against — a flag in memory would loop for ever");
+  // …and the sign-in has to CHANGE something, or it was a sign-in for nothing
+  ok(/const bearer = link\.token \|\| hubToken/.test(main),
+     "the study fetch sends the SESSION's token when the link carries none. "
+     + "Without it the silent attempt worked, the chip firmed up to «confirmed» "
+     + "and the study still said «is not published» — measured, and it made "
+     + "everything else look broken");
   ok(/if \(result\.silent\)/.test(main),
      "a silent attempt that finds no session is NOT reported as a failure: "
      + "`login_required` is the expected answer, and shouting about it would be "

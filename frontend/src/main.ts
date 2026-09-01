@@ -2651,8 +2651,21 @@ async function openStudyFromLink(link: StudyLink): Promise<void> {
   info.textContent = t("study.opening", { what: link.study ?? link.url });
   let answer: Response;
   try {
+    // THE SESSION'S TOKEN, when the link does not carry one of its own.
+    //
+    // This was the missing half of the ring, and it made the rest look broken:
+    // the silent attempt worked, the chip firmed up to «confirmed by
+    // em.localhost», and the study STILL said «is not published» — because the
+    // fetch only ever sent `?token=` from the URL and never the token the
+    // sign-in had just put in memory. Signing in that changes nothing about what
+    // you can then open is a sign-in for nothing.
+    //
+    // The link's own token wins when there is one: it was minted for this
+    // document (the Catalog's reading page hands one out), and it is more
+    // specific than the session.
+    const bearer = link.token || hubToken;
     answer = await fetch(link.url, {
-      headers: link.token ? { Authorization: `Bearer ${link.token}` } : {},
+      headers: bearer ? { Authorization: `Bearer ${bearer}` } : {},
     });
   } catch (exc) {
     // The one that bit: a cross-origin fetch the browser refuses looks exactly
