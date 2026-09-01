@@ -196,7 +196,18 @@ export function handoffFromLocation(search?: string): Handoff | null {
 export function clearHandoffFromLocation(): void {
   if (typeof window === "undefined") return;
   const url = new URL(window.location.href);
-  for (const key of ["handoff", "server", "room"]) url.searchParams.delete(key);
+  // …and the round trip's OWN leftovers, because this function is called on the
+  // way back from the IdP and used to leave them written in the bar: `?room=`
+  // came off and `code`, `state`, `session_state`, `iss` stayed. The same rule
+  // applied to half the problem — and «the token first» exists precisely to keep
+  // credential-shaped things out of an address that gets copied into chats and
+  // screenshots. A spent code is not a live credential; it still does not belong
+  // there.
+  for (const key of ["handoff", "server", "room",
+                     "code", "state", "session_state", "iss",
+                     "error", "error_description"]) {
+    url.searchParams.delete(key);
+  }
   window.history.replaceState({}, "", url.toString());
 }
 

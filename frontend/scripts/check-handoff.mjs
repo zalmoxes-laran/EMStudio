@@ -151,6 +151,20 @@ ok(H.handoffFromLocation("?join=abc&room=r") === null,
 ok(H.handoffFromLocation("?room=r") === null,
    "a room with no server is not a handoff");
 
+console.log("\n6b · the bar keeps nothing from the round trip");
+{
+  const src = readFileSync(join(SRC, "handoff.ts"), "utf8");
+  const at = src.indexOf("export function clearHandoffFromLocation");
+  const body = src.slice(at, src.indexOf("\n}", at));
+  for (const key of ["code", "state", "session_state", "iss"]) {
+    ok(body.includes(`"${key}"`),
+       `\`${key}\` is taken off the address bar on the way back from the IdP`);
+  }
+  ok(body.includes('"room"'),
+     "…along with the handoff's own parameters, which is what it already did — "
+     + "the same rule, applied to the whole problem instead of half of it");
+}
+
 console.log("\n7 · the app signs in ITSELF — the link cannot");
 const main = readFileSync(join(SRC, "main.ts"), "utf8");
 ok(/function\s+joinFromHandoff/.test(main),
