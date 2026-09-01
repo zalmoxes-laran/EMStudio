@@ -45,51 +45,117 @@ if [[ ! -d "$ROOT/frontend/node_modules" ]]; then
 fi
 
 # --- launch, with a single trap that stops both children ------------------
+#
+# JOB CONTROL ON, and it is a bug fix rather than a flourish. `pids` used to
+# collect the pid of `(cd frontend && npm run dev) &` — the SUBSHELL — while the
+# process actually holding :5173 is the `node` that `npm` spawns two levels down.
+# So Ctrl-C killed the bridge (whose pid was the real one) and Vite survived,
+# kept the port, and the next `./dev.sh` slid onto 5174 — where Caddy's
+# `/em/studio/` route, which points at 5173, finds nothing. Measured on E.D.'s
+# machine as TWO Vite processes from this checkout, one of them orphaned.
+#
+# `set -m` gives every background job a process group of its own, so
+# `kill -- -PID` reaches the whole tree instead of the shell that started it.
+set -m
+
 pids=()
 cleanup() {
   echo ""
   echo "🛑  Stopping EMStudio dev stack…"
   for pid in "${pids[@]}"; do
-    kill "$pid" 2>/dev/null || true
+    # the GROUP first (npm → node → vite), then the pid alone as a fallback for
+    # a job that is not a group leader
+    kill -- -"$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+  done
+  # …and then say whether it worked, because a stop that half-worked is what
+  # started this: the next launch behaves differently and nothing said why.
+  sleep 0.4
+  for port in "$BRIDGE_PORT" 5173; do
+    if [[ -n "$(lsof -ti tcp:"$port" -sTCP:LISTEN 2>/dev/null || true)" ]]; then
+      echo "⚠️  :$port is still held — run ./dev.sh again and it will say by whom."
+    fi
   done
 }
 trap cleanup EXIT INT TERM
 
-# --- free a stale bridge holding the port ---------------------------------
-# A previous run killed with SIGKILL, or a sidecar re-parented to launchd, can
-# outlive its shell and keep :$BRIDGE_PORT. The bridge then dies on EADDRINUSE
-# and the app just says "transformer not reachable". Clear it here so every
-# ./dev.sh starts clean without a manual kill.
+# --- free a stale listener — BY IDENTITY, never by port alone --------------
 #
-# Guarded: only if lsof exists, only the LISTENER on that port, and `|| true`
-# throughout so `set -e` does not abort when there is nothing to kill.
+# A previous run killed with SIGKILL, or a job whose group was not stopped, can
+# outlive its shell and keep a port. The bridge then dies on EADDRINUSE and the
+# app just says "transformer not reachable"; Vite slides to 5174 and the node's
+# `/em/studio/` route finds nothing. So both ports are cleared here.
+#
+# AND THIS IS WHERE THE 4 SEPTEMBER LESSON LIVES. `lsof -ti:5173 | xargs kill -9`
+# killed the **Colima port forwarder** that afternoon, and with it the VM and
+# every container on this machine — because on a port there may be a FORWARD
+# rather than the process you are picturing. So: look at `ps -o args=` first, kill
+# only what is recognisably ours (this checkout's path in the command line), and
+# whatever is not recognised is NAMED and left alive. A name is more use than a
+# shot.
+#
+# `PROTECTED` is belt and braces: those never get killed even if a path match
+# somehow said otherwise.
+PROTECTED='ssh|limactl|colima|qemu|docker|com\.docker|vpnkit|lima-guestagent'
+
+#: the pids of THIS checkout's dev processes, recognised by their command line
+ours() {
+  ps -Ao pid=,args= | awk -v root="$ROOT" '
+    $0 ~ /em_bridge\.py/ && index($0, root) { print $1; next }
+    $0 ~ /(vite|npm.* run dev|node .*vite)/ && index($0, root) { print $1 }
+  '
+}
+
 free_port() {
   local port="$1"
   command -v lsof >/dev/null 2>&1 || return 0
-  local pids
-  pids="$(lsof -ti tcp:"$port" -sTCP:LISTEN 2>/dev/null || true)"
-  [[ -z "$pids" ]] && return 0
-  echo "⚠️  freeing stale listener on :$port (pid $(echo "$pids" | tr '\n' ' '))"
-  kill $pids 2>/dev/null || true
-  # give it a moment to release the socket, then insist once
+  local holders mine
+  holders="$(lsof -ti tcp:"$port" -sTCP:LISTEN 2>/dev/null || true)"
+  [[ -z "$holders" ]] && return 0
+  mine=" $(ours | tr '\n' ' ') "
+  local pid args stopped=""
+  for pid in $holders; do
+    args="$(ps -o args= -p "$pid" 2>/dev/null | cut -c1-90)"
+    if [[ "$args" =~ $PROTECTED ]]; then
+      echo "🛡   :$port is held by pid $pid, which I will NOT touch — it looks like"
+      echo "     a port forward or a VM: $args"
+      continue
+    fi
+    if [[ " $mine " != *" $pid "* ]]; then
+      echo "🛡   :$port is held by pid $pid, which is not from this checkout:"
+      echo "     $args"
+      echo "     Left running. Stop it yourself if it really should go: kill $pid"
+      continue
+    fi
+    echo "⚠️  freeing our own stale listener on :$port (pid $pid)"
+    kill "$pid" 2>/dev/null || true
+    stopped="$stopped $pid"
+  done
+  [[ -z "$stopped" ]] && return 0
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     sleep 0.2
     [[ -z "$(lsof -ti tcp:"$port" -sTCP:LISTEN 2>/dev/null || true)" ]] && return 0
   done
-  kill -9 $pids 2>/dev/null || true
+  # insist ONCE, and still only on what we recognised as ours
+  kill -9 $stopped 2>/dev/null || true
   sleep 0.3
 }
 free_port "$BRIDGE_PORT"
+free_port 5173
 
 echo "🐍  Bridge:   http://localhost:$BRIDGE_PORT  (GraphML export)"
 "$PY" "$ROOT/tools/em_bridge.py" --port "$BRIDGE_PORT" --s3dgraphy "$S3DGRAPHY_SRC" &
 pids+=("$!")
 
-echo "⚡  Frontend: http://localhost:5173  (Vite dev, live reload)"
-(cd "$ROOT/frontend" && npm run dev) &
+echo "⚡  Frontend: http://localhost:5173/em/studio/  (Vite dev, live reload)"
+# `npm --prefix` rather than a subshell: one layer fewer between this shell and
+# the node that holds the port, and with `set -m` the group kill in `cleanup`
+# reaches it. The base is `/em/studio/` (frontend/vite.config.ts) because the
+# editor is reached through the node's own origin — `/` redirects there.
+npm --prefix "$ROOT/frontend" run dev &
 pids+=("$!")
 
 echo ""
-echo "✅  EMStudio dev stack up. Open http://localhost:5173, load an .em.json,"
+echo "✅  EMStudio dev stack up. Open http://localhost:5173/em/studio/ (or, through"
+echo "    the node, https://em.localhost:8443/em/studio/), load an .em.json,"
 echo "    click GraphML to export via the bridge. Ctrl-C to stop both."
 wait

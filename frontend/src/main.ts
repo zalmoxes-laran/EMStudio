@@ -110,6 +110,7 @@ import {
   logError,
   logInfo,
   logWarn,
+  logEntries,
   onLogChange,
   renderLogPanel,
   versionBanner,
@@ -791,6 +792,11 @@ type SessionMode = "standalone" | "sidecar" | "hub";
 let sessionMode: SessionMode = "standalone";
 
 function setModeIndicator(mode: SessionMode | boolean): void {
+  // …and the identity chip with it: PRESENCE is «in a room, with a role», so the
+  // rung changes exactly when the connection does. One call here rather than a
+  // second listener, because the mode indicator already runs on every change of
+  // the fact the chip's top rung is about.
+  queueMicrotask(refreshIdentityChip);
   // back-compat with the boolean callers (the sync status handler)
   const m: SessionMode =
     typeof mode === "boolean" ? (mode ? "sidecar" : "standalone") : mode;
@@ -2637,6 +2643,11 @@ function activateSlot(id: string, opts: { rebuildOnly?: boolean } = {}): void {
  * logs in instead of filing a bug.
  */
 async function openStudyFromLink(link: StudyLink): Promise<void> {
+  // INSTRUMENTED, and it stays. A study that does not arrive is invisible
+  // otherwise — which is exactly how the second one was lost for a day — and
+  // these three lines are the first thing anybody asks a session that went
+  // wrong. `logInfo` writes to the Log window whether or not it is open.
+  logInfo(`study: opening ${link.study ?? link.url} from ${link.url}`);
   info.textContent = t("study.opening", { what: link.study ?? link.url });
   let answer: Response;
   try {
@@ -2652,6 +2663,23 @@ async function openStudyFromLink(link: StudyLink): Promise<void> {
     return;
   }
   if (answer.status === 401 || answer.status === 403) {
+    // ONE SILENT ATTEMPT BEFORE ASKING.
+    //
+    // «Sign in and open it again» was the right sentence and an impossible
+    // instruction: the sign-in replaced the query string, so the study was lost,
+    // and re-opening from the door made a fresh tab with no session. A ring that
+    // closes only if you know a trick nobody can guess.
+    //
+    // So: if this node has an OIDC at all, ask the realm ONCE with
+    // `prompt=none`. A session that is already alive answers with a code and
+    // nobody is shown anything — the study simply opens. No session answers
+    // `login_required`, we come back here, and THEN the sentence is honest.
+    //
+    // Once, keyed by the URL: a redirect loop is worse than a refusal, and the
+    // marker outlives the redirect because `sessionStorage` does.
+    if (!silentSignInTried(link.url) && await trySilentSignIn(link.url)) {
+      return;   // navigating; the page comes back with the study still on it
+    }
     studyFailed(t("study.restricted", { what: link.study ?? link.url }),
                 t("study.restrictedWhy"));
     return;
@@ -2672,7 +2700,58 @@ async function openStudyFromLink(link: StudyLink): Promise<void> {
   // not re-fetch the study over whatever has been done since, and a credential
   // in an address bar outlives the tab it was useful in.
   clearStudyLinkFromLocation();
+  logInfo(`study: loaded ${link.study ?? link.url} — the workspace now holds `
+          + `${emtree.slots.length} slot(s), active `
+          + `${emtree.active() ? slotLabel(emtree.active()!) : "(none)"}`);
   logInfo(t("study.opened", { what: link.study ?? link.url }));
+}
+
+/**
+ * The study link on this page's URL, or nothing — and a refusal said out loud.
+ *
+ * `readStudyLink` throws on a link that names two different studies (the 5
+ * September bug: `?emjson=` used to win in silence and the wrong study opened
+ * under the right one's name). Catching it HERE rather than inside the reader is
+ * deliberate: this is the layer that has a canvas to write on, and the reader
+ * has no business deciding how a refusal is presented.
+ */
+function readStudyLinkOrSay(): StudyLink | null {
+  try {
+    return readStudyLink();
+  } catch (error) {
+    const why = String((error as Error).message);
+    // said on the canvas, not only in the log — see `studyFailed`
+    studyFailed(t("study.ambiguous"), why);
+    // …and taken off the address bar, so a reload does not repeat the refusal
+    clearStudyLinkFromLocation();
+    return null;
+  }
+}
+
+/** Has the one silent attempt already been spent for this document?
+ *
+ *  Keyed by the URL and kept in `sessionStorage`, because the marker has to
+ *  survive the very redirect it is guarding against — a flag in memory would be
+ *  gone by the time it mattered, and the loop would be infinite. */
+function silentSignInTried(url: string): boolean {
+  try {
+    return sessionStorage.getItem(`emstudio.silenttry:${url}`) === "1";
+  } catch {
+    // no sessionStorage → no marker → NO ATTEMPT. Refusing to try is the safe
+    // reading: a browser that cannot remember cannot be protected from a loop.
+    return true;
+  }
+}
+
+/** Try once, silently. Answers whether a navigation is under way. */
+async function trySilentSignIn(url: string): Promise<boolean> {
+  try {
+    sessionStorage.setItem(`emstudio.silenttry:${url}`, "1");
+  } catch {
+    return false;
+  }
+  logInfo(`study: ${url} needs a signature — trying the node's session once`);
+  return await signIntoNode({ silent: true });
 }
 
 /** A study that would not open, said where somebody is looking. */
@@ -2680,6 +2759,24 @@ function studyFailed(what: string, why: string): void {
   info.textContent = what;
   toast(what);
   logWarn(`${what} — ${why}`);
+  // …AND ON THE CANVAS, which is where the eye is. The status bar is a line at
+  // the bottom right and a toast is gone in four seconds; what somebody looks at
+  // when nothing opened is the middle of an empty canvas, and it was still
+  // offering «Drop an .em.json file here» as if nothing had been asked for.
+  //
+  // Only when the canvas IS empty: over an open document the status bar and the
+  // toast are right, and painting a failure across a graph somebody is working
+  // on would be the wrong kind of loud.
+  const hint = document.getElementById("drop-hint");
+  if (!hint || emtree.slots.length) return;
+  hint.textContent = "";
+  const said = document.createElement("span");
+  said.className = "dh-failed";
+  said.textContent = what;
+  const detail = document.createElement("span");
+  detail.className = "dh-alt";
+  detail.textContent = why;
+  hint.append(said, detail);
 }
 
 /**
@@ -2762,6 +2859,9 @@ function loadContainerDocument(
   }
 
   // Opening a project: the members become the workspace.
+  logInfo(`container: ${sourceName} — ${parsed.members.length} member(s), `
+          + `active ${parsed.activeGraphId ?? "(none)"}, `
+          + `${emtree.slots.length} slot(s) already open`);
   // P3 · and its version comes with it. Only on a full open: integrating
   // somebody else's project does NOT adopt their revision number — the history
   // being counted is this project's, not theirs.
@@ -3642,6 +3742,37 @@ function reflectRoundTrip(): void {
     ? t("roundtrip.desktop") : t("roundtrip.browser");
 }
 
+/**
+ * WHAT THIS PAGE IS ABOUT, in the one order the three steps can happen in.
+ *
+ * Each step exists because the previous one can rewrite the address bar, and
+ * every version of this that read the link too early lost it:
+ *
+ *  1. **FINISH a sign-in this page started.** The realm's return REPLACES the
+ *     query string, so at this moment the URL says `code`/`state` and not
+ *     `?study=`. Completing the sign-in puts the remembered address back
+ *     (`restoreAfterSignIn`) — which is why nothing may read the link before
+ *     this has awaited.
+ *  2. **READ the link**, which is now on the address again, and say so if it is
+ *     a link that names two studies.
+ *  3. **OPEN it** over the arrangement that the synchronous boot has already
+ *     restored. A link is an explicit request and a restore is a habit, so the
+ *     link wins — and it wins by being LAST, not by its fetch resolving late.
+ *
+ * The room handoff is inside step 1 for the same reason: `followHandoff` is the
+ * one reader of `?code=` on this page, and two readers would race for a code
+ * that can only be spent once.
+ */
+async function bootSession(): Promise<void> {
+  // 1 · the round trip lands, and the address it started from comes back
+  await followHandoff();
+  // 2 · now the link is readable
+  const pendingStudy = readStudyLinkOrSay();
+  if (!pendingStudy) return;
+  // 3 · and it opens over the restored arrangement
+  await openStudyFromLink(pendingStudy);
+}
+
 /** At boot: a handoff on the URL, or a sign-in coming back from one. */
 async function followHandoff(): Promise<void> {
   if (returningFromIdp()) {
@@ -3664,6 +3795,10 @@ async function followHandoff(): Promise<void> {
       return;
     }
   }
+  // …and if the return was not a handoff's, it may be this page's OWN sign-in:
+  // the editor learned to sign itself in (`signIntoNode`), and there is exactly
+  // ONE reader of `?code=` on this page — two would race for a single-use code.
+  if (returningFromIdp() && await completeNodeSignIn()) return;
   const handoff = handoffFromLocation();
   if (!handoff) return;
   clearHandoffFromLocation();
@@ -3843,6 +3978,8 @@ function connectToHub(url: string, room: string, token: string | null): void {
     },
     onHostInfo: (info2) => {
       hostInfo = { ...hostInfo, ...info2 };
+      // the ROLE arrives here, and it is the third rung's second half
+      refreshIdentityChip();
       announceConnector(hostInfo, "cloud");   // a room: the connector is remote
       renderSidecarDetail();
       // …and if it refuses something later, say so out loud (see onDenied).
@@ -6567,25 +6704,299 @@ function identityProvider(): IdentityProvider {
   );
 }
 
-/** The footer chip: who is authoring, and whether they are verified. */
+// ── FIRMA · IDENTITÀ · PRESENZA — three rungs, one chip ────────────────────
+//
+// `EM_design_identita-in-emstudio.md` (5 September 2026). The footer used to say
+// `Standalone · no author`, which is TWO AXES flattened into one — «what name do
+// I sign with» and «which node am I talking to». Harmless while one person edited
+// one file; not harmless from the day a door brought a study into the editor,
+// because a RESTRICTED study answered «Sign in and open it again» and there was
+// no sign-in to follow.
+//
+// Three rungs, each the answer to a different question, contiguous and not the
+// same:
+//
+//   FIRMA     — to whom is what I do attributed. Declared here, offline, and
+//               nobody has checked it. A self-certification, and it is said as
+//               one: NEVER a tick beside an unverified name (a tick nobody
+//               earned is the same species as a preselected licence).
+//   IDENTITÀ  — who a node confirms I am. The node validated THAT SAME
+//               signature: the login does not give you another name, it confirms
+//               the one you had already written.
+//   PRESENZA  — where I am and what I may do there. Contains the rung below it:
+//               a role is given to somebody, not to a declared name.
+//
+// The chip OWNS NOTHING. The identity comes from `/v1/whoami`, the presence from
+// the room this session is in. The node declares, the surface shows.
+
+/** What a node has confirmed about the person at the keyboard, this session.
+ *
+ *  In memory, deliberately — like every token in this codebase. A verification
+ *  that survived a reload would be a claim nobody re-checked. */
+let nodeIdentity: { orcid: string | null; name: string | null;
+                    node: string } | null = null;
+
+/** …and the last thing the node said when asked, when it stopped saying yes.
+ *  Shown, because A SILENT DEGRADATION IS THE LIE: falling back to Firma is a
+ *  property (fallback continuity, D2.2), pretending to still be verified is not. */
+let nodeIdentityLost: string | null = null;
+
+/** Which rung this session is on. Read, never stored: every input is already
+ *  somewhere else, and a copy would be the thing that goes stale. */
+type IdentityRung = "none" | "signature" | "identity" | "presence";
+
+function identityRung(): IdentityRung {
+  if (sync.room && sync.connected && nodeIdentity) return "presence";
+  if (nodeIdentity) return "identity";
+  return currentIdentity() ? "signature" : "none";
+}
+
+/** The node this page was served BY — which is the only node a web build can
+ *  sign in against without being told where to go. */
+function servingNode(): string {
+  const configured = getSettings().sync.hubUrl?.replace(/\/+$/, "");
+  if (configured) return configured;
+  // `/em/studio/` is served by the node at `/em`; the API is one level up from
+  // the page. Derived from the document's own URL, so nothing is written down
+  // twice — the same rule the field assistant's page follows.
+  const path = window.location.pathname;
+  const at = path.indexOf("/studio/");
+  if (at > 0) return `${window.location.origin}${path.slice(0, at)}`;
+  return window.location.origin;
+}
+
+const SIGNIN_KEY = "emstudio.signin";
+
+/**
+ * Sign in against the node this page came from — OIDC + PKCE, token in memory.
+ *
+ * NOT a fourth implementation: `oidc.ts` is the one that exists and this is its
+ * fourth ADOPTION (the front door, the console, the field assistant, and now the
+ * editor). The token never touches localStorage and never appears in a URL; the
+ * only thing remembered across the round trip is WHICH NODE — a place, not a
+ * permission, and the rule the whole handoff contract is built on.
+ */
+async function signIntoNode(opts: { silent?: boolean } = {}): Promise<boolean> {
+  const server = servingNode();
+  const config = await loadAuthConfig(server);
+  if (!config) {
+    // a node running open: there is nobody to be, and saying so beats a button
+    // that appears to do nothing
+    if (!opts.silent) toast(t("ident.nodeOpen", { server }));
+    return false;
+  }
+  try {
+    sessionStorage.setItem(SIGNIN_KEY, JSON.stringify({ server }));
+  } catch { /* a private window: the sign-in simply cannot be resumed */ }
+  handoffAuth = config;
+  // THE ADDRESS COMES WITH US. Somebody who signs in from a page that was
+  // opening something has to come back to that page with the something still on
+  // it — the realm's return replaces the query string, so `?study=` would
+  // otherwise be overwritten by `code`/`state`/`session_state`/`iss`. Measured
+  // in Chrome on 5 September: the study vanished and re-opening it from the door
+  // produced a fresh tab with no session. A ring.
+  window.location.assign(await authorizeUrl(config, {
+    returnTo: window.location.href, silent: opts.silent,
+  }));
+  return true;
+}
+
+/** Finish a sign-in this page started, if it did. Returns whether it was ours. */
+async function completeNodeSignIn(): Promise<boolean> {
+  let remembered: { server?: string } | null = null;
+  try {
+    const raw = sessionStorage.getItem(SIGNIN_KEY);
+    sessionStorage.removeItem(SIGNIN_KEY);
+    remembered = raw ? JSON.parse(raw) : null;
+  } catch { remembered = null; }
+  if (!remembered?.server) return false;
+  const config = await loadAuthConfig(remembered.server);
+  const result = config
+    ? await completeSignIn(config)
+    : { ok: false, error: "that node no longer offers a sign-in" };
+  clearHandoffFromLocation();
+  // …and the address comes back BEFORE anything reads it, so whatever this page
+  // was doing is on the URL again.
+  restoreAfterSignIn(result.returnTo);
+  if (!result.ok || !result.token) {
+    // A SILENT attempt that failed is not a failure. `prompt=none` answering
+    // `login_required` is the expected reply when there is no session, and
+    // shouting about it would be an error message for something that went
+    // exactly as designed — the study fetch will now ask properly.
+    if (result.silent) {
+      logInfo(`identity: no session on this node yet (${result.error})`);
+      return true;
+    }
+    toast(t("ident.signInFailed", { why: String(result.error ?? "") }));
+    logWarn(`identity: sign-in failed — ${result.error}`);
+    return true;
+  }
+  hubToken = result.token;
+  hubRefreshToken = result.refresh_token || null;
+  hubAuthConfig = config ?? null;
+  await askNodeWhoIAm(remembered.server);
+  return true;
+}
+
+/**
+ * Put the address bar back where the sign-in started, and take the round trip's
+ * leftovers off it.
+ *
+ * TWO THINGS, and both were half-done. The query the realm sent back
+ * (`code`, `state`, `session_state`, `iss`) replaced whatever was there, and it
+ * STAYED: `clearStudyLinkFromLocation` took `?study=` off and left a spent
+ * authorization code written in the bar — the same rule applied to one half,
+ * and «the token first» exists precisely to avoid that. A spent code is not a
+ * live credential, but it is a credential-shaped thing in a place that gets
+ * copied into chats and screenshots.
+ */
+function restoreAfterSignIn(returnTo?: string): void {
+  const OIDC_LEFTOVERS = ["code", "state", "session_state", "iss",
+                          "error", "error_description"];
+  try {
+    const back = returnTo ? new URL(returnTo, window.location.href) : null;
+    const url = back ?? new URL(window.location.href);
+    for (const key of OIDC_LEFTOVERS) url.searchParams.delete(key);
+    window.history.replaceState({}, "", url.toString());
+  } catch {
+    // an unparseable remembered address must not cost the sign-in: strip in
+    // place and stay where we are
+    const url = new URL(window.location.href);
+    for (const key of OIDC_LEFTOVERS) url.searchParams.delete(key);
+    window.history.replaceState({}, "", url.toString());
+  }
+}
+
+/**
+ * Ask the node who it thinks we are — `/v1/whoami`, and nothing else.
+ *
+ * This is the whole of the middle rung: the node either confirms the signature
+ * or it does not, and the chip shows which. It does not ask for capabilities
+ * (that is `/v1/admin/whoami`, a different question) and it keeps no list of its
+ * own.
+ */
+async function askNodeWhoIAm(server: string): Promise<void> {
+  const base = server.replace(/\/+$/, "");
+  try {
+    const answer = await fetch(`${base}/v1/whoami`, {
+      headers: hubToken ? { Authorization: `Bearer ${hubToken}` } : {},
+    });
+    if (!answer.ok) {
+      nodeIdentity = null;
+      nodeIdentityLost = `${answer.status}`;
+      logWarn(`identity: ${base} answered ${answer.status} to /v1/whoami`);
+      refreshIdentityChip();
+      return;
+    }
+    const who = await answer.json() as
+      { orcid?: string | null; name?: string | null; enforcing?: boolean };
+    nodeIdentity = {
+      orcid: who.orcid ?? null, name: who.name ?? null,
+      node: new URL(base).host,
+    };
+    nodeIdentityLost = null;
+    logInfo(`identity: ${nodeIdentity.node} confirms `
+            + `${nodeIdentity.orcid ?? nodeIdentity.name ?? "(a session)"}`);
+  } catch (error) {
+    // THE DESCENT IS SAID. The scale is walked in both directions: a node that
+    // stops answering drops this session to Firma, and the chip says the node is
+    // not answering. Work continues — that is the property, not the fault.
+    nodeIdentity = null;
+    nodeIdentityLost = String((error as Error).message);
+    logWarn(`identity: ${base} is not answering — down to Signature`);
+  }
+  refreshIdentityChip();
+}
+
+/**
+ * The footer chip — ONE control, three degrees of solidity.
+ *
+ * Dashed outline → a signature nobody has checked. Solid + the node's name →
+ * confirmed by that node. Solid + the place and the role → present in a room.
+ * One element that grows firmer is what makes the contiguity of the three
+ * readable; two separate badges would tell the story of two systems.
+ *
+ * Clicking always offers THE NEXT RUNG, and never more than the next one.
+ */
 function refreshIdentityChip(): void {
   const chip = document.getElementById("footer-identity");
   if (!chip) return;
   const identity = currentIdentity();
-  if (!identity) {
+  const rung = identityRung();
+  chip.classList.remove("id-signature", "id-identity", "id-presence",
+                        "id-lost", "verified");
+
+  if (rung === "none") {
     chip.textContent = t("identity.none");
     chip.title = t("identity.noneTitle");
-    chip.classList.remove("verified");
     return;
   }
-  const who = identity.name || identity.surname
+
+  const who = identity && (identity.name || identity.surname)
     ? `${identity.name ?? ""} ${identity.surname ?? ""}`.trim()
-    : identity.orcid;
-  chip.textContent = identity.verified ? `✔ ${who}` : `◌ ${who}`;
-  chip.title = identity.verified
-    ? t("identity.chipVerified", { orcid: identity.orcid })
-    : t("identity.chipClaimed", { orcid: identity.orcid });
-  chip.classList.toggle("verified", identity.verified);
+    : (identity?.orcid ?? nodeIdentity?.name ?? nodeIdentity?.orcid ?? "");
+
+  if (rung === "presence") {
+    // the room, and what this session may do in it. `sync.role` when the room
+    // has said; otherwise the place alone — a role we have not been told is not
+    // a role to display.
+    // the role the ROOM resolved, from the host's own `host_info` — never
+    // guessed, and absent rather than invented when the room said nothing (the
+    // chip shows a permission it was told about, and never negotiates one)
+    const said = hostInfo.role ?? null;
+    const role = said ? ` — ${said}` : "";
+    chip.classList.add("id-presence");
+    chip.textContent = `${who} · ${sync.room}${role}`;
+    chip.title = t("ident.presenceTitle", { who, room: String(sync.room),
+                                            node: nodeIdentity!.node });
+    return;
+  }
+
+  if (rung === "identity") {
+    chip.classList.add("id-identity");
+    chip.textContent = `${who} · ${nodeIdentity!.node}`;
+    chip.title = t("ident.identityTitle", { who, node: nodeIdentity!.node });
+    return;
+  }
+
+  // FIRMA. NO TICK — not even when the ORCID's own checksum flow has run: that
+  // is a different claim from «a node confirms this is you», and one mark for
+  // two facts is how the two get confused. The dashed outline is the whole
+  // statement.
+  chip.classList.add("id-signature");
+  if (nodeIdentityLost) chip.classList.add("id-lost");
+  chip.textContent = `◌ ${who}`;
+  chip.title = nodeIdentityLost
+    ? t("ident.lostTitle", { who, why: nodeIdentityLost })
+    : t("ident.signatureTitle", { who, orcid: identity?.orcid ?? "" });
+}
+
+/**
+ * The click: always the NEXT rung, never a menu of everything.
+ *
+ * none → declare a signature (Settings, where the field is)
+ * signature → verify it on the node that served this page
+ * identity → join a room
+ * presence → what your role is there, and how to leave
+ */
+function identityChipClicked(): void {
+  switch (identityRung()) {
+    case "none":
+      openSettings("settings-sect-identity");
+      return;
+    case "signature":
+      void signIntoNode();
+      return;
+    case "identity":
+      toast(t("ident.nextJoin"));
+      openSettings("settings-sect-sync");
+      return;
+    case "presence":
+      toast(t("ident.presenceNow", {
+        room: String(sync.room), role: hostInfo.role ?? "—",
+      }));
+      return;
+  }
 }
 
 /** The Settings section: declare, switch, verify. */
@@ -6911,7 +7322,7 @@ document.getElementById("set-orcid")?.addEventListener("keydown", (e) => {
   if ((e as KeyboardEvent).key === "Enter") declareIdentityFromPanel();
 });
 document.getElementById("footer-identity")?.addEventListener(
-  "click", () => openSettings("settings-sect-identity"));
+  "click", identityChipClicked);
 
 // ── SHELF1 · the wide list's own verbs ──────────────────────────────────────
 restoreShelf();                       // a saved list that vanishes on reload is not saved
@@ -8688,7 +9099,25 @@ function refreshLogPanel(): void {
   if (!panelIsMounted(logpanelEl)) return;
   renderLogPanel(logpanelEl, store?.doc ?? null, EM_VERSION, revealFromWarning);
 }
-onLogChange(refreshLogPanel);
+/** How many log lines are something somebody should be told about.
+ *
+ *  Warnings and errors only — see the note on the tab's badge. */
+function logAttention(): number {
+  return logEntries().filter((e) => e.level !== "info").length;
+}
+
+/** …and the last number the header was drawn with, so a repaint happens when it
+ *  CHANGES rather than on every line. A header that re-rendered on each info
+ *  line would flicker through a sync burst, and the badge is not worth that. */
+let lastLogAttention = 0;
+
+onLogChange(() => {
+  refreshLogPanel();
+  const owed = logAttention();
+  if (owed === lastLogAttention) return;
+  lastLogAttention = owed;
+  renderAreaHeaders();
+});
 // ── Narrative view (N2) ───────────────────────────────────────────────────
 // Rendered as an overlay over the canvas (Matrix and Graph are built on scenes,
 // layout and circles-of-detail; a story is none of those), but it is a
@@ -15144,7 +15573,20 @@ function buildHeaderStrip(win: Win): HTMLElement {
       const chip = document.createElement("button");
       chip.className = "panel-tab win-strip-tab"
         + (tab.id === showing ? " active" : "");
-      chip.textContent = t(tab.labelKey);
+      // A LOG THAT ONLY EXISTS WHEN YOU LOOK AT IT IS NOT A LOG.
+      //
+      // Measured on 5 September: `#logpanel` was empty in the DOM after a
+      // perfectly successful open, and the honest reading of an empty element is
+      // «there is nothing». There WAS: `logpanel.ts` keeps a 500-entry ring
+      // buffer whether or not the panel is mounted, and opening the tab showed
+      // all of it at once. So nothing was lost — but nothing said so either.
+      //
+      // The count says so, and only for what somebody needs to be TOLD about:
+      // warnings and errors. Info lines are a trail you go and consult; a badge
+      // for those would be a number that is always on and therefore never read.
+      const owed = tab.id === "logpanel" ? logAttention() : 0;
+      chip.textContent = t(tab.labelKey) + (owed ? ` (${owed})` : "");
+      if (owed) chip.classList.add("win-strip-tab-owed");
       chip.addEventListener("click", (e) => {
         e.stopPropagation();
         setWinCurrent(win, "panel", tab.id);
@@ -17126,16 +17568,7 @@ void acceptPendingInvite();
 // this page's URL) is the other way a session learns which room it is about.
 // Separate from the invite on purpose: an invite carries a ROLE and writes the
 // ACL; a handoff carries a PLACE and carries nothing else.
-void followHandoff();
 void wireDesktopDeepLink();
-// …and a STUDY on this page's URL (`?emjson=`, or `?study=&catalog=`) — the
-// Catalog's own «open in EMStudio». A room and a study are two different things
-// a session can be about, so they are two readers; neither is a fallback for the
-// other, and a URL that names neither leaves the canvas empty as it always did.
-{
-  const study = readStudyLink();
-  if (study) void openStudyFromLink(study);
-}
 // Language FIRST: `initI18n` sets `dir`/`lang` on <html> and translates the
 // static chrome before anything is rendered. Doing it after the first render
 // would show a frame of English (or an LTR frame in Hebrew) and then flip.
@@ -17153,6 +17586,11 @@ updateToolbar();
 // without a store).
 renderTiles(); // WIN5 · lay out the arrangement this session was left in
 applyWorkspace(activeWorkspace());
+
+// …and THEN what this page was asked to be about. One function, because the
+// three steps have to happen in one order and that order is the whole repair:
+// see `bootSession`.
+void bootSession();
 
 // A2/IIIF · the interoperability corner of the annotator. Bound once, here,
 // like every other piece of static chrome: the buttons exist in the markup and

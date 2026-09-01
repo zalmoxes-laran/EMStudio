@@ -54,6 +54,9 @@ export interface StudyLink {
 export function readStudyLink(search?: string): StudyLink | null {
   const params = new URLSearchParams(
     search ?? (typeof window !== "undefined" ? window.location.search : ""));
+  // `studyDocumentUrl` may THROW (a link naming two studies). Deliberately not
+  // caught here: the caller has a canvas to say it on, and swallowing it would
+  // put back the silence this whole repair is about.
   const url = studyDocumentUrl(params);
   if (!url) return null;
   return {
@@ -76,11 +79,59 @@ export function readStudyLink(search?: string): StudyLink | null {
  */
 export function studyDocumentUrl(params: URLSearchParams): string | null {
   const direct = params.get("emjson");
-  if (direct) return direct;
   const study = params.get("study");
+  if (direct) {
+    // AMBIGUITY IS REFUSED, NOT PREFERRED — and this is the bug of 5 September,
+    // reproduced byte for byte before it was repaired.
+    //
+    // `?emjson=` used to win in silence. So a link whose two halves named
+    // DIFFERENT studies loaded one of them and labelled it with the other: the
+    // status bar said «Villa di Aiano» over a page opened as Porta Marina, the
+    // address bar was cleaned (the success branch had run), and there was no
+    // toast and no log line. A failure shaped exactly like a success — and the
+    // way you get such a URL is ordinary: you edit `study=` in the address bar
+    // and leave `emjson=` pointing where it pointed.
+    //
+    // The rule is the one `handoff.ts` already applies to a link naming both a
+    // room and a study, written three hours earlier in this same tree and not
+    // carried across: guessing would make the guess the contract.
+    const named = studyIdInContainerUrl(direct);
+    if (study && named && named !== study) {
+      throw new StudyLinkError(
+        `this link names two different studies: \`study=${study}\` and an `
+        + `\`emjson=\` that points at ${named}. Refused rather than guessed — `
+        + "one of the two would have opened under the other's name. Drop the "
+        + "`emjson=` to open " + study + ", or drop `study=` to open " + named
+        + ".");
+    }
+    return direct;
+  }
   if (!study) return null;
   const catalog = (params.get("catalog") ?? "").replace(/\/+$/, "");
   return `${catalog}/catalog/study/${encodeURIComponent(study)}/emjson`;
+}
+
+/** A link that could not be read, said rather than half-followed. */
+export class StudyLinkError extends Error {}
+
+/**
+ * The study id a container URL names, when it names one.
+ *
+ * Only the Catalog's own shape (`…/catalog/study/<id>/emjson`) is recognised, and
+ * that narrowness is the point: an `?emjson=` may legitimately be any URL at all
+ * — an object-store link, a presigned one, a file on a share — and none of those
+ * mentions a study id. Refusing those would break the form the contract exists
+ * for. So a disagreement is only reported when it can be SEEN, which is when
+ * both halves speak the same language and say different things.
+ */
+export function studyIdInContainerUrl(url: string): string | null {
+  const match = /\/catalog\/study\/([^/]+)\/emjson\/?$/.exec(url);
+  if (!match) return null;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return match[1];
+  }
 }
 
 /** Take the study parameters off the address bar once they have been read.

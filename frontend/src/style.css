@@ -7038,6 +7038,10 @@ body.nv-standalone main.nv-standalone-main {
 .win-header .win-mode-label,
 .win-header .win-menu-toggle,
 .win-strip-tab { white-space: nowrap; }
+/* the Log tab carrying a count of things somebody should be told about.
+   Quiet — it is a number, not an alarm — but not invisible: an empty
+   `#logpanel` reads as «there is nothing», and there usually is. */
+.win-strip-tab-owed { color: var(--warn, var(--text)); font-weight: 600; }
 /* the shelf's `+ URI` chip is a two-word label: it must not wrap, and it must
    not be the thing that gives way — the name beside it is (see the flex above).
    A verb you have to scroll to is a verb you cannot find. */
@@ -7145,3 +7149,56 @@ body.nv-standalone main.nv-standalone-main {
 
 /* the chip says, quietly, that this session may act */
 #hub-roster.can-manage { font-weight: 600; }
+
+/* A STUDY THAT DID NOT OPEN, said in the middle of the empty canvas — where
+   somebody looks when nothing happened. It used to keep offering «Drop an
+   .em.json file here», which is the answer to a question nobody had asked. */
+.dh-failed {
+  display: block;
+  max-width: 46ch;
+  color: var(--warn, var(--text));
+  font-weight: 600;
+  line-height: 1.4;
+}
+#drop-hint .dh-failed + .dh-alt {
+  display: block;
+  max-width: 52ch;
+  margin-top: 6px;
+  font-weight: 400;
+  opacity: 0.8;
+}
+
+/* ── FIRMA · IDENTITÀ · PRESENZA — one chip, three degrees of solidity ───────
+   `EM_design_identita-in-emstudio.md`. The whole point is that it is ONE
+   element that grows firmer: two separate badges would tell the story of two
+   systems, and these are three rungs of one ladder. */
+
+/* a signature nobody has checked: DASHED, and never a tick. A tick beside a name
+   nobody verified is an assertion nobody made. */
+.footer-chip.id-signature {
+  border: 1px dashed var(--border-strong, var(--border));
+  border-radius: 999px;
+  padding: 1px 9px;
+}
+/* …and when we HAD a confirmation and lost it, the dash goes amber: the descent
+   is said, because a mute degradation is the failure that looks like success. */
+.footer-chip.id-signature.id-lost {
+  border-color: var(--warn, var(--border));
+  color: var(--warn, var(--text));
+}
+/* confirmed by a node: SOLID. */
+.footer-chip.id-identity {
+  border: 1px solid var(--ok, var(--border-strong));
+  border-radius: 999px;
+  padding: 1px 9px;
+  color: var(--text);
+}
+/* …and seated somewhere with a role: solid, and filled. */
+.footer-chip.id-presence {
+  border: 1px solid var(--ok, var(--border-strong));
+  border-radius: 999px;
+  padding: 1px 9px;
+  background: color-mix(in srgb, var(--ok, #4cc98a) 16%, transparent);
+  color: var(--text);
+  font-weight: 600;
+}
