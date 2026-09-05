@@ -164,10 +164,59 @@ function migrateLegacyGraphScope(doc: EmDocument): void {
   }
 }
 
+/**
+ * THE THREE STATES OF AN ATTRIBUTION, and why there are three and not two.
+ *
+ * A digital twin is not found lying in the ground: it is **attributed**, and the
+ * attribution matures downstream of the study. E.D., 30 September 2026, and it
+ * is archaeology rather than software: *when I open a trench I do not yet know
+ * what I am finding.* The other case — digging the Colosseum, where everything
+ * found belongs to the Colosseum — is rarer than it looks, and both live in the
+ * real world.
+ *
+ * So:
+ *
+ * * `none` — **no twin yet**. Not an empty field and not an error: the state of
+ *   somebody who is excavating and does not yet know what it pertains to. The
+ *   Catalog has had a real bucket for it since its first day.
+ * * `provisional` — a twin **I made myself**, because I needed somewhere to put
+ *   what I am finding. A legitimate, ordinary act. Its identity is the id its
+ *   own document minted, so nobody else can have meant the same key.
+ * * `registered` — an identity a register knows, which is what makes it
+ *   findable by other people and mergeable with theirs.
+ *
+ * The passage from provisional to registered happens **at publication**, where
+ * it is said either «this is new» or «this is somebody else's». Nothing in this
+ * editor forces the passage, and nothing forces the first step either.
+ */
+export type TwinState = "none" | "provisional" | "registered";
+
+/** WHICH twin this study is attributed to, and how firmly.
+ *
+ *  The invariant, enforced in {@link DocumentStore.applyHdto} and measured by
+ *  `scripts/check-hdt.mjs`: **`registered` if and only if there is a shared
+ *  `key`.** A status claiming more than the identity supports would be a state
+ *  that reads as certainty on this screen and as a bare uuid in the Catalog. */
+export interface TwinAttribution {
+  state: TwinState;
+  /** the twin's display name — free text, ours to write */
+  name: string;
+  /** the SHARED identity: the IRI two catalogues can agree on. Empty for a
+   *  provisional twin, which is exactly what makes it provisional. Persisted as
+   *  `heritage_entity_iri`, the field `s3dgraphy.study` already reads. */
+  key: string;
+  /** which register the key came from, when it came from one. `label` is what a
+   *  person reads («Sarmizegetusa Catalogue»), `source` the machine id. */
+  registry?: { source: string; label?: string; url?: string };
+}
+
+/** The empty attribution — the honest starting point of every study. */
+export const NO_TWIN: TwinAttribution = { state: "none", name: "", key: "" };
+
 /** The per-graph HDT-O (ECHOES D7.1) authoring fields surfaced by the Canvas
  *  inspector. A graph is a Study (HC9) whose proposition set (HC16) is about a
- *  Heritage Entity (HC1, with its digital twin HC2), optionally under a Project
- *  (HC13). All fields optional — empty ones create/keep nothing. */
+ *  Heritage Entity (HC1, optionally with a digital twin HC2), optionally under
+ *  a Project (HC13). All fields optional — empty ones create/keep nothing. */
 export interface HdtoFields {
   studyTitle: string;
   studyAuthors: string;
@@ -180,7 +229,15 @@ export interface HdtoFields {
    *  `[{uri}]` ref (offline / no pick). */
   heritageAuthorityRef?: AuthorityRef;
   parentName: string;
+  /** §5 · the parent whole gets the SAME treatment as the entity: an authority
+   *  URI with its resolved ref, or free text that degrades and says so. */
+  parentUri: string;
+  parentAuthorityRef?: AuthorityRef;
   projectName: string;
+  /** The twin, and its state. Absent in a document written before the three
+   *  states existed → read back as `provisional` when a twin node is there
+   *  without a shared key, which is what it always was. */
+  twin: TwinAttribution;
 }
 
 /** Marker stored in a node's `data.hdto_role` so the per-graph HDT-O singletons
@@ -2271,22 +2328,55 @@ export class DocumentStore {
     const parent = this.hdtoNode("parent");
     const project = this.hdtoNode("project");
     const sd = (study?.data ?? {}) as Record<string, unknown>;
-    const ad = (about?.data ?? {}) as Record<string, unknown>;
-    const refs = Array.isArray(ad.authority_refs)
-      ? (ad.authority_refs as AuthorityRef[])
-      : [];
-    const first = refs.find((r) => r?.uri);
+    // the first authority ref of a node, and whether it was a resolved pick (a
+    // pick carries an `authority`; a bare free-text uri has none)
+    const refOf = (n?: EmNode): { uri: string; ref?: AuthorityRef } => {
+      const d = (n?.data ?? {}) as Record<string, unknown>;
+      const refs = Array.isArray(d.authority_refs)
+        ? (d.authority_refs as AuthorityRef[])
+        : [];
+      const first = refs.find((r) => r?.uri);
+      return {
+        uri: String(first?.uri ?? ""),
+        ref: first?.authority ? first : undefined,
+      };
+    };
+    const aboutRef = refOf(about);
+    const parentRef = refOf(parent);
     return {
       studyTitle: String(study?.name ?? ""),
       studyAuthors: String(sd.authors ?? ""),
       studyDate: String(sd.date ?? ""),
       heritageName: String(about?.name ?? ""),
-      heritageUri: String(first?.uri ?? ""),
-      // a resolved pick carries an `authority` — surface it so the panel can
-      // show the label; a bare free-text uri has none.
-      heritageAuthorityRef: first?.authority ? first : undefined,
+      heritageUri: aboutRef.uri,
+      heritageAuthorityRef: aboutRef.ref,
       parentName: String(parent?.name ?? ""),
+      parentUri: parentRef.uri,
+      parentAuthorityRef: parentRef.ref,
       projectName: String(project?.name ?? ""),
+      twin: this.readTwin(),
+    };
+  }
+
+  /** The attribution as the document holds it — the three states, read back.
+   *
+   *  No twin node → `none`. A twin node with a shared key → `registered`. A
+   *  twin node without one → `provisional`, whatever `hdt_status` says: the
+   *  identity is the fact, the marker is the declaration, and when they
+   *  disagree the fact wins. That is also what makes documents written before
+   *  the three states existed read correctly — they had no marker, and the
+   *  twin the panel used to create silently was exactly a provisional one. */
+  private readTwin(): TwinAttribution {
+    const twin = this.hdtoNode("twin");
+    if (!twin) return { ...NO_TWIN };
+    const d = (twin.data ?? {}) as Record<string, unknown>;
+    const key = String(d.heritage_entity_iri ?? "").trim();
+    const registry = d.hdt_registry as TwinAttribution["registry"] | undefined;
+    return {
+      state: key ? "registered" : "provisional",
+      name: String(twin.name ?? ""),
+      key,
+      registry: key && registry?.source ? registry : undefined,
     };
   }
 
@@ -2302,6 +2392,11 @@ export class DocumentStore {
    *    HC1 ─has_digital_twin→ HC2 ─contains_proposition_set→ HC16(GraphNode)
    *    Study(HC9) ─study_produced_proposition_set→ HC16
    *    HC1(about) ─heritage_part_of→ HC1(parent)   [optional]
+   *
+   *  **The HC2 link is optional and is an ACT** ({@link TwinAttribution}): a
+   *  study whose excavator does not yet know what they are digging is a
+   *  complete, valid document with an entity and no twin, and the whole chain
+   *  above works without it. See `TwinState` for why there are three states.
    */
   applyHdto(fields: HdtoFields): void {
     this.checkpoint();
@@ -2380,6 +2475,18 @@ export class DocumentStore {
       addedEdges.push(edge);
     };
 
+    // THE ATTRIBUTION IS AN ACT, so it is normalised before anything is
+    // written: `registered` requires a shared key, and a twin with a key is
+    // registered whatever the caller said. The panel cannot produce a state the
+    // identity does not support, and neither can a remote op.
+    const twinKey = trim(fields.twin?.key ?? "");
+    const twinState: TwinState =
+      fields.twin?.state === "none" || !fields.twin
+        ? "none"
+        : twinKey
+          ? "registered"
+          : "provisional";
+
     const hasHeritage = !!(trim(fields.heritageName) || trim(fields.heritageUri));
     const hasStudy = !!(
       trim(fields.studyTitle) ||
@@ -2413,9 +2520,42 @@ export class DocumentStore {
         if (picked?.uri && trim(picked.uri) === uri) d.authority_refs = [picked];
         else if (uri) d.authority_refs = [{ uri }];
         else d.authority_refs = [];
-        twin = ensure("twin", `${trim(fields.heritageName) || "Heritage"} HDT`);
-        ensureEdge(about, twin); // HC1 → HC2 (has_digital_twin)
-        ensureEdge(twin, set); // HC2 → HC16 (contains_proposition_set)
+        // THE TWIN IS NO LONGER CREATED BY TYPING A NAME.
+        //
+        // It used to be: the moment somebody typed the entity's name, this
+        // line minted an HC2 — an attribution nobody had made, in a document
+        // that then travelled to a Catalog which keyed a monument on it. That
+        // is the same failure as a required field, arrived at from the other
+        // side: instead of forcing a choice it made one silently.
+        //
+        // Now the twin exists when the attribution says it does, and «not yet»
+        // is a state the document can hold (`TwinState`). Old documents keep
+        // their twin: `readTwin` reads it back as provisional, which is what
+        // it always was.
+        if (twinState !== "none") {
+          twin = ensure(
+            "twin",
+            trim(fields.twin.name) ||
+              `${trim(fields.heritageName) || "Heritage"} HDT`,
+          );
+          if (twin) {
+            const td = (twin.data ??= {}) as Record<string, unknown>;
+            td.hdto_role = "twin";
+            td.hdt_status = twinState;
+            // the SHARED key, in the field s3dgraphy already reads, so a
+            // registered twin arrives at a catalogue as one identity and not
+            // as a fresh uuid per document
+            if (twinKey) td.heritage_entity_iri = twinKey;
+            else delete td.heritage_entity_iri;
+            const reg = fields.twin.registry;
+            if (twinKey && reg?.source) td.hdt_registry = reg;
+            else delete td.hdt_registry;
+          }
+          ensureEdge(about, twin); // HC1 → HC2 (has_digital_twin)
+          ensureEdge(twin, set); // HC2 → HC16 (contains_proposition_set)
+        } else {
+          removeRole("twin");
+        }
       }
     } else {
       removeRole("about");
@@ -2424,8 +2564,20 @@ export class DocumentStore {
     }
 
     // optional parent Heritage Entity (HC1) + part-whole
-    if (about && trim(fields.parentName)) {
+    if (about && (trim(fields.parentName) || trim(fields.parentUri))) {
       const parent = ensure("parent", trim(fields.parentName));
+      if (parent) {
+        // §5 · the same authority treatment as the entity itself. A whole named
+        // «Roma» in free text stays exactly as it is and is nameable as
+        // unresolved; nothing migrates a document that already said it.
+        const pd = (parent.data ??= {}) as Record<string, unknown>;
+        pd.hdto_role = "parent";
+        const picked = fields.parentAuthorityRef;
+        const uri = trim(fields.parentUri);
+        if (picked?.uri && trim(picked.uri) === uri) pd.authority_refs = [picked];
+        else if (uri) pd.authority_refs = [{ uri }];
+        else pd.authority_refs = [];
+      }
       ensureEdge(about, parent); // HC1(about) → HC1(parent) (heritage_part_of)
     } else {
       removeRole("parent");

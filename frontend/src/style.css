@@ -2948,6 +2948,46 @@ body.sync-active #footer-brand #em-version {
   background: var(--bg-hover);
 }
 
+/* HDT-O · THE ATTRIBUTION AND ITS THREE STATES.
+   Three states, three shades, and none of them red: «not attributed yet» is the
+   ordinary state of an excavation in progress, and colouring it as an error
+   would say the opposite of what the panel says in words. The registered one is
+   the only one that gets a strong colour, because it is the only one that is a
+   claim about the shared world. */
+.insp-twin {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 4px 0 8px;
+}
+.insp-twin-state {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  align-self: flex-start;
+}
+.insp-twin-dot {
+  font-size: 9px;
+  line-height: 1;
+}
+.insp-twin-none .insp-twin-dot {
+  color: var(--text-dim, #8a8a8a);
+}
+.insp-twin-provisional .insp-twin-dot {
+  color: #d8bd30;
+}
+.insp-twin-registered .insp-twin-dot {
+  color: #31792d;
+}
+.insp-twin-registered {
+  border-color: #31792d;
+}
+
 /* name row: optional colour swatch + name + hex field, all on one line */
 .insp-name-row {
   display: flex;

@@ -1,5 +1,10 @@
 import { t } from "./i18n";
-import type { DocumentStore, HdtoFields } from "./model";
+import type {
+  DocumentStore,
+  HdtoFields,
+  TwinAttribution,
+  TwinState,
+} from "./model";
 import { edgeStyle, nodeStyle } from "./palette";
 import { classOf, isGroupType, isStratigraphicType } from "./rules";
 import { BADGE_RULES, resolveEffective, sourceLabel } from "./funnel";
@@ -10,6 +15,8 @@ import { createOsmMap } from "./osm-map";
 import { geocode, GeocodeOffline, zoomFor } from "./geocode";
 import { currentIdentity, orcidProblem } from "./identity";
 import { acquisitionMembers, derivationChain, resourceUsages } from "./ingest";
+import type { TwinSearchResult } from "./twins";
+import { describeSources } from "./twins";
 
 export interface InspectorCallbacks {
   onJump: (nodeId: string) => void;
@@ -39,6 +46,10 @@ export interface InspectorCallbacks {
   /** Query em-bridge /resolve-authority for ranked offline candidates. Optional:
    *  when absent or on any failure the HDT-O authority field is plain free-text. */
   resolveAuthority?: (term: string, facet: string) => Promise<AuthorityCandidate[]>;
+  /** Ask the twin register(s) which digital twins exist for a term. Optional:
+   *  when absent the panel offers no search at all and a provisional twin can
+   *  still be made — the register is a suggestion, never a precondition. */
+  searchTwins?: (term: string) => Promise<TwinSearchResult>;
   /** CMD1 · send a 3D command to the connected host (Blender). Absent = the
    *  build has no command channel at all, and the actions are not drawn. */
   onCommand?: (verb: string, target: string) => void;
@@ -86,22 +97,35 @@ function toHexColor(v: unknown): string | null {
 // edge types — a small resolver-side vocabulary, so it's fine to list here.
 const AUTHORITY_FACETS = ["WHAT", "WHERE", "WHEN", "WHO"] as const;
 
-/** The HC1 "Authority" sub-field: a facet selector + a URI/search input backed
- *  by em-bridge /resolve-authority (via cb.resolveAuthority). Typing a term
- *  shows ranked candidates; picking one stores the full P1-D ref. Fully offline
- *  and graceful: no resolver / any failure → plain free-text URI entry. */
+/** An "Authority" sub-field: a facet selector + a URI/search input backed by
+ *  em-bridge /resolve-authority (via cb.resolveAuthority). Typing a term shows
+ *  ranked candidates; picking one stores the full P1-D ref. Fully offline and
+ *  graceful: no resolver / any failure → plain free-text URI entry.
+ *
+ *  §5 · Used for BOTH heritage entities — the study's subject and its optional
+ *  whole. They are the same kind of thing (a place), so they get the same
+ *  treatment and the same default facet; giving the parent free text only would
+ *  make «Roma» unresolvable in a document whose subject is resolved.
+ *
+ *  `field` is the HdtoFields key the input writes to, so the two instances do
+ *  not share a slot in `inputs` — the bug that a single hardcoded
+ *  `inputs["heritageUri"]` would have caused the moment the second one existed. */
 function buildAuthorityField(
   panel: HTMLElement,
   inputs: Record<string, HTMLInputElement>,
-  hdto: HdtoFields,
+  value: string,
   cb: InspectorCallbacks,
   ref: {
     get: () => AuthorityRef | undefined;
     set: (r: AuthorityRef | undefined) => void;
     commit: () => void;
   },
+  opts: { field: string; facet: string } = {
+    field: "heritageUri",
+    facet: "WHERE",
+  },
 ): void {
-  panel.appendChild(el("label", "insp-field-label", "Authority"));
+  panel.appendChild(el("label", "insp-field-label", t("insp.authority")));
 
   const facetSel = document.createElement("select");
   facetSel.className = "insp-name-input insp-facet-select";
@@ -111,27 +135,31 @@ function buildAuthorityField(
     o.textContent = f;
     facetSel.appendChild(o);
   }
-  // Default facet inferred from the node type this field annotates: this is the
-  // HC1 Heritage Entity → WHERE (place). (Epoch→WHEN, qualia→WHAT elsewhere.)
-  // User-overridable via the selector.
-  facetSel.value = "WHERE";
+  // Default facet inferred from the node type this field annotates: a HC1
+  // Heritage Entity — subject or whole — is a place → WHERE. (Epoch→WHEN,
+  // qualia→WHAT elsewhere.) User-overridable via the selector.
+  facetSel.value = opts.facet;
   panel.appendChild(facetSel);
 
   const inp = document.createElement("input");
   inp.className = "insp-name-input";
-  inp.value = hdto.heritageUri;
-  inp.placeholder = "type to search an authority, or paste a URI";
+  inp.value = value;
+  inp.placeholder = t("insp.authorityPlaceholder");
   panel.appendChild(inp);
-  inputs["heritageUri"] = inp;
+  inputs[opts.field] = inp;
 
   const badge = el("div", "insp-hint");
   const paintBadge = (): void => {
     const r = ref.get();
     if (r?.authority)
       badge.textContent = `✓ ${r.label ?? r.uri} — ${r.authority}${r.match ? ` (${r.match})` : ""}`;
-    else if (cb.resolveAuthority)
-      badge.textContent = "Offline resolver: type a term, pick a match, or paste a URI.";
-    else badge.textContent = "Paste an authority URI (resolver unavailable).";
+    else if (inp.value.trim())
+      // free text that reached no authority: NAMED as unresolved rather than
+      // left looking the same as a resolved pick (§5 — what is already written
+      // keeps working, degrades, and lets itself be called not resolved)
+      badge.textContent = t("insp.authorityUnresolved");
+    else if (cb.resolveAuthority) badge.textContent = t("insp.authorityOffline");
+    else badge.textContent = t("insp.authorityNoResolver");
   };
   paintBadge();
   panel.appendChild(badge);
@@ -196,6 +224,242 @@ function buildAuthorityField(
   });
   inp.addEventListener("change", ref.commit); // blur/Enter → persist
   facetSel.addEventListener("change", queryNow);
+}
+
+/**
+ * THE ATTRIBUTION FIELD — the twin, its state, and the search that suggests.
+ *
+ * Three states are drawn and named (`TwinState`), and the one that matters most
+ * is the first: **no twin yet**. It gets a badge, a sentence, and no red
+ * anything, because it is the ordinary state of an excavation in progress and
+ * not a missing value.
+ *
+ * The search asks a REGISTER of twins — a different question from the authority
+ * field above it, which asks which thing in the world this is. It is offered,
+ * pre-filled from what the entity field already says, and it can be ignored
+ * entirely: the «create a provisional twin» button sits beside it and does not
+ * wait for a search to have run. **If a future version of this field ever
+ * refuses to let somebody carry on until they pick, it has gone wrong.**
+ *
+ * A result carries the three facts that make attaching safe — which register,
+ * who is already working on it, how many studies hang on it — and a provisional
+ * one says so, because somebody else's working record is precisely the twin not
+ * to attach yourself to.
+ */
+function buildTwinField(
+  panel: HTMLElement,
+  cb: InspectorCallbacks,
+  ctl: {
+    get: () => TwinAttribution;
+    set: (a: TwinAttribution) => void;
+    commit: () => void;
+    entityName: () => string;
+    entityUri: () => string;
+  },
+): void {
+  // everything this field draws lives in one box, so a change of state redraws
+  // itself without the whole inspector being rebuilt (which would take the
+  // focus out of whatever the user was typing in the fields above)
+  const box = el("div", "insp-twin");
+  panel.appendChild(box);
+
+  const STATE_LABEL: Record<TwinState, string> = {
+    none: "insp.twinStateNone",
+    provisional: "insp.twinStateProvisional",
+    registered: "insp.twinStateRegistered",
+  };
+  const STATE_HINT: Record<TwinState, string> = {
+    none: "insp.twinStateNoneHint",
+    provisional: "insp.twinStateProvisionalHint",
+    registered: "insp.twinStateRegisteredHint",
+  };
+
+  const apply = (next: TwinAttribution): void => {
+    ctl.set(next);
+    ctl.commit();
+    render();
+  };
+
+  const renderResults = (
+    into: HTMLElement,
+    term: string,
+    result: TwinSearchResult,
+  ): void => {
+    into.innerHTML = "";
+    if (result.unreachable) {
+      // NOT «none found» — a different sentence, in the tone the authority
+      // badge already uses about itself
+      into.appendChild(el("div", "insp-hint", t("insp.twinNoRegister")));
+      return;
+    }
+    const { answering, absent } = describeSources(result);
+    if (!result.twins.length) {
+      into.appendChild(
+        el(
+          "div",
+          "insp-hint",
+          t("insp.twinNoneFound")
+            .replace("{term}", term)
+            .replace(
+              "{sources}",
+              answering.map((s) => s.label ?? s.id).join(", ") || "—",
+            ),
+        ),
+      );
+    }
+    for (const rec of result.twins) {
+      const row = el("button", "insp-auth-item") as HTMLButtonElement;
+      const who = rec.custodians
+        .map((c) => c.name)
+        .filter(Boolean)
+        .slice(0, 3)
+        .join(", ");
+      // the three facts, in the order somebody chooses on: which register, who
+      // holds it, how many studies
+      const where =
+        result.sources.find((s) => s.id === rec.source)?.label ?? rec.source;
+      row.textContent =
+        `${rec.label} — ${where} · ${who || t("insp.twinNoCustodian")} · ` +
+        t("insp.twinStudies").replace("{n}", String(rec.studies)) +
+        (rec.provisional ? ` · ${t("insp.twinProvisionalWarning")}` : "");
+      row.title = rec.key;
+      row.addEventListener("click", () =>
+        apply({
+          state: "registered",
+          name: rec.label,
+          key: rec.key,
+          registry: { source: rec.source, label: where },
+        }),
+      );
+      into.appendChild(row);
+    }
+    // asked and absent is INFORMATION: one register answering must not look
+    // like all of them answering
+    for (const s of absent)
+      into.appendChild(
+        el(
+          "div",
+          "insp-hint",
+          t("insp.twinAbsentSource").replace("{label}", s.label ?? s.id),
+        ),
+      );
+    if (typeof result.untwinned === "number" && result.untwinned > 0)
+      into.appendChild(
+        el(
+          "div",
+          "insp-hint",
+          t("insp.twinUntwinned").replace("{n}", String(result.untwinned)),
+        ),
+      );
+  };
+
+  function render(): void {
+    box.innerHTML = "";
+    const twin = ctl.get();
+
+    const badge = el("div", `insp-twin-state insp-twin-${twin.state}`);
+    badge.appendChild(el("span", "insp-twin-dot", "●"));
+    badge.appendChild(el("span", undefined, t(STATE_LABEL[twin.state])));
+    box.appendChild(badge);
+    box.appendChild(
+      el(
+        "div",
+        "insp-hint",
+        t(STATE_HINT[twin.state]).replace(
+          "{registry}",
+          twin.registry?.label ?? twin.registry?.source ?? "—",
+        ),
+      ),
+    );
+
+    if (twin.state !== "none") {
+      const nameIn = document.createElement("input");
+      nameIn.className = "insp-name-input";
+      nameIn.value = twin.name;
+      nameIn.placeholder = t("insp.twinNamePh");
+      nameIn.addEventListener("change", () => {
+        ctl.set({ ...ctl.get(), name: nameIn.value });
+        ctl.commit();
+      });
+      box.appendChild(el("label", "insp-field-label", t("insp.twinName")));
+      box.appendChild(nameIn);
+      if (twin.key) {
+        box.appendChild(el("label", "insp-field-label", t("insp.twinKey")));
+        const key = el("div", "insp-id", twin.key);
+        box.appendChild(key);
+      }
+      const detach = el("button", "insp-btn", t("insp.twinDetach")) as
+        HTMLButtonElement;
+      // detaching NEVER deletes the study, the entity or anything drawn: it
+      // says «this is not the one», which somebody must be able to say
+      detach.title = t("insp.twinDetachTitle");
+      detach.addEventListener("click", () =>
+        apply({ state: "none", name: "", key: "" }),
+      );
+      box.appendChild(detach);
+    }
+
+    // ── the search: offered, pre-filled, ignorable ─────────────────────────
+    if (cb.searchTwins) {
+      box.appendChild(el("label", "insp-field-label", t("insp.twinSearch")));
+      const q = document.createElement("input");
+      q.className = "insp-name-input";
+      q.value = ctl.entityUri().trim() || ctl.entityName().trim();
+      q.placeholder = t("insp.twinSearchPh");
+      box.appendChild(q);
+      const results = el("div", "insp-auth-menu");
+      results.style.display = "";
+      box.appendChild(results);
+      const go = (): void => {
+        const term = q.value.trim();
+        results.innerHTML = "";
+        results.appendChild(el("div", "insp-hint", t("insp.twinSearching")));
+        void cb
+          .searchTwins!(term)
+          .then((r) => renderResults(results, term, r))
+          .catch(() => {
+            results.innerHTML = "";
+            results.appendChild(
+              el("div", "insp-hint", t("insp.twinNoRegister")),
+            );
+          });
+      };
+      const look = el("button", "insp-btn", t("insp.twinLook")) as
+        HTMLButtonElement;
+      look.addEventListener("click", go);
+      box.appendChild(look);
+      box.appendChild(el("div", "insp-hint", t("insp.twinSearchHint")));
+    }
+
+    // …and the act that needs no search at all.
+    //
+    // MEASURED IN THE BROWSER, 30 September 2026: this button was drawn before
+    // the thing had a name, and pressing it did NOTHING — `applyHdto` writes
+    // the twin inside the branch that needs a heritage entity, because in
+    // HDT-O a twin is the twin OF something. An action offered and then
+    // silently refused is worse than one that is not offered, so where the
+    // button would be there is now the sentence that says what to do first.
+    if (twin.state === "none") {
+      const named = !!(ctl.entityName().trim() || ctl.entityUri().trim());
+      if (!named) {
+        box.appendChild(el("div", "insp-hint", t("insp.twinNeedsEntity")));
+      } else {
+        const make = el("button", "insp-btn", t("insp.twinCreate")) as
+          HTMLButtonElement;
+        make.title = t("insp.twinCreateTitle");
+        make.addEventListener("click", () =>
+          apply({
+            state: "provisional",
+            name: `${ctl.entityName().trim() || t("insp.twinFallbackName")} HDT`,
+            key: "",
+          }),
+        );
+        box.appendChild(make);
+      }
+    }
+  }
+
+  render();
 }
 
 /** AUDIT1 · the four editorial fields, in the order a reader wants them. */
@@ -587,17 +851,29 @@ export function renderInspector(
 
     // ── HDT-O (ECHOES D7.1) per-graph panel ────────────────────────────────
     // This graph = a Study (HC9) whose proposition set (HC16) is about a
-    // Heritage Entity (HC1, with its digital twin HC2), optionally under a
-    // Project (HC13). Editing a field writes/updates REAL gated HDT-O nodes +
-    // edges in the em.json (via store.applyHdto) — they are not in the
+    // Heritage Entity (HC1, OPTIONALLY with its digital twin HC2), optionally
+    // under a Project (HC13). Editing a field writes/updates REAL gated HDT-O
+    // nodes + edges in the em.json (via store.applyHdto) — they are not in the
     // stratigrapher palette; this panel is their authoring surface.
+    //
+    // THE ONE RULE OF THIS SECTION: nothing here is a gate. An excavator who
+    // does not yet know what they are digging fills in what they know, leaves
+    // the twin alone, and the state they are in is drawn and named rather than
+    // shown as an empty field. See `TwinState` in model.ts.
     const hdto = store.readHdto();
-    // text-valued fields only (heritageAuthorityRef is an object, handled below)
-    type HdtoTextKey = Exclude<keyof HdtoFields, "heritageAuthorityRef">;
+    // text-valued fields only (the authority refs and the twin are objects,
+    // handled below)
+    type HdtoTextKey = Exclude<
+      keyof HdtoFields,
+      "heritageAuthorityRef" | "parentAuthorityRef" | "twin"
+    >;
     const inputs = {} as Record<HdtoTextKey, HTMLInputElement>;
-    // the authority candidate the user picked (verbatim uri/authority/label/
-    // rank/match); cleared to free-text when the URI field is edited by hand.
+    // the authority candidates the user picked (verbatim uri/authority/label/
+    // rank/match); cleared to free-text when a URI field is edited by hand.
     let pickedRef: AuthorityRef | undefined = hdto.heritageAuthorityRef;
+    let pickedParentRef: AuthorityRef | undefined = hdto.parentAuthorityRef;
+    // the attribution, held here while the panel is open and written on commit
+    let twin: TwinAttribution = { ...hdto.twin };
     function commit(): void {
       store.applyHdto({
         studyTitle: inputs.studyTitle.value,
@@ -607,7 +883,10 @@ export function renderInspector(
         heritageUri: inputs.heritageUri.value,
         heritageAuthorityRef: pickedRef,
         parentName: inputs.parentName.value,
+        parentUri: inputs.parentUri.value,
+        parentAuthorityRef: pickedParentRef,
         projectName: inputs.projectName.value,
+        twin,
       });
     }
     const hfield = (
@@ -626,37 +905,86 @@ export function renderInspector(
       if (hint) panel.appendChild(el("div", "insp-hint", hint));
       inputs[key] = inp;
     };
+    // §6 · the CODE goes in the tooltip, the WORD on the label. «Study (HC9)»
+    // says nothing to a director of excavations; the code still has to be
+    // reachable, because it is what the ontology and the papers use.
+    const groupTitle = (label: string, glossary: string): void => {
+      const row = el("div", "insp-group-title", label);
+      row.title = glossary;
+      panel.appendChild(row);
+    };
 
-    panel.appendChild(el("h3", "insp-sect", "Heritage Digital Twin (HDT-O)"));
-    panel.appendChild(
-      el(
-        "div",
-        "insp-hint",
-        "Optional — links this graph to its Heritage Digital Twin (enables the collaborative cloud + RDF projection). Stored as graph metadata, not on the canvas.",
-      ),
+    panel.appendChild(el("h3", "insp-sect", t("insp.hdt")));
+    panel.appendChild(el("div", "insp-hint", t("insp.hdtHint")));
+
+    groupTitle(t("insp.hdtStudy"), t("insp.hdtStudyGloss"));
+    hfield("studyTitle", t("insp.hdtStudyTitle"), t("insp.hdtStudyTitlePh"));
+    hfield("studyAuthors", t("insp.hdtStudyAuthors"), t("insp.hdtStudyAuthorsPh"));
+    hfield("studyDate", t("insp.hdtStudyDate"), t("insp.hdtStudyDatePh"));
+
+    groupTitle(t("insp.hdtEntity"), t("insp.hdtEntityGloss"));
+    hfield("heritageName", t("insp.hdtEntityName"), t("insp.hdtEntityNamePh"));
+    buildAuthorityField(
+      panel,
+      inputs,
+      hdto.heritageUri,
+      cb,
+      {
+        get: () => pickedRef,
+        set: (r) => (pickedRef = r),
+        commit,
+      },
+      { field: "heritageUri", facet: "WHERE" },
+    );
+    hfield("parentName", t("insp.hdtParent"), t("insp.hdtParentPh"));
+    buildAuthorityField(
+      panel,
+      inputs,
+      hdto.parentUri,
+      cb,
+      {
+        get: () => pickedParentRef,
+        set: (r) => (pickedParentRef = r),
+        commit,
+      },
+      { field: "parentUri", facet: "WHERE" },
     );
 
-    const study = el("div", "insp-group-title", "Study (HC9)");
-    panel.appendChild(study);
-    hfield("studyTitle", "Title", "study title");
-    hfield("studyAuthors", "Author(s)", "e.g. Rossi, Bianchi");
-    hfield("studyDate", "Date", "e.g. 2026");
-
-    panel.appendChild(el("div", "insp-group-title", "Heritage entity (HC1)"));
-    hfield("heritageName", "Name", "e.g. Colosseo");
-    buildAuthorityField(panel, inputs, hdto, cb, {
-      get: () => pickedRef,
-      set: (r) => (pickedRef = r),
+    groupTitle(t("insp.hdtTwin"), t("insp.hdtTwinGloss"));
+    buildTwinField(panel, cb, {
+      get: () => twin,
+      set: (a) => {
+        twin = a;
+      },
       commit,
+      entityName: () => inputs.heritageName.value,
+      entityUri: () => inputs.heritageUri.value,
     });
-    hfield("parentName", "Part of (parent entity)", "optional whole, e.g. Roma");
 
-    panel.appendChild(el("div", "insp-group-title", "Project (HC13)"));
-    hfield("projectName", "Name", "optional project");
-
-    panel.appendChild(
-      el("div", "insp-empty", "Select a node to inspect it"),
+    groupTitle(t("insp.hdtProject"), t("insp.hdtProjectGloss"));
+    hfield(
+      "projectName",
+      t("insp.hdtProjectName"),
+      t("insp.hdtProjectNamePh"),
+      // §5 · NO authority field here, and the refusal is the finding.
+      // `em.authority_facets()` offers WHEN / WHAT / WHERE / WHO, and a
+      // research project is none of them: not a place, not a period, not a
+      // type of object, and not a person (WHO consults ULAN/VIAF/GND, which
+      // are people and corporate bodies). A project hung on the wrong facet
+      // LOOKS resolved, which is worse than free text — so it stays free text
+      // and says why. The registers that would serve (CORDIS, ROR, a grant
+      // DOI) need a facet of their own in s3Dgraphy first.
+      t("insp.hdtProjectHint"),
     );
+
+    // …and the sentence that says how to get the OTHER inspector. It reads
+    // oddly at the foot of a panel describing the whole study — the panel is
+    // per-graph and lives inside a per-node inspector — and moving it out is
+    // its own piece of work (see the report of 30 September 2026). Left in
+    // place: a canvas panel with no way back to a node would be worse than an
+    // odd sentence.
+    panel.appendChild(el("div", "insp-empty", t("insp.selectNode")));
+
     root.appendChild(panel);
     return;
   }

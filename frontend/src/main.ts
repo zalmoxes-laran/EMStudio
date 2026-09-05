@@ -72,6 +72,7 @@ import {
   type IdentityProvider,
 } from "./identity";
 import { renderInspector } from "./inspector";
+import { searchTwins } from "./twins";
 import type { BoxLookup } from "./surface-scroll";
 import {
   paintSurface,
@@ -1530,6 +1531,11 @@ function refreshInspector(): void {
       },
       isPinned: (nodeId) => store!.isPinned(nodeId),
       resolveAuthority: resolveAuthority,
+      // «does a twin already exist for this?» — asked of the Catalog's twin
+      // register. Passed through unchanged: `searchTwins` is already total (any
+      // failure resolves to NO_REGISTER), and the panel says «no register
+      // answered», which is not the same sentence as «there is none».
+      searchTwins: (term) => searchTwins(term),
       onCommand: (verb, target) => sendHostCommand(verb, target),
       // DOCUMENTATION → SHELF · the study's explicit selection. The locator is
       // the asset's own url (a room asset endpoint, or a path for a reference),
