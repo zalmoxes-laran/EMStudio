@@ -91,7 +91,11 @@ const load = async (entry) => {
 
 const M = await load("model.ts");
 const T = await load("twins.ts");
-const I = await load("inspector.ts");
+//: WIN·STUDY — the HDT-O panel moved OUT of the inspector into a window of
+//: its own (`study-panel.ts`). This fence went red the moment it did, which is
+//: what it is for; it now renders the panel where the panel lives. Every
+//: assertion below is unchanged.
+const S = await load("study-panel.ts");
 
 let checks = 0;
 const ok = (cond, what) => { assert.ok(cond, what); checks++; };
@@ -354,7 +358,7 @@ const CB = {
 };
 const render = (store, cb = CB) => {
   const root = document.createElement("div");
-  I.renderInspector(root, store, null, cb);
+  S.renderStudyPanel(root, store, cb);
   return root;
 };
 const textOf = (root, sel) =>

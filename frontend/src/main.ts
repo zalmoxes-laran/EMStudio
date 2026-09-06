@@ -395,6 +395,7 @@ import { adaptNeighbourhood } from "./views/neighbourhood";
 import type { NeighbourhoodAnswer } from "./views/neighbourhood";
 import { buildGraphScene, type GraphAlgorithm } from "./views/graph";
 import { buildMatrixScene } from "./views/matrix";
+import { renderStudyPanel } from "./study-panel";
 
 declare global {
   interface Window {
@@ -2605,6 +2606,14 @@ function activateSlot(id: string, opts: { rebuildOnly?: boolean } = {}): void {
   refreshInspector();
   refreshNarrativeView();
   refreshEMTree();
+  // STUDY · the study window describes THIS document, so a different document
+  // makes its answer stale — measured: with the window open, loading a second
+  // study left the previous study's name in the field. Refreshed here, on the
+  // DOCUMENT change, and deliberately not in `refreshInspector`: that runs on
+  // every selection, and this panel is made of text inputs somebody may be
+  // typing in. (It guards on its own surface, so it costs nothing when the
+  // window is not showing.)
+  renderStudyWindow();
   selectedNarrativeId = null; // a chapter selection belongs to its document
   if (!opts.rebuildOnly) {
     // A switch restores the view the slot was left in; a load lets
@@ -10704,6 +10713,7 @@ const TRANSFORM_TYPES: WindowType[] = [
   "storage",
   "annotator",
   "shelf",
+  "study",
 ];
 
 /**
@@ -10726,6 +10736,8 @@ function applyWindowSurface(type: WindowType): void {
   if (type === "annotator") renderAnnotator();
   show("shelf-view", type === "shelf");
   if (type === "shelf") renderShelf();
+  show("study-view", type === "study");
+  if (type === "study") renderStudyWindow();
   const hosted = type === "emtree" || type === "inspector";
   show("panel-view", hosted);
   if (hosted) renderPanelWindow(type);
@@ -10890,6 +10902,28 @@ function renderDocViewInto(
 //
 // It is a ShelfGraph, so it saves and reopens like any other graph. The orphan
 // scan of a folder is not a rival shelf: it is an ENTRANCE to this one.
+
+/**
+ * STUDY · the per-graph panel, in a window of its own.
+ *
+ * Reads the SAME store the inspector reads and passes the SAME two callbacks
+ * the panel has always been given (`resolveAuthority`, `searchTwins`) — the
+ * bindings are the module-level functions, not a new pair, so the fields behave
+ * exactly as they did when this panel lived inside the inspector.
+ *
+ * Guarded on the surface, not on the focus, for the reason `renderShelf` gives
+ * two functions below: a renderer should ask the screen whether it is on it.
+ */
+function renderStudyWindow(): void {
+  const body = document.getElementById("study-body");
+  if (!body) return;
+  if (document.getElementById("study-view")?.classList.contains("hidden")) return;
+  if (!store) return;
+  renderStudyPanel(body, store, {
+    resolveAuthority: resolveAuthority,
+    searchTwins: (term) => searchTwins(term),
+  });
+}
 
 function renderShelf(): void {
   const body = document.getElementById("shelf-body");
@@ -15440,7 +15474,8 @@ function mountWindow(win: Win): void {
     win.type === "viewer" ||
     win.type === "storage" ||
     win.type === "annotator" ||
-    win.type === "shelf"
+    win.type === "shelf" ||
+    win.type === "study"
   ) {
     // WIN5 · a real window, not the dock: the surface fills the area. Leave the
     // canvas mode alone underneath (never the narrative overlay) so switching
@@ -16501,6 +16536,11 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
   // STORAGE · navigation is the double-click and the ↑; a menu repeating them
   // would be a second way to do the one thing the surface already does.
   storage: [],
+  // STUDY · nothing to put here yet: the panel is all fields, and its actions
+  // (pick a site position, search an authority, attach a twin) are IN the
+  // fields, where the thing they act on is. An empty menu is the honest state,
+  // and it is the same one `emtree`, `inspector` and `storage` are in.
+  study: [],
   // SHELF · HDR2 · the list's own verbs, now that `#shelf-bar` is gone. Open and
   // Save are here rather than in the header for one reason: they are punctuation
   // — once when you sit down, once when you get up — while the name, the count

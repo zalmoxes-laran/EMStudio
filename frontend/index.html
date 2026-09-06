@@ -421,6 +421,15 @@
         <div id="shelf-view" class="hidden">
           <div id="shelf-body"></div>
         </div>
+        <!-- STUDY · what the canvas IS: the graph's name and id, its
+             propagative metadata (author / licence / embargo, DP-65), the site
+             position, and the HDT-O fields that say which heritage thing this
+             study is about. It used to be the no-node branch of the INSPECTOR,
+             which put a per-graph panel inside a per-node window. Filled by
+             `renderStudyWindow` from `study-panel.ts`. -->
+        <div id="study-view" class="hidden">
+          <div id="study-body"></div>
+        </div>
         <!-- A2 · ANNOTATOR · the image, the regions traced on it, and the panel
              that asks what is being extracted. The picture comes through the
              bridge like every other byte (W1); the regions are an SVG overlay in

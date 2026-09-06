@@ -46,7 +46,13 @@ export type WindowType =
   // SHELF1 · THE WIDE LIST. The curated, savable list of resources a study
   // works from — a ShelfGraph, not a computed view of a folder's orphans.
   // (video editor: browser → SHELF → timeline.)
-  | "shelf";
+  | "shelf"
+  // STUDY · what the canvas IS, as opposed to what a node is: the graph's name
+  // and id, its propagative metadata (DP-65), the site position, the HDT-O
+  // fields. It was the no-node branch of the INSPECTOR, which made a per-graph
+  // panel live inside a per-node window — and ended it with "Select a node to
+  // inspect it". A window of its own is the place that sentence was pointing at.
+  | "study";
 
 /** A single window instance — its own id + type + type-specific state. */
 export interface Win {
@@ -434,6 +440,7 @@ export const WINDOW_TYPE_META: Record<WindowType, { icon: string; labelKey: stri
   storage: { icon: "🗄", labelKey: "win.storage" },
   annotator: { icon: "✎", labelKey: "win.annotator" },
   shelf: { icon: "▤▤", labelKey: "win.shelf" },
+  study: { icon: "◈", labelKey: "win.study" },
 };
 
 /** The window type the active workspace currently shows — the ACTIVE window's
