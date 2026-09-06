@@ -27,6 +27,7 @@ import * as esbuild from "esbuild";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import * as Sorg from "./sorgenti.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SRC = join(HERE, "..", "src");
@@ -329,14 +330,21 @@ console.log("\n6f · THE ZERO RUNG: a refusal names the gesture you HAVE");
      + "with the node naming somebody else, «sign in» is the one instruction "
      + "that cannot help");
 
-  // the ladder's first step needs nobody
+  // ── HERE THE SUBJECT IS THE PROSE, and these checks are NOT repaired ──────
+  //
+  // Everything above asks about a program and is asked of a parser. What
+  // follows asks about SENTENCES A PERSON READS — whether a refusal still says
+  // «sign in» — and searching a word inside one of those is not the defect, it
+  // is the only correct way to ask. `Sorg.prosa` exists to say so at the call
+  // site, so nobody later rewrites these as code fences and nobody counts them
+  // among the ones that had to change.
   const none = i18n.match(/"ident\.next\.none": "([^"]*)"/);
   ok(none, "the zero rung has a sentence");
-  ok(/not a login/i.test(none[1]) && /signature/i.test(none[1]),
+  ok(Sorg.prosa(none[1], "not a login") && Sorg.prosa(none[1], "signature"),
      "…and it says the step is a SIGNATURE and not a login: asking somebody to "
      + "sign in on a node before they have said who they claim to be says that "
      + "without that node they do not exist");
-  ok(/offline/i.test(none[1]),
+  ok(Sorg.prosa(none[1], "offline"),
      "…and that it needs nobody, which is the property that makes the ladder a "
      + "ladder rather than a gate");
 
@@ -344,7 +352,7 @@ console.log("\n6f · THE ZERO RUNG: a refusal names the gesture you HAVE");
   for (const key of ["study.restricted", "members.joinNeedsIdentity"]) {
     const found = i18n.match(new RegExp(`"${key}": "([^"]*)"`));
     ok(found, `${key} exists`);
-    ok(!/sign in/i.test(found[1]),
+    ok(!Sorg.prosa(found[1], "sign in"),
        `${key} states the FACT and leaves the instruction to the rung — it used `
        + "to end «Sign in and open it again», which on a clean profile named a "
        + "step the chip was not offering");

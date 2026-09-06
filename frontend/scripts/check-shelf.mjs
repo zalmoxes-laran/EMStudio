@@ -6,6 +6,7 @@
 // esbuild and exercised in node, with a stub localStorage and crypto.randomUUID.
 import * as esbuild from "esbuild";
 import assert from "node:assert/strict";
+import * as Sorg from "./sorgenti.mjs";
 import { randomUUID } from "node:crypto";
 
 const mem = new Map();
@@ -307,16 +308,21 @@ const DIGEST_B = "sha256:" + "cd".repeat(32);
   eq(T.parseShelfTable({ columns: ["ID"], rows: [] }).rows, [],
      "…while a real table with no rows IS an empty shelf");
 
-  // THE constraint: this module answers nothing about a row. No locator
-  // regex, and not one of the badge VALUES written down anywhere in it.
+  // THE constraint: this module answers nothing about a row. No locator, and
+  // not one of the badge VALUES written down anywhere in it.
+  //
+  // Asked of the PROGRAM (`sorgenti.mjs`, the shared reader) and not of the
+  // file. The text search this replaced said the module mentions the badge
+  // value "subscribe" the moment somebody wrote `const unsubscribe = …`.
   const src = await (await import("node:fs/promises"))
     .readFile(`${SRC}shelf-table.ts`, "utf8");
-  const code = src.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
-  ok(!/https?:/.test(code), "no locator scheme in the code: residence is not computed here");
-  ok(!/s3:/.test(code), "…nor an s3 prefix");
+  ok(Sorg.indirizziNelCodice(src).length === 0,
+     "no locator in the code: residence is not computed here");
+  ok(!Sorg.stringheLetterali(src).some((v) => /^s3:/.test(v)), "…nor an s3 address");
   for (const value of ["minio", "only_shelf", "used_in_graph", "comparandum",
                        "internal_source", "subscribe"]) {
-    ok(!code.includes(value), `the value "${value}" is never mentioned: it is the library's`);
+    ok(!Sorg.nomina(src, value),
+       `the value "${value}" is never named: it is the library's`);
   }
 }
 

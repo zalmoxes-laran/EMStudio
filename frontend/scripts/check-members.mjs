@@ -35,6 +35,7 @@
 //
 // `fetch` is stubbed, so this runs with no node and no network.
 import assert from "node:assert/strict";
+import * as Sorg from "./sorgenti.mjs";
 import * as esbuild from "esbuild";
 
 const SRC = new URL("../src/", import.meta.url).pathname;
@@ -148,29 +149,36 @@ const BRUNO = "0000-0001-5109-3700";
   ok(/function shareThisRoom\(\): void/.test(main),
      "…and it is a function, not a panel");
 
-  const body = main.slice(main.indexOf("function shareThisRoom"));
-  const end = body.indexOf("\n}\n");
-  const share = body.slice(0, end);
+  // The function's REAL body, from the parser (`sorgenti.mjs`) — not
+  // `slice(indexOf("function …"), indexOf("\n}\n"))`, which ends at the first
+  // line that happens to start with a brace and has the fence reading somebody
+  // else's function from then on.
+  const share = Sorg.dentro(main, "shareThisRoom");
+  ok(share, "…and the parser finds it: a rename must fail here, not pass on \"\"");
 
   // A LINK, and nothing else: no fetch, no roster, no ACL read.
-  ok(/window\.open\(/.test(share), "it opens the node's page");
-  ok(!/fetch\(|request\(|renderMembersPanel/.test(share),
+  ok(Sorg.chiama(share, "window.open"), "it opens the node's page");
+  ok(!Sorg.chiama(share, "fetch") && !Sorg.chiama(share, "request") &&
+     !Sorg.chiama(share, "renderMembersPanel"),
      "…and reads nothing itself: a copy of the panel would start here, with one "
      + "fetch that seemed harmless");
-  ok(/\/work\/\?room=/.test(share),
+  ok(Sorg.stringheLetterali(share).some((v) => v.includes("/work/?room=")),
      "…at the stable per-room address the node serves (`/work/?room=<id>`), "
      + "which is the one the note asks every app to bring a link to");
 
   // NO FIELD FOR A SERVER ADDRESS — the note says drawing one means you got lost
-  ok(/getSettings\(\)\.sync\.hubUrl/.test(share),
+  ok(Sorg.chiama(share, "getSettings") && /sync\.hubUrl/.test(share),
      "the server is the one this session is connected to");
-  ok(!/localhost|https?:\/\//.test(share),
+  // Asked of the STRING LITERALS, so the comment that explains this very rule
+  // does not break it. Constructed and run: an honest
+  // `// deliberately NOT https://em.example.org` made the text version fail —
+  // the fence's own warning, written down, tripping the fence.
+  ok(Sorg.indirizziNelCodice(share).length === 0,
      "…and no address is written into the code: a URL spelled here is a URL that "
      + "goes wrong on the first node whose EMStudio lives somewhere else");
 
   // …AND THE ENTRY IS GOVERNED BY THE SAME FACT AS ITS SIBLING
-  const reflect = main.slice(main.indexOf("function reflectRoundTrip"));
-  const reflectBody = reflect.slice(0, reflect.indexOf("\n}\n"));
+  const reflectBody = Sorg.corpoDi(main, "reflectRoundTrip");
   ok(/const inRoom = /.test(reflectBody) &&
      /btn-share-room[\s\S]{0,80}!inRoom/.test(reflectBody),
      "one `inRoom` governs both menu entries — two of them would drift, and the "

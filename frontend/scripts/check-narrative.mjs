@@ -26,6 +26,7 @@
 // The DOM is linkedom: enough of one to build elements and read them back, and
 // small enough that a check script does not need a browser.
 import assert from "node:assert/strict";
+import * as Sorg from "./sorgenti.mjs";
 import { readFileSync } from "node:fs";
 import * as esbuild from "esbuild";
 import { parseHTML } from "linkedom";
@@ -1090,27 +1091,33 @@ eq(doc.graph.nodes.filter(
      "stabile · la larghezza della corsia è dichiarata UNA sola volta");
   eq(declared("nv-chrome-line"), 1,
      "stabile · e così l'altezza di una riga di chrome");
-  const rule = (sel) => {
-    const at = css.indexOf(sel + " {");
-    return at < 0 ? "" : css.slice(at, css.indexOf("}", at));
-  };
-  ok(rule(".nv-block-row").includes("grid-template-columns")
-     && rule(".nv-block-row").includes("var(--nv-tools-w)"),
+  // La cascata si INTERROGA (`sorgenti.mjs`): tutte le regole che nominano il
+  // selettore, contando le graffe. `.nv-chapter-tools` è dichiarato due volte —
+  // una in gruppo e una da solo, con l'altezza che riserva — e un lettore che
+  // torna la prima risponde «nessuna altezza» ed è in torto sulla pagina.
+  ok(Sorg.dichiara(css, ".nv-block-row", "grid-template-columns") &&
+     Sorg.bloccoCss(css, ".nv-block-row").includes("var(--nv-tools-w)"),
      "stabile · la riga è una griglia con la corsia come TRACCIA riservata");
   for (const sel of [".nv-chapter-tools", ".nv-add-row", ".nv-authors-tools"])
-    ok(rule(sel).includes("min-height: var(--nv-chrome-line)"),
+    ok(Sorg.dichiara(css, sel, "min-height", "var(--nv-chrome-line)"),
        `stabile · ${sel} riserva l'altezza di una riga`);
 
   // 4 · la PAGINA (fondo e aria) è sulla classe che i due mount condividono,
   // non sull'id del mount attivo: è l'altra metà del difetto misurato
-  const page = css.slice(css.indexOf(".nv-view {"), css.indexOf(".nv-view {") + 220);
-  ok(/padding:/.test(page) && /background:/.test(page),
+  //
+  // Le due finestre di lunghezza fissa che stavano qui — 220 e 320 caratteri —
+  // erano più lunghe delle regole che dovevano leggere: quella di
+  // `#narrative-view` finisce a 202 caratteri, quindi la finestra si portava
+  // dentro `#narrative-view.hidden` e l'inizio di `.nv-picker`. Costruito e
+  // fatto girare: un onesto `padding` su `.nv-picker` faceva dire al recinto
+  // che l'id ridichiara il padding della pagina. Ora è il blocco vero.
+  ok(Sorg.dichiara(css, ".nv-view", "padding") &&
+     Sorg.dichiara(css, ".nv-view", "background"),
      "stabile · `.nv-view` porta il fondo e il padding della pagina");
-  const idRule = css.slice(css.indexOf("#narrative-view {"),
-                           css.indexOf("#narrative-view {") + 320);
-  ok(!/padding:/.test(idRule),
+  ok(!Sorg.dichiara(css, "#narrative-view", "padding"),
      "stabile · e l'id NON li ridichiara (il secondario ne resterebbe fuori)");
-  ok(/position:\s*absolute/.test(idRule),
+  ok(/absolute/.test(Sorg.bloccoCss(css, "#narrative-view").match(
+       /position\s*:([^;]*)/)?.[1] ?? ""),
      "stabile · all'id resta solo ciò che è vero del mount attivo: è un overlay");
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
   ok(/id="narrative-view"[^>]*class="[^"]*nv-view/.test(html),

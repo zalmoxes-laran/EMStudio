@@ -17,6 +17,7 @@
 // node.
 import * as esbuild from "esbuild";
 import assert from "node:assert/strict";
+import * as Sorg from "./sorgenti.mjs";
 import { readFile } from "node:fs/promises";
 
 const SRC = new URL("../src/", import.meta.url).pathname;
@@ -280,46 +281,48 @@ function xmlState(overrides = {}) {
      "…and carries the version the datamodel declares");
   // the module must not decide WHICH ontology a class belongs to
   const src = await readFile(`${SRC}mapping-editor.ts`, "utf8");
-  const codeOnly = src
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/^\s*\/\/.*$/gm, "")
-    .replace(/^\s*\*.*$/gm, "");
   for (const name of ["CRMarchaeo", "CRMdig", "CRMgeo", "CRMinf", "HDT-O",
                       "PROV-O"]) {
-    ok(!codeOnly.includes(name),
+    ok(!Sorg.nomina(src, name),
        `the code never names ${name}: which class is whose is the datamodel's`);
   }
-  ok(!/\.owl|\.ttl|rdflib/.test(codeOnly),
+  ok(!Sorg.stringheLetterali(src).some((v) => /\.owl$|\.ttl$/.test(v)) &&
+     !Sorg.importaDa(src, "rdflib"),
      "…and no ontology file is read on this side");
 }
 
 // ── THE CONSTRAINT: this module knows nothing about the EM language ────────
 {
   const source = await readFile(`${SRC}mapping-editor.ts`, "utf8");
-  // comments explain the design and MAY name things; the code may not
-  const code = source
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/^\s*\/\/.*$/gm, "")
-    .replace(/^\s*\*.*$/gm, "");
+  //
+  // Asked of the PROGRAM — an identifier, a property name, or a WHOLE string
+  // literal (`sorgenti.mjs`, the shared reader). Comments explain the design
+  // and MAY name things; the parser never sees them, so no stripping here.
+  //
+  // The word-boundary version this replaced carried a comment claiming `\bUS\b`
+  // was safe because `USE` would not trip it. Constructed and run: an honest
+  // `const FALLBACK_LOCALE = "en-US"` DID trip it — `\b` sits between a hyphen
+  // and a letter. And `A8` and `E19` are two and three characters: the honest
+  // colours `#00A8FF` and `#E19B4C` both reported a CIDOC class.
   for (const name of ["StratigraphicUnit", "EpochNode", "DocumentNode",
                       "PropertyNode", "has_property", "is_after",
                       "extracted_from", "US", "USVs"]) {
-    // word-boundary match so `USE` or a property called `us` does not trip it
-    const hit = new RegExp(`\\b${name}\\b`).test(code);
-    ok(!hit, `the code never names ${name}: the datamodel is the library's`);
+    ok(!Sorg.nomina(source, name),
+       `the code never names ${name}: the datamodel is the library's`);
   }
   for (const cidoc of ["A8", "E31 Document", "P120_occurs_before", "E19"]) {
-    ok(!code.includes(cidoc),
+    ok(!Sorg.nomina(source, cidoc),
        `the code never names the CIDOC class ${cidoc}`);
   }
   // …and the schema's own vocabulary IS here, because this module is its writer
   for (const key of ["is_id", "is_description", "property_name", "is_relation",
                      "source_path", "column_mappings", "source_settings",
                      "relations"]) {
-    ok(code.includes(key), `the schema key ${key} is written by this module`);
+    ok(Sorg.nomina(source, key),
+       `the schema key ${key} is written by this module`);
   }
   // no fetch either: the caller does the round trips
-  ok(!/\bfetch\s*\(/.test(code), "a pure module makes no requests");
+  ok(!Sorg.chiama(source, "fetch"), "a pure module makes no requests");
 }
 
 console.log(`mapping-editor: ${checks} checks passed`);

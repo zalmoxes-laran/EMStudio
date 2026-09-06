@@ -40,6 +40,7 @@
 // was of exactly that kind.
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import * as Sorg from "./sorgenti.mjs";
 
 const SRC = new URL("../src/", import.meta.url).pathname;
 // …with its comments removed BEFORE anything is parsed. A comment INSIDE a
@@ -156,10 +157,18 @@ function boxOf(selectors) {
       "that makes the rows move.");
   ok(/if \(!active\) frag\.querySelectorAll\("\*"\)/.test(body),
     "…and what it decides is a CLASS, not a structure");
-  ok(!/\.hdr-passive\s*\{[^}]*(padding|margin|font-size|display|height)/.test(CSS),
+  // Asked of the RULE's declared PROPERTIES, not of the block's text
+  // (`sorgenti.mjs`). The text version read `color: var(--display-muted)` — an
+  // honest colour whose custom property happens to be called `--display-muted`
+  // — and reported a box metric. Constructed and run before this line changed.
+  const METRICHE = ["padding", "margin", "font-size", "display", "height",
+                    "min-height", "max-height", "line-height"];
+  const cambia = [...Sorg.proprieta(CSS, ".hdr-passive")]
+    .filter((p) => METRICHE.includes(p));
+  ok(cambia.length === 0,
     "`.hdr-passive` must not change a box metric: it is the hook that makes an " +
       "unfocused head quieter, and a quieter head that is also SHORTER moves " +
-      "everything below it");
+      `everything below it — found ${cambia.join(", ")}`);
 }
 
 // ── 2 · what the head promises, the head builds ──────────────────────────────
@@ -263,10 +272,13 @@ const NINE = [
   // row that existed in the focused mount only. It is gone, and so is the
   // declaration — an exception left standing after its cause has been removed is
   // worse than the exception, because it teaches people not to trust this table.
-  ok(!/id="shelf-bar"/.test(HTML),
+  // The markup is QUERIED and the stylesheet's SELECTORS are read — never the
+  // two files as text (`sorgenti.mjs`). The text version answered "still there"
+  // for an honest new element called `#shelf-barcode`: constructed and run.
+  ok(Sorg.elementi(HTML, "#shelf-bar").length === 0,
     "`#shelf-bar` is gone from the markup (HDR2): the shelf's chrome is in the " +
       "window header, which both mounts build");
-  ok(!/#shelf-bar/.test(CSS),
+  ok(!Sorg.miraA(CSS, "#shelf-bar"),
     "…and so are its rules — a row that no longer exists must not keep a box");
   // THE TRAP, closed by naming it: the fastest way to make the check above pass
   // is to DELETE the bar and its nine controls. So each of the nine is asserted
