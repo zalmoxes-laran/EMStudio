@@ -75,20 +75,29 @@ import { renderInspector } from "./inspector";
 import { searchTwins } from "./twins";
 import type { BoxLookup } from "./surface-scroll";
 import {
+  mountSurface,
+  refreshSurfaces,
+  surfaceOf,
+  surfaceTypeOf,
+  unmountSurface,
+} from "./shell/surface";
+import { registerBuiltinSurfaces, type StorageMount } from "./shell/types";
+import {
+  layoutRects,
+  sameRect,
+  type DividerRect,
+  type Rect,
+} from "./shell/layout";
+import {
   paintSurface,
   rememberFocusedBoxes,
   restoreFocusedBoxes,
   preservingScroll,
   rememberPanelScroll,
-  rememberScrollsIn,
   rememberSurfaceScroll,
   restorePanelScroll,
-  restoreScrollsIn,
   restoreSurfaceScroll,
   scrollerOf,
-  surfaceKey,
-  surfacePlace,
-  surfaceScroll,
 } from "./surface-scroll";
 import {
   CONNECTOR_API_VERSION,
@@ -289,7 +298,6 @@ import {
   removeEmDataHost,
   emDataFilter,
   setEmDataFilter,
-  type EmDataHost,
   currentSheetKey,
   initEmData,
   renderEmData,
@@ -335,7 +343,6 @@ import {
   splitWindow,
   winMode,
   windowsOf,
-  type Pane,
   type Win,
   type WorkspaceId,
   type WindowType,
@@ -4913,7 +4920,7 @@ function renderResourcePanels(): void {
   ]) {
     const panel = area.querySelector<HTMLElement>(":scope > .win-resources");
     if (!panel) continue;
-    const id = area === canvasWrapEl ? activeWin().id : area.dataset.win;
+    const id = area === canvasWrapEl ? wrapOwnerId : area.dataset.win;
     const win = windowsOf().find((w) => w.id === id);
     const provider = win && RESOURCE_PROVIDERS[win.type];
     if (!win || !provider) continue;
@@ -7822,8 +7829,11 @@ document.getElementById("btn-add-project")?.addEventListener("click", () => {
   input.click();
 });
 
-document.getElementById("storage-add-root")?.addEventListener(
-  "click", () => void openStoragePlaces());
+// HDR2 · the "+ folder" verb is a chip of the window header (`buildHeaderStrip`,
+// `focusThen(win, openStoragePlaces)`), which every Storage area builds. The id
+// it used to hang on lived in `#storage-bar` inside the focused mount, and that
+// bar had already been neutralised in CSS — so this listener was wired to an
+// invisible button. It goes with the singleton.
 // HDR2 · nothing to wire by id here any more. The shelf's nine controls are
 // built per window in `buildHeaderStrip` (the name, the count, `+ URI`, ⟳), in
 // the Shelf menu (Open, Save, Empty) and in `openShelfUriForm` (the address and
@@ -8494,9 +8504,7 @@ function openEMTree(): void {
   const win = activeWin();
   setWinType(win, "emtree");
   setWinCurrent(win, "panel", "emtree");
-  mountWindow(win);
-  renderTiles();
-  renderAreaHeaders();
+  renderTiles();   // the one structural entry: it mounts and re-heads too
 }
 
 const emtreeHandlers: EMTreeHandlers = {
@@ -10017,9 +10025,7 @@ function revealFromNarrative(nodeId: string): void {
   } else {
     const win = activeWin();
     setWinType(win, "graph");
-    mountWindow(win);
     renderTiles();
-    updateWindowHeader();
   }
   revealFromWarning(nodeId);
 }
@@ -10170,7 +10176,9 @@ function drawTiles(): void {
 /** The area element under a point, and the window it holds. */
 function areaAt(x: number, y: number): { el: HTMLElement; winId: string } | null {
   const areas: { el: HTMLElement; winId: string }[] = [
-    { el: canvasWrapEl, winId: activeWin().id },
+    // …the wrap only when it HAS an owner: parked and hidden its rectangle
+    // collapses to 0×0 at the origin, which a hit test would happily match.
+    ...(wrapOwnerId ? [{ el: canvasWrapEl, winId: wrapOwnerId }] : []),
     ...[...document.querySelectorAll<HTMLElement>(".tile-area")].map((el) => ({
       el,
       winId: el.dataset.win ?? "",
@@ -10240,10 +10248,6 @@ function addCornerGrips(area: HTMLElement, winId: string, barOffset: string): vo
           return; // released on nothing meaningful: do nothing, quietly
         }
         renderTiles();
-        const win = activeWin();
-        if (win.type === "graph") setMode(winMode(win));
-        else mountWindow(win);
-        updateWindowHeader();
       };
       window.addEventListener("mousemove", move);
       window.addEventListener("mouseup", up);
@@ -10252,328 +10256,453 @@ function addCornerGrips(area: HTMLElement, winId: string, barOffset: string): vo
   }
 }
 
-/** Build the DOM of one pane of the tree. */
-function buildPane(pane: Pane, activeId: string): HTMLElement {
-  if (pane.kind === "leaf") {
-    if (pane.winId === activeId) {
-      // the live area IS the existing canvas wrapper, moved into place
-      canvasWrapEl.classList.add("tile-active");
-      canvasWrapEl.style.flex = "1 1 0";
-      canvasWrapEl
-        .querySelectorAll(".tile-corner, .win-resources, .win-res-chevron")
-        .forEach((g) => g.remove()); // rebuilt below, so they never pile up
-      const activeWinObj = windowsOf().find((w) => w.id === pane.winId);
-      if (activeWinObj) buildResourcePanel(canvasWrapEl, activeWinObj);
-      addCornerGrips(canvasWrapEl, pane.winId, "var(--winbar-h, 0px)");
-      return canvasWrapEl;
-    }
-    const win = windowsOf().find((x) => x.id === pane.winId);
-    const area = document.createElement("div");
-    area.className = "tile-area";
-    area.style.flex = "1 1 0";
-    area.dataset.win = pane.winId;
-    const bar = document.createElement("div");
-    // WIN-FIX1 · this area's own HEADER. Left empty here and filled by
-    // `renderAreaHeaders` with the SAME bar the focused window gets — every area
-    // is a window, so every area says what it is and offers its own verbs. It
-    // used to be a thin label strip ("Grafo · Matrix — clicca per lavorare qui"),
-    // which is what made three quarters of an arrangement read as panes rather
-    // than windows.
-    bar.className = "tile-bar win-header";
-    area.appendChild(bar);
-    if (win && win.type === "graph") {
-      // FOCUS-NOJITTER / STEP A · the width the panel takes is published on the
-      // AREA (`--palette-w`, set by `buildResourcePanel`) and the canvas reads
-      // it in CSS — in this area and in the focused one alike. So a window with
-      // its panel open is the same size whether or not it has the focus, and
-      // the drawing never re-frames when the pointer crosses a divider.
-      const cv = document.createElement("canvas");
-      area.appendChild(cv);
-      tileCanvases.set(pane.winId, cv);
-    } else if (win) {
-      // WIN7 · a secondary area is a LIVE view of the document, whatever its
-      // type. It used to be a note ("click to work here"), which meant three
-      // quarters of an IDE arrangement showed nothing at all until you clicked
-      // in it — the arrangement was a promise rather than a workspace.
-      buildSecondarySurface(area, win);
-    }
-    // STEP A · this window's resources panel, if it has one open. Built here,
-    // in ITS area, which is what makes it stay put when the focus moves away.
-    if (win) buildResourcePanel(area, win);
-    // ── a secondary area is a WORKING area, not a picture ──────────────────
-    //
-    // Its camera is its own, so pan and zoom happen HERE without stealing the
-    // focus (you look around a reference view without losing the one you were
-    // editing). Anything that touches the DOCUMENT promotes the area first and
-    // then continues in the same gesture: the pointerdown is replayed on the
-    // real canvas, which by then occupies exactly this rectangle. So the first
-    // click selects, drags, or starts a connector — it is not spent on
-    // "activating a window", which is the way this normally goes wrong.
-    const winIdOf = pane.winId;
-    const modeOf = (): ViewKind =>
-      win && win.type === "graph" ? winMode(win) : "matrix";
-    const worldAt = (e: { clientX: number; clientY: number }) => {
-      const cv = tileCanvases.get(winIdOf);
-      const vp = viewportFor(winIdOf, modeOf());
-      if (!cv) return null;
+// ── ONE SURFACE · the arrangement is geometry, the focus is routing ──────────
+//
+// What changed tonight, and the one line it all came from:
+//
+//     tileRoot.innerHTML = "";
+//
+// ran on EVERY focus change, because `selectWindow()` called `renderTiles()` and
+// the focus follows the mouse. A movement of the pointer destroyed and rebuilt
+// the whole tree of areas — and three mechanisms existed to put back what that
+// line threw away (`surface-scroll.ts`'s `rememberScrollsIn`, `wrapWin`,
+// `releaseTilePanels`). They did not solve a problem; they compensated for a
+// destruction that should not have happened.
+//
+// Now:
+//  · every window owns ONE `.tile-area`, created once and NEVER re-parented;
+//  · the tree decides four numbers per area (`shell/layout.ts`), so a split, a
+//    join, a ratio drag and a resize write coordinates, not markup;
+//  · a change of FOCUS writes a class. Nothing is built, moved or measured.
+//
+// `#canvas-wrap` is no longer "the focused area": it is THE GRAPH'S AREA — the
+// area of whichever window still needs the singleton editing machine (graph,
+// narrative, the hosted panels, the annotator). It is positioned like any other
+// area and it only changes owner when the focus moves between two of THOSE
+// types. That residual migration is the graph's, and it is the next step.
+
+/** The types still drawn by the singleton wrap — the ones NOT converted. Named
+ *  here, in one list, so the boundary of the conversion is readable rather than
+ *  deducible from a fall-through. */
+const WRAP_TYPES: WindowType[] = [
+  "graph", "narrative", "emtree", "inspector", "annotator",
+];
+const needsWrap = (type: WindowType): boolean => WRAP_TYPES.includes(type);
+
+/** One area per window, for the lifetime of the window. */
+const winAreas = new Map<string, HTMLElement>();
+/** The divider strips, pooled: a split adds one, a join hides one. */
+const tileDividers: HTMLElement[] = [];
+/** What each divider is dragging right now — read at mousedown, so one element
+ *  can serve a different split after the arrangement changes. */
+const dividerInfo = new WeakMap<HTMLElement, DividerRect>();
+/** The rectangle last written to each element: a re-layout that changes nothing
+ *  writes nothing, which is what makes `positionAreas` safe to call often. */
+const lastRects = new WeakMap<HTMLElement, Rect>();
+/** The window whose area IS `#canvas-wrap`. NOT the focused window — that
+ *  distinction is the whole of tonight. Its TYPE is kept too, so a window
+ *  transformed in place (Graph → Narrative) re-mounts while a window that only
+ *  gained the focus does not. */
+let wrapOwnerId: string | null = null;
+let wrapOwnerType: WindowType | null = null;
+
+const byId: BoxLookup = (id) => document.getElementById(id);
+
+/** Wire an area's own gestures. Called ONCE per window: these listeners outlive
+ *  every arrangement change, because the element does. */
+function createArea(winId: string): HTMLElement {
+  const area = document.createElement("div");
+  area.className = "tile-area";
+  area.dataset.win = winId;
+  const bar = document.createElement("div");
+  // WIN-FIX1 · this area's own HEADER, filled by `renderAreaHeaders` with the
+  // SAME bar every other area gets — every area is a window, so every area says
+  // what it is and offers its own verbs.
+  bar.className = "tile-bar win-header";
+  area.appendChild(bar);
+  const winNow = (): Win | undefined => windowsOf().find((w) => w.id === winId);
+  const modeOf = (): ViewKind => {
+    const w = winNow();
+    return w && w.type === "graph" ? winMode(w) : "matrix";
+  };
+  const worldAt = (e: { clientX: number; clientY: number }) => {
+    const cv = tileCanvases.get(winId);
+    const vp = viewportFor(winId, modeOf());
+    if (!cv) return null;
+    const r = cv.getBoundingClientRect();
+    return vp.toWorld(e.clientX - r.left, e.clientY - r.top);
+  };
+  area.addEventListener(
+    "wheel",
+    (e) => {
+      const cv = tileCanvases.get(winId);
+      if (!cv) return;
+      e.preventDefault();
       const r = cv.getBoundingClientRect();
-      return vp.toWorld(e.clientX - r.left, e.clientY - r.top);
-    };
-    area.addEventListener(
-      "wheel",
-      (e) => {
-        const cv = tileCanvases.get(winIdOf);
-        if (!cv) return;
-        e.preventDefault();
-        const r = cv.getBoundingClientRect();
-        markCameraTouched(winIdOf, modeOf()); // aimed by hand: never re-frame it
-        viewportFor(winIdOf, modeOf()).zoomAt(
-          e.clientX - r.left,
-          e.clientY - r.top,
-          Math.exp(-e.deltaY * 0.0016),
-        );
-        drawTiles();
-      },
-      { passive: false },
-    );
-    area.addEventListener("pointermove", (e) => {
-      const w = worldAt(e);
-      const sc = scenes[modeOf()] ?? null;
-      const hit = w && sc ? hitTest(sc, w.x, w.y) : null;
-      const now = hit?.id ?? null;
-      if (tileHover.get(winIdOf) === now) return;
-      tileHover.set(winIdOf, now);
-      area.style.cursor = now ? "pointer" : "default";
+      markCameraTouched(winId, modeOf()); // aimed by hand: never re-frame it
+      viewportFor(winId, modeOf()).zoomAt(
+        e.clientX - r.left,
+        e.clientY - r.top,
+        Math.exp(-e.deltaY * 0.0016),
+      );
       drawTiles();
-    });
-    area.addEventListener("pointerleave", () => {
-      if (tileHover.get(winIdOf) == null) return;
-      tileHover.set(winIdOf, null);
-      drawTiles();
-    });
-    // ── FOCUS FOLLOWS MOUSE (Blender) ─────────────────────────────────────
-    //
-    // The editor moves to the area the pointer is IN, before any button is
-    // pressed. So by the time you press, the real canvas — the whole
-    // interaction machine, not a copy of it — is already under the cursor:
-    // click, drag, rubber-band and connector all work here exactly as they do
-    // anywhere else, from the FIRST gesture. No promoting click, no replay.
-    //
-    // Why this and not two interaction machines running side by side: there is
-    // one pointer. Two machines would differ only in holding two half-finished
-    // gestures at once (a marquee in one area while a connector hangs in the
-    // other), which no hand can produce. What was actually missing was that the
-    // machine be where the hand is — this is that, and it is what Blender does.
-    //
-    // Guarded: never mid-drag (moving the mouse across a divider while dragging
-    // a node must not hand the node to another window), and never while placing
-    // a node from the palette.
-    area.addEventListener("pointerenter", () => {
-      if (dragMode !== "none" || connect || placingType) return;
-      if (activeWin().id === winIdOf) return;
-      selectWindow(winIdOf);
-    });
-    // ── the palette drop lands on THIS window ──────────────────────────────
-    //
-    // A drag from the palette is an HTML5 drag: pointer events do not fire, so
-    // focus-follows-mouse cannot hand the editor over mid-drag and the drop
-    // would be delivered to whichever canvas happened to be the editor —
-    // creating the node in the wrong window. So a secondary area accepts the
-    // drop itself: it takes the focus and places the node at the point of the
-    // GRAPH that was pointed at, in this area's own camera.
-    //
-    // W1 · the SAME reasoning covers a resource dragged out of a Storage
-    // window. The Viewer's own surface is a singleton inside the focused area,
-    // so a drop meant for a Viewer that does NOT have the focus would land
-    // nowhere at all — which is exactly the bug this per-area handler was
-    // written for, arriving a second time with a different payload.
-    area.addEventListener("dragover", (e) => {
-      if (storageDragPayload(e) &&
-          ["viewer", "shelf"].includes(
-            windowsOf().find((w) => w.id === winIdOf)?.type ?? "")) {
-        e.preventDefault();
-        area.classList.add("drop-target");
-        return;
-      }
-      if (!paletteDragPayload(e)) return;
+    },
+    { passive: false },
+  );
+  area.addEventListener("pointermove", (e) => {
+    const w = worldAt(e);
+    const sc = scenes[modeOf()] ?? null;
+    const hit = w && sc ? hitTest(sc, w.x, w.y) : null;
+    const now = hit?.id ?? null;
+    if (tileHover.get(winId) === now) return;
+    tileHover.set(winId, now);
+    area.style.cursor = now ? "pointer" : "default";
+    drawTiles();
+  });
+  area.addEventListener("pointerleave", () => {
+    if (tileHover.get(winId) == null) return;
+    tileHover.set(winId, null);
+    drawTiles();
+  });
+  // ── FOCUS FOLLOWS MOUSE (Blender) ───────────────────────────────────────
+  //
+  // The editor moves to the area the pointer is IN, before any button is
+  // pressed. Since tonight that costs a class on two elements — the area that
+  // leaves and the one that arrives — instead of rebuilding the tree.
+  //
+  // Guarded: never mid-drag (moving across a divider while dragging a node must
+  // not hand the node to another window), and never while placing a node.
+  area.addEventListener("pointerenter", () => {
+    if (dragMode !== "none" || connect || placingType) return;
+    if (activeWin().id === winId) return;
+    selectWindow(winId);
+  });
+  // ── the palette drop lands on THIS window ────────────────────────────────
+  //
+  // A drag from the palette is an HTML5 drag: pointer events do not fire, so
+  // focus-follows-mouse cannot hand the editor over mid-drag and the drop would
+  // be delivered to whichever canvas happened to be the editor — creating the
+  // node in the wrong window. So the area accepts the drop itself: it takes the
+  // focus and places the node at the point of the GRAPH that was pointed at, in
+  // this area's own camera.
+  area.addEventListener("dragover", (e) => {
+    if (storageDragPayload(e) &&
+        ["viewer", "shelf"].includes(winNow()?.type ?? "")) {
       e.preventDefault();
       area.classList.add("drop-target");
-    });
-    area.addEventListener("dragleave", () => area.classList.remove("drop-target"));
-    area.addEventListener("drop", (e) => {
-      area.classList.remove("drop-target");
-      const resource = storageDragPayload(e);
-      const target = windowsOf().find((w) => w.id === winIdOf);
-      if (resource && target?.type === "viewer") {
-        e.preventDefault();
-        selectWindow(winIdOf); // the window you dropped on is the one you meant
-        pinViewerCollection(target, resource);
-        return;
-      }
-      // SHELF1 · the same gesture, the other meaning: dropping a file on the
-      // shelf is "keep this", and it is where the digest is taken.
-      if (resource && target?.type === "shelf") {
-        e.preventDefault();
-        selectWindow(winIdOf);
-        if (resource.type === "dir") toast(t("shelf.folderIsASource"));
-        else void addFileToShelf(resource);
-        return;
-      }
-      const p = paletteDragPayload(e);
-      if (!p) return;
-      e.preventDefault();
-      if (!store) {
-        toast("Open a document first");
-        return;
-      }
-      const wpt = worldAt(e);
-      selectWindow(winIdOf);
-      placingType = p.nodeType;
-      placingKind = p.kind ?? null;
-      placingIsResource = !!p.isResource;
-      if (wpt) placeNode(wpt.x, wpt.y);
-      else cancelPlacing();
-    });
-    area.addEventListener("pointerdown", (e) => {
-      // PAN, same gesture as the canvas (middle button or Space held): this
-      // moves a CAMERA, not the document, so it must NOT steal the focus — the
-      // whole point of a reference area is looking around it while you keep
-      // working in the other one.
-      if (e.button === 1 || spaceHeld) {
-        e.preventDefault();
-        markCameraTouched(winIdOf, modeOf());
-        const vp = viewportFor(winIdOf, modeOf());
-        let lx = e.clientX;
-        let ly = e.clientY;
-        const move = (ev: PointerEvent): void => {
-          vp.x += ev.clientX - lx;
-          vp.y += ev.clientY - ly;
-          lx = ev.clientX;
-          ly = ev.clientY;
-          drawTiles();
-        };
-        const up = (): void => {
-          window.removeEventListener("pointermove", move);
-          window.removeEventListener("pointerup", up);
-        };
-        window.addEventListener("pointermove", move);
-        window.addEventListener("pointerup", up);
-        return;
-      }
-      // A press that reaches HERE means the pointer entered without the focus
-      // following (mid-drag, or placing a node): take the focus now and resolve
-      // the click in this area's own camera, so nothing is lost.
-      const wpt = worldAt(e);
-      const sc = scenes[modeOf()] ?? null;
-      const hit = wpt && sc ? hitTest(sc, wpt.x, wpt.y) : null;
-      selectWindow(winIdOf);
-      select(hit ? hit.id : null);
-    });
-    // the secondary bar is laid out already; measure it after the append below
-    addCornerGrips(area, pane.winId, `${bar.offsetHeight || 29}px`);
-    return area;
-  }
-  const split = document.createElement("div");
-  split.className = "tile-split" + (pane.dir === "col" ? " tile-col" : "");
-  const a = buildPane(pane.a, activeId);
-  a.style.flex = `${pane.ratio} 1 0`;
-  const div = document.createElement("div");
-  div.className = "tile-div" + (pane.dir === "col" ? " tile-div-col" : "");
-  const b = buildPane(pane.b, activeId);
-  b.style.flex = `${1 - pane.ratio} 1 0`;
-  // dragging the divider re-proportions THIS split only
-  div.addEventListener("mousedown", (e) => {
+      return;
+    }
+    if (!paletteDragPayload(e)) return;
     e.preventDefault();
-    div.classList.add("dragging");
-    const rect = split.getBoundingClientRect();
-    const firstId = paneIds(pane.a)[0];
-    const move = (ev: MouseEvent): void => {
-      const r =
-        pane.dir === "col"
-          ? (ev.clientY - rect.top) / Math.max(1, rect.height)
-          : (ev.clientX - rect.left) / Math.max(1, rect.width);
-      setSplitRatio(firstId, r);
-      renderTiles();
-    };
-    const up = (): void => {
-      div.classList.remove("dragging");
-      window.removeEventListener("mousemove", move);
-      window.removeEventListener("mouseup", up);
-    };
-    window.addEventListener("mousemove", move);
-    window.addEventListener("mouseup", up);
+    area.classList.add("drop-target");
   });
-  split.appendChild(a);
-  split.appendChild(div);
-  split.appendChild(b);
-  return split;
+  area.addEventListener("dragleave", () => area.classList.remove("drop-target"));
+  area.addEventListener("drop", (e) => {
+    area.classList.remove("drop-target");
+    const resource = storageDragPayload(e);
+    const target = winNow();
+    if (resource && target?.type === "viewer") {
+      e.preventDefault();
+      selectWindow(winId); // the window you dropped on is the one you meant
+      pinViewerCollection(target, resource);
+      return;
+    }
+    // SHELF1 · the same gesture, the other meaning: dropping a file on the shelf
+    // is "keep this", and it is where the digest is taken.
+    if (resource && target?.type === "shelf") {
+      e.preventDefault();
+      selectWindow(winId);
+      if (resource.type === "dir") toast(t("shelf.folderIsASource"));
+      else void addFileToShelf(resource);
+      return;
+    }
+    const p = paletteDragPayload(e);
+    if (!p) return;
+    e.preventDefault();
+    if (!store) {
+      toast("Open a document first");
+      return;
+    }
+    const wpt = worldAt(e);
+    selectWindow(winId);
+    placingType = p.nodeType;
+    placingKind = p.kind ?? null;
+    placingIsResource = !!p.isResource;
+    if (wpt) placeNode(wpt.x, wpt.y);
+    else cancelPlacing();
+  });
+  area.addEventListener("pointerdown", (e) => {
+    // PAN, same gesture as the canvas (middle button or Space held): this moves
+    // a CAMERA, not the document, so it must NOT steal the focus.
+    if (e.button === 1 || spaceHeld) {
+      e.preventDefault();
+      markCameraTouched(winId, modeOf());
+      const vp = viewportFor(winId, modeOf());
+      let lx = e.clientX;
+      let ly = e.clientY;
+      const move = (ev: PointerEvent): void => {
+        vp.x += ev.clientX - lx;
+        vp.y += ev.clientY - ly;
+        lx = ev.clientX;
+        ly = ev.clientY;
+        drawTiles();
+      };
+      const up = (): void => {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up);
+      return;
+    }
+    // A press that reaches HERE means the pointer entered without the focus
+    // following (mid-drag, or placing a node): take the focus now and resolve the
+    // click in this area's own camera, so nothing is lost.
+    const wpt = worldAt(e);
+    const sc = scenes[modeOf()] ?? null;
+    const hit = wpt && sc ? hitTest(sc, wpt.x, wpt.y) : null;
+    selectWindow(winId);
+    select(hit ? hit.id : null);
+  });
+  tileRoot.appendChild(area);
+  return area;
 }
 
-/** Lay the workspace's tree out. Cheap and idempotent: called on any change to
- *  the arrangement (split, close, activate, ratio) and after a workspace switch. */
-/**
- * The window whose surfaces are mounted in `#canvas-wrap` right now.
+// ── the wrap is an AREA now, so it needs an area's gestures ─────────────────
+//
+// Found by measuring, not by reading: `#canvas-wrap` used to BE the focused area
+// by definition, so nothing ever had to give it the focus. Since it belongs to
+// its owner rather than to the focus, a pointer coming back into the graph from
+// the table beside it had nothing to tell — the focus stayed on the table while
+// the cursor sat on the canvas. One listener, the same rule and the same guards
+// as every other area's.
+canvasWrapEl.addEventListener("pointerenter", () => {
+  if (dragMode !== "none" || connect || placingType) return;
+  if (!wrapOwnerId || activeWin().id === wrapOwnerId) return;
+  selectWindow(wrapOwnerId);
+});
+
+/** This window's area, created on first sight and kept. */
+function areaFor(win: Win): HTMLElement {
+  let area = winAreas.get(win.id);
+  if (!area) {
+    area = createArea(win.id);
+    winAreas.set(win.id, area);
+  }
+  syncAreaContent(area, win);
+  return area;
+}
+
+/** Give an area the surface of its window's type — and REBUILD it only when
+ *  that type actually changed. A focus change never reaches here. */
+function syncAreaContent(area: HTMLElement, win: Win): void {
+  if (area.dataset.surfaceType === win.type) return;
+  clearAreaContent(area, win.id);
+  area.dataset.surfaceType = win.type;
+  if (win.type === "graph") {
+    // FOCUS-NOJITTER / STEP A · the width the panel takes is published on the
+    // AREA (`--palette-w`) and the canvas reads it in CSS, in every area alike.
+    const cv = document.createElement("canvas");
+    area.appendChild(cv);
+    tileCanvases.set(win.id, cv);
+    return;
+  }
+  const type = surfaceTypeOf(win.type);
+  if (type) {
+    // ONE constructor, focused or not (`shell/types.ts`)
+    mountSurface(win, area);
+    return;
+  }
+  buildSecondarySurface(area, win);
+}
+
+/** Everything an area holds that belongs to its TYPE — the bar and the grips
+ *  belong to the area itself and stay. */
+function clearAreaContent(area: HTMLElement, winId: string): void {
+  unmountSurface(winId);
+  unregisterTileSurface(winId);
+  tileCanvases.delete(winId);
+  // a singleton panel hosted here would be destroyed with the box: send it home
+  if (area.querySelector(".tile-panel")) releaseTilePanels();
+  for (const child of [...area.children]) {
+    if (child.classList.contains("tile-bar")) continue;
+    if (child.classList.contains("tile-corner")) continue;
+    child.remove();
+  }
+  delete area.dataset.surfaceType;
+}
+
+/** A window that is gone: its area, its surface and its registrations with it. */
+function destroyArea(winId: string): void {
+  const area = winAreas.get(winId);
+  if (!area) return;
+  clearAreaContent(area, winId);
+  area.remove();
+  winAreas.delete(winId);
+  lastRects.delete(area);
+}
+
+/** Which window owns `#canvas-wrap` right now.
  *
- * NOT `activeWin()`, and that distinction is the whole of it: a focus change
- * sets the new active window and THEN rebuilds the tree, so by the time the
- * teardown reads it the answer is the INCOMING window — and the outgoing
- * window's position was being filed under the incoming one's name (measured: the
- * story stayed at 900 for the window arriving, and the one leaving got 0).
+ *  The focused window when its type still needs the wrap; otherwise the wrap
+ *  STAYS with the window that had it, so a graph keeps drawing while you work in
+ *  the table beside it. Only a focus moving between two wrap types moves it. */
+function wrapOwnerFor(): string | null {
+  const placed = new Set(paneIds(layoutOf()));
+  const wins = windowsOf().filter((w) => placed.has(w.id));
+  const act = activeWin();
+  if (placed.has(act.id) && needsWrap(act.type)) return act.id;
+  const held = wins.find((w) => w.id === wrapOwnerId && needsWrap(w.type));
+  if (held) return held.id;
+  return wins.find((w) => needsWrap(w.type))?.id ?? null;
+}
+
+/**
+ * Hand `#canvas-wrap` to another window — the ONE migration tonight leaves in
+ * place, and the only place `FOCUSED_SURFACE_BOXES` is still needed.
+ *
+ * Declared: the narrative and the hosted panels are singleton elements inside
+ * the wrap, so their content really does travel. The six converted types never
+ * come through here.
  */
-let wrapWin: Win = activeWin();
+function setWrapOwner(id: string | null): void {
+  const win = windowsOf().find((w) => w.id === id) ?? null;
+  const type = win?.type ?? null;
+  if (wrapOwnerId === id && wrapOwnerType === type) return;
+  const moved = wrapOwnerId !== id;
+  if (moved) {
+    const prev = windowsOf().find((w) => w.id === wrapOwnerId);
+    if (prev) rememberFocusedBoxes(prev, byId);
+    wrapOwnerId = id;
+    canvasWrapEl.dataset.win = id ?? "";
+    canvasWrapEl.classList.toggle("hidden", !id);
+    if (prev) areaFor(prev);   // it needs an area of its own from now on
+    if (id) destroyArea(id);   // …and the new owner's area gives way to the wrap
+  }
+  wrapOwnerType = type;
+  if (!win) return;
+  // what the wrap SHOWS is decided by its owner's type, never by who has the
+  // focus — that is the sentence this whole night is about
+  mountWindow(win);
+  if (moved) restoreFocusedBoxes(win, byId);
+}
 
-/** The two halves of the migrating-surface handoff, over THIS document. The
- *  loops live in `surface-scroll.ts` — one place, and a checker can run them. */
-const byId: BoxLookup = (id) => document.getElementById(id);
-const rememberFocusedSurfaceScroll = (): void =>
-  rememberFocusedBoxes(wrapWin, byId);
-const restoreFocusedSurfaceScroll = (): void =>
-  restoreFocusedBoxes(activeWin(), byId);
+/** Write a rectangle onto an element — and only when it moved. */
+function placeAt(el: HTMLElement, r: Rect): void {
+  if (sameRect(lastRects.get(el), r)) return;
+  lastRects.set(el, r);
+  el.style.left = `${r.x}px`;
+  el.style.top = `${r.y}px`;
+  el.style.width = `${r.w}px`;
+  el.style.height = `${r.h}px`;
+}
 
+/** The arrangement, as coordinates. Cheap enough to run on every resize. */
+function positionAreas(): void {
+  const root: Rect = { x: 0, y: 0, w: tileRoot.clientWidth, h: tileRoot.clientHeight };
+  const { areas, dividers } = layoutRects(layoutOf(), root);
+  for (const [id, r] of areas) {
+    const el = id === wrapOwnerId ? canvasWrapEl : winAreas.get(id);
+    if (el) placeAt(el, r);
+  }
+  while (tileDividers.length < dividers.length) {
+    const div = document.createElement("div");
+    div.className = "tile-div";
+    div.addEventListener("mousedown", (e) => {
+      const info = dividerInfo.get(div);
+      if (!info) return;
+      e.preventDefault();
+      div.classList.add("dragging");
+      const base = tileRoot.getBoundingClientRect();
+      const move = (ev: MouseEvent): void => {
+        const r =
+          info.dir === "col"
+            ? (ev.clientY - base.top - info.span.y) / Math.max(1, info.span.h)
+            : (ev.clientX - base.left - info.span.x) / Math.max(1, info.span.w);
+        setSplitRatio(info.firstId, r);
+        positionAreas();       // four numbers per area — nothing is rebuilt
+        resizeCanvas();
+        drawTiles();
+      };
+      const up = (): void => {
+        div.classList.remove("dragging");
+        window.removeEventListener("mousemove", move);
+        window.removeEventListener("mouseup", up);
+      };
+      window.addEventListener("mousemove", move);
+      window.addEventListener("mouseup", up);
+    });
+    tileRoot.appendChild(div);
+    tileDividers.push(div);
+  }
+  tileDividers.forEach((div, i) => {
+    const info = dividers[i];
+    div.classList.toggle("hidden", !info);
+    if (!info) return;
+    dividerInfo.set(div, info);
+    div.classList.toggle("tile-div-col", info.dir === "col");
+    placeAt(div, info.rect);
+  });
+}
+
+/** The focus ring and the input routing, and NOTHING else. */
+function setAreaFocused(winId: string, on: boolean): void {
+  const el = winId === wrapOwnerId ? canvasWrapEl : winAreas.get(winId);
+  if (!el) return;
+  el.classList.toggle("tile-active", on);
+  surfaceOf(winId)?.setFocused(on);
+}
+
+/**
+ * Lay the workspace out. A STRUCTURAL change only: a split, a join, a ratio, a
+ * magnify, a window added or closed, a workspace switched, a type transformed.
+ *
+ * NOT a focus change. `selectWindow()` no longer calls this, and that sentence
+ * is the criterion the whole night was measured against.
+ */
 function renderTiles(): void {
-  // Any menu open right now belongs to a bar that is about to move — leaving it
-  // up would float it over the new arrangement, detached from anything.
+  // Any menu open right now belongs to a bar that is about to be rebuilt.
   closeAllDropdowns();
   closeAllSubmenus();
-  // SURFACE-AUDIT · where every reader was, on BOTH sides of the crossing:
-  // the focused window's own surface, and each secondary box that is about to
-  // be discarded with its area.
-  rememberFocusedSurfaceScroll();
-  for (const s of tileSurfaceBoxes) rememberSurfaceScroll(s.win, s.box, s.slot);
-  tileSurfaceBoxes.length = 0;
-  tileCanvases.clear();
-  tileSurfaces.length = 0;
+  setWrapOwner(wrapOwnerFor());
+  const placed = paneIds(layoutOf());
+  const keep = new Set(placed);
+  for (const id of [...winAreas.keys()]) {
+    if (!keep.has(id) || id === wrapOwnerId) destroyArea(id);
+  }
+  for (const id of placed) {
+    if (id === wrapOwnerId) continue;
+    const win = windowsOf().find((w) => w.id === id);
+    if (win) areaFor(win);
+  }
+  // the resources panel and the corner grips belong to the ARRANGEMENT: they are
+  // rebuilt here, with it, and never on a focus change
   paletteUis.length = 0;
-  // the areas that owned these are about to be discarded whole
-  for (const h of tileEmDataHosts.splice(0)) removeEmDataHost(h);
-  // WIN7-STORAGE · same ownership rule for the Storage surfaces: their areas go
-  // with the tree, and a host left in the registry would be painted into a
-  // detached box on every render.
-  tileStorageHosts.length = 0;
-  // WIN7 · a panel living in a secondary area would be DESTROYED by the reset
-  // below (with every handler wired to it at boot) — send it home first. The
-  // same reason `#canvas-wrap` is detached rather than left to be cleared.
-  releaseTilePanels();
-  // detach the live area before rebuilding, so it survives the innerHTML reset
-  // …and remember where its surfaces were: a detach zeroes every scrollTop
-  // inside (see `rememberScrollsIn`).
-  const wrapScrolls = rememberScrollsIn(canvasWrapEl);
-  canvasWrapEl.remove();
-  tileRoot.innerHTML = "";
-  tileRoot.appendChild(buildPane(layoutOf(), activeWin().id));
-  renderAreaHeaders(); // WIN-FIX1 · every area gets its bar, this pass
+  for (const [id, area] of winAreas) {
+    const win = windowsOf().find((w) => w.id === id);
+    if (!win) continue;
+    area.querySelectorAll(".tile-corner, .win-resources, .win-res-chevron")
+      .forEach((g) => g.remove());
+    buildResourcePanel(area, win);
+    addCornerGrips(area, id, "var(--winbar-h, 0px)");
+  }
+  const ownerWin = windowsOf().find((w) => w.id === wrapOwnerId);
+  canvasWrapEl.querySelectorAll(".tile-corner, .win-resources, .win-res-chevron")
+    .forEach((g) => g.remove());
+  if (ownerWin) {
+    buildResourcePanel(canvasWrapEl, ownerWin);
+    addCornerGrips(canvasWrapEl, ownerWin.id, "var(--winbar-h, 0px)");
+  }
+  positionAreas();
+  renderAreaHeaders();
   syncSecondaryPanels();
-  // The table hosts registered while their areas were still detached, so the
-  // render that `addEmDataHost` fires found them disabled (`isConnected` false).
-  // Now the tree is attached: paint them.
   renderEmData();
-  renderStorage();   // …and the Storage surfaces, for exactly the same reason
+  renderStorage();
   refreshTileSurfaces();
-  resizeCanvas(); // the live area changed size
+  resizeCanvas();
   drawTiles();
-  restoreScrollsIn(wrapScrolls); // …the reader is where they were, in every type
-  wrapWin = activeWin();         // whose surfaces the wrap now holds
-  restoreFocusedSurfaceScroll(); // …and the migrating ones, from their window
+  setAreaFocused(activeWin().id, true);
+  for (const id of placed) if (id !== activeWin().id) setAreaFocused(id, false);
 }
 
 // ── CURRENT-ELEMENT · the element the ACTIVE window is working on ───────────
@@ -10726,18 +10855,11 @@ function applyWindowSurface(type: WindowType): void {
   const show = (id: string, on: boolean): void => {
     document.getElementById(id)?.classList.toggle("hidden", !on);
   };
-  show("table-view", type === "table");
-  show("doc-view", type === "doc");
-  show("viewer-view", type === "viewer");
-  if (type === "viewer") renderViewer();
-  show("storage-view", type === "storage");
-  if (type === "storage") renderStorage();
+  // The six converted types have NO line here and no singleton to show: their
+  // surface is built by `shell/types.ts` into the window's own area, focused or
+  // not. What is left is what still lives inside `#canvas-wrap`.
   show("annotator-view", type === "annotator");
   if (type === "annotator") renderAnnotator();
-  show("shelf-view", type === "shelf");
-  if (type === "shelf") renderShelf();
-  show("study-view", type === "study");
-  if (type === "study") renderStudyWindow();
   const hosted = type === "emtree" || type === "inspector";
   show("panel-view", hosted);
   if (hosted) renderPanelWindow(type);
@@ -10752,8 +10874,6 @@ function applyWindowSurface(type: WindowType): void {
   show("overview", isCanvasWindow);
   if (!isCanvasWindow && filterPanelOpen()) closeFilterPanel();
   refreshFunnel();
-  if (type === "table") renderEmData();
-  if (type === "doc") renderDocView();
 }
 
 // ── WIN5 · the Doc window ───────────────────────────────────────────────────
@@ -10777,18 +10897,7 @@ function documentsInGraph(): EmNode[] {
 /** The focused Doc window's surface. WIN7 split the rendering out (below) so a
  *  SECONDARY Doc area can paint the same thing into its own two boxes. */
 function renderDocView(): void {
-  const surface = document.getElementById("doc-view");
-  const list = document.getElementById("doc-view-list");
-  const detail = document.getElementById("doc-view-detail");
-  if (!surface || !list || !detail) return;
-  const win = activeWin();
-  reflectDocWidth(surface);
-  // the same two slots the secondary Doc surface uses (`FOCUSED_SURFACE_BOXES`)
-  const wasList = rememberSurfaceScroll(win, list, "doc-list");
-  const wasDetail = rememberSurfaceScroll(win, detail, "doc-detail");
-  renderDocViewInto(win, list, detail);
-  restoreSurfaceScroll(win, list, wasList, "doc-list");
-  restoreSurfaceScroll(win, detail, wasDetail, "doc-detail");
+  refreshSurfaces("doc");
 }
 
 /** A Doc surface wide enough for the list and the detail side by side gets the
@@ -10883,8 +10992,6 @@ function renderDocViewInto(
     // click came from a secondary area, which the focus has just moved to anyway.
     setActiveWin(win.id);
     setWinType(win, "graph");
-    mountWindow(win);
-    updateWindowHeader();
     renderTiles();
     select(current.id);
     centerOn(current.id);
@@ -10914,32 +11021,30 @@ function renderDocViewInto(
  * Guarded on the surface, not on the focus, for the reason `renderShelf` gives
  * two functions below: a renderer should ask the screen whether it is on it.
  */
+/** Paint the Study of every Study window on screen. There is no longer a
+ *  "focused" one to ask about: the surface is the same object in every area
+ *  (`shell/types.ts`), and an unfocused Study shows the study — which before
+ *  tonight it did not, because nobody had written its secondary surface. */
 function renderStudyWindow(): void {
-  const body = document.getElementById("study-body");
-  if (!body) return;
-  if (document.getElementById("study-view")?.classList.contains("hidden")) return;
-  if (!store) return;
+  refreshSurfaces("study");
+}
+
+/** …and the one renderer both — now all — mounts call. */
+function renderStudyInto(body: HTMLElement): void {
+  if (!store) {
+    body.textContent = "";
+    return;
+  }
   renderStudyPanel(body, store, {
     resolveAuthority: resolveAuthority,
     searchTwins: (term) => searchTwins(term),
   });
 }
 
+/** Paint every Shelf surface on screen. "Ask the surface, not who has the
+ *  focus" was already the rule here; now there is nothing else to ask. */
 function renderShelf(): void {
-  const body = document.getElementById("shelf-body");
-  if (!body) return;
-  // Ask the SURFACE, not who has the focus. The header's controls live in the
-  // DOM whether or not this area is the focused one, so a click on "+ URI" from
-  // a neighbouring window used to add the entry and then skip the redraw — the
-  // list said two while the shelf held three. Same rule the EM-Data hosts use
-  // (`body.isConnected`): a renderer should ask the screen whether it is on it.
-  if (document.getElementById("shelf-view")?.classList.contains("hidden")) return;
-  // HDR2 · the count is in the window header, looked up at render time because
-  // that header is rebuilt whenever the arrangement changes — exactly what the
-  // Tabular window does with the same element.
-  const count = document.querySelector<HTMLElement>(
-    "#window-header .win-strip-count");
-  renderShelfInto(activeWin(), body, count);
+  refreshSurfaces("shelf");
   syncShelfNameInputs();
 }
 
@@ -12339,7 +12444,10 @@ function renderAnnotatorTools(host: HTMLElement): void {
         annotatorTool = tool.id as AnnotatorTool;
         annotatorDraft = null;
         drawAnnotatorOverlay();
-        renderTiles();          // the panel redraws with the new current tool
+        // ONE SURFACE · the tool palette is a RESOURCE PANEL, and repainting one
+        // is not a change to the arrangement. This used to re-lay the whole
+        // workspace out to redraw six buttons.
+        renderResourcePanels();
         renderAnnotatorPanel();
       });
     }
@@ -12822,53 +12930,27 @@ function setStorageSelected(win: Win, path: string | null): void {
  * listing on every render. Copying the second is cheap; copying the first would
  * be two editors for one state.
  */
-interface StorageHost {
-  /** the window this surface belongs to — its mode and its folder */
-  win: Win;
-  body: HTMLElement;
-  crumb: HTMLElement | null;
-  up: HTMLButtonElement | null;
-  /** false once the area is gone: a render into a detached box is wasted work */
-  enabled: () => boolean;
+/** A Storage mount: the window it belongs to and the boxes it writes into.
+ *  The shape lives in `shell/types.ts` — one definition for the surface that
+ *  builds the boxes and the listing that fills them. */
+type StorageHost = StorageMount;
+
+/** Every Storage surface on screen right now. Registered rather than computed:
+ *  since the conversion there is no privileged `#storage-view` to add on the
+ *  side, so the register IS the answer. */
+const storageHosts: StorageHost[] = [];
+
+function addStorageHost(host: StorageHost): void {
+  storageHosts.push(host);
 }
 
-/** The hosts THIS module built for secondary areas. Owned explicitly, exactly as
- *  `tileEmDataHosts` is (WIN-FIX1): `renderTiles` drops them when it rebuilds the
- *  tree, so nothing has to guess from the DOM which mounts are still alive. */
-const tileStorageHosts: StorageHost[] = [];
+function removeStorageHost(host: StorageHost): void {
+  const i = storageHosts.indexOf(host);
+  if (i >= 0) storageHosts.splice(i, 1);
+}
 
-/** Every Storage surface on screen right now: the focused window's, plus every
- *  secondary area's. Computed rather than registered for the focused one — it is
- *  the fixed `#storage-view`, and a registration lifecycle for a permanent
- *  element is a second thing to keep in step. */
 function storageHostsNow(): StorageHost[] {
-  const out: StorageHost[] = [];
-  const view = document.getElementById("storage-view");
-  const body = document.getElementById("storage-body");
-  const win = activeWin();
-  if (view && body && !view.classList.contains("hidden") && win.type === "storage") {
-    // HDR2 · the crumb and the up-button live in the window HEADER now, not in a
-    // second strip under it. The host reads them from there — one row of chrome,
-    // and the listing code did not have to know.
-    const head = document.getElementById("window-header");
-    out.push({
-      win, body,
-      crumb: head?.querySelector<HTMLElement>(".win-strip-crumb") ?? null,
-      up: head?.querySelector<HTMLButtonElement>(".win-strip-up") ?? null,
-      enabled: () => body.isConnected,
-    });
-  }
-  for (const host of tileStorageHosts) {
-    if (!host.enabled()) continue;
-    // …and a secondary area reads them from ITS bar, by the same rule
-    const bar = host.body.parentElement?.querySelector<HTMLElement>(":scope > .tile-bar");
-    out.push({
-      ...host,
-      crumb: bar?.querySelector<HTMLElement>(".win-strip-crumb") ?? host.crumb,
-      up: bar?.querySelector<HTMLButtonElement>(".win-strip-up") ?? host.up,
-    });
-  }
-  return out;
+  return storageHosts.filter((h) => h.enabled());
 }
 
 /** Paint every Storage surface on screen. */
@@ -14705,13 +14787,7 @@ function setViewerIndex(win: Win, index: number): void {
  * says which fence it hit rather than showing a broken image.
  */
 function renderViewer(): void {
-  const stage = document.getElementById("viewer-stage");
-  const caption = document.getElementById("viewer-caption");
-  const bar = document.getElementById("viewer-bar");
-  if (!stage || !caption || !bar) return;
-  const win = activeWin();
-  if (win.type !== "viewer") return;
-  paintSurface(win, stage, () => renderViewerInto(win, stage, caption, bar));
+  refreshSurfaces("viewer");
 }
 
 /** SURFACE-AUDIT · the same preview, into any three boxes — so a viewer window
@@ -14873,13 +14949,28 @@ function drawViewerCollection(
   // The strip earns its space only when there is more than one item to move
   // between; on a collection of one it would be two dead arrows and "1 / 1".
   if (collection.items.length > 1) {
+    // ONE SURFACE · the strip is BUILT HERE, into this mount's own bar.
+    //
+    // Its four controls used to be markup inside `#viewer-view` — the focused
+    // mount — so a Viewer area without the focus had a `.viewer-bar` with
+    // nothing in it and a collection you could not page through. That is the
+    // exact shape of "the tools exist only in the focused version", and the
+    // repair is the one §2 asks for: same box, built once, for every mount.
     bar.classList.remove("hidden");
-    const pos = document.getElementById("viewer-pos");
-    const title = document.getElementById("viewer-title");
-    const prev = document.getElementById("viewer-prev") as HTMLButtonElement;
-    const next = document.getElementById("viewer-next") as HTMLButtonElement;
-    if (pos) pos.textContent = `${index + 1} / ${collection.items.length}`;
-    if (title) title.textContent = collection.title;
+    bar.textContent = "";
+    const prev = document.createElement("button");
+    prev.className = "viewer-nav";
+    prev.textContent = "‹";
+    const pos = document.createElement("span");
+    pos.className = "viewer-pos";
+    const next = document.createElement("button");
+    next.className = "viewer-nav";
+    next.textContent = "›";
+    const title = document.createElement("span");
+    title.className = "viewer-coll-title";
+    bar.append(prev, pos, next, title);
+    pos.textContent = `${index + 1} / ${collection.items.length}`;
+    title.textContent = collection.title;
     prev.disabled = index === 0;
     next.disabled = index === collection.items.length - 1;
     prev.onclick = () => setViewerIndex(win, index - 1);
@@ -15136,14 +15227,19 @@ function releasePanels(): void {
 // real surface mounts there. So nothing in here needs to be interactive — its
 // tabs are labels, and it is never the thing being clicked.
 
-/** What each live secondary surface must do when the document changes. Rebuilt
- *  with the tree; a surface whose area is gone is simply not in the list. */
-const tileSurfaces: Array<() => void> = [];
-
-/** …and WHERE the reader was in each of them. Read once more just before the
- *  tree is torn down (`renderTiles`), so a position the reader scrolled to by
- *  hand — with no repaint since — is not lost with the box that held it. */
-const tileSurfaceBoxes: Array<{ win: Win; box: HTMLElement; slot: string }> = [];
+/**
+ * What each surface still drawn the OLD way must do when the document changes.
+ *
+ * Keyed by WINDOW now, not a list rebuilt with the tree: an area is created once
+ * and lives as long as its window, so a registration that outlived the tree was
+ * the bug the list defended against. It is dropped when the window's TYPE
+ * changes (`clearAreaContent`) or when the window closes.
+ *
+ * The six converted types are NOT here — `shell/surface.ts` owns their mounts.
+ * What is left is the narrative and the hosted panels: the types still drawn by
+ * the singletons inside `#canvas-wrap`.
+ */
+const tileSurfaces = new Map<string, () => void>();
 
 /**
  * Register a live secondary surface: the boxes that hold the reader's place, and
@@ -15162,18 +15258,17 @@ function registerTileSurface(win: Win,
     paint();
     boxes.forEach((b, i) => restoreSurfaceScroll(win, b.box, at[i], b.slot));
   };
-  for (const b of boxes) tileSurfaceBoxes.push({ win, ...b });
-  tileSurfaces.push(run);
+  tileSurfaces.set(win.id, run);
   run();
 }
 
-/** The EM-Data hosts THIS module created for secondary areas. Owned explicitly
- *  (WIN-FIX1) so they are unregistered when their area goes, and so nothing has
- *  to guess from the DOM which mounts are still alive. */
-const tileEmDataHosts: EmDataHost[] = [];
+function unregisterTileSurface(winId: string): void {
+  tileSurfaces.delete(winId);
+}
 
 function refreshTileSurfaces(): void {
-  for (const fn of tileSurfaces) fn();
+  for (const fn of tileSurfaces.values()) fn();
+  refreshSurfaces();   // …and every converted mount, through the one contract
 }
 
 /** A secondary area that cannot show its content, saying which and why. */
@@ -15184,38 +15279,20 @@ function tileNote(area: HTMLElement, text: string): void {
   area.appendChild(note);
 }
 
-/** Build the live surface of one secondary area. */
+/**
+ * The surface of an area whose type has NOT been converted yet.
+ *
+ * What is left here is the honest boundary of tonight: the narrative, the two
+ * hosted-panel types, and the annotator. Every one of them is bound to a
+ * SINGLETON inside `#canvas-wrap` — `#narrative-view` for the writing editors,
+ * `#panel-view` for the re-homed panels, `#annotator-image` plus the module's
+ * draft state for the tracing — so converting them is not a move of a renderer
+ * but a change to what those singletons are, and that is §4's work.
+ *
+ * The six types that DID cross over (table, storage, shelf, viewer, doc, study)
+ * are not in this function any more. They are in `shell/types.ts`, once each.
+ */
 function buildSecondarySurface(area: HTMLElement, win: Win): void {
-  if (win.type === "table") {
-    // the same renderer as the focused Tabular window, one more mount
-    // FOCUS-NOJITTER · the head holds exactly what the FOCUSED window's head
-    // holds — the row count, nothing else. It used to carry the sheet name too,
-    // which (a) is the window's MODE now, stated in its header two centimetres
-    // above, and (b) existed only here, so entering the window made it vanish
-    // and the rows move.
-    // HDR2 · no head of its own: the row count is in this area's window header,
-    // with every other type's strip. One row of chrome per window.
-    const body = document.createElement("div");
-    body.className = "tile-tablebody";
-    area.appendChild(body);
-    // This host lives exactly as long as its area does; `renderTiles` drops it
-    // (tileEmDataHosts) when the tree is rebuilt. The count element is looked up
-    // at RENDER time (the header is rebuilt often), so the host holds a getter
-    // rather than a reference that would go stale.
-    const host: EmDataHost = {
-      body,
-      get count() {
-        return body.parentElement
-          ?.querySelector<HTMLElement>(":scope > .tile-bar .win-strip-count") ?? null;
-      },
-      enabled: () => body.isConnected,
-      // the row this window was on, kept where its focused surface keeps it
-      place: surfacePlace(win),
-    };
-    tileEmDataHosts.push(host);
-    addEmDataHost(host);
-    return;
-  }
   if (PANEL_TABS[win.type]) {
     const host = document.createElement("div");
     host.className = "tile-panel";
@@ -15231,43 +15308,14 @@ function buildSecondarySurface(area: HTMLElement, win: Win): void {
     // (`syncSecondaryPanels`), because it depends on what the others took
     return;
   }
-  if (win.type === "doc") {
-    // SURFACE-AUDIT · the same two boxes and the same classes the focused Doc
-    // window uses. The only thing that differs is the direction, and it is keyed
-    // to the AREA'S WIDTH (`doc-wide`), not to who has the focus — so entering
-    // this window reflows nothing.
-    const surface = document.createElement("div");
-    surface.className = "doc-surface";
-    const list = document.createElement("div");
-    list.className = "doc-list";
-    const detail = document.createElement("div");
-    detail.className = "doc-detail";
-    surface.append(list, detail);
-    area.appendChild(surface);
-    // two scrollers, two slots: the list you had scrolled and the source you
-    // were reading are both positions worth keeping
-    registerTileSurface(win,
-      [{ box: list, slot: "doc-list" }, { box: detail, slot: "doc-detail" }],
-      () => {
-        reflectDocWidth(surface);
-        renderDocViewInto(win, list, detail);
-      });
-    return;
-  }
   if (win.type === "narrative") {
     // SURFACE-AUDIT · the story, READ-ONLY, in its own area.
     //
-    // This was a note ("step in to read and write here"), and the note was the
-    // bug: a narrative window that lost the focus went blank — the longest
-    // surface in the app, emptied by the pointer crossing a divider. Measured
-    // side by side before touching anything.
-    //
-    // What made the note look necessary was the worry about "a second renderer
-    // for the same document". There is no second renderer: `renderNarrativeView`
-    // takes its host as its first argument, and called WITHOUT an editor it is
-    // the same function producing the reading. The authoring editors stay bound
-    // to `#narrative-view`, which is still the one and only writing surface —
-    // and this area, the moment the pointer enters it, becomes that surface.
+    // There is no second renderer: `renderNarrativeView` takes its host as its
+    // first argument, and called WITHOUT an editor it is the same function
+    // producing the reading. The authoring editors stay bound to
+    // `#narrative-view`, which is still the one and only writing surface — and
+    // that singleton is exactly why this type is not converted tonight.
     const host = document.createElement("div");
     host.className = "tile-narrative nv-view";
     area.appendChild(host);
@@ -15284,52 +15332,14 @@ function buildSecondarySurface(area: HTMLElement, win: Win): void {
     });
     return;
   }
-  if (win.type === "storage") {
-    // WIN7-STORAGE · a LIVE second Storage surface. The same three boxes the
-    // focused window has (`#storage-bar` / crumb / body) and the same classes,
-    // so the two measure identically and taking the focus moves nothing.
+  if (win.type === "annotator") {
+    // SURFACE-AUDIT · the PICTURE, in its own area — and only the picture.
     //
-    // This is what makes the Assets arrangement work as an arrangement: the disk
-    // and the object store are both drawn, so a file can be dragged from one
-    // into the other. With one surface at a time the gesture had nowhere to
-    // start OR nowhere to land.
-    // HDR2 · no bar of its own any more: the up-button and the crumb are in this
-    // area's window header, like every other type's strip. One row of chrome per
-    // window, whether or not it has the focus.
-    const body = document.createElement("div");
-    body.className = "tile-storagebody";
-    area.append(body);
-    const host: StorageHost = {
-      win, body, crumb: null, up: null, enabled: () => body.isConnected,
-    };
-    tileStorageHosts.push(host);
-    // painted by `renderTiles` once the tree is attached — rendering into a
-    // detached box now would throw the listing away
-    return;
-  }
-  if (win.type === "shelf") {
-    // SURFACE-AUDIT · the wide list, in its own area. Same bar-less shape as the
-    // other secondary surfaces (the count lives in this area's window header),
-    // and the same renderer as the focused window (`renderShelfInto`).
-    const body = document.createElement("div");
-    body.className = "tile-shelfbody shelf-body";
-    area.appendChild(body);
-    registerTileSurface(win, [{ box: body, slot: "" }], () => {
-      const count = body.parentElement
-        ?.querySelector<HTMLElement>(":scope > .tile-bar .win-strip-count") ?? null;
-      renderShelfInto(win, body, count);
-    });
-    return;
-  }
-  if (win.type === "viewer" || win.type === "annotator") {
-    // SURFACE-AUDIT · the PICTURE, in its own area.
-    //
-    // A viewer window gets its own preview, drawn by the same renderer as the
-    // focused one. An ANNOTATOR window gets the picture too, and only the
-    // picture: tracing needs the single `#annotator-image` + its overlay canvas
-    // and the module's draft state, so a second live *annotator* would be a
-    // second annotator, not a second view of one. Its regions are drawn where
-    // the tracing happens — one step into the area, which is one pointer move.
+    // Tracing needs the single `#annotator-image`, its overlay canvas and the
+    // module's draft state, so a second live *annotator* would be a second
+    // annotator, not a second view of one. Stated as a capability rather than
+    // inferred from this branch: `ANNOTATOR_CAPABILITIES` in `shell/types.ts`
+    // is how the limit reads once this type crosses over.
     const view = document.createElement("div");
     view.className = "tile-viewer viewer-view";
     const stage = document.createElement("div");
@@ -15340,17 +15350,13 @@ function buildSecondarySurface(area: HTMLElement, win: Win): void {
     bar.className = "viewer-bar hidden";
     view.append(bar, stage, caption);
     area.appendChild(view);
-    registerTileSurface(win, [{ box: stage, slot: "" }], () => {
-      if (win.type === "viewer") renderViewerInto(win, stage, caption, bar);
-      else renderAnnotatorPictureInto(stage, caption);
-    });
+    registerTileSurface(win, [{ box: stage, slot: "" }], () =>
+      renderAnnotatorPictureInto(stage, caption));
     return;
   }
-  // W1 · every OTHER type without a secondary surface says its own name. This
-  // fall-through used to be narrative-only, so `storage` and `viewer` landed on
-  // it and a file browser announced itself as "Narrative — step in to read and
-  // write here". A note that names the wrong window is worse than no note: the
-  // limit (this area is not live yet) is honest, the label was not.
+  // Every OTHER unconverted type says its own name. After tonight only one type
+  // can still land here — a window type with neither a surface nor a singleton —
+  // and that is worth keeping: the limit stated is better than a blank area.
   tileNote(area, t("tile.enterNote", { name: t(WINDOW_TYPE_META[win.type].labelKey) }));
 }
 
@@ -15458,24 +15464,23 @@ function renderPanelWindow(type: WindowType): void {
  *  window type becomes something on screen — `applyWorkspace` and the transform
  *  both go through it, so they can never drift apart. */
 function mountWindow(win: Win): void {
+  // The wrap shows its OWNER and nobody else. A converted type has its own area
+  // and never comes through here; a call for a window that does not hold the
+  // wrap would blank the window that does.
+  if (win.id !== wrapOwnerId) return;
   if (win.type === "narrative") {
     setMode("narrative"); // the narrative overlay owns the area
     applyWindowSurface("narrative");
     return;
   }
-  // Every type whose window IS a surface rather than the canvas. `viewer` joined
-  // them: without it the fall-through below mounted the canvas and hid the
-  // preview, which looked like "the viewer shows nothing".
+  // The types still bound to a singleton inside the wrap: the two hosted-panel
+  // windows and the annotator. The six converted ones are gone from this list
+  // (and cannot reach here at all, per the guard above) — their surface is their
+  // area, focused or not.
   if (
-    win.type === "table" ||
-    win.type === "doc" ||
     win.type === "emtree" ||
     win.type === "inspector" ||
-    win.type === "viewer" ||
-    win.type === "storage" ||
-    win.type === "annotator" ||
-    win.type === "shelf" ||
-    win.type === "study"
+    win.type === "annotator"
   ) {
     // WIN5 · a real window, not the dock: the surface fills the area. Leave the
     // canvas mode alone underneath (never the narrative overlay) so switching
@@ -15495,13 +15500,36 @@ function setWindowMode(mode: ViewKind): void {
   setMode(mode); // → reflect + updateWindowHeader
 }
 
-/** Show another window of the current workspace, restoring ITS mode. */
+/**
+ * Move the focus to another window.
+ *
+ * **This function no longer calls `renderTiles()`, and that is the criterion the
+ * whole night was measured against.** A focus change is two calls —
+ * `setFocused(false)` on the window leaving, `setFocused(true)` on the one
+ * arriving — plus, for the types still bound to the singletons inside
+ * `#canvas-wrap`, handing the wrap over. Nothing is built, nothing is
+ * re-parented, nothing is re-measured: the focus decides where the events go,
+ * never what is drawn.
+ *
+ * The residual, named: `setWrapOwner` runs only when the incoming window is a
+ * graph, a narrative, a hosted panel or the annotator AND the wrap is not
+ * already its. A move between any of the six converted types — or from one of
+ * them to a window whose neighbour holds the wrap — touches four class lists and
+ * stops.
+ */
 function selectWindow(winId: string): void {
+  const previous = activeWin().id;
   const win = setActiveWin(winId);
-  renderTiles(); // the live (editable) area moves to the window just picked
-  if (win.type === "graph") setMode(winMode(win));
-  else mountWindow(win);
-  updateWindowHeader();
+  if (previous !== win.id) setAreaFocused(previous, false);
+  if (needsWrap(win.type) && wrapOwnerId !== win.id) {
+    // the one migration left: its content is a singleton, so it travels
+    setWrapOwner(win.id);
+    positionAreas();
+    renderAreaHeaders();
+    syncSecondaryPanels();
+    drawTiles();
+  }
+  setAreaFocused(win.id, true);
 }
 
 /**
@@ -15517,18 +15545,11 @@ function selectWindow(winId: string): void {
 function magnifyWindow(winId: string): void {
   toggleMaximize(winId);
   renderTiles();
-  const win = activeWin();
-  if (win.type === "graph") setMode(winMode(win));
-  else mountWindow(win);
-  updateWindowHeader();
 }
 
 function closeActiveWindow(): void {
   if (!closeWindow(activeWin().id)) return; // never the last one
-  const win = activeWin();
   renderTiles(); // the split JOINS: the sibling takes the space back
-  if (win.type === "graph") setMode(winMode(win));
-  updateWindowHeader();
 }
 
 /**
@@ -15556,7 +15577,7 @@ function closeActiveWindow(): void {
  *    the windows are side by side. The SPLIT verbs stayed, with glyphs that say
  *    what they do: → a new area beside, ↓ a new area below.
  */
-function buildAreaHeader(win: Win, active: boolean): DocumentFragment {
+function buildAreaHeader(win: Win): DocumentFragment {
   const frag = document.createDocumentFragment();
   const type = win.type;
 
@@ -15750,10 +15771,6 @@ function buildAreaHeader(win: Win, active: boolean): DocumentFragment {
     chip("⊟", t("win.join"), false, () => {
       joinWindow(win.id);
       renderTiles();
-      const w = activeWin();
-      if (w.type === "graph") setMode(winMode(w));
-      else mountWindow(w);
-      renderAreaHeaders();
     });
   if (windowsOf().length > 1) {
     const close = document.createElement("button");
@@ -15768,7 +15785,17 @@ function buildAreaHeader(win: Win, active: boolean): DocumentFragment {
     arr.appendChild(close);
   }
   frag.appendChild(arr);
-  if (!active) frag.querySelectorAll("*").forEach((el) => el.classList.add("hdr-passive"));
+  // ONE SURFACE · the head does NOT know who has the focus, and that is
+  // stronger than the parity it used to be checked for.
+  //
+  // It used to take an `active` flag and stamp `.hdr-passive` on every
+  // descendant of an unfocused bar — 92 to 106 class writes on every crossing of
+  // a divider, measured — for a class with no rules in the stylesheet. What says
+  // which window takes the edits is `.tile-active` on the AREA: the frame at
+  // full strength, and `#tile-root .tile-area > .tile-bar.win-header` a shade
+  // quieter when it is absent. One class, on the ancestor, so the head is
+  // literally the same DOM in both states and a focus change writes two
+  // attributes instead of two hundred.
   return frag;
 }
 
@@ -15788,10 +15815,6 @@ function splitAreaOf(win: Win, dir: "row" | "col"): void {
   setActiveWin(win.id);
   splitWindow(win.id, dir);
   renderTiles();
-  const w = activeWin();
-  if (w.type === "graph") setMode(winMode(w));
-  else mountWindow(w);
-  renderAreaHeaders();
 }
 
 /**
@@ -15840,10 +15863,8 @@ function transformWindowOf(win: Win, type: WindowType): void {
   if (win.type === type) return;
   setActiveWin(win.id);
   setWinType(win, type);
-  renderTiles();
-  mountWindow(win);
-  renderAreaHeaders();
-}
+  renderTiles();   // the area re-surfaces itself, and the wrap re-mounts if it
+}                  // was this window that held it
 
 /**
  * The MODES a window offers in its header, or null when it has none.
@@ -16180,17 +16201,20 @@ function buildHeaderStrip(win: Win): HTMLElement {
  * area. Same builder, same contents, one dimmed.
  */
 function renderAreaHeaders(): void {
-  const active = activeWin();
   const head = document.getElementById("window-header");
-  if (head) {
+  // `#window-header` is the bar of the window that OWNS the wrap, which since
+  // tonight is not necessarily the focused one — the wrap is the graph's area,
+  // not the focus's.
+  const owner = windowsOf().find((w) => w.id === wrapOwnerId);
+  if (head && owner) {
     head.innerHTML = "";
-    head.appendChild(buildAreaHeader(active, true));
+    head.appendChild(buildAreaHeader(owner));
   }
   for (const bar of document.querySelectorAll<HTMLElement>(".tile-area > .tile-bar")) {
     const win = windowsOf().find((w) => w.id === bar.parentElement?.dataset.win);
     if (!win) continue;
     bar.innerHTML = "";
-    bar.appendChild(buildAreaHeader(win, false));
+    bar.appendChild(buildAreaHeader(win));
   }
   // STEP A · every area publishes the height ITS bar takes, the way the focused
   // one always has (`--winbar-h`): the resources panel and its chevron sit below
@@ -16730,6 +16754,11 @@ function highlightNarrative(query: string): void {
  *  first window, so a Canvas workspace left in DTC mode reopens in DTC, and one
  *  whose window was transformed into a table reopens as a table. */
 function applyWorkspace(id: WorkspaceId): void {
+  // ONE SURFACE · `mountWindow` only ever acts on the window that holds the wrap
+  // (it returns immediately for any other), and `renderTiles` has already
+  // mounted that one through `setWrapOwner`. This call is what remains of "the
+  // active window becomes the editor": it is now idempotent, and kept because
+  // the boot path reaches here without a workspace switch.
   mountWindow(activeWin(id));
 }
 
@@ -16968,29 +16997,12 @@ canvas.addEventListener("drop", (e) => {
 // or a file dragged out of a Storage window — "show me this" — which is a
 // different sentence from "create one of these", carried on a different mime so
 // the two can never be confused for one another.
-{
-  const viewerView = document.getElementById("viewer-view");
-  const carriesStorage = (e: DragEvent): boolean =>
-    !!e.dataTransfer?.types?.includes(STORAGE_MIME);
-  viewerView?.addEventListener("dragover", (e) => {
-    if (!carriesStorage(e)) return;
-    e.preventDefault();
-    e.dataTransfer!.dropEffect = "copy";
-    viewerView.classList.add("drop-target");
-  });
-  viewerView?.addEventListener("dragleave", () =>
-    viewerView.classList.remove("drop-target"),
-  );
-  viewerView?.addEventListener("drop", (e) => {
-    viewerView.classList.remove("drop-target");
-    const payload = storageDragPayload(e);
-    if (!payload) return;
-    e.preventDefault();
-    const win = activeWin();
-    if (win.type !== "viewer") return;
-    pinViewerCollection(win, payload);
-  });
-}
+//
+// ONE SURFACE · wired on the AREA now (`createArea`), not on `#viewer-view`.
+// That element was the focused mount, so this handler only ever caught a drop on
+// a Viewer window that already had the focus — and the area's own handler, which
+// takes the focus and then pins the collection, has covered both cases since W1.
+// One listener, one place, and it works in every area.
 
 // ---------- canvas interactions ----------
 type DragMode =
@@ -18043,6 +18055,15 @@ window.addEventListener("beforeunload", (e) => {
 });
 
 new ResizeObserver(resizeCanvas).observe(wrap);
+// ONE SURFACE · the arrangement is coordinates now, so the browser no longer
+// reflows it on its own: when the shell changes size the rectangles are
+// recomputed. Stated as the declared cost of the choice (`shell/layout.ts`) —
+// one observer, on the element that was already being observed for the canvas.
+new ResizeObserver(() => {
+  positionAreas();
+  resizeCanvas();
+  drawTiles();
+}).observe(tileRoot);
 resizeCanvas();
 // repaint when an official icon finishes decoding
 import("./icons").then(({ setIconRedraw }) => setIconRedraw(() => draw()));
@@ -18080,6 +18101,16 @@ updateToolbar();
 // workspace while the canvas silently sat in Matrix — the saved state was a
 // label, not a state. Safe on an empty canvas (fit/buildScenes are no-ops
 // without a store).
+// THE CONTRACT, honoured before the first area exists (`shell/surface.ts`): the
+// six converted types register their ONE constructor here, and the renderers
+// they need travel as arguments — so `shell/` never imports `main.ts` and its
+// `setFocused` bodies can be read by a checker without the app behind them.
+registerBuiltinSurfaces({
+  addEmDataHost, removeEmDataHost, renderEmData,
+  addStorageHost, removeStorageHost, renderStorage,
+  renderShelfInto, renderViewerInto, renderDocViewInto, reflectDocWidth,
+  renderStudyInto,
+});
 renderTiles(); // WIN5 · lay out the arrangement this session was left in
 applyWorkspace(activeWorkspace());
 
@@ -18101,33 +18132,16 @@ document.getElementById("annotator-mirador")
 // EM-Data (DP-81): a live tabular view on the active store. Reads `store`
 // through a getter so it always sees the current slot; re-renders from the
 // store's onChange (wired in wireStore).
-// WIN6-RESIDUAL · the Tabular WINDOW is the table's only home (the dock is
-// retired). HDR1 · and the sheet is that window's MODE, chosen in its header —
-// the `<select>` that used to sit in this head is gone with it.
-{
-  const body = document.getElementById("table-view-body");
-  if (body)
-    addEmDataHost({
-      body,
-      // HDR2 · the count is in the window header (`.win-strip-count`), looked up
-      // at render time because that header is rebuilt whenever the arrangement
-      // changes. `#table-view-head` stays in the DOM, hidden and empty: the
-      // surface keeps its shape and nothing else had to move.
-      get count() {
-        return document.querySelector<HTMLElement>(
-          "#window-header .win-strip-count");
-      },
-      actions: document.getElementById("table-view-actions"),
-      enabled: () =>
-        !document.getElementById("table-view")?.classList.contains("hidden"),
-      // read at call time: this mount always belongs to whichever Tabular window
-      // currently has the focus
-      place: {
-        recall: () => surfaceScroll.get(surfaceKey(activeWin(), "")) ?? 0,
-        remember: (at) => surfaceScroll.set(surfaceKey(activeWin(), ""), at),
-      },
-    });
-}
+//
+// ONE SURFACE · nothing is registered here any more. This block used to add the
+// mount of the FOCUSED Tabular window — `#table-view-body`, enabled by asking
+// whether `#table-view` was hidden — alongside the per-area hosts that
+// `buildSecondarySurface` registered. Two registrations, one for the focused
+// path and one for the other. There is one now, made by the Table surface in
+// `shell/types.ts` when its area is mounted, and it is the same object whichever
+// window has the focus. The row actions went with it: `EmDataHost.actions` was
+// `#table-view-actions`, an element `renderEmData` only ever EMPTIED — the row
+// verbs have been in the window's `Righe ▸` menu since HDR1.
 
 initAnnotatorGestures();   // A2 · the overlay is a singleton: wire it once
 refreshIdentityChip();     // IDENTITY · who is authoring, from the first frame

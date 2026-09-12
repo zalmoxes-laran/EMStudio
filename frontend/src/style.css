@@ -425,25 +425,12 @@ main {
 /* ---------- EM-Data table (DP-81) ---------- */
 /* WIN6-RESIDUAL · the dock's own chrome (#emdata-dock / -head / -resizer /
    -toggle / -sheet / -body) is gone with the dock. What is left is what belongs
-   to the TABLE itself — the row/cell rules below, plus the two bits its head
-   contributed, now worn by the Tabular window's head. */
-#table-view-actions {
-  display: flex;
-  gap: 6px;
-  align-items: center;
-}
-#table-view-actions button {
-  font-size: 12px;
-  padding: 2px 8px;
-  background: var(--bg-panel);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  cursor: pointer;
-}
-#table-view-actions button:hover {
-  background: var(--bg-hover);
-}
+   to the TABLE itself — the row/cell rules below.
+   ONE SURFACE · `#table-view-actions` went with the head that held it. It was
+   an element `renderEmData` only ever EMPTIED (`if (actions) actions.innerHTML
+   = ""`): the row verbs have lived in the window's `Righe ▸` menu since HDR1,
+   and a styled box that is cleared on every render is furniture, not a
+   control. */
 /* ROWSELECT · the selection gutter. A narrow handle at the head of every row
    that makes the row current WITHOUT opening any editor — until now the only way
    to say "this row" was to click a value, which also started changing it. */
@@ -1014,9 +1001,11 @@ body.sync-active #mode-indicator::before {
   filter: brightness(0.97);
 }
 
+/* ONE SURFACE · `#canvas-wrap` is THE GRAPH'S AREA now, not "the focused area":
+   it is placed by `positionAreas()` like every other area, and it changes owner
+   only when the focus moves between two of the types still bound to the
+   singletons inside it (graph, narrative, the hosted panels, the annotator). */
 #canvas-wrap {
-  position: relative;
-  flex: 1;
   background: var(--canvas-bg);
   overflow: hidden;
 }
@@ -4833,38 +4822,33 @@ body.sync-active #footer-brand #em-version {
 }
 
 /* ── WIN5 · tiling ──────────────────────────────────────────────────────────
-   `#tile-root` is the split tree rendered as nested flex boxes: an area is a
-   flex child with a grow factor, a divider is a 6px handle between two of them.
-   With one window the root has a single child (`#canvas-wrap`) and behaves
-   exactly as it did before tiling existed. */
+   ONE SURFACE (12 set 2026) · the split tree is no longer nested flex boxes. It
+   is a FLAT set of absolutely positioned areas whose rectangles `shell/layout.ts`
+   computes from the tree, and `positionAreas()` writes as four numbers.
+
+   The reason is not tidiness. Nested flex made an area a child of a `.tile-split`
+   that was itself a child of another, so any change to the arrangement — and,
+   because the focus rebuilt the tree, any movement of the POINTER — re-parented
+   every area. A re-parent zeroes every `scrollTop` inside, destroys every hosted
+   panel and invalidates every registered mount, and three mechanisms existed to
+   put those back. Areas that never move need none of them.
+
+   Each area is created once and positioned; `#canvas-wrap` is one of them. */
 #tile-root {
   flex: 1;
-  display: flex;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-}
-#tile-root.tile-col {
-  flex-direction: column;
-}
-/* every area — the live one and the secondary ones — shares the same box */
-#tile-root > #canvas-wrap,
-#tile-root .tile-area,
-#tile-root .tile-split {
-  min-width: 0;
-  min-height: 0;
-}
-.tile-split {
-  display: flex;
-  flex: 1;
-  overflow: hidden;
-}
-.tile-split.tile-col {
-  flex-direction: column;
-}
-/* a secondary area: its own docked bar + a canvas that draws its projection */
-.tile-area {
   position: relative;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+/* every area — the wrap and the others alike — is placed, not flowed */
+#tile-root > #canvas-wrap,
+#tile-root > .tile-area,
+#tile-root > .tile-div {
+  position: absolute;
+}
+/* an area: its own docked bar + whatever surface its type builds below it */
+.tile-area {
   display: flex;
   flex-direction: column;
   background: var(--canvas-bg);
@@ -4928,8 +4912,7 @@ body.sync-active #footer-brand #em-version {
   --win-frame-active: rgba(255, 255, 255, 0.30);
 }
 #tile-root .tile-area,
-#tile-root > #canvas-wrap,
-#tile-root .tile-split > #canvas-wrap {
+#tile-root > #canvas-wrap {
   border: 1px solid var(--win-frame);
   box-sizing: border-box;
 }
@@ -4939,12 +4922,15 @@ body.sync-active #footer-brand #em-version {
 #tile-root #canvas-wrap.tile-active {
   border-color: var(--win-frame-active);
 }
-/* the divider between two areas */
+/* the divider between two areas. Its thickness is the one `DIVIDER` in
+   `shell/layout.ts` reserves — the strip you grab and the gap the geometry
+   leaves can never be two different widths, because only one of them is a
+   number and the other is this box being told where to sit. */
 .tile-div {
-  flex: 0 0 6px;
   background: var(--border);
   opacity: 0.55;
   cursor: col-resize;
+  z-index: 2;
 }
 .tile-div.tile-div-col {
   cursor: row-resize;
@@ -4955,48 +4941,15 @@ body.sync-active #footer-brand #em-version {
   background: var(--accent);
 }
 
-/* ── WIN5 · Table and Doc window surfaces ───────────────────────────────────
-   Siblings of #narrative-view: they fill the window area below the docked bar
-   and are shown according to the window's type. */
-#table-view,
-#doc-view {
-  position: absolute;
-  inset: var(--winbar-h, 0px) 0 0 var(--palette-w, 0px);
-  z-index: 5;
-  background: var(--bg-subtle);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-#table-view.hidden,
-#doc-view.hidden {
-  display: none;
-}
-/* FOCUS-NOJITTER · ONE head for the table, focused area or not. `#table-view-head`
-   and the secondary `.tile-tablehead` had different padding and font sizes, so
-   taking the focus re-measured the head and the rows below it stepped down 10.5px
-   — the same defect as the panel tab strip, one surface along. The `min-height`
-   is what makes the two equal regardless of what each one holds (a `+ row`
-   button here, a sheet name there): the box is declared, not inferred from its
-   contents. */
-#table-view-head,
-.tile-tablehead {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  min-height: 35px;
-  box-sizing: border-box;
-  flex: 0 0 auto;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-panel);
-  font-size: 12px;
-}
-#table-view-body {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-}
+/* ── ONE SURFACE · the Table and the Doc are their window's area ────────────
+   `#table-view`, `#table-view-head`, `#table-view-body` and `#doc-view` are
+   gone from the markup and their rules with them: they styled the FOCUSED mount
+   of two types that now have one mount, in the window's own area. What styled
+   the box already lived on the classes both mounts carried — that was the
+   2 September repair — so the rules that survive are exactly those. The heads
+   went with them: HDR2 had already emptied them into the window header, and
+   `#storage-bar, #table-view-head { display: none; }` was the last trace of
+   two rows of chrome that nobody could see. */
 /* SURFACE-AUDIT · the Doc surface, ONE rule set for both renderings.
    The focused window laid it out as a row (list 240px on the left) and a
    secondary area as a column (list 34% on top) — so entering a Doc window
@@ -5005,7 +4958,6 @@ body.sync-active #footer-brand #em-version {
    unusable, and a column is right there. So the direction is keyed to a
    `.doc-wide` class that JS sets from the measured width — identical in both
    focus states, because the area's width is. */
-#doc-view,
 .doc-surface {
   /* FOCUS-PARITY · `display: flex` belongs HERE and not only on the id. Without
      it `flex-direction` — and therefore `.doc-wide` below — was inert on the
@@ -5014,8 +4966,13 @@ body.sync-active #footer-brand #em-version {
      type measured tonight. */
   display: flex;
   flex-direction: column;
+  /* …and the area's plumbing, which `#doc-view` used to supply by being an
+     absolutely-positioned overlay: as a child of its area it has to fill it. */
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg-subtle);
 }
-#doc-view.doc-wide,
 .doc-surface.doc-wide {
   flex-direction: row;
 }
@@ -5101,10 +5058,6 @@ body.sync-active #footer-brand #em-version {
    Same content as the focused window's, at the size the area happens to be.
    They are views, not editors: the pointer entering the area promotes it and
    the real surface takes over, so nothing here has to be reachable. */
-.tile-tablehead .tile-sheet {
-  font-weight: 600;
-  color: var(--text);
-}
 .tile-tablebody {
   flex: 1;
   min-height: 0;
@@ -5138,11 +5091,6 @@ body.sync-active #footer-brand #em-version {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-}
-.tile-viewer > .viewer-stage {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
 }
 .tile-annot-image {
   max-width: 100%;
@@ -5308,24 +5256,14 @@ body.sync-active #footer-brand #em-version {
    block-stacked (which looks the same until one of them grows) over a different
    background. `overflow` stays off this rule: the focused mount clips, an area
    scrolls, and that difference is the area's job (`.tile-viewer`). */
-#viewer-view,
 .viewer-view {
   display: flex;
   flex-direction: column;
   background: var(--bg-sunken);
 }
-/* …and what is true only of the FOCUSED mount: it is an overlay over the
-   canvas. Position and stacking, nothing that decides the column. */
-#viewer-view {
-  position: absolute;
-  inset: var(--winbar-h, 0px) 0 0 var(--palette-w, 0px);
-  z-index: 5;
-  overflow: hidden;
-}
-#viewer-view.hidden {
-  display: none;
-}
-#viewer-stage {
+/* ONE SURFACE · there is no "focused mount" any more, so the overlay rules that
+   were true only of it are gone. What is left is the box, on the class. */
+.viewer-stage {
   flex: 1;
   min-height: 0;
   display: flex;
@@ -5350,7 +5288,13 @@ object.viewer-media {
   width: 100%;
   height: 100%;
 }
-#viewer-caption {
+/* ONE SURFACE · on the CLASS. This whole box was on the id, which is to say on
+   the FOCUSED mount alone — so a Viewer area without the focus had a caption
+   with no padding, no rule above it and no minimum height, and the picture above
+   it sat 27px lower there than here. The old parity check compared the surface
+   ROOTS and never looked this far in; the fence that replaced it asks whether a
+   rule still aims at a retired id, and this is the first thing it found. */
+.viewer-caption {
   flex: 0 0 auto;
   padding: 6px 12px;
   min-height: 27px;
@@ -5390,7 +5334,7 @@ object.viewer-media {
 /* W1 · the collection strip. Same height as the caption below it, so a Viewer
    holding one item and a Viewer holding forty have the same stage: a strip that
    appears and disappears must not make the picture resize under you. */
-#viewer-bar {
+.viewer-bar {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
@@ -5403,7 +5347,7 @@ object.viewer-media {
   font-size: 12px;
   color: var(--text-muted);
 }
-#viewer-bar.hidden {
+.viewer-bar.hidden {
   display: none;
 }
 .viewer-nav {
@@ -5421,12 +5365,12 @@ object.viewer-media {
   opacity: 0.35;
   cursor: default;
 }
-#viewer-pos {
+.viewer-pos {
   min-width: 5ch;
   text-align: center;
   font-variant-numeric: tabular-nums; /* the number must not jog the arrows */
 }
-#viewer-title {
+.viewer-coll-title {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -5484,36 +5428,17 @@ object.viewer-media {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-/* the drop of a folder from Storage — a RESOURCE drop, not a node-type one */
-#viewer-view.drop-target {
-  outline: 2px dashed var(--accent);
-  outline-offset: -4px;
-}
+/* the drop of a folder from Storage — a RESOURCE drop, not a node-type one.
+   Marked on the AREA now (`.tile-area.drop-target`), which is where the handler
+   lives and which works in every Viewer window rather than only in the one that
+   happened to have the focus. */
 
-/* W1 · STORAGE · a file browser, in the same box every other surface uses. */
-#storage-view {
-  position: absolute;
-  inset: var(--winbar-h, 0px) 0 0 var(--palette-w, 0px);
-  z-index: 5;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  background: var(--bg-sunken);
-}
-#storage-view.hidden {
-  display: none;
-}
-#storage-bar {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 10px;
-  min-height: 30px;
-  box-sizing: border-box;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-panel);
-}
+/* W1 · STORAGE · a file browser, in the same box every other surface uses —
+   which since the conversion is `.tile-storagebody`, below, and nothing else.
+   `#storage-view` and `#storage-bar` are gone from the markup: the bar had
+   already been neutralised by HDR2 (its up-button, its crumb and its `+ folder`
+   are chips of the window header), so what these rules styled was a row the
+   stylesheet itself was hiding. */
 .storage-nav {
   width: 22px;
   height: 22px;
@@ -5540,15 +5465,6 @@ object.viewer-media {
   white-space: nowrap;
   direction: rtl; /* a long path truncates at the FRONT: the leaf is the news */
   text-align: left;
-}
-#storage-body {
-  flex: 1;
-  min-height: 0;
-  overflow: auto;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  padding: 10px;
 }
 .storage-list {
   align-self: stretch;
@@ -5927,18 +5843,6 @@ object.viewer-media {
 
 /* ── SHELF1 · the wide list ─────────────────────────────────────────────────
    Same box every surface uses, so switching to it moves nothing. */
-#shelf-view {
-  position: absolute;
-  inset: var(--winbar-h, 0px) 0 0 var(--palette-w, 0px);
-  z-index: 5;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  background: var(--bg-sunken);
-}
-#shelf-view.hidden {
-  display: none;
-}
 /* HDR2 · `#shelf-bar` and its nine controls are GONE from here: they are in the
    window header, built by the one builder both mounts call. What is left of
    their look lives on `.win-strip-shelfname` and in the `+ URI` popover below,
@@ -5950,7 +5854,6 @@ object.viewer-media {
    missing and `align-items` inert, so the same list sat higher and further left
    there than in the focused window. Same repair as `.nv-view`, which states the
    rule: the box goes on the class, position and stacking on the id. */
-#shelf-body,
 .shelf-body {
   flex: 1;
   min-height: 0;
@@ -6278,10 +6181,6 @@ object.viewer-media {
   font: inherit;
   font-size: 11px;
   cursor: pointer;
-}
-#shelf-view.drop-target {
-  outline: 2px dashed var(--accent);
-  outline-offset: -4px;
 }
 .storage-nav-wide {
   padding: 2px 8px;
@@ -6974,6 +6873,18 @@ body.nv-standalone main.nv-standalone-main {
   padding: 10px;
 }
 
+/* ONE SURFACE · the STUDY, which is the case that says whether tonight worked.
+   It had NO rule at all — neither an id nor a class — because `#study-view` was
+   an unstyled box inside the wrap and an unfocused Study window fell through to
+   a note, so there was never a second mount to give a box to. There is one
+   surface now, so it gets the one box: fill the area, scroll inside it. */
+.tile-studybody {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 12px;
+}
+
 /* PHASES · the leader bar shows the sequence of work (Documentation → Analysis →
    Comparisons → Output) and then, after a hairline, the arrangements of the same
    material. Without the rule the bar read as six equal choices. */
@@ -7062,9 +6973,6 @@ body.nv-standalone main.nv-standalone-main {
   font-size: 11.5px;
   cursor: pointer;
 }
-/* the strips that used to be a second row: kept in the DOM (the surfaces keep
-   their shape), emptied and out of the way */
-#storage-bar, #table-view-head { display: none; }
 .panel-tabs.hidden { display: none; }
 
 /* ACTIVE IS A STYLE, not a row. The focused area's header carries the accent;

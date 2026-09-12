@@ -11,15 +11,19 @@
  *
  * Two registers, because there are two ways a surface loses its place:
  *
- * * `panelScroll`, by ELEMENT ID — for the singletons that are MOVED (the four
- *   panels travel between the aside and whichever area claims them), and for
- *   everything inside `#canvas-wrap`, which `renderTiles` detaches and
- *   re-attaches (a detach zeroes every `scrollTop` inside it);
+ * * `panelScroll`, by ELEMENT ID — for the singletons that are MOVED: the four
+ *   panels travel between the aside and whichever area claims them;
  * * `surfaceScroll`, by WINDOW (plus a slot, for the types whose surface is two
- *   boxes) — for the surfaces that are REBUILT, and for the ones that MIGRATE
- *   between the focused element and a secondary area's box. Those two mounts are
- *   different elements holding the same window's content, so only the window is
- *   a stable name for the place.
+ *   boxes) — for the surfaces that are REBUILT, and for the two that still
+ *   MIGRATE between the singleton inside `#canvas-wrap` and an area's own box.
+ *   Those are different elements holding the same window's content, so only the
+ *   window is a stable name for the place.
+ *
+ * ONE SURFACE (12 set 2026) · the third register is GONE, and with it the reason
+ * most of this file existed. `#canvas-wrap` used to be DETACHED and re-attached
+ * on every focus change, which zeroes every `scrollTop` inside it; it is placed
+ * by coordinates now and never leaves the document. See the note where
+ * `rememberScrollsIn` used to be.
  *
  * Nothing here reaches for the app's state: the caller says which window and
  * which box. That is what makes it checkable outside a browser
@@ -123,33 +127,27 @@ export function paintSurface(win: SurfaceWin, box: HTMLElement, paint: () => voi
 }
 
 /**
- * The box that scrolls in each type's FOCUSED surface, and the slot it shares
- * with that type's secondary surface.
+ * The box that scrolls in the surface of a type that still MIGRATES.
  *
- * These surfaces MIGRATE: the same content is a singleton element inside
- * `#canvas-wrap` while its window has the focus, and a box built into an area
- * when it does not. Remembering by element id (`rememberScrollsIn`) carries a
- * surface across the detach; it cannot carry it across the crossing. Keyed by
- * window, both mounts read one place.
+ * ONE SURFACE (12 set 2026) · five of the seven rows are gone, and the reason is
+ * that the crossing they described no longer happens. `table`, `storage`,
+ * `shelf`, `viewer` and `doc` had a singleton mount inside `#canvas-wrap` for
+ * the focused window and a box inside an area for every other one, so the same
+ * content lived in two different elements and only the WINDOW was a stable name
+ * for the reader's place. Those five have one mount now, in the window's own
+ * area, and it is never detached — so their position is simply where it was.
+ *
+ * What is left migrates for real: `#narrative-view` carries the writing editors
+ * and `#annotator-stage` the tracing overlay, both singletons inside the wrap,
+ * and the wrap changes owner when the focus moves between two of the types still
+ * bound to it (`setWrapOwner` in `main.ts`). That is the whole remaining
+ * migration, and it is named in one place instead of seven.
  */
 export const FOCUSED_SURFACE_BOXES: Partial<Record<WindowType,
   Array<{ id: string; slot: string }>>> = {
   narrative: [{ id: "narrative-view", slot: "" }],
-  shelf: [{ id: "shelf-body", slot: "" }],
-  viewer: [{ id: "viewer-stage", slot: "" }],
   annotator: [{ id: "annotator-stage", slot: "" }],
-  table: [{ id: "table-view-body", slot: "" }],
-  storage: [{ id: "storage-body", slot: "" }],
-  doc: [{ id: "doc-view-list", slot: "doc-list" },
-        { id: "doc-view-detail", slot: "doc-detail" }],
 };
-
-/** The ids in that table, flat. `rememberScrollsIn` SKIPS them: a migrating
- *  surface has one authority (its window), and two registries writing the same
- *  element meant the later write won — measured, the element-keyed one clobbered
- *  a position that had just travelled in from the secondary box. */
-export const MIGRATING_SURFACE_IDS = new Set(
-  Object.values(FOCUSED_SURFACE_BOXES).flat().map((b) => b!.id));
 
 /** How a caller finds its boxes. `main.ts` passes the document; a checker passes
  *  its own map — which is what lets the two loops below be exercised outside a
@@ -159,9 +157,11 @@ export type BoxLookup = (id: string) => HTMLElement | null;
 /**
  * Where the reader is in a window's FOCUSED surface — read before the tree goes.
  *
- * `win` is the window whose surfaces are mounted right now, which is NOT the
- * active one during a focus change: the active window is already the incoming
- * one by the time this runs (see `wrapWin` in `main.ts`).
+ * `win` is the window that OWNS the wrap right now — which since the conversion
+ * is not the focused one in general, and is read from `wrapOwnerId` rather than
+ * from `activeWin()`. (`wrapWin` used to be that answer and existed only because
+ * the focus had already moved on by the time the teardown asked; there is no
+ * teardown, so there is no lag to compensate.)
  */
 export function rememberFocusedBoxes(win: SurfaceWin, find: BoxLookup): void {
   for (const { id, slot } of FOCUSED_SURFACE_BOXES[win.type] ?? []) {
@@ -181,44 +181,26 @@ export function restoreFocusedBoxes(win: SurfaceWin, find: BoxLookup): void {
   }
 }
 
-/**
- * Remember where every scrolled box inside `root` is, by element id.
+/*
+ * GONE (12 set 2026) · `rememberScrollsIn` / `restoreScrollsIn`.
  *
- * For the FOCUSED window, whose surfaces are all singletons living inside
- * `#canvas-wrap`. `renderTiles` DETACHES that wrap (so the `innerHTML` reset
- * below does not destroy it) and re-attaches it into the new tree — and
- * detaching an element resets the `scrollTop` of everything inside it, in every
- * browser. So the position of the surface you were reading was lost on every
- * focus change, whatever type of window it was: the narrative, the shelf, the
- * viewer, the table, the doc, a panel. Measured: 900 → 0.
+ * They existed for one reason, written in their own doc-comment: «`renderTiles`
+ * DETACHES that wrap (so the `innerHTML` reset below does not destroy it) and
+ * re-attaches it into the new tree — and detaching an element resets the
+ * `scrollTop` of everything inside it, in every browser. So the position of the
+ * surface you were reading was lost on every focus change, whatever type of
+ * window it was. Measured: 900 → 0.»
  *
- * Read off the DOM rather than from a list of ids, so a surface added later is
- * covered by having a scrollbar, not by being remembered here.
+ * There is no `innerHTML` reset and no detach now. `#canvas-wrap` is placed by
+ * coordinates like every other area (`shell/layout.ts`) and never leaves the
+ * document, so nothing inside it is ever zeroed and there is nothing to put
+ * back. They are deleted rather than left unused, because a helper that repairs
+ * a destruction that no longer happens is an invitation to bring the destruction
+ * back.
+ *
+ * `MIGRATING_SURFACE_IDS` went with them: it existed only so that loop would
+ * SKIP the ids `FOCUSED_SURFACE_BOXES` owns.
  */
-export function rememberScrollsIn(root: HTMLElement): string[] {
-  const kept: string[] = [];
-  for (const el of [root, ...root.querySelectorAll<HTMLElement>("[id]")]) {
-    if (!el.id || !el.scrollTop) continue;
-    if (MIGRATING_SURFACE_IDS.has(el.id)) continue;   // its window owns it
-    panelScroll.set(el.id, el.scrollTop);
-    kept.push(el.id);
-  }
-  return kept;
-}
-
-/** …and put them back once the wrap is in the new tree (twice, same reason). */
-export function restoreScrollsIn(ids: readonly string[]): void {
-  if (!ids.length) return;
-  const put = (): void => {
-    for (const id of ids) {
-      const el = document.getElementById(id);
-      const at = panelScroll.get(id);
-      if (el && at) el.scrollTop = at;
-    }
-  };
-  put();
-  nextFrame(put);
-}
 
 export function rememberPanelScroll(el: HTMLElement | null): void {
   if (!el?.id) return;

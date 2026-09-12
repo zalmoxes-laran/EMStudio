@@ -85,6 +85,21 @@ July 2026; this file is the handoff map — read it before touching anything.
   filters), `routing.ts` (orthogonal edges, ports, crossing bridges),
   `renderer.ts` (canvas; official 2D icons; vector property chip and
   document sheet), `emcore.ts` (WASM bridge), `svg-export.ts`.
+- `frontend/src/shell/` — **the window shell, and its law: the focus decides
+  where the events go, never what is drawn.** `surface.ts` is the contract
+  (`Surface` = mount/refresh/setFocused/destroy, `SurfaceType`, the registry,
+  `capabilities`) — a window type has ONE constructor, used for every area
+  whether or not it has the focus. `types.ts` holds the six converted types
+  (table · storage · shelf · viewer · doc · study), built from renderers
+  injected by `main.ts` so `shell/` never imports it. `layout.ts` turns the
+  split tree into rectangles (`layoutRects`): areas are absolutely positioned
+  children of `#tile-root`, created once and NEVER re-parented, so a split, a
+  join, a ratio drag and a resize write four numbers each. `#canvas-wrap` is
+  not "the focused area" — it is the area of the window that owns it
+  (`wrapOwnerId`), i.e. the types still bound to its singletons (graph,
+  narrative, the hosted panels, the annotator). `selectWindow()` must never
+  call `renderTiles()`; `check-focus-parity.mjs` and `check-surfaces.mjs`
+  assert that, and that no `setFocused` touches the layout.
 - Test fixture: `frontend/testdata/TempluMare.em.json` — regenerate with
   `tools/graphml2em.py` + `emstudio layout` after import/export changes.
 

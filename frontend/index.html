@@ -344,23 +344,18 @@
              threading it through that machinery would have changed the graph
              view to add something beside it. -->
         <div id="narrative-view" class="nv-view hidden"></div>
-        <!-- WIN5 · Table and Doc as REAL windows: two more surfaces of the
-             window area, siblings of the narrative overlay, shown when the
-             window's type says so. The Table surface renders the SAME EM-Data
-             table as the bottom dock (one renderer, two mounts); the Doc surface
-             is the graph's documents — the sources the paradata chain hangs
-             from — with their fields editable. -->
-        <div id="table-view" class="hidden">
-          <!-- HDR1 · the sheet SELECT left this head: which sheet a Tabular
-               window shows is that window's MODE, and it lives in its header
-               with every other window's mode. What stays here is what belongs to
-               the table itself — its row actions and how many rows there are. -->
-          <div id="table-view-head">
-            <span id="table-view-actions"></span>
-            <span id="table-view-count" class="emdata-count"></span>
-          </div>
-          <div id="table-view-body"></div>
-        </div>
+        <!-- ONE SURFACE (12 set 2026) · SIX SURFACES LEFT THIS FILE.
+             `#table-view`, `#viewer-view`, `#storage-view`, `#shelf-view`,
+             `#study-view` and `#doc-view` were the FOCUSED mount of their type:
+             one element, usable only by the window that happened to have the
+             focus, with `buildSecondarySurface()` drawing the same thing a
+             second way for every other area. Parity between the two was an
+             invariant kept by hand, and the types nobody had levelled were the
+             ones that still jumped.
+             There is one path now (`src/shell/`): the surface is built into the
+             window's own area, focused or not, by one constructor per type. A
+             singleton here would BE the second path, so there is none — and
+             `check-surfaces.mjs` fails if one comes back. -->
         <!-- WIN6 · panels as WINDOWS. This surface hosts one of the existing
              side panels, MOVED here while a window of that type is showing it
              (and moved back to `#side` when it is not) — the panels keep their
@@ -371,64 +366,6 @@
         <div id="panel-view" class="hidden">
           <div id="panel-view-tabs" class="panel-tabs"></div>
           <div id="panel-view-body" class="panel-body"></div>
-        </div>
-        <!-- VIEWER · a single-preview surface: the resource the current element
-             points at, shown as itself. Images and PDFs are treated the SAME —
-             both are "the document, rendered" — so the difference is one element
-             (<img> vs <object>) and nothing else. Filled by `renderViewer`. -->
-        <div id="viewer-view" class="hidden">
-          <!-- W1 · the collection strip: which item of how many, and the way
-               through them. Hidden when the collection holds a single item —
-               "1 / 1" with two dead arrows is furniture, not information. -->
-          <div id="viewer-bar" class="hidden">
-            <button id="viewer-prev" class="viewer-nav" title="">‹</button>
-            <span id="viewer-pos"></span>
-            <button id="viewer-next" class="viewer-nav" title="">›</button>
-            <span id="viewer-title"></span>
-          </div>
-          <div id="viewer-stage"></div>
-          <div id="viewer-caption"></div>
-        </div>
-        <!-- W1 · STORAGE · where the bytes live. Its Modes are the BACKENDS:
-             Filesystem (live, through the em-bridge's /fs routes) and MinIO
-             (phase 2 — present as a Mode, honestly empty). The browser cannot
-             read a disk path, so every listing and every byte comes from the
-             bridge. Filled by `renderStorage`. -->
-        <div id="storage-view" class="hidden">
-          <div id="storage-bar">
-            <button id="storage-up" class="storage-nav" title="">↑</button>
-            <div id="storage-crumb" class="storage-crumb"></div>
-            <!-- DS4 · adding a served folder has a UI, not just an environment
-                 variable. The browser sees the folders you name — a library, a
-                 DOSCO, the excavation photos — and never the whole disk. -->
-            <button id="storage-add-root" class="storage-nav-wide" title="">+ 📁</button>
-          </div>
-          <div id="storage-body"></div>
-        </div>
-        <!-- SHELF1 · THE WIDE LIST. Not a view of a folder: a curated list you
-             save and reopen (a ShelfGraph). The file browser shows everything on
-             the disk — including what must never enter the documentation — while
-             this holds what you CHOSE, with its digest and its two axes (which
-             fence it comes from, where the bytes live). Filled by `renderShelf`. -->
-        <!-- HDR2 · no bar of its own. The nine controls that used to sit here
-             live in the WINDOW HEADER now (`buildHeaderStrip`), which both the
-             focused mount and every secondary area build with the same builder:
-             the name and the count in the strip, `+ URI` as a form behind one
-             chip, Open/Save/Empty in the Shelf menu. This was the last type the
-             focus-parity table still declared a difference for — the row
-             existed in the focused mount ONLY, so the list moved down 30px the
-             moment the window took the focus. -->
-        <div id="shelf-view" class="hidden">
-          <div id="shelf-body"></div>
-        </div>
-        <!-- STUDY · what the canvas IS: the graph's name and id, its
-             propagative metadata (author / licence / embargo, DP-65), the site
-             position, and the HDT-O fields that say which heritage thing this
-             study is about. It used to be the no-node branch of the INSPECTOR,
-             which put a per-graph panel inside a per-node window. Filled by
-             `renderStudyWindow` from `study-panel.ts`. -->
-        <div id="study-view" class="hidden">
-          <div id="study-body"></div>
         </div>
         <!-- A2 · ANNOTATOR · the image, the regions traced on it, and the panel
              that asks what is being extracted. The picture comes through the
@@ -467,10 +404,6 @@
             </div>
           </div>
           <div id="annotator-panel" class="hidden"></div>
-        </div>
-        <div id="doc-view" class="hidden">
-          <div id="doc-view-list" class="doc-list"></div>
-          <div id="doc-view-detail" class="doc-detail"></div>
         </div>
         <canvas id="overview" title="Overview — click to move the viewport"></canvas>
       </div>
