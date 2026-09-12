@@ -530,9 +530,14 @@ let lastDtcSource: "corpus" | "study" | "neighbourhood" | null = null;
 /**
  * WIN7 · (window, mode) pairs whose camera the USER has moved — a pan, a zoom, a
  * fit they asked for. The app may re-frame a view it framed itself (see
- * `drawTile`: an area that changes size was framed for a rectangle it no longer
- * has, and a graph left as a speck in the corner is an area showing nothing);
- * it must never re-frame one somebody aimed by hand.
+ * `paintGraphWindow`: an area that changes size was framed for a rectangle it no
+ * longer has, and a graph left as a speck in the corner is an area showing
+ * nothing); it must never re-frame one somebody aimed by hand.
+ *
+ * (15 set 2026 · this used to point at `drawTile`, which was the SECOND drawing
+ * and no longer exists. The rule did not move — one painter now does it for
+ * every window — but a comment that outlives the name it cites teaches the next
+ * reader a shape of the program that is not there.)
  */
 const touchedViews = new Set<string>();
 /** The size each window's camera was last framed for — one per (window, mode),
@@ -16233,12 +16238,17 @@ function buildHeaderStrip(win: Win): HTMLElement {
     const count = document.createElement("span");
     count.className = "emdata-count win-strip-count";
     // FILLED HERE, not left for the renderer. Measured: the header is rebuilt
-    // AFTER `mountWindow` has painted the surface (`transformWindowOf` ends with
-    // `renderAreaHeaders`), so a count written by `renderShelfInto` and then
-    // rebuilt empty simply did not appear — the same class of defect as the one
-    // this whole pass is about, one step further along. The count is a pure
-    // function of the list, so the builder can state it, and the renderer still
-    // writes it: two paths, one value.
+    // AFTER the area's surface has been mounted and painted — `renderTiles`
+    // calls `areaFor()` for every placed window and only then
+    // `renderAreaHeaders()`, and `transformWindowOf` ends by calling
+    // `renderTiles` — so a count written by `renderShelfInto` and then rebuilt
+    // empty simply did not appear. The count is a pure function of the list, so
+    // the builder can state it, and the renderer still writes it: two paths, one
+    // value.
+    //
+    // (15 set 2026 · this used to cite `mountWindow`, deleted with the last
+    // privileged area. The ORDER it warns about is unchanged; only the names
+    // that make it are.)
     count.textContent = t("shelf.count", { n: String(shelfEntries().length) });
     strip.append(name, count);
 
@@ -17066,7 +17076,10 @@ const paletteDragPayload = (e: DragEvent): PaletteDragPayload | null => {
  *    being edited. That is not a trick: it is the measure of how little of this
  *    code was ever about "the" canvas rather than "a" canvas;
  *  · the CAMERA is per instance, and has been since WIN7 — `viewportFor(winId,
- *    mode)`, `markCameraTouched(winId, mode)`, `tileHover`;
+ *    mode)` and `markCameraTouched(winId, mode)`. (This list named `tileHover`
+ *    until 15 set 2026, which was wrong twice over: it was deleted the same
+ *    night, and the hover was never a camera — it is gesture state, the next
+ *    bullet, and the module's one `hoverId` is the whole of it.);
  *  · the GESTURE STATE is deliberately NOT per instance. `dragMode`, `marquee`,
  *    `spaceHeld`, `dragNodeId` and the rest stay at module scope, shared by
  *    every wired canvas, and that is correct rather than convenient: **there is
