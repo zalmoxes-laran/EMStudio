@@ -79,7 +79,21 @@ export type ViewKind = "matrix" | "graph" | "dtc" | "multigraph";
  *  scene/circles, see `ViewKind`); `narrative` reads the graph as a story.
  *  Extensible: `table` (and a future `3d`) slots in here without touching the
  *  callers — the enum + the render dispatch are the single extension point. */
-export type CentralMode = ViewKind | "narrative";
+/**
+ * GONE (14 set 2026) · `CentralMode` was `ViewKind | "narrative"`.
+ *
+ * The narrative was the one thing that was BOTH a window type and a mode of the
+ * canvas — a `WindowType` in `workspace.ts` with its own tab and preset, AND an
+ * overlay switched on over the canvas by `centralMode === "narrative"`. Two ways
+ * to be the same thing, and the second is why `#narrative-view` had to be a
+ * singleton: an overlay is over ONE canvas.
+ *
+ * E.D.'s decision of 12 September: the narrative is a window type and nothing
+ * else. So the union has one member left and the alias says so — a central mode
+ * IS a canvas projection. Kept as a name because that is what its call sites
+ * mean; delete it the day nothing reads it.
+ */
+export type CentralMode = ViewKind;
 
 /** A resolved authority cross-reference stored on a node/qualia
  *  (`data.authority_refs`) — the P1-D shape. `match` drives the export

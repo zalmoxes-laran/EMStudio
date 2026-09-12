@@ -1296,41 +1296,15 @@ body.sync-active #mode-indicator::before {
   border-bottom-width: 2px;
 }
 
-/* ---------- side panel (inspector + node list) ---------- */
-#side {
-  width: 320px;
-  border-left: 1px solid var(--border);
-  background: var(--bg-panel);
-  display: flex;
-  flex-direction: column;
-}
-
-#side-tabs {
-  display: flex;
-  border-bottom: 1px solid var(--border);
-}
-
-#side-tabs button {
-  flex: 1;
-  background: var(--bg-sunken);
-  border: none;
-  border-bottom: 2px solid transparent;
-  padding: 7px 0;
-  font-size: 12.5px;
-  cursor: pointer;
-  color: var(--text-muted);
-}
-
-#side-tabs button.active {
-  background: var(--bg-panel);
-  border-bottom-color: var(--accent);
-  color: var(--text);
-  font-weight: 600;
-}
-
-
-#inspector {
-  flex: 1;
+/* ---------- THE PANELS · the box goes on the BODY that holds one ----------
+   GONE (13 set 2026) · `#side`, `#side-tabs` and the four panel ids.
+   The aside had been a hidden parking place since WIN-FIX1 and its tab strip had
+   no markup left at all; the four ids were the ELEMENTS the panels were, and a
+   panel is built into its window's own area now. So the box each one needs is
+   declared where it applies — on the panel body, told which panel it is holding
+   — which is the same rule the six surfaces of 12 September follow: the box goes
+   on what BOTH mounts carry, never on the id of one of them. */
+.panel-body[data-panel="inspector"] {
   overflow-y: auto;
   padding: 12px 16px;
   font-size: 13px;
@@ -1376,8 +1350,7 @@ body.sync-active #mode-indicator::before {
   margin-top: 24px;
 }
 
-#nodelist {
-  flex: 1;
+.panel-body[data-panel="nodelist"] {
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -1387,8 +1360,7 @@ body.sync-active #mode-indicator::before {
 /* ── Log / Warnings tab (S6) ──────────────────────────────────────────────
    Document warnings on top (the working list an author corrects the graph
    from), activity trail below. */
-#logpanel {
-  flex: 1;
+.panel-body[data-panel="logpanel"] {
   overflow-y: auto;
   padding: 10px 12px;
   font-size: 12.5px;
@@ -3165,17 +3137,14 @@ body.sync-active #footer-brand #em-version {
   padding: 28px 0 64px;
 }
 
-/* …and what is true only of the FOCUSED mount: it is an overlay over the canvas.
-   Position and stacking, nothing that decides the column. */
-#narrative-view {
-  position: absolute;
-  inset: var(--winbar-h, 0px) 0 0 var(--palette-w, 0px); /* WIN4 · below the docked bar; STEP A · beside the resources panel */
+/* GONE (14 set 2026) · `#narrative-view`, which carried «what is true only of
+   the FOCUSED mount: it is an overlay over the canvas». There is no focused
+   mount and no overlay: a Narrative window is a window, so what its surface
+   needs is what any area's child needs — fill it and scroll inside it. */
+.nv-view {
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
-  z-index: 5;
-}
-
-#narrative-view.hidden {
-  display: none;
 }
 
 .nv-picker {
@@ -4346,8 +4315,7 @@ body.sync-active #footer-brand #em-version {
    The ACTIVE slot is marked with the accent on its left edge rather than a fill:
    this list sits next to the canvas showing that very graph, and a filled row
    would compete with the selection colours on the canvas itself. */
-#emtree {
-  flex: 1;
+.panel-body[data-panel="emtree"] {
   overflow-y: auto;
   padding: 12px 16px;
   font-size: 13px;
@@ -4596,8 +4564,7 @@ body.sync-active #footer-brand #em-version {
    Width to 0 rather than `display:none`: the element stays in the flex row, so
    the canvas resize is a plain reflow and no scroll position is lost. The
    overflow clip is what actually hides the content. */
-#left-col.collapsed,
-#side.collapsed {
+#left-col.collapsed {
   width: 0;
   min-width: 0;
   overflow: hidden;
@@ -5163,7 +5130,7 @@ body.sync-active #footer-brand #em-version {
 
 /* HDR1 · a narrative-window search hit. Marked in place, not filtered out: a
    story read with its non-matching paragraphs removed is not the story. */
-#narrative-view .nv-hit {
+.nv-view .nv-hit {
   background: var(--bg-accent-soft);
   box-shadow: inset 3px 0 0 var(--accent);
   border-radius: 4px;
@@ -5249,13 +5216,6 @@ body.sync-active #footer-brand #em-version {
 }
 #tool-float-body > .hidden {
   display: none;
-}
-
-/* WIN-FIX1 · `#side` is a PARKING PLACE, never a panel. The panels are
-   singletons wired at boot, so they need somewhere to be while no window and no
-   floating tool is showing them — but nothing ever puts it on screen. */
-#side.side-parking {
-  display: none !important;
 }
 
 /* VIEWER · one resource, shown as itself. A neutral stage so the thing on it is
@@ -5524,19 +5484,10 @@ object.viewer-media {
   cursor: not-allowed;
 }
 
-/* WIN6 · a side panel hosted INSIDE a window area */
-#panel-view {
-  position: absolute;
-  inset: var(--winbar-h, 0px) 0 0 var(--palette-w, 0px);
-  z-index: 5;
-  background: var(--bg-panel);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-#panel-view.hidden {
-  display: none;
-}
+/* GONE (13 set 2026) · `#panel-view`, the FOCUSED mount of the two hosted types.
+   It was the overlay into which the one panel was moved while the window showing
+   it had the focus. There is one mount per window now, in the window's own area
+   (`.tile-panel`, below), so the overlay has nothing to be. */
 /* FOCUS-NOJITTER · ONE tab strip, whichever area the panel is living in.
    There were two: `<button>`s at 12.5px in the focused window and `<span>`s at
    11.5px in a secondary area. Taking the focus therefore re-measured the strip
@@ -5576,19 +5527,15 @@ object.viewer-media {
   opacity: 1;
   font-weight: 600;
 }
+/* ONE SURFACE · the body IS the panel now. Nothing has "moved into a window", so
+   there is no re-homed element between this box and the content to stretch to
+   full height (`.panel-body > * { height: 100% }` was that stretch, and it is
+   gone with the re-homing): `mountPanel` draws straight in here, and the box
+   carries the panel's own padding and scrolling (`[data-panel=…]` above). */
 .panel-body {
   flex: 1;
   min-height: 0;
   overflow: auto;
-}
-/* a panel that has moved into a window fills it, without the aside's own frame */
-.panel-body > * {
-  display: block;
-  height: 100%;
-  overflow: auto;
-}
-.panel-body > .hidden {
-  display: none;
 }
 /* a secondary area accepting a palette drop */
 .tile-area.drop-target {
@@ -5599,44 +5546,15 @@ object.viewer-media {
 /* ── A2 · ANNOTATOR ─────────────────────────────────────────────────────────
    The picture, and the claims traced on it. Same box every other surface uses,
    so switching to it moves nothing on screen. */
-#annotator-view {
-  position: absolute;
-  inset: var(--winbar-h, 0px) 0 0 var(--palette-w, 0px);
-  z-index: 5;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
+/* GONE (14 set 2026) · `#annotator-view` and `#annotator-bar`. The first was
+   the overlay (position, inset, stacking) and the second a row of chrome that
+   HDR2 had already emptied into the window header. What the picture needs is on
+   `.annot-surface` / `.annot-stage`, which the ONE constructor gives to every
+   Annotator window — the one that traces and the one that only looks. */
+.annot-surface {
   background: var(--bg-sunken);
 }
-#annotator-view.hidden {
-  display: none;
-}
-#annotator-bar {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: baseline;
-  gap: 12px;
-  padding: 4px 10px;
-  min-height: 30px;
-  box-sizing: border-box;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg-panel);
-  font-size: 12px;
-}
-#annotator-title {
-  color: var(--text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-#annotator-hint {
-  color: var(--text-faint);
-  font-size: 11.5px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-#annotator-stage {
+.annot-stage {
   flex: 1;
   min-height: 0;
   display: flex;
@@ -5680,7 +5598,7 @@ object.viewer-media {
 #annotator-overlay {
   pointer-events: none;
 }
-#annotator-view[data-mode="annotate"] #annotator-overlay {
+.annot-stage[data-mode="annotate"] #annotator-overlay {
   pointer-events: auto;
   cursor: crosshair;
 }

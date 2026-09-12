@@ -338,12 +338,15 @@
         </button>
         <div id="filter-panel" class="hidden"></div>
         <div id="toast" class="hidden"></div>
-        <!-- N2: the narrative view is an OVERLAY over the canvas, not a third
-             ViewKind. The canvas views (Matrix / Graph) are built on scenes,
-             layout and circles-of-detail; a story is none of those, and
-             threading it through that machinery would have changed the graph
-             view to add something beside it. -->
-        <div id="narrative-view" class="nv-view hidden"></div>
+        <!-- GONE (14 set 2026) · `#narrative-view`.
+             Its own comment said what it was: «the narrative view is an OVERLAY
+             over the canvas, not a third ViewKind». That is exactly why it had
+             to be one element — an overlay is over ONE canvas — and it is why
+             the narrative was the last type still drawn two ways.
+             E.D.'s decision of 12 September: the narrative is a WINDOW TYPE and
+             nothing else. Its surface is built into its own area by
+             `shell/types.ts`, the writing editors bind to that host, and two
+             Narrative windows on two different chapters are two stories. -->
         <!-- ONE SURFACE (12 set 2026) · SIX SURFACES LEFT THIS FILE.
              `#table-view`, `#viewer-view`, `#storage-view`, `#shelf-view`,
              `#study-view` and `#doc-view` were the FOCUSED mount of their type:
@@ -356,75 +359,61 @@
              window's own area, focused or not, by one constructor per type. A
              singleton here would BE the second path, so there is none — and
              `check-surfaces.mjs` fails if one comes back. -->
-        <!-- WIN6 · panels as WINDOWS. This surface hosts one of the existing
-             side panels, MOVED here while a window of that type is showing it
-             (and moved back to `#side` when it is not) — the panels keep their
-             identity, their handlers and their state; only their address
-             changes. The tab strip above is built by main.ts from the window
-             type: EMtree = Multigraph + Outliner, Inspector = Inspector + Log +
-             StratiMiner. -->
-        <div id="panel-view" class="hidden">
-          <div id="panel-view-tabs" class="panel-tabs"></div>
-          <div id="panel-view-body" class="panel-body"></div>
+        <!-- GONE (13 set 2026) · `#panel-view`, the hosted-panel surface.
+             It was the FOCUSED mount of `emtree` and `inspector`: one element
+             into which the one panel was moved while the window showing it had
+             the focus. Both types are `SurfaceType`s now (`shell/types.ts`),
+             built into their own area like every other type — so the last two
+             entries of `WRAP_TYPES` that were not the canvas are gone, and with
+             them the note that said «another window has this panel». -->
+        <!-- A2 · ANNOTATOR · the interoperability corner and the question panel.
+             GONE from here (14 set 2026): `#annotator-view`, its bar, and the
+             frame (`#annotator-frame`, `#annotator-image`, `#annotator-overlay`).
+             The frame is built by the instance that TRACES, into its own stage
+             (`ensureAnnotatorFrame`), and the gestures are wired the moment it
+             exists. There is one such instance by DECLARATION —
+             `ANNOTATOR_CAPABILITIES = { multiInstance: false }` — because
+             tracing needs one image, one overlay and one in-progress draft; a
+             second Annotator window gets the same constructor with no tools,
+             not a different function. That is the difference between a limit and
+             a defect.
+             What stays here is what is not the picture: the IIIF corner and the
+             panel that asks what is being extracted, both overlays of the app. -->
+        <div id="annotator-iiif" class="annot-iiif hidden">
+          <span id="annotator-iiif-badge" class="annot-iiif-badge"
+                title="questa immagine è servita via IIIF Image API">IIIF</span>
+          <button id="annotator-copy-anno" class="ghost-btn"
+                  title="Copia le regioni di questa immagine come W3C Web Annotation">
+            Copia annotazioni
+          </button>
+          <button id="annotator-paste-anno" class="ghost-btn"
+                  title="Incolla una W3C Web Annotation e falla diventare una regione del grafo">
+            Incolla annotazione
+          </button>
+          <button id="annotator-mirador" class="ghost-btn"
+                  title="Apri questa immagine e le sue regioni in Mirador">
+            Apri in Mirador
+          </button>
         </div>
-        <!-- A2 · ANNOTATOR · the image, the regions traced on it, and the panel
-             that asks what is being extracted. The picture comes through the
-             bridge like every other byte (W1); the regions are an SVG overlay in
-             NORMALISED coordinates, so they are the same numbers the datamodel
-             stores and no pixel size is ever written down. Filled by
-             `renderAnnotator`. -->
-        <div id="annotator-view" class="hidden">
-          <div id="annotator-bar">
-            <span id="annotator-title"></span>
-            <span id="annotator-hint"></span>
-            <!-- The interoperability corner. Hidden until the picture actually
-                 has a IIIF service: an affordance that is offered and then
-                 refused is worse than one that is not there. -->
-            <span id="annotator-iiif" class="annot-iiif hidden">
-              <span id="annotator-iiif-badge" class="annot-iiif-badge"
-                    title="questa immagine è servita via IIIF Image API">IIIF</span>
-              <button id="annotator-copy-anno" class="ghost-btn"
-                      title="Copia le regioni di questa immagine come W3C Web Annotation">
-                Copia annotazioni
-              </button>
-              <button id="annotator-paste-anno" class="ghost-btn"
-                      title="Incolla una W3C Web Annotation e falla diventare una regione del grafo">
-                Incolla annotazione
-              </button>
-              <button id="annotator-mirador" class="ghost-btn"
-                      title="Apri questa immagine e le sue regioni in Mirador">
-                Apri in Mirador
-              </button>
-            </span>
-          </div>
-          <div id="annotator-stage">
-            <div id="annotator-frame">
-              <img id="annotator-image" alt="" />
-              <svg id="annotator-overlay" viewBox="0 0 1 1" preserveAspectRatio="none"></svg>
-            </div>
-          </div>
-          <div id="annotator-panel" class="hidden"></div>
-        </div>
+        <span id="annotator-title" class="hidden"></span>
+        <span id="annotator-hint" class="hidden"></span>
+        <div id="annotator-panel" class="hidden"></div>
         <canvas id="overview" title="Overview — click to move the viewport"></canvas>
       </div>
       </div>
-      <!-- WIN-FIX1 · the right-hand ASIDE is retired. It carried the tabs
-           Inspector / Nodes / EMTree / Log, all of which are WINDOWS now
-           (WIN6/WIN7) — so it had become a strip of tabs whose panels lived
-           somewhere else, and a collapse handle for a column with nothing in it.
-           The element itself STAYS, permanently hidden, as the parking place a
-           panel returns to when no window and no floating tool is showing it:
-           the panels are singletons with handlers wired at boot, and they must
-           have somewhere to be that is not the document's root. Nothing ever
-           un-hides it. -->
-      <aside id="side" class="hidden side-parking" aria-hidden="true">
-        <div id="inspector"></div>
-        <div id="nodelist" class="hidden"></div>
-        <div id="emtree" class="hidden"></div>
-        <div id="stratiminer" class="hidden"></div>
-        <div id="mapping-editor" class="hidden"></div>
-        <div id="logpanel" class="hidden"></div>
-      </aside>
+      <!-- GONE (13 set 2026) · the `#side` PARKING PLACE, and the four panels
+           it held.
+           It survived the retirement of the right-hand aside as the place a
+           panel went back to when no window was showing it — which it had to be,
+           because a panel was ONE ELEMENT with its handlers wired at boot, and
+           an element has to be somewhere. The four are built per window now
+           (`mountPanel` in main.ts, into the window's own area), so there is
+           nothing to park: `#emtree`, `#nodelist`, `#inspector` and `#logpanel`
+           are gone from this file with it.
+           The two FLOATING TOOLS that also lived here — StratiMiner and the
+           mapping editor — moved into `#tool-float-body` below, where they are
+           actually shown. They were never window panels; they were parked next
+           to them by habit. -->
     </main>
     <!-- WIN6-RESIDUAL · the EM-Data DOCK is gone. It was a full-width strip
          below the side wings, and since WIN5 the Tabular window rendered the
@@ -495,7 +484,14 @@
         <span id="tool-float-title">Tool</span>
         <button id="tool-float-close" title="Close">×</button>
       </div>
-      <div id="tool-float-body"></div>
+      <!-- ONE SURFACE · the two tools LIVE here now, hidden until opened.
+           They used to be parked in `#side` and re-parented into this box on
+           open — the same re-homing the panels did, for the same reason (one
+           element each). Nothing is moved any more: opening a tool shows it. -->
+      <div id="tool-float-body">
+        <div id="stratiminer" class="hidden"></div>
+        <div id="mapping-editor" class="hidden"></div>
+      </div>
     </div>
     <div id="tooltip" class="hidden"></div>
     <div id="settings-modal" class="modal hidden">

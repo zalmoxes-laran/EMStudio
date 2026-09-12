@@ -1102,26 +1102,33 @@ eq(doc.graph.nodes.filter(
     ok(Sorg.dichiara(css, sel, "min-height", "var(--nv-chrome-line)"),
        `stabile · ${sel} riserva l'altezza di una riga`);
 
-  // 4 · la PAGINA (fondo e aria) è sulla classe che i due mount condividono,
-  // non sull'id del mount attivo: è l'altra metà del difetto misurato
+  // 4 · LA PAGINA, e il difetto che questa sezione misurava non esiste più
   //
-  // Le due finestre di lunghezza fissa che stavano qui — 220 e 320 caratteri —
-  // erano più lunghe delle regole che dovevano leggere: quella di
-  // `#narrative-view` finisce a 202 caratteri, quindi la finestra si portava
-  // dentro `#narrative-view.hidden` e l'inizio di `.nv-picker`. Costruito e
-  // fatto girare: un onesto `padding` su `.nv-picker` faceva dire al recinto
-  // che l'id ridichiara il padding della pagina. Ora è il blocco vero.
+  // Qui c'erano tre clausole sulla divisione fra `#narrative-view` (l'id del
+  // mount ATTIVO) e `.nv-view` (la classe che i DUE mount condividevano): il
+  // fondo e il padding sulla classe, e solo `position: absolute` sull'id, perché
+  // l'id era un overlay sul canvas.
+  //
+  // Il 14 settembre 2026 la narrativa ha smesso di essere anche un MODO
+  // (`centralMode === "narrative"`) ed è soltanto un tipo di finestra. Non c'è
+  // più un mount attivo e non c'è più un overlay: c'è UNA superficie, costruita
+  // nell'area della sua finestra come quella di ogni altro tipo. Una clausola
+  // che misura la distanza fra due mount non ha più referente — quindi al suo
+  // posto va l'asserzione più forte: **il secondo mount non esiste**.
   ok(Sorg.dichiara(css, ".nv-view", "padding") &&
      Sorg.dichiara(css, ".nv-view", "background"),
      "stabile · `.nv-view` porta il fondo e il padding della pagina");
-  ok(!Sorg.dichiara(css, "#narrative-view", "padding"),
-     "stabile · e l'id NON li ridichiara (il secondario ne resterebbe fuori)");
-  ok(/absolute/.test(Sorg.bloccoCss(css, "#narrative-view").match(
-       /position\s*:([^;]*)/)?.[1] ?? ""),
-     "stabile · all'id resta solo ciò che è vero del mount attivo: è un overlay");
+  ok(!Sorg.miraA(css, "#narrative-view"),
+     "stabile · e NESSUNA regola punta più a `#narrative-view`: era l'overlay, " +
+     "cioè il mount che solo la finestra a fuoco poteva usare");
   const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
-  ok(/id="narrative-view"[^>]*class="[^"]*nv-view/.test(html),
-     "stabile · …e il mount attivo porta davvero quella classe");
+  ok(Sorg.elementi(html, "#narrative-view").length === 0,
+     "stabile · …e l'elemento non è più nel markup: la storia si costruisce " +
+     "nell'area della sua finestra (`shell/types.ts`), a fuoco o no");
+  ok(/tile-narrative nv-view/.test(
+       readFileSync(new URL("../src/shell/types.ts", import.meta.url), "utf8")),
+     "stabile · …ed è quel costruttore a mettere `.nv-view` sull'host, così la " +
+     "pagina che la classe descrive è quella che si vede");
 }
 
 console.log(`narrative: ${checks} checks passed`);

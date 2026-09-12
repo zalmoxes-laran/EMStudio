@@ -126,60 +126,26 @@ export function paintSurface(win: SurfaceWin, box: HTMLElement, paint: () => voi
   restoreSurfaceScroll(win, box, at, slot);
 }
 
-/**
- * The box that scrolls in the surface of a type that still MIGRATES.
+/*
+ * GONE (14 set 2026) · `FOCUSED_SURFACE_BOXES`, and the two loops over it.
  *
- * ONE SURFACE (12 set 2026) · five of the seven rows are gone, and the reason is
- * that the crossing they described no longer happens. `table`, `storage`,
- * `shelf`, `viewer` and `doc` had a singleton mount inside `#canvas-wrap` for
- * the focused window and a box inside an area for every other one, so the same
- * content lived in two different elements and only the WINDOW was a stable name
- * for the reader's place. Those five have one mount now, in the window's own
- * area, and it is never detached — so their position is simply where it was.
+ * The table named the surfaces that MIGRATED — the same window's content living
+ * in a singleton inside `#canvas-wrap` while it had the focus and in an area's
+ * own box when it did not, so that only the WINDOW was a stable name for the
+ * reader's place. It had seven rows on 12 September, five on the 12th at
+ * midnight, two on the 13th, and none tonight: every type builds its surface in
+ * its own area, and no area is ever detached.
  *
- * What is left migrates for real: `#narrative-view` carries the writing editors
- * and `#annotator-stage` the tracing overlay, both singletons inside the wrap,
- * and the wrap changes owner when the focus moves between two of the types still
- * bound to it (`setWrapOwner` in `main.ts`). That is the whole remaining
- * migration, and it is named in one place instead of seven.
+ * `rememberFocusedBoxes` / `restoreFocusedBoxes` are deleted with it rather than
+ * left empty. What remains in this module is the discipline that is still true —
+ * a surface REBUILT in place loses its scroll, and `paintSurface` is what puts
+ * it back.
  */
-export const FOCUSED_SURFACE_BOXES: Partial<Record<WindowType,
-  Array<{ id: string; slot: string }>>> = {
-  narrative: [{ id: "narrative-view", slot: "" }],
-  annotator: [{ id: "annotator-stage", slot: "" }],
-};
 
 /** How a caller finds its boxes. `main.ts` passes the document; a checker passes
  *  its own map — which is what lets the two loops below be exercised outside a
  *  browser instead of re-implemented there. */
 export type BoxLookup = (id: string) => HTMLElement | null;
-
-/**
- * Where the reader is in a window's FOCUSED surface — read before the tree goes.
- *
- * `win` is the window that OWNS the wrap right now — which since the conversion
- * is not the focused one in general, and is read from `wrapOwnerId` rather than
- * from `activeWin()`. (`wrapWin` used to be that answer and existed only because
- * the focus had already moved on by the time the teardown asked; there is no
- * teardown, so there is no lag to compensate.)
- */
-export function rememberFocusedBoxes(win: SurfaceWin, find: BoxLookup): void {
-  for (const { id, slot } of FOCUSED_SURFACE_BOXES[win.type] ?? []) {
-    const el = find(id);
-    if (el?.scrollTop) surfaceScroll.set(surfaceKey(win, slot), el.scrollTop);
-  }
-}
-
-/** …and the other half: put back from the position the window carries, which is
- *  the same position its secondary box was showing a moment ago. */
-export function restoreFocusedBoxes(win: SurfaceWin, find: BoxLookup): void {
-  for (const { id, slot } of FOCUSED_SURFACE_BOXES[win.type] ?? []) {
-    const el = find(id);
-    if (!el) continue;
-    restoreSurfaceScroll(win, el, surfaceScroll.get(surfaceKey(win, slot)) ?? 0,
-                         slot);
-  }
-}
 
 /*
  * GONE (12 set 2026) · `rememberScrollsIn` / `restoreScrollsIn`.

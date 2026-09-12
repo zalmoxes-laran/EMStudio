@@ -49,6 +49,15 @@ export interface Surface {
   setFocused(on: boolean): void;
   /** The area is going away: give back whatever was registered elsewhere. */
   destroy(): void;
+  /**
+   * The SELECTION moved — optional, and separate from `refresh` on purpose.
+   *
+   * The outliner answers this by moving a highlight over rows it has already
+   * built; answering it with `refresh()` would rebuild a list of every node in
+   * the graph on every click. A surface that does not care simply omits it, and
+   * the fan-out below then costs nothing for that type.
+   */
+  select?(id: string | null): void;
 }
 
 export interface SurfaceType {
@@ -113,11 +122,38 @@ export function surfaceOf(winId: string): Surface | null {
 /** Repaint every live mount, or every live mount of one type. The document
  *  changed; who has the focus has nothing to do with it. */
 export function refreshSurfaces(type?: WindowType): void {
+  for (const surface of surfacesOfType(type)) surface.refresh();
+}
+
+/**
+ * The live surfaces of one type — THE fan-out, and the reason there is no second
+ * bookkeeping anywhere.
+ *
+ * Before the panels were converted, `refreshInspector()` and
+ * `nodeList.setSelected()` meant "the one panel", and the code that made that
+ * true was a set of moves between a hidden parking element and whichever area
+ * had claimed it. Now they mean "every live one", and the list of live ones is
+ * this map — the same map that holds every other surface. If a caller finds
+ * itself wanting a register of its own, the answer is that this one is in the
+ * wrong place, not that a second one is needed.
+ *
+ * A mount whose host has left the document is skipped rather than removed: it is
+ * `destroy()` that unregisters, and inferring death from `isConnected` is the
+ * mistake `removeEmDataHost` was written to undo.
+ */
+export function surfacesOfType(type?: WindowType): Surface[] {
+  const out: Surface[] = [];
   for (const { win, surface, host } of mounted.values()) {
     if (type && win.type !== type) continue;
     if (!host.isConnected) continue;
-    surface.refresh();
+    out.push(surface);
   }
+  return out;
+}
+
+/** Tell every live surface of a type that the selection moved. */
+export function selectInSurfaces(type: WindowType, id: string | null): void {
+  for (const surface of surfacesOfType(type)) surface.select?.(id);
 }
 
 /** Window ids with a live mount — the shell reconciles against this. */

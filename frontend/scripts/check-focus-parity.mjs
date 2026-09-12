@@ -71,16 +71,28 @@ const CONVERTED = {
   viewer:  ["viewer-view", "viewer-stage", "viewer-caption", "viewer-bar"],
   doc:     ["doc-view", "doc-view-list", "doc-view-detail"],
   study:   ["study-view", "study-body"],
+  // 13 set 2026 · the two HOSTED types. Their singletons were of two kinds and
+  // both are listed: the surface they were mounted into (`#panel-view`) and the
+  // four PANELS themselves, which were elements taken from the document at boot
+  // and moved about — the last thing in this application that was one by
+  // definition.
+  emtree:    ["panel-view", "panel-view-tabs", "panel-view-body", "emtree", "nodelist"],
+  inspector: ["inspector", "logpanel"],
+  // 14 set 2026 · the last two. The narrative was the one type that was also a
+  // MODE — an overlay over the canvas — which is why its surface had to be one
+  // element; the annotator's frame is built by the instance that traces.
+  narrative: ["narrative-view"],
+  annotator: ["annotator-view", "annotator-bar", "annotator-stage"],
 };
 // NOT converted, and each with the singleton that is the reason why. These keep
 // the old parity clauses, below.
 const UNCONVERTED = {
-  graph:     "#canvas — the interaction machine is bound to it",
-  narrative: "#narrative-view — the writing editors are bound to it",
-  emtree:    "#panel-view — the panels are singletons re-homed into it",
-  inspector: "#panel-view — same",
-  annotator: "#annotator-image + the module's draft state (one tracing at a time)",
+  graph: "#canvas — the interaction machine is bound to it",
 };
+
+/** The four panels, by the id each USED to be. Named so their absence can be
+ *  asserted rather than hoped for — see clause A8. */
+const PANEL_IDS = ["emtree", "nodelist", "inspector", "logpanel"];
 
 // ════════════════════════════════════════════════════════════════════════════
 // A · for the SIX: the second path does not exist
@@ -108,18 +120,27 @@ const UNCONVERTED = {
   ok(body.length > 0, "applyWindowSurface was found (by its AST, not its name)");
   for (const type of Object.keys(CONVERTED)) {
     ok(!nominaTipo(body, type),
-      `applyWindowSurface must not name "${type}": that function decides which ` +
-        "SINGLETON is showing, and a converted type has none — its surface is " +
-        "its window's own area, focused or not.");
+      `applyWindowSurface must not name "${type}": that function used to decide ` +
+        "which SINGLETON was lit, and a converted type has none — its surface " +
+        "is its window's own area, focused or not.");
   }
-  // …and it still knows the ones that DO live inside the wrap, or it would be
-  // passing this by having been emptied
-  ok(nominaTipo(body, "annotator") && nominaTipo(body, "emtree"),
-    "…and it still names the types whose surface IS a singleton in the wrap — " +
-      "otherwise this clause would pass on an empty function");
+  // …and what it still does, or this clause would pass on a function that was
+  // simply emptied: it turns the two OVERLAYS of the canvas on and off (the map
+  // that answers «where am I», and the funnel that filters what is on it), which
+  // belong to a graph window and to no other.
+  ok(nominaTipo(body, "graph") && Sorg.chiama(body, "refreshFunnel"),
+    "…while it still says what is true of a CANVAS window: the overview and " +
+      "the funnel are questions only a graph can answer");
 }
 
-// ── A3 · no row in `FOCUSED_SURFACE_BOXES` (the module, imported and run) ───
+// ── A3 · `FOCUSED_SURFACE_BOXES` DOES NOT EXIST ────────────────────────────
+//
+// The table named the surfaces that MIGRATED: the same window's content living
+// in a singleton inside `#canvas-wrap` while it had the focus and in an area's
+// own box when it did not, so that only the WINDOW was a stable name for the
+// reader's place. Seven rows on 12 September, two on the 13th, none tonight.
+//
+// Asked of the MODULE, imported and run — not of the file.
 {
   const bundle = await esbuild.build({
     entryPoints: [`${SRC}surface-scroll.ts`],
@@ -127,33 +148,43 @@ const UNCONVERTED = {
   });
   const S = await import("data:text/javascript;base64," +
     Buffer.from(bundle.outputFiles[0].text).toString("base64"));
-  const declared = Object.keys(S.FOCUSED_SURFACE_BOXES).sort();
-  for (const type of Object.keys(CONVERTED)) {
-    ok(!declared.includes(type),
-      `FOCUSED_SURFACE_BOXES must not declare "${type}": that table names the ` +
-        "surfaces that MIGRATE between a singleton and an area's box. A " +
-        "converted type has one mount, which is never detached, so it has no " +
-        "crossing to be carried across.");
+  ok(S.FOCUSED_SURFACE_BOXES === undefined,
+    "`FOCUSED_SURFACE_BOXES` must be gone, not empty: a table of migrating " +
+      "surfaces describes a crossing between two mounts, and there are no two " +
+      "mounts. Left empty it would be an invitation to add a row.");
+  for (const dead of ["rememberFocusedBoxes", "restoreFocusedBoxes",
+                      "rememberScrollsIn", "restoreScrollsIn",
+                      "MIGRATING_SURFACE_IDS"]) {
+    ok(S[dead] === undefined,
+      `…and \`${dead}\` with it: it existed only to carry a surface across ` +
+        "that crossing, or to repair the detach that made the crossing lossy");
   }
-  assert.deepEqual(declared, ["annotator", "narrative"],
-    "…and what is left is exactly the two that still migrate");
-  checks++;
+  // …and what the module still does, which is a different and still-true thing:
+  // a surface REBUILT in place loses its scroll, and this is what puts it back.
+  ok(typeof S.paintSurface === "function" &&
+     typeof S.surfacePlace === "function",
+    "…while `paintSurface` and `surfacePlace` remain: a rebuild in place still " +
+      "loses the reader's position, whoever has the focus");
 }
 
-// ── A4 · `buildSecondarySurface` does not know these types ─────────────────
+// ── A4 · `buildSecondarySurface` DOES NOT EXIST ────────────────────────────
+//
+// The strongest form this clause can take, and the one the whole series was for.
+// It used to say "it must not name these types"; every night took types out of
+// it — six on 12 September, the two hosted panels on the 13th, the last two on
+// the 14th — and a function with nothing left in it is not a smaller second
+// path. It is none.
 {
-  const body = Sorg.dentro(TS, "buildSecondarySurface");
-  ok(body.length > 0, "buildSecondarySurface was found");
-  for (const type of Object.keys(CONVERTED)) {
-    ok(!nominaTipo(body, type),
-      `buildSecondarySurface must not name "${type}". It IS the second path — ` +
-        "keeping a branch for a converted type is keeping the twin under " +
-        "another name, which is the exact thing tonight was for.");
-  }
-  for (const type of ["narrative", "annotator"]) {
-    ok(nominaTipo(body, type),
-      `…and it still names "${type}", which is NOT converted (${UNCONVERTED[type]})`);
-  }
+  ok(Sorg.corpoDi(TS, "buildSecondarySurface").length === 0,
+    "`buildSecondarySurface` must not exist. It WAS the second path: the " +
+      "function that drew a window which did not have the focus, while the " +
+      "focused one was drawn by a singleton. Parity between the two was an " +
+      "invariant kept BY HAND, type by type — and a branch that comes back for " +
+      "any type at all brings the whole invariant back with it.");
+  ok(Sorg.corpoDi(TS, "tileNote").length === 0,
+    "…and neither may `tileNote`, its fall-through. «Step in to work here» is " +
+      "an area announcing its own name instead of showing the document, and " +
+      "after tonight no type can reach it.");
 }
 
 // ── A5 · the SIX are registered, and it is the registry that says so ───────
@@ -241,8 +272,23 @@ const UNCONVERTED = {
     node.forEachChild(walk);
   };
   walk(sf);
-  ok(bodies >= Object.keys(CONVERTED).length,
-    `every converted type implements setFocused — found ${bodies} bodies`);
+  // EVERY CONSTRUCTOR implements it — counted against the constructors, not
+  // against the types, and the difference is the finding: there are eight
+  // converted types and seven `create` bodies, because `emtree` and `inspector`
+  // share ONE factory (`panelSurface`). Two types drawn by one constructor is
+  // the whole shape of the conversion, so a fence that demanded one body per
+  // type would be demanding the twin back.
+  let creators = 0;
+  const countCreate = (n) => {
+    if ((ts.isMethodDeclaration(n) || ts.isPropertyAssignment(n)) &&
+        n.name?.getText(sf) === "create") creators++;
+    n.forEachChild(countCreate);
+  };
+  countCreate(sf);
+  ok(bodies === creators && creators > 0,
+    `every surface constructor implements setFocused — ${creators} constructors, ` +
+      `${bodies} bodies. (That there are fewer constructors than converted ` +
+      "types is right: the two hosted types share one.)");
   ok(found.length === 0,
     "a setFocused implementation touches the LAYOUT: " + found.join(" · ") +
       ". `setFocused` may turn input handling on and off and draw the focus " +
@@ -250,20 +296,94 @@ const UNCONVERTED = {
       "the whole law, and this is the only place it can be broken quietly.");
 }
 
+// ── A8 · NO PANEL ELEMENT LIVES OUTSIDE A SURFACE ──────────────────────────
+//
+// The clause that had no meaning before tonight, because before tonight it was
+// false by design.
+//
+// A panel was ONE ELEMENT: `document.getElementById("inspector")` at boot, and
+// then a life of being moved — into `#side` while nobody showed it, into
+// whichever area claimed it, into the floating tool, and back. Everything that
+// followed (a release pass, a claim pass, a "where does this live?" guard, and a
+// note in the second area saying another window had it) followed from that one
+// fact.
+//
+// So the fence asks the one question that makes it impossible: **is any of the
+// four still fetched from the document?** A panel that is built into its
+// window's own host cannot be; a panel that is parked anywhere must be. And
+// `#side` — the parking place itself — must not exist in the markup or be
+// looked up in the code.
+//
+// Said of the PROGRAM, not the file: `Sorg.chiama` finds a real call expression
+// and `stringheLetterali` a whole string. The word `side` alone would be useless
+// here — `aside`, `sidecar`, `sidebar` and `setSidePanel` all contain it, and
+// this file names three of them.
+{
+  // WHAT THE PROGRAM FETCHES, from the AST — not "does this file contain the
+  // word". The first version of this clause asked
+  // `chiama(TS, "document.getElementById") && literals.includes(id)` and fired
+  // immediately on `"emtree"`, which is an honest literal in four other places:
+  // the tab list (`{ id: "emtree", labelKey: … }`), the branch of `mountPanel`
+  // that builds it, the workspace type, the i18n key. Constructed by running it.
+  // The question is only ever about the ARGUMENT of a lookup.
+  const fetchedIds = new Set();
+  {
+    const sf = ts.createSourceFile("main.ts", TS, ts.ScriptTarget.Latest, true);
+    const walk = (n) => {
+      if (ts.isCallExpression(n) && n.arguments.length &&
+          ts.isStringLiteral(n.arguments[0])) {
+        const e = n.expression;
+        const name = ts.isPropertyAccessExpression(e) ? e.name.text
+                   : ts.isIdentifier(e) ? e.text : "";
+        const arg = n.arguments[0].text;
+        if (name === "getElementById") fetchedIds.add(arg);
+        if (name === "querySelector" || name === "querySelectorAll") {
+          for (const m of arg.matchAll(/#([A-Za-z][-\w]*)/g)) fetchedIds.add(m[1]);
+        }
+      }
+      n.forEachChild(walk);
+    };
+    walk(sf);
+  }
+  const literals = Sorg.stringheLetterali(TS);
+  const fetched = (id) => fetchedIds.has(id);
+  for (const id of PANEL_IDS) {
+    ok(!fetched(id),
+      `no panel may be fetched from the document: \`getElementById("${id}")\` ` +
+        "means there is ONE of it, and everything the panels used to need — a " +
+        "parking place, a release pass, a claim pass, a note saying another " +
+        "window had it — followed from exactly that.");
+    ok(Sorg.elementi(HTML, `#${id}`).length === 0,
+      `…and \`#${id}\` must not be in the markup either`);
+  }
+  ok(!fetched("side"),
+    "`#side` — the hidden parking place — must not be looked up: a panel that " +
+      "is built where it is shown has nowhere it needs to be put back to");
+  // …and the lookup set is not empty, or every clause above would pass on a
+  // file that fetches nothing at all
+  ok(fetchedIds.size > 5,
+    `the lookup set is real — ${fetchedIds.size} ids are fetched by this file`);
+  ok(Sorg.elementi(HTML, "#side").length === 0,
+    "…and it must not be in the markup");
+  // …and the positive half, or this would pass on an application with no panels
+  void literals;
+  const shell = Sorg.stringheLetterali(SHELL);
+  ok(shell.some((x) => x.includes("tile-panel-body")),
+    "…while the panel BODY a window builds for itself is still there — the " +
+      "clause above must fail on a parked panel, not on a deleted one");
+  ok(Sorg.corpoDi(TS, "mountPanel").length > 0,
+    "…and `mountPanel` is what builds one, per window, into that body");
+}
+
 // ════════════════════════════════════════════════════════════════════════════
-// B · for the FIVE that are NOT converted: the old clauses, kept
+// B · for the THREE that are NOT converted: the old clauses, kept
 // ════════════════════════════════════════════════════════════════════════════
 
 // The two mounts of each unconverted type. The pairing is knowledge this check
 // has to hold — the two paths ARE two pieces of code and nothing in the source
 // states it — and a type missing from it is caught below.
 const MOUNTS = {
-  graph:     { focused: ["#canvas-wrap"], secondary: ["#canvas-wrap"] },
-  narrative: { focused: ["#narrative-view", ".nv-view"],
-               secondary: [".tile-narrative", ".nv-view"] },
-  inspector: { focused: ["#panel-view"], secondary: [".tile-panel"] },
-  emtree:    { focused: ["#panel-view"], secondary: [".tile-panel"] },
-  annotator: { focused: ["#annotator-view"], secondary: [".tile-viewer"] },
+  graph: { focused: ["#canvas-wrap"], secondary: ["#canvas-wrap"] },
 };
 
 const ALLOWED = {

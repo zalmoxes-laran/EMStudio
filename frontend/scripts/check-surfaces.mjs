@@ -332,35 +332,23 @@ ok(typeof globalThis.requestAnimationFrame === "function",
      "place · …in the very same register the window's own surface reads");
 }
 
-// ── 9 · the table of migrating surfaces is down to the two that still do ──
+// ── 9 · GONE · the table of migrating surfaces ────────────────────────────
+//
+// It declared the types whose surface existed in TWO mounts, so that a reader's
+// position could be carried across the crossing between them. Seven rows on
+// 12 September, two on the 13th, none on the 14th: every type builds its surface
+// in its own area and no area is ever detached, so there is no crossing.
+//
+// `check-focus-parity.mjs` asserts its ABSENCE (clause A3) — including that it
+// is absent rather than empty, because an empty table is an invitation to add a
+// row. What is checked here instead is what the module still does, which is a
+// different and still-true thing: a surface rebuilt IN PLACE loses its scroll.
 {
-  // Not a list to keep in step by hand: the point is that the types whose
-  // surface exists in TWO mounts are all declared, because one that is missing
-  // is a window that loses its place and says nothing about it.
-  //
-  // ONE SURFACE · five rows left this table on 12 September — `table`,
-  // `storage`, `shelf`, `viewer`, `doc` — and not because anybody decided to
-  // stop carrying their place. They have ONE mount now, in the window's own
-  // area, which is never detached: their position is simply where it was. A row
-  // here for one of them would be describing a crossing that cannot happen.
-  const declared = Object.keys(S.FOCUSED_SURFACE_BOXES).sort();
-  eq(declared, ["annotator", "narrative"],
-     "types · exactly the two types whose surface is still a singleton in the " +
-     "wrap are declared");
-  ok(!declared.includes("graph"),
-     "types · not the canvas: its place is pan/zoom, kept per window in the " +
-     "viewport register (measured in the browser, not here)");
-  ok(!declared.includes("emtree") && !declared.includes("inspector"),
-     "types · nor the panels: their element MOVES, so it is filed by id");
-  for (const [type, boxes] of Object.entries(S.FOCUSED_SURFACE_BOXES)) {
-    ok(boxes.length >= 1 && boxes.every((b) => b.id && typeof b.slot === "string"),
-       `types · ${type} names the box that scrolls`);
-    ok(new Set(boxes.map((b) => b.slot)).size === boxes.length,
-       `types · ${type}'s boxes are in distinct slots`);
-  }
-  ok(S.MIGRATING_SURFACE_IDS === undefined,
-     "types · and the exemption set is gone with the element-keyed register it " +
-     "existed to carve a hole in");
+  ok(S.FOCUSED_SURFACE_BOXES === undefined,
+     "types · the migrating-surfaces table is gone, not emptied");
+  ok(typeof S.paintSurface === "function",
+     "types · …and the discipline that survives it is the one that is still " +
+     "true: a rebuild in place still loses the reader's place");
 }
 
 // ── 10 · a place that was never set restores nothing (and breaks nothing) ──
@@ -372,118 +360,111 @@ ok(typeof globalThis.requestAnimationFrame === "function",
   eq(box.content, "an empty shelf", "surface · …and still gets its content");
 }
 
-// ── 11 · THE FULL CYCLE, for the two types that still MIGRATE ──────────────
+// ── 11 · GONE · the full migration cycle ──────────────────────────────────
 //
-// This used to run six types through a whole `renderTiles` cycle: remember the
-// focused boxes, detach the wrap (zeroing everything inside), build the area's
-// boxes, paint, and back again. Four of those six no longer migrate, so their
-// cases were not made to pass — they were made meaningless, and are gone.
+// This ran a type through a whole hand-over of `#canvas-wrap`: remember the
+// singleton's position, let the wrap change owner, build the area's box, paint,
+// and back again. It covered six types on 12 September and two on the 13th.
 //
-// What is left is the cycle that still happens: `#canvas-wrap` changes OWNER
-// when the focus moves between two of the types still bound to its singletons,
-// and the narrative's content really does travel between `#narrative-view` and
-// a `.tile-narrative` box. `setWrapOwner` in `main.ts` is the one place that
-// does it, and these two halves are what it calls.
-//
-// What this can and cannot prove, stated rather than blurred: a headless DOM has
-// no layout, so there are no real pixels here (that is why frames are modelled).
-// What it proves is that the preservation machine is WIRED for these types and
-// that a non-zero position survives a whole hand-over in both directions — and
-// that it stops surviving the moment any one of the pieces is removed.
-const CYCLE_TYPES = [
-  { type: "narrative", boxes: [["narrative-view", ""]], at: 951,
-    painted: "the story, all of it" },
-  { type: "annotator", boxes: [["annotator-stage", ""]], at: 1100,
-    painted: "photo:US-101.jpg · 7 regions traced" },
-];
+// On the 14th the narrative stopped being a MODE and the annotator's frame
+// became something its own instance builds, so no type has a singleton to be
+// handed over — and a cycle over an empty list is not a passing test, it is a
+// test that has stopped asking anything. The one thing it really proved is
+// asserted where it now belongs: §12 below, on a surface rebuilt in place.
 
-/** The singleton surface of a window, as tall as it needs to be to overflow. */
-function focusedBoxesFor(spec) {
-  return new Map(spec.boxes.map(([id, slot], i) => [id, {
-    slot,
-    box: makeBox(id, { clientHeight: 300, scrollHeight: 4000 + i * 500 }),
-  }]));
-}
-
-/**
- * The wrap changes owner AWAY from this window: its singleton is remembered by
- * WINDOW, and the area that now has to draw it builds its own box and paints.
- *
- * The secondary box is rebuilt SHORT (`0`), which is the real case: a body that
- * has just been filled is momentarily no taller than its viewport, so the first
- * write clamps and only the second one lands. That is what makes this cycle bite
- * when the `requestAnimationFrame` write is removed.
- */
-function cycleAway(w, focused, spec) {
-  S.rememberFocusedBoxes(w, (id) => focused.get(id)?.box ?? null);
-  for (const f of focused.values()) f.box.reparent();   // the singleton moves on
-  const secondary = new Map(spec.boxes.map(([id, slot]) => [slot, makeBox(
-    `tile-${id}`, { clientHeight: 260, scrollHeight: 4000 })]));
-  for (const [slot, box] of secondary) {
-    const at = S.rememberSurfaceScroll(w, box, slot);
-    box.rebuild(spec.painted, 0);          // filled, and still short
-    S.restoreSurfaceScroll(w, box, at, slot);
-  }
+// ── 12 · a surface REBUILT IN PLACE still keeps the reader's place ─────────
+//
+// The half of the old cycle that is still true, and the only half. Nothing moves
+// between elements any more, but a `refresh()` throws the content away and
+// builds it again — and a `scrollTop` written against a box that is momentarily
+// shorter than it will be clamps to 0. That is what `paintSurface` answers, and
+// what the second write inside it is for.
+{
+  const w = win("rebuild:narrative", "narrative");
+  const box = makeBox("nv-view", { clientHeight: 300, scrollHeight: 4000 });
+  box.scrollTop = 951;
+  S.paintSurface(w, box, () => box.rebuild("the story, again", 0));
+  eq(box.scrollTop, 0,
+     "rebuild · a write against a box that is still short lands at 0");
   frame();
-  return { secondary };
+  eq(box.scrollTop, 951,
+     "rebuild · …and the second write is what puts it back");
+  eq(box.content, "the story, again", "rebuild · …with the new content in it");
 }
 
-/** …and back: the wrap comes to this window again. */
-function cycleBack(w, secondary, focused) {
-  for (const [slot, box] of secondary) S.rememberSurfaceScroll(w, box, slot);
-  for (const f of focused.values()) f.box.reparent();   // re-homed: zeroed
-  S.restoreFocusedBoxes(w, (id) => focused.get(id)?.box ?? null);
-  frame();
-}
-
-for (const spec of CYCLE_TYPES) {
-  const w = win(`cycle:${spec.type}`, spec.type);
-  const focused = focusedBoxesFor(spec);
-  let i = 0;
-  for (const f of focused.values()) {
-    f.box.content = spec.painted;
-    f.box.scrollTop = spec.at + i++ * 100;
-  }
-  const wanted = [...focused.values()].map((f) => f.box.scrollTop);
-  ok(wanted.every((v) => v > 0),
-     `${spec.type} · a surface long enough for a position to exist (${wanted})`);
-
-  const { secondary } = cycleAway(w, focused, spec);
-
-  // (a) the content is there — the window does not go blank while the wrap is
-  //     somewhere else
-  eq([...secondary.values()].map((b) => b.content),
-     spec.boxes.map(() => spec.painted),
-     `${spec.type} · the area's mount carries the content, not a placeholder`);
-  // (b) …and it opens where the reader was
-  eq([...secondary.values()].map((b) => b.scrollTop), wanted,
-     `${spec.type} · …at the position the singleton had`);
-
-  // …and the way back, after being scrolled while the wrap was away
-  const moved = [...secondary.values()].map((b, k) => {
-    b.scrollTop = 250 + k * 90;
-    return b.scrollTop;
-  });
-  cycleBack(w, secondary, focused);
-  eq([...focused.values()].map((f) => f.box.scrollTop), moved,
-     `${spec.type} · and back into the singleton where it was left`);
-}
-
-// ── 12 · the ANNOTATOR's declared limit, stated rather than hidden ─────────
+// ── 12c · A LIMIT IS NOT A TWIN · two annotators, one constructor ─────────
 //
-// The annotator's area gets the PICTURE and only the picture: one
-// `#annotator-image`, one overlay canvas and one in-progress gesture, so a
-// second live annotator would be a second annotator rather than a second view of
-// one. That is a capability of the type, not a branch — `ANNOTATOR_CAPABILITIES`
-// in `shell/types.ts` is how it reads once the type crosses over — and this
-// asserts the declaration exists so the reason survives the conversion.
+// The distinction §2 of the 14 September prompt turns on, made checkable.
+//
+// The limit is real: tracing needs one image element, one overlay and one
+// in-progress gesture, so only one instance can trace. What must NOT follow is
+// that the second instance is drawn by a different function — which is what a
+// branch in `buildSecondarySurface` was. Both mounts go through the same
+// `create`, both build a box, both paint; the difference is that the second gets
+// no tracing tools, and it arrives as an ARGUMENT.
+{
+  const M = await load("shell/types.ts");
+  const calls = [];
+  M.registerBuiltinSurfaces(new Proxy({}, {
+    get: (_, name) => (...args) => {
+      if (name === "renderAnnotatorInto")
+        calls.push({ tools: args[3] !== null && args[3] !== undefined });
+      if (name === "panelIdOf") return "inspector";
+      if (name === "mountPanel") return { refresh: () => {} };
+      return undefined;
+    },
+  }));
+  const makeEl2 = () => {
+    const el = {
+      className: "", dataset: {}, isConnected: true, children: [],
+      scrollTop: 0, scrollHeight: 0, clientHeight: 0,
+      classList: { toggle() {}, add() {}, contains: () => false },
+      parentElement: null,
+      appendChild(c) { el.children.push(c); c.parentElement = el; return c; },
+      append(...cs) { cs.forEach((c) => el.appendChild(c)); },
+      remove() {}, querySelector: () => null, querySelectorAll: () => [],
+    };
+    return el;
+  };
+  globalThis.document = { createElement: makeEl2 };
+  const st = M.surfaceTypeOf("annotator");
+  ok(st, "annotator · is a registered surface type");
+  eq(st.capabilities, { multiInstance: false },
+     "annotator · …and carries its limit as a capability");
+  const wa = { id: "a:1", type: "annotator", state: {} };
+  const wb = { id: "a:2", type: "annotator", state: {} };
+  // through the REAL registry, because who traces is decided from it: a test
+  // that called `create` + `mount` by hand would leave the registry empty and
+  // both instances would think they were first. (Measured: `[true, true]`.)
+  const areaA = makeEl2(), areaB = makeEl2();
+  const sa = M.mountSurface(wa, areaA);
+  const sb = M.mountSurface(wb, areaB);
+  ok(areaA.children.length > 0 && areaB.children.length > 0,
+     "two annotators · BOTH built a surface in their own area — a second one " +
+     "must not be refused, only limited");
+  eq(calls.length, 2,
+     "two annotators · …and BOTH painted through the same renderer " +
+     `(got ${calls.length} calls)`);
+  eq(calls.map((c) => c.tools), [true, false],
+     "two annotators · the difference is an ARGUMENT: the first traces (tools), " +
+     "the second looks (none). A branch choosing another function would be the " +
+     "twin coming back under the name of a limit.");
+  M.unmountSurface(wa.id);
+  M.unmountSurface(wb.id);
+  delete globalThis.document;
+}
+
+// ── 12b · the ANNOTATOR's declared limit, stated rather than hidden ───────
+//
+// A second Annotator window gets the same constructor with no tracing tools —
+// a flag, not a branch in another function. The limit itself is unchanged and
+// still true: tracing needs one image element, one overlay and one in-progress
+// gesture. This asserts the DECLARATION exists, so the reason survives.
 {
   const M = await load("shell/types.ts");
   eq(M.ANNOTATOR_CAPABILITIES, { multiInstance: false },
      "annotator · single-instance is DECLARED, with a reason, rather than " +
      "deduced from an `if` in the middle of main.ts");
-  ok(S.FOCUSED_SURFACE_BOXES.annotator?.[0]?.id === "annotator-stage",
-     "annotator · and the type is wired: its stage is the declared box");
 }
 
 // ── 13 · …and every surface really DRAWS, rather than announcing itself ────
@@ -507,6 +488,15 @@ for (const spec of CYCLE_TYPES) {
       // the table and the storage register a HOST and are painted through it
       if (name === "addEmDataHost" || name === "addStorageHost")
         called.add(`${name}:${args[0] && typeof args[0] === "object"}`);
+      // the two HOSTED types ask two questions of `main.ts`: which tab this
+      // window is on, and how a panel is built into a host. Answered for real
+      // here — a stub returning `undefined` would let a surface that never
+      // mounts a panel pass.
+      if (name === "panelIdOf") return "inspector";
+      if (name === "mountPanel") {
+        called.add(`mountPanel:${args[0]}`);
+        return { refresh: () => called.add("panel.refresh") };
+      }
       return undefined;
     },
   });
@@ -534,6 +524,12 @@ for (const spec of CYCLE_TYPES) {
     viewer:  "renderViewerInto",
     doc:     "renderDocViewInto",
     study:   "renderStudyInto",
+    // 13 set 2026 · the two HOSTED types. A panel window builds its OWN panel in
+    // its own area, so what proves it draws is that it asked `mountPanel` for
+    // one — which is exactly the call that could not exist while the panel was a
+    // single element somebody else was holding.
+    emtree:    "mountPanel",
+    inspector: "mountPanel",
   };
   for (const [type, renderer] of Object.entries(PAINTS)) {
     called.clear();
@@ -560,38 +556,87 @@ for (const spec of CYCLE_TYPES) {
        `callers · ${type}: …and adds or removes no child`);
     surface.destroy();
   }
+
+  // ── and the proof the twin is gone: TWO of the same type, at once ─────────
+  //
+  // Not "does it draw" but "does a second one draw too". Before tonight the
+  // answer was a note — `tile.panelTaken`, «another window has this panel» —
+  // because the panel was one element and the first claimant kept it. Two mounts
+  // of the same type must now each ask for their own panel.
+  for (const type of ["inspector", "emtree"]) {
+    called.clear();
+    const st = M.surfaceTypeOf(type);
+    const a = makeEl(), b = makeEl();
+    const wa = { id: "w:a", type, state: {} };
+    const wb = { id: "w:b", type, state: {} };
+    const sa = st.create(wa), sb = st.create(wb);
+    sa.mount(a, wa);
+    sb.mount(b, wb);
+    const asked = [...called].filter((c) => c.startsWith("mountPanel:"));
+    ok(a.children.length > 0 && b.children.length > 0,
+       `two ${type} windows · both built a box of their own`);
+    eq(asked.length, 1,
+       `two ${type} windows · both asked for a panel (the set of distinct asks ` +
+       "is one because they are on the same tab — what matters is that neither " +
+       "was refused, which is what the note used to do)");
+    // the selection reaches BOTH, and through the contract rather than a lookup
+    called.clear();
+    sa.select?.("n1");
+    sb.select?.("n1");
+    sa.destroy();
+    sb.destroy();
+  }
   delete globalThis.document;
 }
 
-// ── 14 · what is LEFT of the old second path, and what it may still name ──
+// ── 14 · EVERY window type has a constructor, and none has two ────────────
 //
-// `buildSecondarySurface` still exists, for the types that were not converted.
-// It must name them and nothing else — a branch for a converted type would be
-// the twin coming back under another name.
+// The clause that makes the defect impossible instead of watched, and the one
+// this whole series was for.
+//
+// It used to name types: "`buildSecondarySurface` must not mention these six,
+// and must still mention those two". That works while there is a list to keep,
+// and it protects exactly the types somebody remembered to write down. What it
+// cannot protect is the NINTH window type — the one that will be added when
+// nobody remembers any of this.
+//
+// So the question is asked of `workspace.ts` and the registry together: every
+// `WindowType` the model declares has an entry in `shell/surface.ts`. A type
+// added without one fails here, on the line that adds it.
 {
-  const main = await readFile(new URL("../src/main.ts", import.meta.url), "utf8");
-  const Sorg = await import("./sorgenti.mjs");
-  const body = Sorg.dentro(main, "buildSecondarySurface");
-  ok(body.length > 0, "callers · buildSecondarySurface was found, by its AST");
-  const literals = Sorg.stringheLetterali(body);
-  for (const type of ["table", "storage", "shelf", "viewer", "doc", "study"])
-    ok(!literals.includes(type),
-       `callers · it must not name "${type}" — that type has ONE constructor now`);
-  // …and the ones it does keep still build something live, each named with the
-  // renderer that proves it
-  for (const [type, marker] of [["narrative", "renderNarrativeView"],
-                                ["annotator", "renderAnnotatorPictureInto"]]) {
-    ok(literals.includes(type), `callers · a ${type} area is recognised by its type`);
-    ok(Sorg.chiama(body, marker),
-       `callers · …and builds a LIVE surface (${marker}), not a placeholder`);
+  const W = await load("workspace.ts");
+  const M = await load("shell/types.ts");
+  M.registerBuiltinSurfaces(new Proxy({}, { get: () => () => {} }));
+  const registered = new Set(M.convertedTypes());
+
+  // every type the MODEL knows — read from the metadata table every window type
+  // must appear in to have an icon and a name, so this cannot drift from the union
+  const declared = Object.keys(W.WINDOW_TYPE_META);
+  ok(declared.length > 8, `the model declares ${declared.length} window types`);
+
+  // …minus the ones still drawn the old way, named here with the reason. THIS
+  // LIST MUST BECOME EMPTY, and while it is not, the fence says what is in it.
+  const STILL_PRIVILEGED = {
+    graph: "#canvas — ten pointer handlers and the whole interaction machine " +
+           "are bound to the one canvas element",
+  };
+  for (const type of declared) {
+    if (STILL_PRIVILEGED[type]) {
+      ok(!registered.has(type),
+        `${type} is declared as still privileged but IS registered — remove it ` +
+          "from the list rather than leaving a lie in the fence");
+      continue;
+    }
+    ok(registered.has(type),
+      `every window type has ONE constructor: "${type}" is declared in ` +
+        "`workspace.ts` and has no entry in the surface registry. A type " +
+        "without a constructor is a type that will be drawn some other way — " +
+        "which is how the second path was born the first time.");
   }
-  // the note stays for a type that genuinely has neither — and it must be the
-  // LAST thing, i.e. what nothing else claimed
-  const note = body.indexOf('t("tile.enterNote"');
-  ok(note > 0, "callers · the fall-through placeholder is still there");
-  for (const marker of ["renderNarrativeView", "renderAnnotatorPictureInto"])
-    ok(body.indexOf(marker) < note,
-       `callers · ${marker} is reached BEFORE the placeholder`);
+  console.log("\n  still drawn the old way");
+  const left = Object.entries(STILL_PRIVILEGED);
+  if (!left.length) console.log("    (none — every window type has one constructor)");
+  for (const [type, why] of left) console.log(`    ${type.padEnd(10)} ${why}`);
 }
 
 console.log(`surfaces: ${checks} checks passed`);

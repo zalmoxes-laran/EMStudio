@@ -73,15 +73,18 @@ import {
 } from "./identity";
 import { renderInspector } from "./inspector";
 import { searchTwins } from "./twins";
-import type { BoxLookup } from "./surface-scroll";
 import {
   mountSurface,
   refreshSurfaces,
+  selectInSurfaces,
   surfaceOf,
-  surfaceTypeOf,
   unmountSurface,
 } from "./shell/surface";
-import { registerBuiltinSurfaces, type StorageMount } from "./shell/types";
+import {
+  registerBuiltinSurfaces,
+  type PanelMount,
+  type StorageMount,
+} from "./shell/types";
 import {
   layoutRects,
   sameRect,
@@ -90,12 +93,8 @@ import {
 } from "./shell/layout";
 import {
   paintSurface,
-  rememberFocusedBoxes,
-  restoreFocusedBoxes,
   preservingScroll,
-  rememberPanelScroll,
   rememberSurfaceScroll,
-  restorePanelScroll,
   restoreSurfaceScroll,
   scrollerOf,
 } from "./surface-scroll";
@@ -145,7 +144,7 @@ import {
   watchSystemTheme,
   type ThemeMode,
 } from "./theme";
-import { buildNodeList } from "./nodelist";
+import { buildNodeList, type NodeListCallbacks } from "./nodelist";
 import { buildOverview } from "./overview";
 import { edgeStyle } from "./palette";
 import {
@@ -464,11 +463,14 @@ let applyingRemoteSelect = false;
 let view: ViewKind = "matrix";
 // DP-82 · the central area's MODE — the single decider of what the middle shows.
 // `matrix`/`graph` are canvas projections and keep `view` in step (the canvas
-// sub-view to restore when leaving narrative); `narrative` is a first-class mode,
-// not a separate overlay toggle. `setMode` is the one entry point; the old
-// `view`+`narrativeOpen` pair collapsed into this. Extension seam: add a token to
-// CentralMode and a branch in `setMode`/the render dispatch — nothing else.
+// sub-view). Extension seam: add a token to `CentralMode` and a branch in
+// `setMode` — nothing else.
+//
+// 14 set 2026 · `narrative` LEFT this union. It was the one type that was also a
+// mode, and that is exactly where the window work had stopped: an overlay is
+// over one canvas, so its surface had to be one element.
 let centralMode: CentralMode = "matrix";
+void centralMode;   // read by nothing since the narrative stopped being a mode
 /** The modes the central-area selector offers, in order. Add `table`/`dtc` here
  *  (and a branch in `setMode`) when they land — the seam, not the feature. */
 const CENTRAL_MODES: CentralMode[] = [
@@ -476,7 +478,6 @@ const CENTRAL_MODES: CentralMode[] = [
   "graph",
   "dtc",
   "multigraph",
-  "narrative",
 ];
 // Graph-view layout: chosen algorithm + manual position overrides (drags /
 // liquid clustering). Overrides persist across rebuilds in-session and are
@@ -636,7 +637,6 @@ const info = document.getElementById("info")!;
 const tooltip = document.getElementById("tooltip")!;
 const dropHint = document.getElementById("drop-hint")!;
 const hintBar = document.getElementById("hint-bar")!;
-const inspector = document.getElementById("inspector")!;
 const breadcrumb = document.getElementById("breadcrumb")!;
 const edgeMenu = document.getElementById("edge-menu")!;
 const toastEl = document.getElementById("toast")!;
@@ -650,22 +650,18 @@ const btnNarrative = document.getElementById("btn-narrative") as HTMLButtonEleme
 const MODE_BUTTONS: Partial<Record<CentralMode, HTMLButtonElement>> = {
   matrix: btnMatrix,
   graph: btnGraph,
-  narrative: btnNarrative,
+  // …and NOT `btnNarrative`: since 14 September that button transforms the
+  // window instead of lighting a mode, so it has no "active" state to keep.
 };
-const narrativeViewEl = document.getElementById("narrative-view")!;
 const btnNarrativeEdit = document.getElementById(
   "btn-narrative-edit") as HTMLButtonElement;
 const btnUndo = document.getElementById("btn-undo") as HTMLButtonElement;
 const btnRedo = document.getElementById("btn-redo") as HTMLButtonElement;
 const dirtyDot = document.getElementById("dirty-dot")!;
-const sidePanel = document.getElementById("side")!;
-const emtreeEl = document.getElementById("emtree") as HTMLDivElement;
 // POL1: the always-present "+ epoch" for Matrix view. Declared up here with the
 // other element refs because `updateToolbar` (much earlier in the file) toggles it.
 const btnAddEpoch = document.getElementById("btn-add-epoch") as HTMLButtonElement;
 const stratiminerEl = document.getElementById("stratiminer") as HTMLDivElement;
-const nodelistEl = document.getElementById("nodelist")!;
-const logpanelEl = document.getElementById("logpanel")!;
 
 // EM-version pill → click for the version breakdown (config files + ontologies)
 const verBtn = document.getElementById("em-version")!;
@@ -1545,22 +1541,27 @@ function selectMany(ids: string[]): void {
   if (!applyingRemoteSelect) sync.sendSelect(selectedId, [...selectedIds]);
 }
 
-function refreshInspector(): void {
-  // VIEWER · the preview answers the same question the Inspector does ("what am
-  // I looking at?"), so it is repainted wherever the Inspector is. A2 · the
-  // annotator asks it too ("which picture am I annotating?"), and a window that
-  // followed the selection only on a DOCUMENT change would sit on the wrong
-  // image for the whole of the next gesture.
-  renderViewer();
-  renderAnnotator();
-  if (!store) return;
+/**
+ * Draw the inspector into ONE host — the half of `refreshInspector` that is
+ * actually a drawing, split out so a window can have its own.
+ *
+ * Nothing inside changed: `renderInspector(root, …)` has taken its root since it
+ * was written, and every callback below acts on the STORE the thing lives in,
+ * not on a panel. That is why two live inspectors needed no new rules — the
+ * panel never knew which one it was.
+ */
+function renderInspectorInto(host: HTMLElement): void {
+  if (!store) {
+    host.textContent = "";
+    return;
+  }
   // DAG · the inspector reads the store the SELECTION BELONGS TO. Clicking an
   // acquisition on the DTC canvas selects a node of the CORPUS, and a panel that
   // only ever looked at the study graph would answer "nothing selected" about a
   // node the user can see. One rule, no special case in the panel itself.
   const owning = storeOfNode(selectedId) ?? store;
   renderInspector(
-    inspector,
+    host,
     owning,
     selectedId,
     {
@@ -1687,6 +1688,20 @@ function refreshInspector(): void {
     },
     selectedEdge,
   );
+}
+
+/**
+ * "Repaint the inspector", as forty call sites in this file still spell it —
+ * and now every live one.
+ *
+ * The two lines that are NOT the inspector stay here, where they always were:
+ * the preview and the annotator answer the same question it does ("what am I
+ * looking at?"), so they are repainted with it.
+ */
+function refreshInspector(): void {
+  renderViewer();
+  renderAnnotator();
+  refreshSurfaces("inspector");
 }
 
 // HDT-O authority autocomplete → em-bridge /resolve-authority (P1-D, offline).
@@ -2447,46 +2462,26 @@ async function refreshMatrixViewLayout(): Promise<void> {
  */
 function setMode(m: CentralMode): void {
   centralMode = m;
-  const narrative = m === "narrative";
   // One selector segment active at a time — derived from CENTRAL_MODES, so a new
   // mode needs no new toggle line here.
   for (const mode of CENTRAL_MODES)
     MODE_BUTTONS[mode]?.classList.toggle("active", mode === m);
   // WIN2 · the mode belongs to the WINDOW and never moves the leader chip: the
   // workspace changes only when the user picks one. A Canvas workspace showing
-  // DTC — or a narrative, after a transform — is a legitimate arrangement.
+  // DTC is a legitimate arrangement.
   const win = activeWin();
-  if (!narrative && win.type === "graph") setWinMode(win, m);
+  if (win.type === "graph") setWinMode(win, m);
   updateWindowHeader();
-  // The narrative overlay's visibility IS "the mode is narrative" (this replaced
-  // the separate `narrativeOpen` flag — no second, divergible state).
-  narrativeViewEl.classList.toggle("hidden", !narrative);
-  // WIN5 · entering a CANVAS mode also puts the canvas back in front: the table
-  // and doc surfaces belong to their window types, not to a mode.
-  if (!narrative && win.type === "graph") applyWindowSurface("graph");
+  // WIN5 · entering a CANVAS mode also puts the canvas back in front: the other
+  // surfaces belong to their window types, not to a mode.
+  if (win.type === "graph") applyWindowSurface("graph");
   // HDR1 · the "Edit" affordance does NOT come back to the master header here.
   // Writing is a mode of a NARRATIVE WINDOW (the ✎ toggle in that window's
   // header, `buildAreaHeader`), and the master header belongs to no window — an
   // Edit button there could not say which narrative it edited. The element below
   // stays in the DOM, permanently hidden, as the handler owner: same arrangement
   // as #btn-fit / #btn-layout / #graph-layout, which the window header mirrors.
-  // NARRWS1/PALETTE1 · the left palette is PER-MODE and PER-WINDOW, and it is
-  // only there at all when you have opened it (Tools ▸ Palette).
-  if (narrative) {
-    // keep `view` (matrix/graph) as the canvas sub-view to restore on the way back.
-    // NARR1 · entering narrative with no story yet → scaffold one from the graph
-    // (a chapter per epoch, ordered + anchored, canonical intro). Idempotent:
-    // scaffoldNarrativeFromGraph is a no-op when a narrative already exists, so a
-    // written story is never disturbed.
-    if (store) {
-      const nid = scaffoldNarrativeFromGraph(store);
-      if (nid) selectedNarrativeId = nid;
-    }
-    refreshNarrativeView();
-    return;
-  }
-  // <extension seam> a `table`/`dtc` mode would branch above this line.
-  applyCanvasView(m); // m is matrix | graph
+  applyCanvasView(m); // a central mode IS a canvas projection now
 }
 
 /** A canvas view IS a central mode — back-compat entry for the many callers that
@@ -4843,7 +4838,7 @@ async function openRecentFile(r: RecentFile): Promise<void> {
   } catch {
     removeRecent(r.path);
     toast("Il file recente non è più leggibile — rimosso dai recenti.");
-    renderEMTree(emtreeEl, emtree, emtreeHandlers, t);
+    refreshEMTree();   // every live EMtree window: the list is one shorter
   }
 }
 
@@ -5140,32 +5135,55 @@ function addEpochEmMode(index = 0, start?: number, end?: number): void {
 }
 
 // ---------- accessory views ----------
-const nodeList = buildNodeList(
-  nodelistEl,
-  () => store?.doc ?? null,
-  (id) => {
-    if (inContext()) {
-      contextStack = [];
-      rebuildContext();
-    }
-    select(id);
-    centerOn(id);
+// ── THE OUTLINER, once written down and mounted as many times as asked ──────
+//
+// This used to be `const nodeList = buildNodeList(nodelistEl, …)` — ONE object,
+// built at boot around ONE element, and called from eighteen places in this file
+// as `nodeList.refresh()` / `nodeList.setSelected(id)`. It was the singleton
+// that made "two Outliner windows" impossible: not the drawing (the renderer
+// took its root from the first day), the OBJECT.
+//
+// What it becomes: the two arguments that are not the root, named here so
+// `mountPanel` can build one per window, and a `nodeList` that is no longer an
+// instance but the FAN-OUT over every live one. The eighteen call sites did not
+// have to change, and that is the point — they were always asking for "the
+// outliner", and the answer simply stopped being "the one".
+function pickFromOutliner(id: string): void {
+  if (inContext()) {
+    contextStack = [];
+    rebuildContext();
+  }
+  select(id);
+  centerOn(id);
+}
+
+const outlinerCallbacks: NodeListCallbacks = {
+  isFolded: (id) => store?.isFolded(id) ?? false,
+  onToggleFold: (id) => requestFold(id),
+  onExplode: (id) => {
+    contextStack = [];
+    enterGroup(id);
   },
-  {
-    isFolded: (id) => store?.isFolded(id) ?? false,
-    onToggleFold: (id) => requestFold(id),
-    onExplode: (id) => {
-      contextStack = [];
-      enterGroup(id);
-    },
-    onFoldGroups: (ids, folded) => store?.setFoldedMany(ids, folded),
-    isContainer: (id) => {
-      if (!store) return false;
-      const mm = buildMembership(store.doc);
-      return (mm.membersOf.get(id)?.filter((m) => m !== id).length ?? 0) > 0;
-    },
+  onFoldGroups: (ids, folded) => store?.setFoldedMany(ids, folded),
+  isContainer: (id) => {
+    if (!store) return false;
+    const mm = buildMembership(store.doc);
+    return (mm.membersOf.get(id)?.filter((m) => m !== id).length ?? 0) > 0;
   },
-);
+};
+
+/**
+ * "The outliner", as every caller in this file still spells it — and now a verb
+ * over all of them instead of a reference to one.
+ *
+ * `setSelected` is kept apart from `refresh` on purpose: it moves a highlight
+ * over rows that are already built, and answering a click with `refresh()` would
+ * rebuild a list of every node in the graph each time the selection moves.
+ */
+const nodeList = {
+  refresh: (): void => refreshSurfaces("emtree"),
+  setSelected: (id: string | null): void => selectInSurfaces("emtree", id),
+};
 
 const overview = buildOverview(
   document.getElementById("overview") as HTMLCanvasElement,
@@ -8610,12 +8628,11 @@ btnViewProps.addEventListener("click", () => {
 // ── EMTree ────────────────────────────────────────────────────────────────────
 
 function refreshEMTree(): void {
-  // WIN6/WIN7/WIN-FIX1 · the panel lives in a window (focused or not) or in the
-  // floating tool. Skip the work only when it is nowhere visible.
-  if (!panelIsMounted(emtreeEl)) return; // rebuilt on show; no work while hidden
-  // The panel asks for its text by key and `t` resolves it in the active
-  // language: ET1 already went through a key lookup, so I18N1 was this one line.
-  renderEMTree(emtreeEl, emtree, emtreeHandlers, t);
+  // ONE SURFACE · every live EMtree window, and the optimisation that used to be
+  // `panelIsMounted(emtreeEl)` — "do not draw a panel nobody can see" — is the
+  // same sentence said better: the registry has no instances of this type, so
+  // the loop does nothing. Nobody reads the DOM to find out where a thing lives.
+  refreshSurfaces("emtree");
 }
 
 /**
@@ -9377,7 +9394,6 @@ function openMappingEditor(): void {
 // one StratiMiner, wherever it happens to be showing.
 
 const toolFloat = document.getElementById("tool-float")!;
-const toolFloatBody = document.getElementById("tool-float-body")!;
 const toolFloatTitle = document.getElementById("tool-float-title")!;
 
 /** The panel element the float is currently showing, if any. */
@@ -9388,30 +9404,31 @@ let floatingToolId: string | null = null;
  *  column of example values, and eliding that one defeats the tool). */
 const WIDE_TOOLS = new Set(["mapping-editor"]);
 
+// ONE SURFACE · the two tools LIVE in the float, and nothing is moved.
+//
+// They used to be parked in `#side` and re-parented into `#tool-float-body` on
+// open, which is the same re-homing the panels did — for the same reason, that
+// each was one element. `#side` is gone, so they simply sit inside the float,
+// hidden, and opening one shows it. Both renderers take their host and rebuild
+// from state (`renderStratiMiner(host, …)`, `renderMappingEditor(host, …)`), so
+// there was never anything in them that needed to travel.
 function openFloatingTool(panelId: string, title: string): void {
   if (floatingToolId && floatingToolId !== panelId) closeFloatingTool();
   const el = document.getElementById(panelId);
   if (!el) return;
   toolFloat.classList.toggle("wide", WIDE_TOOLS.has(panelId));
   el.classList.remove("hidden");
-  toolFloatBody.appendChild(el);
   toolFloatTitle.textContent = title;
   toolFloat.classList.remove("hidden");
   floatingToolId = panelId;
-  refreshPanelById(panelId);
-  reflectEmptyAside();
+  refreshFloatingTool(panelId);
 }
 
 function closeFloatingTool(): void {
   if (!floatingToolId) return;
-  const el = document.getElementById(floatingToolId);
-  if (el) {
-    el.classList.add("hidden");
-    sidePanel.appendChild(el); // its parking spot, as before
-  }
+  document.getElementById(floatingToolId)?.classList.add("hidden");
   toolFloat.classList.add("hidden");
   floatingToolId = null;
-  reflectEmptyAside();
 }
 
 /** True while StratiMiner is the tool on screen — the only condition under which
@@ -9702,9 +9719,9 @@ function revealFromWarning(nodeId: string): void {
 /** Redraw the Log tab — only when it is the visible one; there is no point
  *  rebuilding a hidden DOM on every sync message. */
 function refreshLogPanel(): void {
-  // same as the EMTree: the log panel lives in an Inspector WINDOW, focused or not
-  if (!panelIsMounted(logpanelEl)) return;
-  renderLogPanel(logpanelEl, store?.doc ?? null, EM_VERSION, revealFromWarning);
+  // same as the EMtree: the log lives in an Inspector WINDOW — as many as there
+  // are, each drawing whichever of its two tabs is up
+  refreshSurfaces("inspector");
 }
 /** How many log lines are something somebody should be told about.
  *
@@ -9730,7 +9747,6 @@ onLogChange(() => {
 // layout and circles-of-detail; a story is none of those), but it is a
 // first-class central MODE now (DP-82): its on/off IS `centralMode === "narrative"`,
 // driven by `setMode` — there is no separate `narrativeOpen` flag to drift.
-let narrativeEditing = false;
 let selectedNarrativeId: string | null = null;
 /** Who is signing endorsements in this session. NOT persisted in the document:
  *  it is a fact about the person at the keyboard, not about the graph. What
@@ -9769,8 +9785,8 @@ function currentSigner(): string | null {
  * choice matters.
  */
 function revealSignerPicker(): void {
-  const sel = document.querySelector(
-    "#narrative-view .nv-signing select") as HTMLSelectElement | null;
+  const sel = activeNarrativeHost()
+    ?.querySelector<HTMLSelectElement>(".nv-signing select") ?? null;
   if (!sel) {
     toast(t("toast.noHumanAuthor"));
     return;
@@ -9794,8 +9810,8 @@ const generating = new Set<number>();
  * so there is nothing to clean up if a render happens meanwhile.
  */
 function markChapterGenerating(chapterIndex: number, title: string): void {
-  const section = document.querySelectorAll(
-    "#narrative-view .nv-chapter")[chapterIndex] as HTMLElement | undefined;
+  const section = activeNarrativeHost()
+    ?.querySelectorAll<HTMLElement>(".nv-chapter")[chapterIndex];
   if (!section) return;
   section.classList.add("nv-generating");
   const line = document.createElement("div");
@@ -9992,32 +10008,59 @@ function narrativeEditor(narrativeId: string): NarrativeEditor {
   };
 }
 
+/** Paint every live Narrative window. There is no "the narrative" any more —
+ *  no overlay, no `centralMode` — so there is nothing to ask about the focus. */
 function refreshNarrativeView(): void {
-  if (centralMode !== "narrative") return;
-  // SURFACE-AUDIT · keyed to the WINDOW, not to `#narrative-view`, because this
-  // surface MIGRATES: the same story is the overlay while the window has the
-  // focus and a secondary area's box when it does not. One key, so the place you
-  // were reading survives the crossing in both directions — and, on the way,
-  // survives this rebuild too (the view is rebuilt on every document change).
-  paintSurface(activeWin(), narrativeViewEl, () => renderNarrativeViewNow());
+  refreshSurfaces("narrative");
 }
 
-function renderNarrativeViewNow(): void {
+/** Is this window WRITING? Per window, like every other mode: two Narrative
+ *  windows can be one reading and one being written, which is the arrangement
+ *  somebody actually wants (the story on the left, the chapter under the hand
+ *  on the right). It used to be a module flag, because there was one story on
+ *  screen by construction. */
+function narrativeEditingOf(win: Win): boolean {
+  return winCurrent(win, "editing") === true;
+}
+
+/**
+ * Draw ONE window's story into ONE host — reading, and writing when its ✎ is on.
+ *
+ * `renderNarrativeView(host, …)` has taken its host since it was written, and
+ * called without an editor it is the reading; that half stopped being a problem
+ * on 12 September. What this adds is the other half: the EDITOR is built for
+ * THIS window, so the chapter being written is the one `winCurrent(win,
+ * "narrative")` says — not the one the single overlay happened to be showing.
+ */
+function renderNarrativeInto(host: HTMLElement, win: Win): void {
+  // NARR1 · a Narrative window with no story yet scaffolds one from the graph —
+  // a chapter per epoch, ordered, anchored, with a canonical intro. This used to
+  // hang off `setMode("narrative")`, i.e. off ENTERING THE MODE; with the
+  // narrative a window type the same sentence attaches to the window: a
+  // narrative window that opens on a graph with no story writes the outline.
+  // Idempotent (`scaffoldNarrativeFromGraph` is a no-op once a narrative
+  // exists), so a written story is never disturbed.
+  if (store) {
+    const nid = scaffoldNarrativeFromGraph(store);
+    if (nid) selectedNarrativeId = nid;
+  }
   const narratives = narrativesIn(store?.doc ?? null);
-  const current = narratives.find((n) => n.id === selectedNarrativeId)
-    ?? narratives[0];
+  const chosen = (winCurrent(win, "narrative") as string | null)
+    ?? selectedNarrativeId ?? narratives[0]?.id ?? null;
+  const current = narratives.find((n) => n.id === chosen) ?? narratives[0];
   renderNarrativeView(
-    narrativeViewEl,
+    host,
     store?.doc ?? null,
-    selectedNarrativeId,
+    chosen,
     (id) => {
+      setWinCurrent(win, "narrative", id);
       selectedNarrativeId = id;
       refreshNarrativeView();
     },
     // an embed that resolves is a way into the graph: same gesture as the Log
     // tab, so "go and look at it" means one thing everywhere in the app
     revealFromNarrative,
-    narrativeEditing && current && store
+    narrativeEditingOf(win) && current && store
       ? narrativeEditor(current.id)
       : undefined,
     // CURRENT-ELEMENT · the window owns which chapter is being worked on; the
@@ -10164,16 +10207,43 @@ function revealFromNarrative(nodeId: string): void {
   revealFromWarning(nodeId);
 }
 
-btnNarrative.addEventListener("click", () =>
-  setMode(centralMode === "narrative" ? view : "narrative"),
-);
+// ── btnNarrative · «this window becomes Narrative» ──────────────────────────
+//
+// It used to be a SWITCH: `setMode(centralMode === "narrative" ? view :
+// "narrative")`, an overlay on and off over the canvas. That was the second way
+// of reaching a narrative, and the reason `#narrative-view` had to be one
+// element — an overlay is over ONE canvas.
+//
+// Now it is the transformation every other type already had, reached by the same
+// verb (`transformWindowOf`) as picking "❧ Narrative" from a window's own type
+// menu. ONE gesture: the button is a shortcut to the menu item, not a different
+// mechanism with a different state. Pressing it on a window that is already a
+// narrative does nothing, which is what a transform means.
+//
+// NARR1 · and the scaffold moved here with it, because "make me a narrative" is
+// exactly when a graph with no story yet should get one. Idempotent:
+// `scaffoldNarrativeFromGraph` is a no-op when a narrative already exists, so a
+// written story is never disturbed.
+btnNarrative.addEventListener("click", () => {
+  const win = activeWin();
+  if (store) {
+    const nid = scaffoldNarrativeFromGraph(store);
+    if (nid) selectedNarrativeId = nid;
+  }
+  if (win.type !== "narrative") transformWindowOf(win, "narrative");
+  else refreshNarrativeView();
+});
 // HDR1 · the writing toggle. Invoked by the ✎ action of a narrative window's
 // header, never by a visible master-header button — so it no longer dresses
 // itself (no active class, no Done/Edit label): the STATE is what it owns, and
 // the window header renders that state (`win-act-on`).
 btnNarrativeEdit.addEventListener("click", () => {
-  narrativeEditing = !narrativeEditing;
-  refreshNarrativeView();
+  // PER WINDOW, like every other mode: the ✎ of the window whose header was
+  // pressed (`focusThen` has made it the active one), not a flag for the app.
+  const win = activeWin();
+  setWinCurrent(win, "editing", narrativeEditingOf(win) ? null : true);
+  surfaceOf(win.id)?.refresh();
+  renderAreaHeaders();
 });
 
 btnUndo.addEventListener("click", () => undoStore()?.undo());
@@ -10418,9 +10488,7 @@ function addCornerGrips(area: HTMLElement, winId: string, barOffset: string): vo
 /** The types still drawn by the singleton wrap — the ones NOT converted. Named
  *  here, in one list, so the boundary of the conversion is readable rather than
  *  deducible from a fall-through. */
-const WRAP_TYPES: WindowType[] = [
-  "graph", "narrative", "emtree", "inspector", "annotator",
-];
+const WRAP_TYPES: WindowType[] = ["graph"];
 const needsWrap = (type: WindowType): boolean => WRAP_TYPES.includes(type);
 
 /** One area per window, for the lifetime of the window. */
@@ -10439,8 +10507,6 @@ const lastRects = new WeakMap<HTMLElement, Rect>();
  *  gained the focus does not. */
 let wrapOwnerId: string | null = null;
 let wrapOwnerType: WindowType | null = null;
-
-const byId: BoxLookup = (id) => document.getElementById(id);
 
 /** Wire an area's own gestures. Called ONCE per window: these listeners outlive
  *  every arrangement change, because the element does. */
@@ -10641,23 +10707,22 @@ function syncAreaContent(area: HTMLElement, win: Win): void {
     tileCanvases.set(win.id, cv);
     return;
   }
-  const type = surfaceTypeOf(win.type);
-  if (type) {
-    // ONE constructor, focused or not (`shell/types.ts`)
-    mountSurface(win, area);
-    return;
-  }
-  buildSecondarySurface(area, win);
+  // ONE constructor, for every type and every area, focused or not
+  // (`shell/types.ts`). There is no `else` any more: a window type with no
+  // registered surface is a bug the fence catches (`check-focus-parity.mjs`
+  // asserts every `WindowType` in `workspace.ts` has an entry), not a silent
+  // fall-through to a note saying "step in to work here".
+  mountSurface(win, area);
 }
 
 /** Everything an area holds that belongs to its TYPE — the bar and the grips
  *  belong to the area itself and stay. */
 function clearAreaContent(area: HTMLElement, winId: string): void {
   unmountSurface(winId);
-  unregisterTileSurface(winId);
   tileCanvases.delete(winId);
-  // a singleton panel hosted here would be destroyed with the box: send it home
-  if (area.querySelector(".tile-panel")) releaseTilePanels();
+  // (a panel used to be sent home here before its box was destroyed: it was one
+  //  element, so destroying the box destroyed the panel. It is this window's own
+  //  now, and `unmountSurface` above has already taken it down.)
   for (const child of [...area.children]) {
     if (child.classList.contains("tile-bar")) continue;
     if (child.classList.contains("tile-corner")) continue;
@@ -10706,7 +10771,6 @@ function setWrapOwner(id: string | null): void {
   const moved = wrapOwnerId !== id;
   if (moved) {
     const prev = windowsOf().find((w) => w.id === wrapOwnerId);
-    if (prev) rememberFocusedBoxes(prev, byId);
     wrapOwnerId = id;
     canvasWrapEl.dataset.win = id ?? "";
     canvasWrapEl.classList.toggle("hidden", !id);
@@ -10718,7 +10782,6 @@ function setWrapOwner(id: string | null): void {
   // what the wrap SHOWS is decided by its owner's type, never by who has the
   // focus — that is the sentence this whole night is about
   mountWindow(win);
-  if (moved) restoreFocusedBoxes(win, byId);
 }
 
 /** Write a rectangle onto an element — and only when it moved. */
@@ -10829,7 +10892,6 @@ function renderTiles(): void {
   }
   positionAreas();
   renderAreaHeaders();
-  syncSecondaryPanels();
   renderEmData();
   renderStorage();
   refreshTileSurfaces();
@@ -10870,10 +10932,36 @@ function setCurrentChapterIndex(i: number | null): void {
   updateWindowHeader(); // the menus enable/disable with it
 }
 
+/**
+ * The host of a Narrative window's story — `.nv-view`, which every mount carries.
+ *
+ * Three places used to say `#narrative-view …`: the signer picker, the
+ * "generating" mark, and the current-chapter marker. That id was the OVERLAY,
+ * i.e. the one story on screen, so the selector was a way of writing "whichever
+ * narrative has the focus" without having to say which. With the narrative a
+ * window type, the question has a real answer — this window — and the answer is
+ * its own host.
+ */
+function narrativeHostOf(win: Win): HTMLElement | null {
+  return document.querySelector<HTMLElement>(
+    `.tile-area[data-win="${CSS.escape(win.id)}"] .nv-view`);
+}
+
+/** …and the one the verbs of the master header act on: the focused Narrative
+ *  window if there is one, else the first on screen. Says which, rather than
+ *  letting a selector pick whatever came first in the document. */
+function activeNarrativeHost(): HTMLElement | null {
+  const act = activeWin();
+  if (act.type === "narrative") return narrativeHostOf(act);
+  const any = windowsOf().find((w) => w.type === "narrative");
+  return any ? narrativeHostOf(any) : null;
+}
+
 /** Move the `nv-current` marker in the DOM, without rebuilding anything. */
 function markCurrentChapter(i: number | null): void {
-  const sections = document.querySelectorAll("#narrative-view .nv-chapter");
-  sections.forEach((section, index) =>
+  const host = activeNarrativeHost();
+  if (!host) return;
+  host.querySelectorAll(".nv-chapter").forEach((section, index) =>
     section.classList.toggle("nv-current", index === i));
 }
 function currentRowId(): string | null {
@@ -10985,27 +11073,25 @@ const TRANSFORM_TYPES: WindowType[] = [
  * visible, and this is the only place that decides — a window type maps to a
  * surface, and nothing else touches their visibility.
  */
+/**
+ * What the WRAP shows — and by 14 September that is the graph, or nothing.
+ *
+ * It used to be the one place that decided which SINGLETON was lit, with a line
+ * per window type: eight `show()` calls, one for each surface only the focused
+ * window could use. Every night of this series took lines out of it, and what is
+ * left is not about surfaces at all — it is about the two OVERLAYS of the canvas
+ * (the map that answers "where am I", and the funnel that filters what is on
+ * it), which belong to a graph window and to no other.
+ *
+ * Kept under its old name because nine call sites still mean exactly this: "the
+ * wrap now belongs to a window of that type".
+ */
 function applyWindowSurface(type: WindowType): void {
-  const show = (id: string, on: boolean): void => {
-    document.getElementById(id)?.classList.toggle("hidden", !on);
-  };
-  // The six converted types have NO line here and no singleton to show: their
-  // surface is built by `shell/types.ts` into the window's own area, focused or
-  // not. What is left is what still lives inside `#canvas-wrap`.
-  show("annotator-view", type === "annotator");
-  if (type === "annotator") renderAnnotator();
-  const hosted = type === "emtree" || type === "inspector";
-  show("panel-view", hosted);
-  if (hosted) renderPanelWindow(type);
-  else {
-    releasePanels();
-    syncSecondaryPanels(); // the panels it gave back may be wanted by an area
-  }
   // The overview map answers "where am I on the canvas", and the funnel filters
   // NODES AND CONNECTORS — both are questions only a canvas window has. On a
   // table or a document they would act on something that is not on screen.
   const isCanvasWindow = type === "graph";
-  show("overview", isCanvasWindow);
+  document.getElementById("overview")?.classList.toggle("hidden", !isCanvasWindow);
   if (!isCanvasWindow && filterPanelOpen()) closeFilterPanel();
   refreshFunnel();
 }
@@ -12043,7 +12129,7 @@ function setAnnotatorShelfSource(entry: ShelfEntry | null): void {
 /** How wide the annotator's picture is on screen, in CSS pixels. What the Image
  *  API is asked for — not the file's own size, which is the point. */
 function srcWidthForAnnotator(): number {
-  const host = document.getElementById("annotator-view");
+  const host = document.getElementById("annotator-frame")?.parentElement ?? null;
   const width = host?.clientWidth ?? 0;
   return width > 64 ? width : 1024;
 }
@@ -12098,7 +12184,12 @@ function renderAnnotator(): void {
   // and tracing is `pointer-events` and nothing else: the overlay keeps exactly
   // the same geometry in every mode, which is the SHELL-FIX rule (a surface that
   // changes size when you change mode makes a mode switch a layout change).
-  document.getElementById("annotator-view")?.setAttribute("data-mode", annotatorMode());
+  // the Mode reaches the CSS on the STAGE of the instance that traces — the
+  // element `ensureAnnotatorFrame` built — not on a singleton view that no
+  // longer exists. Still `pointer-events` and nothing else: a mode change must
+  // never be a layout change (SHELL-FIX).
+  document.getElementById("annotator-frame")?.parentElement
+    ?.setAttribute("data-mode", annotatorMode());
 
   // SHELF1 · the shelf pick wins over the selection. The annotator used to have
   // only the selection, so its empty state was a dead end ("select a resource"
@@ -12218,6 +12309,56 @@ function renderAnnotator(): void {
  * progress, and a second one would be a second annotator. This is the picture,
  * so the window is not blank, plus one line saying where the tracing is.
  */
+/**
+ * ONE CONSTRUCTOR, and the flag is `tools`.
+ *
+ * `tools` is the element the tracing instance builds for its own controls and
+ * `null` for any other. So the difference between the annotator that traces and
+ * an annotator window that is simply showing the picture is an ARGUMENT, not a
+ * second function reached through a branch in `buildSecondarySurface` — which is
+ * what §2 asked for, and the difference between a limit and a defect. The limit
+ * itself is unchanged and still true: tracing needs one image element, one
+ * overlay and one in-progress gesture (`ANNOTATOR_CAPABILITIES`).
+ */
+function renderAnnotatorInto(stage: HTMLElement, caption: HTMLElement,
+                             win: Win, tools: HTMLElement | null): void {
+  if (tools) {
+    // the instance that traces: build the frame the gestures are wired to, once
+    ensureAnnotatorFrame(stage);
+    renderAnnotator();
+    renderAnnotatorTools(tools);
+    return;
+  }
+  renderAnnotatorPictureInto(stage, caption);
+  void win;
+}
+
+/**
+ * The tracing frame — the image, the overlay, and the gestures on it.
+ *
+ * Built into the tracing instance's own stage instead of living in the markup,
+ * and built ONCE: `initAnnotatorGestures` binds to the overlay, and the module
+ * keeps an in-progress draft against it. The ids survive because there is
+ * exactly one of these by declaration, and the declaration is readable
+ * (`ANNOTATOR_CAPABILITIES`) rather than hidden in an `if`.
+ */
+function ensureAnnotatorFrame(stage: HTMLElement): void {
+  if (stage.querySelector("#annotator-frame")) return;
+  stage.textContent = "";
+  const frame = document.createElement("div");
+  frame.id = "annotator-frame";
+  const img = document.createElement("img");
+  img.id = "annotator-image";
+  img.alt = "";
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.id = "annotator-overlay";
+  svg.setAttribute("viewBox", "0 0 1 1");
+  svg.setAttribute("preserveAspectRatio", "none");
+  frame.append(img, svg);
+  stage.appendChild(frame);
+  initAnnotatorGestures();   // wired to THIS overlay, the moment it exists
+}
+
 function renderAnnotatorPictureInto(stage: HTMLElement,
                                     caption: HTMLElement): void {
   stage.textContent = "";
@@ -12558,6 +12699,11 @@ function initAnnotatorGestures(): void {
  * tracing. Nothing about the panel had to change to hold a different offer.
  */
 function renderAnnotatorTools(host: HTMLElement): void {
+  // …into an EMPTY host. It used to be called once, into a resources panel that
+  // `buildResourcePanel` had just cleared; now the annotator surface calls it on
+  // every refresh, and without this the tools stacked up — measured: two copies
+  // of "Tracing tools" after the first repaint.
+  host.textContent = "";
   const box = document.createElement("div");
   box.className = "annot-tools";
   const heading = document.createElement("div");
@@ -15249,350 +15395,156 @@ const PANEL_TABS: Partial<Record<WindowType, { id: string; labelKey: string }[]>
   ],
 };
 
-/** Every panel element a WINDOW can hold. Named once: the release pass and the
- *  "is this thing mounted anywhere?" guards both read it. StratiMiner is not
- *  here — it is a floating tool (WIN7), never an area's content. */
-const PANEL_ELEMENT_IDS = ["emtree", "nodelist", "inspector", "logpanel"];
+/*
+ * GONE (13 set 2026) · `PANEL_ELEMENT_IDS`, `panelIsMounted`, `currentPanelId`,
+ * `releaseTilePanels`, `releasePanels`, and `#side` with them.
+ *
+ * All five existed for one fact: a panel was ONE ELEMENT. So it had to be parked
+ * somewhere while nobody showed it (`#side`), sent home before any rebuild could
+ * destroy it (`releaseTilePanels`) or before another window took it
+ * (`releasePanels`), located by reading the DOM when something wanted to know
+ * whether it was on screen at all (`panelIsMounted`), and asked for "per type"
+ * in the one place that could not say which window it meant (`currentPanelId` —
+ * whose whole body was a guess: `win.type === type ? panelIdOf(win) : the first
+ * tab`).
+ *
+ * A panel is built into its window's own area now, by `mountPanel`, through the
+ * renderer that already took a host. Nothing moves, so nothing has to be moved
+ * back; nothing is unique, so nothing has to be claimed. The optimisation
+ * `panelIsMounted` bought — "do not draw a panel nobody can see" — is kept, said
+ * better: the registry has no instances of that type, so the fan-out loop does
+ * nothing at all.
+ */
 
 /** The panel a hosted window is currently showing. Per WINDOW (not per type):
  *  two Inspector windows can sit on different tabs, and that is what makes the
- *  second one a live view of its own rather than a duplicate of the first. */
+ *  second one a live view of its own rather than a duplicate of the first.
+ *
+ *  This was already right before the panels became instances — the model always
+ *  said "this window shows that tab" — which is why converting them needed no
+ *  change at all to what a tab means. */
 function panelIdOf(win: Win): string {
   const tabs = PANEL_TABS[win.type] ?? [];
   const v = winCurrent(win, "panel");
   return typeof v === "string" && tabs.some((t) => t.id === v) ? v : (tabs[0]?.id ?? "");
 }
 
-/** The panel each hosted window is currently showing (per window). */
-function currentPanelId(type: WindowType): string {
-  const win = activeWin();
-  return win.type === type ? panelIdOf(win) : (PANEL_TABS[type]?.[0]?.id ?? "");
-}
-
 /**
- * True when a panel element is mounted somewhere the user can SEE it: the
- * focused window's surface, a secondary area, or the floating tool.
+ * Build ONE panel into ONE host, and hand back the handle to it.
  *
- * WIN6 broadened an "is the aside tab active?" guard once, WIN7 again, and
- * WIN-FIX1 retired the aside altogether — so the question finally has one
- * answer, in one place: is this thing on screen? Anything parked in `#side` is
- * not, by construction.
+ * THE WHOLE OF "the panels stop being unique" is this function existing. Every
+ * one of the four renderers already took its host as the first argument —
+ * `renderEMTree(host, …)`, `buildNodeList(root, …)`, `renderInspector(root, …)`,
+ * `renderLogPanel(container, …)` — so nothing had to be written to draw a second
+ * one. What had to go was the ELEMENT: four `getElementById` at boot, a hidden
+ * `#side` to park them in, and three passes that moved them about.
+ *
+ * The outliner is the only one with state of its own (its filter, its collapsed
+ * sections, which row is highlighted), and `buildNodeList` has returned an API
+ * per root since the day it was written — so a second outliner is a second call,
+ * not a second implementation.
  */
-function panelIsMounted(el: HTMLElement): boolean {
-  const parent = el.parentElement;
-  return (
-    parent?.id === "panel-view-body" ||
-    parent?.id === "tool-float-body" ||
-    !!parent?.classList.contains("tile-panel-body")
-  );
+function mountPanel(panelId: string, host: HTMLElement, win: Win): PanelMount {
+  void win;
+  if (panelId === "emtree") {
+    const paint = (): void => renderEMTree(host, emtree, emtreeHandlers, t);
+    paint();
+    return { refresh: paint };
+  }
+  if (panelId === "nodelist") {
+    const api = buildNodeList(host, () => store?.doc ?? null, pickFromOutliner,
+                              outlinerCallbacks);
+    // `buildNodeList` builds the FILTER, the count and an empty list — it does
+    // not draw the rows, because until tonight the one outliner was built at
+    // boot with no document and painted by the first `nodeList.refresh()` that
+    // came along. A second one, mounted by switching a tab on a graph that is
+    // already open, has no such call coming: measured, and it came up blank.
+    api.refresh();
+    api.setSelected(selectedId);
+    return { refresh: api.refresh, select: (id) => api.setSelected(id) };
+  }
+  if (panelId === "inspector") {
+    const paint = (): void => renderInspectorInto(host);
+    paint();
+    return { refresh: paint };
+  }
+  if (panelId === "logpanel") {
+    const paint = (): void =>
+      renderLogPanel(host, store?.doc ?? null, EM_VERSION, revealFromWarning);
+    paint();
+    return { refresh: paint };
+  }
+  // A tab naming a panel nobody builds: say so in the box rather than leaving it
+  // blank. Unreachable from `PANEL_TABS` as it stands, and it is the fall-through
+  // that would catch a fifth panel added to a tab list and nowhere else.
+  host.textContent = panelId;
+  return { refresh: () => {} };
 }
 
-/** Ask a panel to redraw itself, whichever window it is living in. */
-function refreshPanelById(id: string): void {
-  // …and every panel refresh goes through it: the panel a person scrolled is the
-  // one they were reading.
+/** Ask one of the two FLOATING TOOLS to redraw. They are NOT window surfaces:
+ *  an instrument you open, use and close lives in the float and nowhere else,
+ *  which is why they never needed the machinery the panels did. */
+function refreshFloatingTool(id: string): void {
   const el = document.getElementById(id);
   preservingScroll(scrollerOf(el), () => {
-    if (id === "emtree") refreshEMTree();
-    else if (id === "nodelist") nodeList.refresh();
-    else if (id === "inspector") refreshInspector();
-    else if (id === "logpanel") refreshLogPanel();
-    else if (id === "stratiminer") refreshStratiMiner();
+    if (id === "stratiminer") refreshStratiMiner();
     else if (id === "mapping-editor") refreshMappingEditor();
   });
 }
 
-/** Send every panel currently living in a TILED area back to the aside.
+/*
+ * GONE (14 set 2026) · `tileSurfaces`, `registerTileSurface`,
+ * `unregisterTileSurface`, `tileNote`.
  *
- *  Called before the tree is torn down: `renderTiles` resets `#tile-root`'s
- *  innerHTML, which would DESTROY a panel that had been moved into a secondary
- *  area — and with it every handler wired to it at boot. */
-function releaseTilePanels(): void {
-  const side = document.getElementById("side");
-  if (!side) return;
-  for (const id of PANEL_ELEMENT_IDS) {
-    const el = document.getElementById(id);
-    if (!el?.parentElement?.classList.contains("tile-panel-body")) continue;
-    rememberPanelScroll(el);    // …before the move takes it to 0
-    el.classList.add("hidden"); // the aside shows one at a time, via its tabs
-    side.appendChild(el);
-  }
-}
-
-/** Send every hosted panel back to the aside it came from. */
-function releasePanels(): void {
-  const side = document.getElementById("side");
-  const body = document.getElementById("panel-view-body");
-  if (!side || !body) return;
-  while (body.firstChild) {
-    const el = body.firstChild as HTMLElement;
-    rememberPanelScroll(el);    // same rule on the focused side
-    el.classList.add("hidden"); // the aside shows one at a time, via its tabs
-    side.appendChild(el);
-  }
-}
-
-// ── WIN7 · the secondary areas are LIVE VIEWS ───────────────────────────────
-//
-// Every area of the arrangement shows the document, and shows it NOW: edit a
-// node in the graph and the outliner beside it, the table below it and the
-// inspector in the corner all move. Before this only graph areas drew anything;
-// the rest carried a note saying "click to work here", so an IDE arrangement was
-// four areas of which three were empty until visited.
-//
-// Two different mechanisms, because the surfaces are two different kinds of
-// thing, and pretending otherwise is what would have made this a rewrite:
-//
-//  · the TABLE renders through a host registry (WIN5): one renderer, as many
-//    mounts as there are areas. A secondary Tabular area registers a host and is
-//    live for free — `renderEmData` already runs on every store change.
-//  · the PANELS (outliner, multigraph, inspector, log) are SINGLETON elements
-//    with their handlers wired at boot. They are re-homed, not copied: an area
-//    that wants one takes it, and the panel's own refresh function — which also
-//    already runs on every store change — then paints it where it now lives.
-//
-// The declared consequence of re-homing: two areas asking for the SAME panel is
-// one area too many. The first claimant gets it (the focused window first, then
-// tree order) and the second says so. Two Inspector windows on DIFFERENT tabs
-// are both live, which is the case that actually comes up.
-//
-// A secondary surface is a view and not a second editor: the moment the pointer
-// enters the area it becomes the focused one (focus-follows-mouse, WIN5) and the
-// real surface mounts there. So nothing in here needs to be interactive — its
-// tabs are labels, and it is never the thing being clicked.
-
-/**
- * What each surface still drawn the OLD way must do when the document changes.
- *
- * Keyed by WINDOW now, not a list rebuilt with the tree: an area is created once
- * and lives as long as its window, so a registration that outlived the tree was
- * the bug the list defended against. It is dropped when the window's TYPE
- * changes (`clearAreaContent`) or when the window closes.
- *
- * The six converted types are NOT here — `shell/surface.ts` owns their mounts.
- * What is left is the narrative and the hosted panels: the types still drawn by
- * the singletons inside `#canvas-wrap`.
+ * This register held "what each surface still drawn the OLD way must do when the
+ * document changes". Nothing is drawn the old way, so it held nothing —
+ * `refreshTileSurfaces()` below is now exactly `refreshSurfaces()`, the one
+ * contract, over every mount there is.
  */
-const tileSurfaces = new Map<string, () => void>();
-
-/**
- * Register a live secondary surface: the boxes that hold the reader's place, and
- * what paints them.
- *
- * One call per type, so "repaint it" and "remember where it was" cannot drift
- * apart — which is how some window types ended up with the fix and others
- * without it.
- */
-function registerTileSurface(win: Win,
-                             boxes: Array<{ box: HTMLElement; slot: string }>,
-                             paint: () => void): void {
-  const run = (): void => {
-    if (!boxes.every((b) => b.box.isConnected)) return;
-    const at = boxes.map((b) => rememberSurfaceScroll(win, b.box, b.slot));
-    paint();
-    boxes.forEach((b, i) => restoreSurfaceScroll(win, b.box, at[i], b.slot));
-  };
-  tileSurfaces.set(win.id, run);
-  run();
-}
-
-function unregisterTileSurface(winId: string): void {
-  tileSurfaces.delete(winId);
-}
 
 function refreshTileSurfaces(): void {
-  for (const fn of tileSurfaces.values()) fn();
-  refreshSurfaces();   // …and every converted mount, through the one contract
+  refreshSurfaces();
 }
 
-/** A secondary area that cannot show its content, saying which and why. */
-function tileNote(area: HTMLElement, text: string): void {
-  const note = document.createElement("div");
-  note.className = "tile-note";
-  note.textContent = text;
-  area.appendChild(note);
-}
-
-/**
- * The surface of an area whose type has NOT been converted yet.
+/*
+ * GONE (14 set 2026) · `buildSecondarySurface`, and its fall-through `tileNote`.
  *
- * What is left here is the honest boundary of tonight: the narrative, the two
- * hosted-panel types, and the annotator. Every one of them is bound to a
- * SINGLETON inside `#canvas-wrap` — `#narrative-view` for the writing editors,
- * `#panel-view` for the re-homed panels, `#annotator-image` plus the module's
- * draft state for the tracing — so converting them is not a move of a renderer
- * but a change to what those singletons are, and that is §4's work.
+ * It was THE SECOND PATH — the function that drew a window that did not have the
+ * focus, while the focused one was drawn by a singleton inside `#canvas-wrap`.
+ * Parity between the two was an invariant kept by hand, type by type, and every
+ * night of this series took types out of it: six on 12 September, the two hosted
+ * panels on the 13th, and tonight the last two, the narrative and the annotator.
  *
- * The six types that DID cross over (table, storage, shelf, viewer, doc, study)
- * are not in this function any more. They are in `shell/types.ts`, once each.
+ * With nothing left in it the function is not a smaller second path — it is
+ * none. Every window type is built by its own constructor in `shell/types.ts`,
+ * and `check-focus-parity.mjs` asserts that against the REGISTRY rather than
+ * type by type: a ninth window type cannot be born the old way, because there is
+ * no old way to be born into.
+ *
+ * `tileNote` went with it. It said "step in to work here" — an area announcing
+ * its own name instead of showing the document — and after 12 September only one
+ * type could still reach it. Now none can.
  */
-function buildSecondarySurface(area: HTMLElement, win: Win): void {
-  if (PANEL_TABS[win.type]) {
-    const host = document.createElement("div");
-    host.className = "tile-panel";
-    host.dataset.win = win.id;
-    const tabs = document.createElement("div");
-    tabs.className = "tile-panel-tabs panel-tabs panel-tabs-passive";
-    const body = document.createElement("div");
-    body.className = "tile-panel-body panel-body";
-    host.appendChild(tabs);
-    host.appendChild(body);
-    area.appendChild(host);
-    // which panel actually lands here is decided in one pass over every area
-    // (`syncSecondaryPanels`), because it depends on what the others took
-    return;
-  }
-  if (win.type === "narrative") {
-    // SURFACE-AUDIT · the story, READ-ONLY, in its own area.
-    //
-    // There is no second renderer: `renderNarrativeView` takes its host as its
-    // first argument, and called WITHOUT an editor it is the same function
-    // producing the reading. The authoring editors stay bound to
-    // `#narrative-view`, which is still the one and only writing surface — and
-    // that singleton is exactly why this type is not converted tonight.
-    const host = document.createElement("div");
-    host.className = "tile-narrative nv-view";
-    area.appendChild(host);
-    registerTileSurface(win, [{ box: host, slot: "" }], () => {
-      const narratives = narrativesIn(store?.doc ?? null);
-      const chosen = (winCurrent(win, "narrative") as string | null)
-        ?? selectedNarrativeId ?? narratives[0]?.id ?? null;
-      renderNarrativeView(
-        host, store?.doc ?? null, chosen,
-        (id) => { setWinCurrent(win, "narrative", id); refreshTileSurfaces(); },
-        revealFromNarrative,
-        undefined,                         // no editor: this is the reading
-      );
-    });
-    return;
-  }
-  if (win.type === "annotator") {
-    // SURFACE-AUDIT · the PICTURE, in its own area — and only the picture.
-    //
-    // Tracing needs the single `#annotator-image`, its overlay canvas and the
-    // module's draft state, so a second live *annotator* would be a second
-    // annotator, not a second view of one. Stated as a capability rather than
-    // inferred from this branch: `ANNOTATOR_CAPABILITIES` in `shell/types.ts`
-    // is how the limit reads once this type crosses over.
-    const view = document.createElement("div");
-    view.className = "tile-viewer viewer-view";
-    const stage = document.createElement("div");
-    stage.className = "viewer-stage";
-    const caption = document.createElement("div");
-    caption.className = "viewer-caption";
-    const bar = document.createElement("div");
-    bar.className = "viewer-bar hidden";
-    view.append(bar, stage, caption);
-    area.appendChild(view);
-    registerTileSurface(win, [{ box: stage, slot: "" }], () =>
-      renderAnnotatorPictureInto(stage, caption));
-    return;
-  }
-  // Every OTHER unconverted type says its own name. After tonight only one type
-  // can still land here — a window type with neither a surface nor a singleton —
-  // and that is worth keeping: the limit stated is better than a blank area.
-  tileNote(area, t("tile.enterNote", { name: t(WINDOW_TYPE_META[win.type].labelKey) }));
-}
 
-/**
- * Decide which area holds each singleton panel, and mount it there.
+/*
+ * GONE (13 set 2026) · `syncSecondaryPanels`, `reflectEmptyAside`,
+ * `renderPanelWindow`, and the string `tile.panelTaken`.
  *
- * Runs after the tree is built AND after the focused window changes its panel,
- * because the answer depends on both. The DOM is the register of who holds what
- * — reading it back rather than keeping a second map means a claim can never
- * survive the element having been moved somewhere else.
- */
-function syncSecondaryPanels(): void {
-  const hosts = [...document.querySelectorAll<HTMLElement>(".tile-panel")];
-  if (!hosts.length) return;
-  releaseTilePanels(); // start from a clean board: the focused window keeps its own
-  const claimed = new Set<string>();
-  const panelView = document.getElementById("panel-view");
-  const panelBody = document.getElementById("panel-view-body");
-  if (panelBody && !panelView?.classList.contains("hidden"))
-    for (const child of panelBody.children) claimed.add(child.id);
-  for (const host of hosts) {
-    const win = windowsOf().find((w) => w.id === host.dataset.win);
-    const tabs = host.querySelector<HTMLElement>(".tile-panel-tabs");
-    const body = host.querySelector<HTMLElement>(".tile-panel-body");
-    if (!win || !tabs || !body) continue;
-    const showing = panelIdOf(win);
-    const taken = claimed.has(showing);
-    // HDR2 · the tabs are in this area's window header, like the focused one's.
-    // The strip is emptied and hidden rather than removed: the surface keeps its
-    // shape, and one builder means the two areas still measure identically.
-    tabs.innerHTML = "";
-    tabs.classList.add("hidden");
-    body.innerHTML = "";
-    if (taken) {
-      // honest rather than blank: the panel is a single element and another area
-      // has it. Say where to look instead of showing an empty box.
-      const note = document.createElement("div");
-      note.className = "tile-note";
-      note.textContent = t("tile.panelTaken");
-      body.appendChild(note);
-      continue;
-    }
-    claimed.add(showing);
-    const el = document.getElementById(showing);
-    if (!el) continue;
-    el.classList.remove("hidden");
-    // MOVING an element resets its scrollTop — so the position is saved around
-    // the move as well as around the rebuild
-    preservingScroll(scrollerOf(el), () => {
-      body.appendChild(el);
-      refreshPanelById(showing);
-    });
-    restorePanelScroll(el);     // …and back where the reader left it
-  }
-  reflectEmptyAside();
-}
-
-/**
- * The aside is only worth its width while it still holds something.
+ * The first decided WHICH AREA got to keep each panel, because there was one of
+ * each; the third mounted it into the focused window's surface; the second was
+ * already a named no-op left over from the aside.
  *
- * With the panels living in windows, an arrangement like the IDE preset takes
- * ALL of them — and the aside was left as a strip of tabs over an empty box,
- * the exact shape of a broken panel. It steps aside when it has nothing (its
- * collapse handle with it) and comes back the moment a panel does.
+ * The string is the one worth naming. It read «another window has this panel»,
+ * and it was not a message — it was **the confession of the defect**. «Another
+ * window has it» is a sentence that can only be written about an object there is
+ * one of. The day there are two, the sentence has no referent, and its removal
+ * is the proof that the twin is gone rather than renamed: a claim pass that
+ * still existed under another name would still need somewhere to say this.
+ *
+ * What replaced all three: `mountPanel` builds this window's panel in this
+ * window's area, and `panelIdOf(win)` — which was per-window from the start —
+ * decides which one. Two Inspector windows side by side are two inspectors.
  */
-function reflectEmptyAside(): void {
-  // WIN-FIX1 · nothing left to reflect: `#side` is a parking place, never shown.
-  // Kept as a named no-op call site so the panel-mounting passes still read as
-  // "and then tell the aside", which is where the next thing about it would go.
-}
-
-/** Mount the panels of a hosted window type into the window's surface. */
-function renderPanelWindow(type: WindowType): void {
-  const tabsHost = document.getElementById("panel-view-tabs");
-  const body = document.getElementById("panel-view-body");
-  const tabs = PANEL_TABS[type];
-  if (!tabsHost || !body || !tabs) return;
-  releasePanels();
-  const showing = currentPanelId(type);
-  // HDR2 · the tabs are in the window HEADER now (`buildHeaderStrip`): which
-  // panel this window shows is a MODE of it, and modes live in the header. The
-  // strip stays in the DOM, empty and hidden, so the surface keeps its shape and
-  // nothing else had to move.
-  tabsHost.classList.add("hidden");
-  tabsHost.innerHTML = "";
-  const el = document.getElementById(showing);
-  // the same rule on the FOCUSED side: taking a panel back into this window is a
-  // move, and a move resets the scroll
-  preservingScroll(scrollerOf(el), () => {
-    if (el) {
-      el.classList.remove("hidden");
-      body.appendChild(el);
-    }
-    // the panels are built on demand by their own renderers
-    refreshPanelById(showing);
-  });
-  restorePanelScroll(el);
-  // the focused window just took a panel (or gave one back): the secondary areas
-  // have to re-resolve their claims, or one of them would be left holding a body
-  // whose element has moved.
-  syncSecondaryPanels();
-}
 
 /** Mount a window's editor in the central area. The ONE place that knows how a
  *  window type becomes something on screen — `applyWorkspace` and the transform
@@ -15602,25 +15554,14 @@ function mountWindow(win: Win): void {
   // and never comes through here; a call for a window that does not hold the
   // wrap would blank the window that does.
   if (win.id !== wrapOwnerId) return;
-  if (win.type === "narrative") {
-    setMode("narrative"); // the narrative overlay owns the area
-    applyWindowSurface("narrative");
-    return;
-  }
-  // The types still bound to a singleton inside the wrap: the two hosted-panel
-  // windows and the annotator. The six converted ones are gone from this list
-  // (and cannot reach here at all, per the guard above) — their surface is their
-  // area, focused or not.
-  if (
-    win.type === "emtree" ||
-    win.type === "inspector" ||
-    win.type === "annotator"
-  ) {
+  // The types still bound to a singleton inside the wrap. `narrative` left this
+  // list on 14 September — it was the only one that answered with `setMode`,
+  // because it was the only type that was also a mode.
+  if (win.type === "annotator") {
     // WIN5 · a real window, not the dock: the surface fills the area. Leave the
     // canvas mode alone underneath (never the narrative overlay) so switching
     // back finds the projection you left.
-    if (centralMode === "narrative") setMode(view);
-    applyWindowSurface(win.type);
+      applyWindowSurface(win.type);
     return;
   }
   applyWindowSurface("graph");
@@ -15660,7 +15601,6 @@ function selectWindow(winId: string): void {
     setWrapOwner(win.id);
     positionAreas();
     renderAreaHeaders();
-    syncSecondaryPanels();
     drawTiles();
   }
   setAreaFocused(win.id, true);
@@ -15849,7 +15789,7 @@ function buildAreaHeader(win: Win): DocumentFragment {
   if (type === "narrative") {
     // ✎ · writing IS a mode of a narrative window, so it is a toggle you can see
     // the state of, not an item buried in a menu
-    act("✎", t("win.editTitle"), narrativeEditing, () =>
+    act("✎", t("win.editTitle"), narrativeEditingOf(win), () =>
       focusThen(win, () => {
         click("btn-narrative-edit");
         renderAreaHeaders();
@@ -16236,10 +16176,12 @@ function buildHeaderStrip(win: Win): HTMLElement {
       chip.addEventListener("click", (e) => {
         e.stopPropagation();
         setWinCurrent(win, "panel", tab.id);
-        // the panel that is showing changed: re-home it and repaint the header
+        // THIS window shows another panel now. It used to mean "re-home the one
+        // element and let every area re-resolve its claim"; it means "this
+        // surface draws something else", and the windows beside it are not
+        // affected at all — which is the whole of tonight in one handler.
         renderAreaHeaders();
-        if (activeWin().id === win.id) renderPanelWindow(win.type);
-        syncSecondaryPanels();
+        surfaceOf(win.id)?.refresh();
       });
       strip.appendChild(chip);
     }
@@ -16831,9 +16773,12 @@ function placeBarMenu(toggle: HTMLElement, menu: HTMLElement): void {
  *
  * The site position is a graph-scope fact (GEO1), so the panel that holds it is
  * the Inspector's no-selection state — which means clearing the selection first.
- * Where the Inspector *is* depends on the arrangement: an area of its own if the
- * workspace has one, the aside otherwise. Both are handled, because "open the
- * panel" has to mean the same thing in either.
+ *
+ * It used to have to ask WHERE the inspector was — `getElementById("inspector")`
+ * and then whether its parent was the focused mount or an area — because there
+ * was one of it and it could be anywhere. There are as many as there are
+ * Inspector windows now, so the question is only which WINDOW to bring forward,
+ * and the answer is the first one showing that tab.
  */
 function revealSitePosition(): void {
   if (!store) {
@@ -16841,14 +16786,10 @@ function revealSitePosition(): void {
     return;
   }
   select(null); // the graph card is the Inspector's no-selection state
-  const insp = document.getElementById("inspector");
   const inWindow = windowsOf().find(
     (w) => PANEL_TABS[w.type] && panelIdOf(w) === "inspector",
   );
-  if (inWindow && insp?.parentElement?.id !== "panel-view-body") {
-    // an Inspector area already holds it (or is about to): work there
-    if (activeWin().id !== inWindow.id) selectWindow(inWindow.id);
-  }
+  if (inWindow && activeWin().id !== inWindow.id) selectWindow(inWindow.id);
   refreshInspector();
   const anchor = document.getElementById("insp-site-position");
   if (!anchor) {
@@ -16868,7 +16809,8 @@ function revealSitePosition(): void {
  * passage in its place.
  */
 function highlightNarrative(query: string): void {
-  const host = narrativeViewEl;
+  const host = activeNarrativeHost();
+  if (!host) return;
   host.querySelectorAll(".nv-hit").forEach((el) => el.classList.remove("nv-hit"));
   const q = query.trim().toLowerCase();
   if (!q) return;
@@ -18244,6 +18186,13 @@ registerBuiltinSurfaces({
   addStorageHost, removeStorageHost, renderStorage,
   renderShelfInto, renderViewerInto, renderDocViewInto, reflectDocWidth,
   renderStudyInto,
+  // …and the two the hosted panels need: which tab this window shows, and how a
+  // panel gets built into a host. `shell/` draws none of them — it only knows
+  // that a panel can be repainted, told the selection moved, and taken down.
+  panelIdOf, mountPanel,
+  // …and the last two types to cross over: the narrative (which stopped being a
+  // MODE on 14 September) and the annotator (one constructor, a declared limit).
+  renderNarrativeInto, renderAnnotatorInto,
 });
 renderTiles(); // WIN5 · lay out the arrangement this session was left in
 applyWorkspace(activeWorkspace());

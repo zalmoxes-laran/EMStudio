@@ -21,10 +21,10 @@
  */
 import type { Win } from "../workspace";
 import type { Surface, SurfaceType } from "./surface";
-import { registerSurfaceType } from "./surface";
+import { registerSurfaceType, surfacesOfType } from "./surface";
 // …and re-exported here, so a checker that bundles THIS file can ask the
 // registry what is in it without a second entry point.
-export { convertedTypes, surfaceTypeOf } from "./surface";
+export { convertedTypes, surfaceTypeOf, mountSurface, unmountSurface } from "./surface";
 import { paintSurface, surfacePlace } from "../surface-scroll";
 
 /** Just what this module needs of an EM-Data mount (`emdata.ts` owns the type). */
@@ -44,6 +44,23 @@ export interface StorageMount {
   enabled: () => boolean;
 }
 
+/**
+ * One mounted PANEL — the outliner, the multigraph, the inspector, the log.
+ *
+ * `main.ts` builds it, because that is where the renderers and the state they
+ * read live; `shell/` only knows that a panel can be repainted, can be told the
+ * selection moved, and can be taken down. The four renderers already took their
+ * host as the first argument before any of this — `renderEMTree(host, …)`,
+ * `buildNodeList(root, …)`, `renderInspector(root, …)`, `renderLogPanel(container, …)`
+ * — so nothing here draws anything, and nothing new was written to draw it.
+ */
+export interface PanelMount {
+  refresh(): void;
+  /** the outliner moves a highlight; the others do not care */
+  select?(id: string | null): void;
+  destroy?(): void;
+}
+
 export interface SurfaceDeps {
   addEmDataHost(host: TableMount): void;
   removeEmDataHost(host: TableMount): void;
@@ -57,6 +74,19 @@ export interface SurfaceDeps {
   renderDocViewInto(win: Win, list: HTMLElement, detail: HTMLElement): void;
   reflectDocWidth(surface: HTMLElement): void;
   renderStudyInto(body: HTMLElement): void;
+  /** Which of its tabs this hosted window is showing (per WINDOW, never per
+   *  type — two Inspector windows can sit on different tabs, and that is what
+   *  makes the second one a view of its own instead of a duplicate). */
+  panelIdOf(win: Win): string;
+  /** Build that panel into this host, and hand back the handle to it. */
+  mountPanel(panelId: string, host: HTMLElement, win: Win): PanelMount;
+  /** Draw THIS window's story into THIS host — reading, and writing when the
+   *  window's ✎ is on. The reading half has taken a host since the audit; what
+   *  arrived on 14 September is that the editor knows which host it is in. */
+  renderNarrativeInto(host: HTMLElement, win: Win): void;
+  /** …and the annotator's PICTURE, into any stage. */
+  renderAnnotatorInto(stage: HTMLElement, caption: HTMLElement, win: Win,
+                      tools: HTMLElement | null): void;
 }
 
 /** An element of this area's own header strip — the row count, the crumb, the
@@ -73,6 +103,14 @@ function strip<T extends HTMLElement>(area: HTMLElement | null,
 function markFocus(root: HTMLElement | null, on: boolean): void {
   root?.classList.toggle("surf-focus", on);
 }
+
+/** Declared, not deduced from an `if`: the annotator is single-instance because
+ *  tracing needs one image element, one overlay canvas and one in-progress
+ *  gesture — one picture being traced, one draft. Read by its own `create`
+ *  below, so the limit and the code that honours it are the same sentence. */
+export const ANNOTATOR_CAPABILITIES: SurfaceType["capabilities"] = {
+  multiInstance: false,
+};
 
 export function registerBuiltinSurfaces(deps: SurfaceDeps): void {
   // ── TABLE ────────────────────────────────────────────────────────────────
@@ -283,12 +321,192 @@ export function registerBuiltinSurfaces(deps: SurfaceDeps): void {
       };
     },
   });
+
+  // ── THE HOSTED PANELS · emtree and inspector ─────────────────────────────
+  //
+  // THE LAST THING IN THIS APPLICATION THAT WAS ONE BY DEFINITION.
+  //
+  // Until tonight the four panels were singleton ELEMENTS taken from
+  // `getElementById` at boot and MOVED — from a hidden `#side`, into whichever
+  // area claimed one, and back again. Everything that follows from a thing being
+  // unique followed: a release pass before any rebuild, a claim pass after it, a
+  // guard that read the DOM to find out where a panel currently lived, and a
+  // note in the second area saying «another window has this one». That note was
+  // the confession: «another window has it» is a sentence you can only write if
+  // there is one.
+  //
+  // There is no element to move now. A panel window builds its own panel in its
+  // own area, through the renderer that already existed, and two Inspector
+  // windows side by side are two live inspectors. `panelIdOf(win)` was already
+  // per-window — the right thing written in advance — so which tab each one
+  // shows was never the part that was broken.
+  const panelSurface = (id: "emtree" | "inspector"): SurfaceType => ({
+    id,
+    create(): Surface {
+      let root: HTMLElement | null = null;
+      let body: HTMLElement | null = null;
+      let win: Win | null = null;
+      let mount: PanelMount | null = null;
+      let showing = "";
+      const teardown = (): void => {
+        mount?.destroy?.();
+        mount = null;
+        showing = "";
+      };
+      return {
+        mount(area, w) {
+          win = w;
+          root = document.createElement("div");
+          root.className = "tile-panel";
+          root.dataset.win = w.id;
+          // HDR2 · the tab strip is in the window HEADER, which every area
+          // builds with one builder. This row stays in the DOM, empty and
+          // hidden, so the surface keeps the shape both mounts were levelled to.
+          const tabs = document.createElement("div");
+          tabs.className = "tile-panel-tabs panel-tabs panel-tabs-passive hidden";
+          body = document.createElement("div");
+          body.className = "tile-panel-body panel-body";
+          root.append(tabs, body);
+          area.appendChild(root);
+          this.refresh();
+        },
+        refresh() {
+          if (!body || !win || !body.isConnected) return;
+          const want = deps.panelIdOf(win);
+          if (want !== showing) {
+            // the tab changed: this window shows another panel now
+            teardown();
+            body.textContent = "";
+            showing = want;
+            // …and the body says WHICH panel it is holding, so the stylesheet can
+            // give it that panel's box. It used to be the panel's own id that
+            // carried the padding and the scrolling — i.e. the box lived on the
+            // one element, which is exactly what stopped there being two.
+            body.dataset.panel = want;
+            mount = deps.mountPanel(want, body, win);
+            return;             // mountPanel paints; a second paint is waste
+          }
+          paintSurface(win, body, () => mount?.refresh());
+        },
+        select(nodeId) { mount?.select?.(nodeId); },
+        setFocused(on) { markFocus(root, on); },
+        destroy() {
+          teardown();
+          root?.remove();
+          root = body = null;
+          win = null;
+        },
+      };
+    },
+  });
+  registerSurfaceType(panelSurface("emtree"));
+  registerSurfaceType(panelSurface("inspector"));
+
+  // ── NARRATIVE ────────────────────────────────────────────────────────────
+  //
+  // THE ONLY TYPE THAT WAS ALSO A MODE, which is where the work had stopped.
+  //
+  // It was a `WindowType` in `workspace.ts` — with its own tab and its own
+  // preset — AND `centralMode === "narrative"`, an overlay switched on over the
+  // canvas by a button in the master header. Two ways to be the same thing, and
+  // the second one is why `#narrative-view` had to be a singleton: an overlay is
+  // over ONE canvas.
+  //
+  // E.D.'s decision of 12 September, applied here: the narrative is a window
+  // type and nothing else. `renderNarrativeView(host, …)` already took its host
+  // and, called without an editor, already was the reading — that half was done
+  // on the 12th. What arrived tonight is that the EDITOR knows which host it is
+  // in, so two Narrative windows on two different chapters are two stories being
+  // written, which is what `winCurrent(win, "narrative")` always claimed.
+  registerSurfaceType({
+    id: "narrative",
+    create(): Surface {
+      let host: HTMLElement | null = null;
+      let win: Win | null = null;
+      return {
+        mount(area, w) {
+          win = w;
+          host = document.createElement("div");
+          host.className = "tile-narrative nv-view";
+          area.appendChild(host);
+          this.refresh();
+        },
+        refresh() {
+          if (!host || !win || !host.isConnected) return;
+          const h = host, w = win;
+          paintSurface(w, h, () => deps.renderNarrativeInto(h, w));
+        },
+        setFocused(on) { markFocus(host, on); },
+        destroy() { host?.remove(); host = null; win = null; },
+      };
+    },
+  });
+
+  // ── ANNOTATOR · one constructor, and a limit that is declared ────────────
+  //
+  // The limit is real and stays: tracing needs one `#annotator-image`, one
+  // overlay canvas and one in-progress gesture, so a second live *annotator*
+  // would be a second annotator rather than a second view of one.
+  //
+  // What goes is the GEMELLO. A second Annotator window used to fall into a
+  // branch of `buildSecondarySurface` that called a different function to draw
+  // the picture. Now it is the same constructor with a FLAG: `create` asks the
+  // registry whether an instance is already tracing, and the second mount builds
+  // the same surface without the tracing tools. A limit expressed as a
+  // capability can be read; a limit expressed as an `if` in another function has
+  // to be rediscovered.
+  registerSurfaceType({
+    id: "annotator",
+    capabilities: ANNOTATOR_CAPABILITIES,
+    create(w): Surface {
+      // WHO TRACES is decided at MOUNT, not here: `mountSurface` registers an
+      // instance AFTER calling its `mount`, so at mount time the registry holds
+      // exactly the annotators that came before this one. Asked in `create` it
+      // would be asked one step too early for the first instance and right by
+      // accident for the rest.
+      let tracing = false;
+      let root: HTMLElement | null = null;
+      let stage: HTMLElement | null = null;
+      let caption: HTMLElement | null = null;
+      let tools: HTMLElement | null = null;
+      let win: Win | null = w;
+      return {
+        mount(area, wi) {
+          win = wi;
+          // the FIRST annotator on screen traces; any other is a view of the
+          // same picture (`ANNOTATOR_CAPABILITIES.multiInstance === false`)
+          tracing = surfacesOfType("annotator").length === 0;
+          root = document.createElement("div");
+          root.className = "tile-viewer viewer-view annot-surface";
+          root.classList.toggle("annot-tracing", tracing);
+          stage = document.createElement("div");
+          stage.className = "viewer-stage annot-stage";
+          caption = document.createElement("div");
+          caption.className = "viewer-caption";
+          if (tracing) {
+            tools = document.createElement("div");
+            tools.className = "annot-tools-host";
+            root.append(tools, stage, caption);
+          } else {
+            root.append(stage, caption);
+          }
+          area.appendChild(root);
+          this.refresh();
+        },
+        refresh() {
+          if (!win || !stage || !caption || !stage.isConnected) return;
+          const s = stage, c = caption, w2 = win, tl = tools;
+          paintSurface(w2, s, () => deps.renderAnnotatorInto(s, c, w2, tl));
+        },
+        setFocused(on) { markFocus(root, on); },
+        destroy() {
+          root?.remove();
+          root = stage = caption = tools = null;
+          win = null;
+        },
+      };
+    },
+  });
 }
 
-/** Declared, not deduced from an `if`: the annotator is single-instance because
- *  tracing needs `#annotator-image`, its overlay canvas and the module's draft
- *  state — one picture being traced, one draft. It is NOT converted tonight; this
- *  is how the limit would be stated when it is. */
-export const ANNOTATOR_CAPABILITIES: SurfaceType["capabilities"] = {
-  multiInstance: false,
-};
+
