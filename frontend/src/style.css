@@ -645,6 +645,17 @@ body.sync-active #mode-indicator::before {
   text-transform: uppercase;
   letter-spacing: 0.4px;
 }
+/* C1 · the two ends are not on the same document. Warning colour and not error
+   colour on purpose: it is legitimate, it is just not something to discover by
+   wondering why nothing arrives. `cursor: help` because the title carries the
+   whole sentence when the footer has to ellipsis it. */
+#sidecar-detail .sd-mismatch {
+  color: var(--warn, #d9bd7a);
+  cursor: help;
+}
+#sidecar-detail .sd-mismatch .sd-k {
+  opacity: 1;
+}
 
 /* ---------- settings modal ---------- */
 .modal {

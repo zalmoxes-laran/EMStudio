@@ -67,6 +67,29 @@ export interface HostInfo {
    * with what it does declare.
    */
   connector?: ConnectorDescriptor;
+  /**
+   * C1 · WHICH DOCUMENT the host has open — the graph's id, not its file name.
+   *
+   * `file` above is a basename, and a basename identifies nothing: two people
+   * can each hold their own `TempluMare.em.json`, and a graph that arrived over
+   * a socket has no file at all. This is what a `node_id` actually belongs to,
+   * so it is what the two ends compare (`alignment.ts`); `graph_name` is the
+   * label a human reads and `graph_ids` is everything the host has loaded —
+   * "it is in my other tab" is a different situation from "I do not have it".
+   */
+  graph_id?: string;
+  graph_name?: string;
+  graph_ids?: string[];
+  /**
+   * C2 · what the HOST refuses to take from us — `nothing` | `selection` |
+   * `everything`.
+   *
+   * The half that makes the rule true: a gate on the receiving end is only
+   * better than one on the sending end if the other end can find out about it.
+   * Without this, "they closed their gate" and "the wire is broken" look the
+   * same from here, which is the failure the rearrangement was against.
+   */
+  accept?: string;
 }
 
 /** The BODY of each message type. The envelope (`v`, `type`, `source`) is
@@ -156,31 +179,54 @@ export interface SyncCallbacks {
     delta?: { nodes?: unknown[]; edges?: unknown[] };
     error?: string; repeated?: boolean; info?: Record<string, unknown>;
   }) => void;
+  /**
+   * C1 · what to tell the other end about OUR document, when it is asked for.
+   *
+   * A provider and not a value, because the answer changes while the connection
+   * lives — a slot switch, a file opened — and a descriptor captured at connect
+   * time would make the comparison run against a photograph.
+   */
+  describeSelf?: () => Record<string, unknown>;
   onStatus: (state: "connecting" | "open" | "closed") => void;
 }
 
 /**
- * MODES1 · what EMStudio does on the live channel. FOUR states, because two
- * (on/off) cannot express the situation people are actually in:
+ * C2 · ONE GATE, AND IT SITS WITH WHOEVER RECEIVES.
  *
- *   off      — no echo at all: neither sent nor applied
- *   send     — my selection shows up over there, theirs does not come here
- *   receive  — the host's selection shows up here, mine does not leave
- *   both     — the two screens follow each other
+ * This used to be a four-state DIRECTION (`off`/`send`/`receive`/`both`) that
+ * also held traffic back on the way out. The decision of 12-09-2026 (§6) takes
+ * the outbound half away, and the argument is not consent but **observability**:
  *
- * The principle this exists for: **nobody has somebody else's state imposed on
- * them without having chosen it.** One person on two screens wants `both`; two
- * people working at once want `off` or one direction, and until now that was
- * not a choice anybody could make.
+ *   In a sidecar the two tools are PEERS — one person on two screens, or two
+ *   who are talking to each other — so nobody is being subjected to anything.
+ *   But a gate on the way OUT is invisible to the other end: whoever is not
+ *   receiving cannot tell «has not sent» from «got lost», and that is one of
+ *   the three indistinguishable silences this work exists to separate. A gate
+ *   on the way IN is always declared by whoever closed it — they see it in
+ *   their own footer, and they can see themselves refusing.
  *
- * It governs the EPHEMERAL channels — selection and operations. The snapshot and
- * `host_info` are NOT gated: the snapshot is how a sidecar comes to show the
- * host's document at all, and refusing it would make connecting in `off` look
- * like a broken app rather than a quiet one.
+ * Three values and not four, because on the way in `off` and `send` were the
+ * same fact (nothing lands), while a selection and an operation are different
+ * in kind: somebody else's selection moves my viewport, somebody else's
+ * operation **changes my document**. Putting them in one box was an accident of
+ * the old vocabulary, not a choice.
+ *
+ *   nothing     — nothing from the host lands here
+ *   selection   — the host's selection lands; its graph edits do not
+ *   everything  — both land. The behaviour that has always existed, and the default
+ *
+ * NOT governed by this: the snapshot (it is how a sidecar comes to show the
+ * host's document at all — refusing it would make connecting look like a broken
+ * app rather than a quiet one), `host_info`, `presence`, `command_result`,
+ * `op_result` and `denied` — answers and announcements, never echoes.
+ *
+ * The name and the three values are the same on the EMtools side
+ * (`em_sync_accept`, `sync_manager/operators.py`): one vocabulary, so somebody
+ * switching between the two applications does not have to learn it twice.
  */
-export type SyncDirection = "off" | "send" | "receive" | "both";
+export type SyncAccept = "nothing" | "selection" | "everything";
 
-export const SYNC_DIRECTIONS: SyncDirection[] = ["off", "send", "receive", "both"];
+export const SYNC_ACCEPTS: SyncAccept[] = ["nothing", "selection", "everything"];
 
 // `SOURCE` now lives in `wire.ts` beside the envelope it belongs to: one
 // spelling of "who is speaking", used by both the builder and the echo guard.
@@ -190,9 +236,23 @@ export class SyncClient {
   private url = "";
   private cb: SyncCallbacks | null = null;
   private manualClose = false;
-  /** MODES1 · default `both`: it is exactly today's behaviour, so turning the
-   *  control on changes nothing until somebody chooses otherwise. */
-  private direction: SyncDirection = "both";
+  /** C2 · default `everything`: it is exactly today's behaviour, so the control
+   *  existing changes nothing until somebody chooses otherwise. */
+  private accept: SyncAccept = "everything";
+  /**
+   * P5 · what the ROOM said this client may do — NOT a user choice.
+   *
+   * It used to ride on the sync direction (`setDirection("receive")` was how a
+   * read-only room was enforced), and when C2 took the outbound gate away that
+   * enforcement would have vanished with it. So it gets its own guard, which is
+   * the honest shape anyway: a refusal declared by a server is a different kind
+   * of fact from a preference chosen by a person, and the two were only sharing
+   * a mechanism because one happened to be there.
+   *
+   * It stops OPERATIONS, not selection: a viewer's awareness is welcome in a
+   * room, and it is the edit the server would refuse.
+   */
+  private writable = true;
   //: P4.3 · reconnect state. Phase 1 deliberately had none ("no auto-reconnect")
   //: because a sidecar is a laptop pairing you re-establish by hand. A ROOM is
   //: not: a dropped Wi-Fi must not end a session, and coming back is where the
@@ -201,23 +261,32 @@ export class SyncClient {
   private attempt = 0;
   private retryTimer: number | null = null;
 
-  get syncDirection(): SyncDirection {
-    return this.direction;
+  get syncAccept(): SyncAccept {
+    return this.accept;
   }
 
-  /** Change what this client does on the channel. Takes effect immediately —
-   *  including on a connection already open, which is the point: you turn the
-   *  echo off when the other person starts working, not before. */
-  setDirection(direction: SyncDirection): void {
-    this.direction = direction;
+  /** Change what this client accepts. Takes effect immediately — including on a
+   *  connection already open, which is the point: you close the gate when the
+   *  other person starts working, not before. */
+  setAccept(accept: SyncAccept): void {
+    this.accept = accept;
   }
 
-  private get sends(): boolean {
-    return this.direction === "send" || this.direction === "both";
+  /** P5 · what the ROOM allows. Believed, never chosen here. */
+  setWritable(writable: boolean): void {
+    this.writable = writable;
   }
 
-  private get receives(): boolean {
-    return this.direction === "receive" || this.direction === "both";
+  get canWrite(): boolean {
+    return this.writable;
+  }
+
+  private get acceptsSelection(): boolean {
+    return this.accept === "selection" || this.accept === "everything";
+  }
+
+  private get acceptsOps(): boolean {
+    return this.accept === "everything";
   }
 
   get connected(): boolean {
@@ -282,6 +351,12 @@ export class SyncClient {
       } catch {
         /* dropped */
       }
+      // C1 · …and say what WE have open, so the comparison can happen at the
+      // one moment it is still cheap to fix. `client_info` is the verb the
+      // ecosystem already has for "the client describes itself"
+      // (`stratigraph-server/app/ws.py`): no new message was coined for a
+      // question that already had one.
+      this.announceSelf();
     };
     ws.onclose = () => {
       this.cb?.onStatus("closed");
@@ -329,8 +404,8 @@ export class SyncClient {
         // drag every view around whenever anybody looked at something.
         if (body.connection_id) {
           this.cb?.onPeerSelect?.(payload);
-        } else if (this.receives) {
-          // MODES1 · gated, not disconnected: the socket stays up (the host's
+        } else if (this.acceptsSelection) {
+          // C2 · gated, not disconnected: the socket stays up (the host's
           // document and its status keep arriving), only the echo stops.
           this.cb?.onSelect(body.node_id ?? "", body.node_ids);
         }
@@ -352,7 +427,9 @@ export class SyncClient {
         // the request hanging with no way to tell why.
         this.cb?.onCommandResult?.(payload as unknown as CommandResultPayload);
       } else if (type === "op") {
-        if (!this.receives) return;   // MODES1 · same gate as the selection
+        // C2 · a stronger refusal than the selection's, and separately chosen:
+        // this one would CHANGE THIS DOCUMENT.
+        if (!this.acceptsOps) return;
         this.cb?.onOp(payload as unknown as GraphOp);
       } else if (type === "denied") {
         // NOT gated by the sync direction: this is the answer to something this
@@ -368,7 +445,9 @@ export class SyncClient {
   /** Announce a local selection to the peer (no-op when disconnected).
    * `nodeId` is the active node; `nodeIds` the full multi-selection. */
   sendSelect(nodeId: string | null, nodeIds?: string[]): void {
-    if (!this.sends) return;          // MODES1 · off / receive: nothing leaves
+    // C2 · NOTHING IS HELD BACK HERE. What this client does not send is
+    // invisible to the other end, and «has not sent» looks exactly like «got
+    // lost». Whoever does not want it refuses it on arrival.
     if (!this.connected || (!nodeId && !nodeIds?.length)) return;
     const body: SelectPayload = { node_id: nodeId };
     if (nodeIds && nodeIds.length > 1) body.node_ids = nodeIds;
@@ -379,9 +458,31 @@ export class SyncClient {
     }
   }
 
+  /**
+   * C1 · tell the other end which document this client has open.
+   *
+   * Deliberately NOT governed by the accept policy: knowing what the other end
+   * is looking at is not an echo of anybody's work, and it is exactly the
+   * sentence somebody who closed their gate needs in order to understand why
+   * nothing is arriving.
+   */
+  announceSelf(): void {
+    if (!this.connected || !this.cb?.describeSelf) return;
+    try {
+      this.ws!.send(JSON.stringify(envelope("client_info", this.cb.describeSelf())));
+    } catch {
+      /* dropped */
+    }
+  }
+
   /** Send a graph mutation to the peer/host (no-op when disconnected). */
   sendOp(op: GraphOp): void {
-    if (!this.sends) return;          // MODES1 · off / receive: nothing leaves
+    // C2 · no preference gate here either (see `sendSelect`). What DOES stop an
+    // op is the room having said this client may not write: that is not a
+    // choice made at this end, it is a refusal already declared at the other,
+    // and sending an edit we have been told will be refused would spend a
+    // round-trip to learn what we already know.
+    if (!this.writable) return;
     if (!this.connected) return;
     try {
       this.ws!.send(JSON.stringify(

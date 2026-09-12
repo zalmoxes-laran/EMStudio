@@ -376,12 +376,18 @@ print(json.dumps(heriverse_wire()))
 
 // ── 9 · the app SAYS it, at both moments ───────────────────────────────────
 //
-// `subscribe` rides the existing op channel, which means the sync direction
-// governs it: in `off` or `receive` nothing leaves this client and a subscribed
-// viewer shows a study that never moves — indistinguishable, from over there,
-// from a broken viewer. So the sentence is owed at two moments, and a source
-// check is the only thing that can hold a caller (the logic lives in `main.ts`,
-// which does not load outside a browser).
+// `subscribe` rides the existing op channel, and what can leave that channel
+// EMPTY is the thing to watch. It used to be the sync direction (`off` /
+// `receive` held ops back on the way out) — **C2 took that away**: no
+// preference holds anything back any more, because a gate on the way out is
+// invisible to whoever is waiting on the other side.
+//
+// So one starvation is left, and it is a different kind of fact: the ROOM has
+// said this client may not write. A subscribed viewer then shows a study that
+// never moves, indistinguishable from over there from a broken viewer. The
+// sentence is still owed at two moments, and a source check is the only thing
+// that can hold a caller (the logic lives in `main.ts`, which does not load
+// outside a browser).
 {
   const main = readFileSync(new URL("../src/main.ts", import.meta.url).pathname,
                             "utf8");
@@ -392,12 +398,18 @@ print(json.dumps(heriverse_wire()))
                               main.indexOf("function warnStarvedSubscribers"));
   ok(/warnStarvedSubscribers\(\);/.test(announce),
      "app · …said when a subscriber arrives");
-  // …and when somebody turns the stream off, which is the other half: the
-  // subscriber was already there and nothing announces itself twice
-  const direction = main.slice(main.indexOf("function setSyncDirection"),
-                               main.indexOf("const SYNC_GLYPHS"));
-  ok(/warnStarvedSubscribers\(\);/.test(direction),
-     "app · …and when the direction changes under one");
+  // …and when the ROOM's permission lands under one that was already there —
+  // the other half, since nothing announces itself twice
+  const permission = main.slice(main.indexOf("function applyRoomPermission"),
+                                main.indexOf("function renderSyncControl"));
+  ok(/warnStarvedSubscribers\(\);/.test(permission),
+     "app · …and when the room's permission changes under one");
+  // …and NOT on a preference any more: an assertion that the old gate is gone,
+  // because a check that still allowed it would keep the dead premise alive
+  const starve = main.slice(main.indexOf("function warnStarvedSubscribers"),
+                            main.indexOf("function renderSidecarDetail"));
+  ok(/sync\.canWrite/.test(starve) && !/syncAccept\(\)/.test(starve),
+     "app · starvation is the room's refusal, never a user's preference");
   // a consumer is SAID differently from a collaborator, and what is listed is
   // what it was GRANTED rather than what it declared
   ok(/isConsumer\(state\.descriptor\) \? "conn\.consumer"/.test(main),
@@ -407,7 +419,7 @@ print(json.dumps(heriverse_wire()))
   // the two sentences exist in both languages (parity itself is check-i18n's)
   const i18n = readFileSync(new URL("../src/i18n.ts", import.meta.url).pathname,
                             "utf8");
-  for (const key of ["conn.consumer", "conn.starved"])
+  for (const key of ["conn.consumer", "conn.starvedReadOnly"])
     eq((i18n.match(new RegExp(`"${key.replace(".", "\\.")}":`, "g")) || []).length,
        2, `app · «${key}» is written in both languages`);
 }

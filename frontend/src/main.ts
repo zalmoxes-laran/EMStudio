@@ -234,7 +234,8 @@ import type {
   PromptResult,
   StratiMinerHandlers,
 } from "./stratiminer";
-import { type HostInfo, SyncClient, SYNC_DIRECTIONS, type SyncDirection } from "./sync";
+import { type HostInfo, SyncClient, SYNC_ACCEPTS, type SyncAccept } from "./sync";
+import * as alignment from "./alignment";
 import type { GraphOp } from "./model";
 import { buildCommand, type CommandVerb } from "./commands";
 import {
@@ -688,6 +689,80 @@ const sidecarDetail = document.getElementById("sidecar-detail")!;
 // + endpoint are known locally from settings; file/database arrive from the
 // host's `host_info` (or a snapshot's `host`). Reset when we disconnect.
 let hostInfo: HostInfo = {};
+//: C1 · the last misalignment SAID, so the log does not repeat one sentence
+//: every time a `host_info` arrives. A warning repeated is a warning ignored.
+let lastMisalignment = "";
+
+/**
+ * C1 · what THIS client has open, in the three keys `alignment` compares.
+ *
+ * The graph's id, because that is what a `node_id` belongs to; the name as the
+ * label a human reads; and every id in the workspace, so "your document is in
+ * my other slot" can be told from "I do not have your document".
+ */
+function describeOpenDocument(): Record<string, unknown> {
+  // C2 · …and WHAT THIS CLIENT REFUSES. A gate on the receiving end is only
+  // better than one on the sending end if the other end can find out about it:
+  // otherwise "I closed my gate" and "the wire is broken" look the same from
+  // over there, which is the failure this whole rearrangement is against.
+  const said: Record<string, unknown> = { tool: "EMStudio", accept: syncAccept() };
+  const g = store?.doc.graph as Record<string, unknown> | undefined;
+  const id = g ? String(g.graph_id ?? "") : "";
+  const name = g ? String(g.name ?? "") : "";
+  if (id) said[alignment.GRAPH_ID_KEY] = id;
+  if (name) said[alignment.GRAPH_NAME_KEY] = name;
+  const all: string[] = [];
+  for (const slot of emtree.slots) {
+    const sid = String((slot.store.doc.graph as Record<string, unknown>).graph_id ?? "");
+    if (sid && !all.includes(sid)) all.push(sid);
+  }
+  if (all.length) said[alignment.GRAPH_IDS_KEY] = all;
+  return said;
+}
+
+/** C1 · the two documents compared, from THIS end. */
+function documentAlignment(): alignment.Alignment {
+  return alignment.compare(describeOpenDocument() as alignment.Declared, hostInfo);
+}
+
+/**
+ * C1 · the OTHER end declared something → compare, and say it if it changed.
+ *
+ * Said once per distinct sentence. A warning that repeats on every `host_info`
+ * is a warning people learn to scroll past, and this one has to be read exactly
+ * once, while there is still time to fix it.
+ */
+function noteAlignment(): void {
+  const state = documentAlignment();
+  if (state.aligned) {
+    lastMisalignment = "";
+    return;
+  }
+  if (state.sentence === lastMisalignment) return;
+  lastMisalignment = state.sentence;
+  logWarn(t("sync.differentDocs", { what: state.sentence }));
+  toast(t("sync.differentDocsToast"));
+}
+
+/**
+ * C1 · the document changed on OUR side → say so, once, to whoever is listening.
+ *
+ * Called wherever the open document changes rather than only at connect: a
+ * descriptor captured once would make the comparison run against a photograph,
+ * and the case this whole thing exists for — somebody switching document while
+ * the channel stays up — is exactly the one a photograph cannot see.
+ */
+function announceOpenDocument(): void {
+  if (!sync.connected) return;
+  sync.announceSelf();
+  const state = documentAlignment();
+  if (state.aligned) lastMisalignment = "";
+  renderSidecarDetail();
+  if (!state.aligned && state.sentence !== lastMisalignment) {
+    lastMisalignment = state.sentence;
+    logWarn(t("sync.differentDocs", { what: state.sentence }));
+  }
+}
 
 /**
  * CONNECTORS · what has announced itself to this session, and how it went.
@@ -750,12 +825,15 @@ function announceConnector(info: HostInfo,
  * thing this client owes is the sentence.
  */
 function warnStarvedSubscribers(): void {
-  const dir = sync.syncDirection;
-  if (dir === "send" || dir === "both") return;
+  // C2 · …and after C2 there is only ONE way this happens: the room said this
+  // client may not write. A PREFERENCE no longer starves anybody, because no
+  // preference holds traffic back on the way out any more — which is the whole
+  // point of moving the gate to the receiving end.
+  if (sync.canWrite) return;
   for (const state of connectors.subscribers())
-    logWarn(t("conn.starved", {
+    logWarn(t("conn.starvedReadOnly", {
       name: state.descriptor.description || state.descriptor.name,
-      dir: t(`sync.dir.${dir}`),
+      role: hostInfo.role ?? t("room.roleUnknown"),
     }));
 }
 function renderSidecarDetail(): void {
@@ -786,6 +864,35 @@ function renderSidecarDetail(): void {
     k.textContent = s.k;
     seg.append(k, document.createTextNode(s.v));
     sidecarDetail.appendChild(seg);
+  }
+  // C2 · …and what the HOST refuses to take from us, when it is not everything.
+  // Without this line, a host that has closed its gate is indistinguishable
+  // from a broken wire — which is exactly what moving the gate was supposed to
+  // end. Only when there is something to say.
+  if (hostInfo.accept && hostInfo.accept !== "everything") {
+    const gate = document.createElement("span");
+    gate.className = "sd-seg sd-mismatch";
+    const k = document.createElement("span");
+    k.className = "sd-k";
+    k.textContent = t("sync.hostAcceptTag");
+    gate.append(k, document.createTextNode(String(hostInfo.accept)));
+    gate.title = t("sync.hostAcceptHint");
+    sidecarDetail.appendChild(gate);
+  }
+  // C1 · …and, when the two ends are NOT on the same document, that — here,
+  // beside the connection it is a property of, rather than as a toast that
+  // scrolls away. Only when there is something to say: a permanent "maybe" is
+  // the first thing anybody learns to stop reading.
+  const state = documentAlignment();
+  if (!state.aligned) {
+    const warn = document.createElement("span");
+    warn.className = "sd-seg sd-mismatch";
+    const k = document.createElement("span");
+    k.className = "sd-k";
+    k.textContent = t("sync.differentDocsTag");
+    warn.append(k, document.createTextNode(state.sentence));
+    warn.title = t("sync.differentDocsHint");
+    sidecarDetail.appendChild(warn);
   }
 }
 /**
@@ -821,6 +928,7 @@ function setModeIndicator(mode: SessionMode | boolean): void {
   if (connected) renderSidecarDetail();
   else {
     hostInfo = {};
+    lastMisalignment = "";  // C1 · that sentence was about a session that ended
     connectors.clear();     // nothing is announced when nothing is connected
     sidecarDetail.innerHTML = "";
   }
@@ -840,24 +948,26 @@ function setModeIndicator(mode: SessionMode | boolean): void {
 // to govern: a control over a connection that does not exist is furniture.
 const syncControlEl = document.getElementById("sync-control")!;
 
-function syncDirection(): SyncDirection {
-  const raw = getSettings().sync.direction;
-  return (SYNC_DIRECTIONS as string[]).includes(raw) ? raw : "both";
+function syncAccept(): SyncAccept {
+  const raw = getSettings().sync.accept;
+  return (SYNC_ACCEPTS as string[]).includes(raw) ? raw : "everything";
 }
 
-function setSyncDirection(direction: SyncDirection): void {
+function setSyncAccept(accept: SyncAccept): void {
   const s = getSettings();
-  saveSettings({ ...s, sync: { ...s.sync, direction } });
-  sync.setDirection(direction);
+  saveSettings({ ...s, sync: { ...s.sync, accept } });
+  sync.setAccept(accept);
   renderSyncControl();
-  logInfo(t("sync.dirLogged", { dir: t(`sync.dir.${direction}`) }));
-  // …and if a consumer is subscribed, turning the stream off is exactly the
-  // moment to say what it means for them
-  warnStarvedSubscribers();
+  logInfo(t("sync.acceptLogged", { what: t(`sync.accept.${accept}`) }));
+  // C2 · …and it is SAID on the wire, because a gate on the receiving end is
+  // only better than one on the sending end if the other end can learn about
+  // it. `client_info` already carries what this client is; what it refuses is
+  // one more field of the same answer.
+  if (sync.connected) sync.announceSelf();
 }
 
-const SYNC_GLYPHS: Record<SyncDirection, string> = {
-  off: "⃠", send: "→", receive: "←", both: "⇄",
+const SYNC_GLYPHS: Record<SyncAccept, string> = {
+  nothing: "⃠", selection: "◉", everything: "⇄",
 };
 
 /**
@@ -874,20 +984,21 @@ function hubReadOnly(): boolean {
 /**
  * Make the session match what the room allows.
  *
- * Reuses the sync DIRECTION rather than inventing a lockdown: `receive` is
- * already "listen, do not send", it is already respected by every send path in
- * `sync.ts`, and a second mechanism for the same idea is a second thing to keep
- * right. What is added on top is that the control cannot be turned back on —
- * an affordance that is offered and then refused is worse than one that is
- * greyed out with a reason.
+ * It used to borrow the sync DIRECTION for this — `receive` meant "listen, do
+ * not send", and every send path respected it. C2 took the outbound gate away,
+ * and this enforcement would have gone with it silently: the client would have
+ * kept offering edits the server then refused one by one. So the room's refusal
+ * gets its own guard (`sync.setWritable`), which is the honest shape anyway —
+ * a permission declared by a server and a preference chosen by a person are
+ * different kinds of fact, and they were only sharing a mechanism because one
+ * was already there.
  */
 function applyRoomPermission(): void {
-  if (hubReadOnly()) {
-    sync.setDirection("receive");
-  } else {
-    sync.setDirection(syncDirection());
-  }
+  sync.setWritable(!hubReadOnly());
   renderSyncControl();
+  // …and if a consumer is subscribed to a stream that will now never move, that
+  // is the moment to say so.
+  warnStarvedSubscribers();
 }
 
 function renderSyncControl(): void {
@@ -899,7 +1010,11 @@ function renderSyncControl(): void {
     return;
   }
   const readOnly = hubReadOnly();
-  const active: SyncDirection = readOnly ? "receive" : syncDirection();
+  // C2 · the read-only badge and the accept control are now about DIFFERENT
+  // things — what the room refuses to take FROM me, and what I refuse to take
+  // FROM it — so neither disables the other. They used to be one control, which
+  // is why a read-only room looked like somebody had changed your preference.
+  const active: SyncAccept = syncAccept();
   syncControlEl.innerHTML = "";
   if (readOnly) {
     // Said once, where the session's state is shown, and not as a toast that
@@ -915,34 +1030,25 @@ function renderSyncControl(): void {
   }
   const label = document.createElement("span");
   label.className = "sync-ctl-label";
-  label.textContent = t("sync.label");
-  // The hint is the whole reason the control has four states and not two, so it
-  // travels with it instead of living in a manual nobody opens.
-  label.title = t("sync.hint");
+  label.textContent = t("sync.acceptLabel");
+  // The hint is the whole reason the gate is here and not on the way out, so it
+  // travels with the control instead of living in a manual nobody opens.
+  label.title = t("sync.acceptHint");
   syncControlEl.appendChild(label);
-  for (const dir of SYNC_DIRECTIONS) {
+  for (const what of SYNC_ACCEPTS) {
     const b = document.createElement("button");
-    b.className = "sync-ctl-btn" + (dir === active ? " on" : "");
-    b.textContent = SYNC_GLYPHS[dir];
-    b.title = `${t(`sync.dir.${dir}`)} — ${t(`sync.dirTitle.${dir}`)}`;
-    b.dataset.dir = dir;
-    if (readOnly && (dir === "send" || dir === "both")) {
-      // sending is not this client's to choose here: the room refuses the op
-      // anyway, and a button that produces a refusal is a button that lies
-      b.disabled = true;
-      b.title = t("room.readOnlyHint", {
-        role: hostInfo.role ?? t("room.roleUnknown"),
-      });
-    } else {
-      b.addEventListener("click", () => setSyncDirection(dir));
-    }
+    b.className = "sync-ctl-btn" + (what === active ? " on" : "");
+    b.textContent = SYNC_GLYPHS[what];
+    b.title = `${t(`sync.accept.${what}`)} — ${t(`sync.acceptTitle.${what}`)}`;
+    b.dataset.accept = what;
+    b.addEventListener("click", () => setSyncAccept(what));
     syncControlEl.appendChild(b);
   }
 }
 
 // The client is told what to do BEFORE any connection exists, so a stored
 // choice is in force from the first frame rather than from the first click.
-sync.setDirection(syncDirection());
+sync.setAccept(syncAccept());
 setModeIndicator("standalone");
 
 // ---------- theme (DARK1) ----------
@@ -1200,7 +1306,7 @@ window.__EM_SCENE__ = () => {
       declared: s.descriptor.capabilities,
     })),
     subscribers: connectors.subscribers().map((s) => s.descriptor.name),
-    syncDirection: sync.syncDirection,
+    syncAccept: sync.syncAccept,
   });
 
 window.__EM_DOCS__ = () => {
@@ -2644,6 +2750,11 @@ function activateSlot(id: string, opts: { rebuildOnly?: boolean } = {}): void {
     updateBreadcrumb();
     logInfo(t("toast.activeGraph", { name: slotLabel(target) }));
   }
+  // C1 · the open document has changed → tell the other end, and re-compare.
+  // Here and not only at connect: the case this exists for is somebody
+  // switching document while the channel stays up, which is precisely what a
+  // descriptor captured at connect time cannot see.
+  announceOpenDocument();
 }
 
 /**
@@ -3278,6 +3389,7 @@ function clearDocument(): void {
   updateLegend();
   nodeList.refresh();
   draw();
+  announceOpenDocument();   // C1 · nothing open here any more, and it is said
 }
 
 function defaultFileName(): string {
@@ -3384,6 +3496,20 @@ function noteHub(note: AwarenessNote): void {
  *  understands. The fields (and their clocks) come from the store, which
  *  stamped them — nothing is re-derived here. */
 function hubSendLocal(op: GraphOp): void {
+  // C2 · THE THIRD OUTBOUND POINT, and finding it changed what C2 found.
+  //
+  // A room's operations do not go through `sendOp`: they are translated into
+  // per-field CRDT ops and pushed with `sendCommand`, which is deliberately
+  // ungated (a command is an explicit act, not an echo). Which means the sync
+  // DIRECTION never governed them — and, worse, neither did P5's read-only:
+  // `applyRoomPermission` enforced it by setting the direction to `receive`,
+  // and `receive` only ever stopped `sendOp`. **A viewer's edits were leaving
+  // this client and being refused one at a time by the server.**
+  //
+  // So the guard lands here, where the room's ops actually leave. Not the
+  // preference — no preference holds anything back any more — but the refusal
+  // the server already declared at the door.
+  if (!sync.canWrite) return;
   const ops = opsForLocalChange(op as Parameters<typeof opsForLocalChange>[0]);
   for (const hubOp of ops) {
     hubUnconfirmed.set(hubKey(hubOp), hubOp);
@@ -6621,9 +6747,17 @@ btnSync.addEventListener("click", () => {
       // with the reason. A pairing on this machine is the `direct` transport.
       announceConnector(hostInfo, "direct");
       renderSidecarDetail();
+      // C1 · …and WHICH DOCUMENT it has open, against ours. Said once per
+      // change, in the log and in the footer: two ends on different documents
+      // produce exactly the silence of a closed channel, and until this line
+      // the two were indistinguishable.
+      noteAlignment();
       // CMD1 · consent can be toggled while connected; the affordance follows it
       refreshInspector();
     },
+    // C1 · and what WE have open, asked for whenever it is needed rather than
+    // captured once — a photograph would miss every change after connect.
+    describeSelf: () => describeOpenDocument(),
     onCommandResult: (res) => applyCommandResult(res),
     // WIRE 2 · a host that speaks another protocol version is SAID. Without
     // this it would look exactly like a host that has gone quiet.
@@ -7882,10 +8016,10 @@ settingsModal.addEventListener("click", (e) => {
       protocol: setProtoSel.value === "wss" ? "wss" : "ws",
       host: setHostInp.value.trim() || "localhost",
       port,
-      // MODES1 · the direction is not edited here: it is a live control in the
+      // C2 · the accept policy is not edited here: it is a live control in the
       // footer, changed while working. Carried through so saving the endpoint
-      // does not silently reset what the channel is doing.
-      direction: getSettings().sync.direction,
+      // does not silently reset what this client is taking in.
+      accept: getSettings().sync.accept,
       // P4.3 · the room's address. The token is NOT here: it is asked for at
       // connection time and never written down.
       hubUrl: (document.getElementById("set-hub-url") as HTMLInputElement)?.value.trim() ?? "",

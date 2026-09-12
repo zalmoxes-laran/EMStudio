@@ -2,7 +2,7 @@
 // forward-compatible — today it holds the live-sync target (ADR-002); more
 // sections (appearance, layout defaults…) can slot in later.
 
-import type { SyncDirection } from "./sync";
+import { type SyncAccept, SYNC_ACCEPTS } from "./sync";
 
 export interface SyncSettings {
   /** ws (local/plain) or wss (TLS). A browser can only be a WS *client*. */
@@ -12,16 +12,25 @@ export interface SyncSettings {
   /** which tool hosts the session; only "blender" (EMtools) is wired today */
   tool: string;
   /**
-   * MODES1 · what this client does on the live channel: `off` | `send` |
-   * `receive` | `both`. Persisted per user/browser, because it is a working
-   * arrangement ("today I am alone on two screens", "today somebody else is in
-   * Blender") and re-choosing it at every reload would make it a nuisance
-   * instead of a control.
+   * C2 · what this client ACCEPTS from the host: `nothing` | `selection` |
+   * `everything`. One gate per tool, and it sits with whoever receives.
    *
-   * `both` is the default because it IS the behaviour that existed before this
-   * control did: nothing changes for anyone until they choose.
+   * It used to be a four-state DIRECTION that also held traffic back on the way
+   * out, and that was the wrong place: a gate on the way out is invisible to
+   * the other end — «has not sent» and «got lost» look identical — while a gate
+   * on the way in is always declared by whoever closed it, because they can see
+   * themselves closing it.
+   *
+   * Three values and not four: on the way IN, `off` and `send` were the same
+   * fact, while a selection and a graph edit are different in kind — one moves
+   * my viewport, the other CHANGES MY DOCUMENT.
+   *
+   * Persisted per user/browser, because it is a working arrangement ("today I
+   * am alone on two screens", "today somebody else is in Blender"), and
+   * `everything` is the default because it IS the behaviour that existed before
+   * this control did.
    */
-  direction: SyncDirection;
+  accept: SyncAccept;
   /** P4.3 · the StratiGraph Server whose rooms this client can join. Configuration, not
    *  a secret: the URL and the room name are what you would write on a
    *  whiteboard. The TOKEN is not here on purpose — it lives in memory for the
@@ -110,7 +119,7 @@ const KEY = "emstudio.settings";
 
 const DEFAULTS: Settings = {
   sync: { protocol: "ws", host: "localhost", port: 8788, tool: "blender",
-          direction: "both", hubUrl: "", hubRoom: "" },
+          accept: "everything", hubUrl: "", hubRoom: "" },
   developer: { showNodeIds: false },
   interaction: { edgeTooltips: true, strictDocumentNames: true },
   ai: { provider: "claude", model: "" },
@@ -151,6 +160,33 @@ function clone(s: Settings): Settings {
   };
 }
 
+/**
+ * C2 · a stored `direction` becomes an `accept`, reading the OLD value for what
+ * it meant ON THE WAY IN.
+ *
+ * `off` and `send` both refused everything arriving; `receive` and `both` both
+ * took it. So the four map onto two without guessing, and somebody who had
+ * deliberately closed their gate does not find it open after an update — which
+ * is the one way this rename could have gone wrong.
+ *
+ * (The Blender end cannot do this: a property registered on `bpy.types.Scene`
+ * never appears in `scene.keys()`, even after being written — measured — so the
+ * old value is simply unreachable there. Said in the report, not hidden.)
+ */
+function migrateSync(stored: Partial<SyncSettings> | undefined
+                    ): Partial<SyncSettings> {
+  const raw = { ...(stored ?? {}) } as Record<string, unknown>;
+  const old = raw.direction;
+  delete raw.direction;
+  if (typeof raw.accept === "string"
+      && (SYNC_ACCEPTS as string[]).includes(raw.accept)) {
+    return raw as Partial<SyncSettings>;
+  }
+  if (old === "off" || old === "send") raw.accept = "nothing";
+  else if (old === "receive" || old === "both") raw.accept = "everything";
+  return raw as Partial<SyncSettings>;
+}
+
 function load(): Settings {
   try {
     const raw = localStorage.getItem(KEY);
@@ -158,7 +194,7 @@ function load(): Settings {
     const parsed = JSON.parse(raw) as Partial<Settings>;
     // merge onto defaults so a missing/renamed field never breaks startup
     return {
-      sync: { ...DEFAULTS.sync, ...(parsed.sync ?? {}) },
+      sync: { ...DEFAULTS.sync, ...migrateSync(parsed.sync) },
       developer: { ...DEFAULTS.developer, ...(parsed.developer ?? {}) },
       interaction: { ...DEFAULTS.interaction, ...(parsed.interaction ?? {}) },
       ai: { ...DEFAULTS.ai, ...(parsed.ai ?? {}) },
