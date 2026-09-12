@@ -151,9 +151,15 @@ console.log("\n5 · THE ORDER IS DECLARED, not won by a race");
      + "already restored. A link is an explicit request and a restore is a "
      + "habit, so the link wins by being last.");
   const bootAt = main.indexOf("void bootSession()");
-  const restore = main.indexOf("applyWorkspace(activeWorkspace())");
+  // 15 set 2026 · the restore used to be `applyWorkspace(activeWorkspace())` —
+  // "mount the editor of the workspace's active window". There is no editor to
+  // mount: every window of the arrangement is built in its own area, so
+  // `renderTiles()` IS the restore, and it is the boot line that has to come
+  // first. The clause is the same sentence about the same order.
+  const restore = main.indexOf(
+    "renderTiles(); // WIN5 · lay out the arrangement this session was left in");
   ok(restore > 0 && bootAt > restore,
-     "…and the whole sequence is started AFTER the workspace is put back");
+     "…and the whole sequence is started AFTER the arrangement is put back");
   ok(/function readStudyLinkOrSay/.test(main),
      "a refused link is caught where there is a canvas to say it on");
   ok(/studyFailed\(t\("study\.ambiguous"\)/.test(main),

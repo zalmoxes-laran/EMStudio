@@ -83,12 +83,28 @@ const CONVERTED = {
   // element; the annotator's frame is built by the instance that traces.
   narrative: ["narrative-view"],
   annotator: ["annotator-view", "annotator-bar", "annotator-stage"],
+  // 15 set 2026 · THE LAST ONE. `#canvas-wrap` was the privileged AREA — the one
+  // the focus moved into — `#canvas` the one element the ten pointer gestures
+  // were bound to, `#window-header` its docked bar, and `#overview` the one
+  // minimap. A graph window builds its own canvas and its own minimap now.
+  graph: ["canvas-wrap", "canvas", "window-header", "overview"],
 };
-// NOT converted, and each with the singleton that is the reason why. These keep
-// the old parity clauses, below.
-const UNCONVERTED = {
-  graph: "#canvas — the interaction machine is bound to it",
-};
+
+/*
+ * `UNCONVERTED` IS GONE (15 set 2026), and so is section B with it.
+ *
+ * It held the types still drawn two ways, each with the singleton that was the
+ * reason — five on 12 September, three on the 13th, one on the 14th. Section B
+ * compared the two mounts of each: the box on the class both carried, position
+ * and stacking on the id of the focused one.
+ *
+ * With the table empty that comparison has no subject, and an empty table is an
+ * invitation to add a row — the same reasoning that deleted `FOCUSED_SURFACE_BOXES`
+ * on the 14th rather than emptying it. What replaces it is one clause, asked of
+ * the registry rather than of a list (`check-surfaces.mjs` §14): every
+ * `WindowType` declared in `workspace.ts` has a constructor, with no exceptions
+ * to print.
+ */
 
 /** The four panels, by the id each USED to be. Named so their absence can be
  *  asserted rather than hoped for — see clause A8. */
@@ -114,23 +130,31 @@ const PANEL_IDS = ["emtree", "nodelist", "inspector", "logpanel"];
   }
 }
 
-// ── A2 · no branch in `applyWindowSurface` ─────────────────────────────────
+// ── A2 · `applyWindowSurface()` DOES NOT EXIST ─────────────────────────────
+//
+// It was the one place that decided WHICH SINGLETON was lit — eight `show()`
+// calls, one per window type, each for a surface only the focused window could
+// use. Every night of this series took lines out of it: six types on
+// 12 September, the two hosted panels on the 13th, the narrative and the
+// annotator on the 14th. What was left by then had nothing to do with surfaces
+// — it showed the overview and refreshed the funnel, the two OVERLAYS of a
+// canvas window — and tonight the overview became per instance, so both belong
+// to `setAreaFocused`, which is where they are.
 {
-  const body = Sorg.dentro(TS, "applyWindowSurface");
-  ok(body.length > 0, "applyWindowSurface was found (by its AST, not its name)");
-  for (const type of Object.keys(CONVERTED)) {
-    ok(!nominaTipo(body, type),
-      `applyWindowSurface must not name "${type}": that function used to decide ` +
-        "which SINGLETON was lit, and a converted type has none — its surface " +
-        "is its window's own area, focused or not.");
-  }
-  // …and what it still does, or this clause would pass on a function that was
-  // simply emptied: it turns the two OVERLAYS of the canvas on and off (the map
-  // that answers «where am I», and the funnel that filters what is on it), which
-  // belong to a graph window and to no other.
-  ok(nominaTipo(body, "graph") && Sorg.chiama(body, "refreshFunnel"),
-    "…while it still says what is true of a CANVAS window: the overview and " +
-      "the funnel are questions only a graph can answer");
+  ok(Sorg.corpoDi(TS, "applyWindowSurface").length === 0,
+    "`applyWindowSurface` must not exist. A function whose job is «decide which " +
+      "singleton is showing» has no job when no type has a singleton, and " +
+      "keeping it as a place to put the next one is how the twin comes back.");
+  ok(Sorg.corpoDi(TS, "mountWindow").length === 0,
+    "…and neither may `mountWindow`, which was «the ONE place that knows how a " +
+      "window type becomes something on screen». A window type becomes something " +
+      "on screen by its CONSTRUCTOR now, in its own area.");
+  // …and what took their place really is there, or this would pass on a file
+  // that had simply lost both
+  ok(Sorg.corpoDi(TS, "setAreaFocused").length > 0 &&
+     Sorg.chiama(Sorg.dentro(TS, "setAreaFocused"), "refreshFunnel"),
+    "…while the funnel, which IS a question only a canvas window answers, moved " +
+      "to the one thing a focus change is allowed to do");
 }
 
 // ── A3 · `FOCUSED_SURFACE_BOXES` DOES NOT EXIST ────────────────────────────
@@ -376,69 +400,8 @@ const PANEL_IDS = ["emtree", "nodelist", "inspector", "logpanel"];
 }
 
 // ════════════════════════════════════════════════════════════════════════════
-// B · for the THREE that are NOT converted: the old clauses, kept
+// B · what is true of EVERY window, now that no type is drawn twice
 // ════════════════════════════════════════════════════════════════════════════
-
-// The two mounts of each unconverted type. The pairing is knowledge this check
-// has to hold — the two paths ARE two pieces of code and nothing in the source
-// states it — and a type missing from it is caught below.
-const MOUNTS = {
-  graph: { focused: ["#canvas-wrap"], secondary: ["#canvas-wrap"] },
-};
-
-const ALLOWED = {
-  position: "the focused mount is an overlay, the secondary a child of its area",
-  inset: "same",
-  "z-index": "same",
-  flex: "the area's plumbing: a secondary surface fills its tile",
-  "min-height": "same — `0`, so a flex child may shrink",
-  overflow: "the focused mount clips, an area scrolls",
-  "overflow-y": "same",
-};
-const BOX = ["padding", "padding-top", "padding-bottom", "padding-left",
-             "padding-right", "border", "border-top", "border-bottom",
-             "border-width", "margin", "margin-top", "margin-bottom", "gap",
-             "display", "flex-direction", "align-items", "height"];
-const PAINT = ["background"];
-
-function boxOf(selectors) {
-  const found = {};
-  for (const match of CSS.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-    const list = match[1].split(",").map((s) => s.trim());
-    if (!list.some((s) => selectors.includes(s))) continue;
-    for (const declaration of match[2].split(";")) {
-      const at = declaration.indexOf(":");
-      if (at < 0) continue;
-      const key = declaration.slice(0, at).trim();
-      const value = declaration.slice(at + 1).trim();
-      if (BOX.includes(key) || PAINT.includes(key) || ALLOWED[key]) found[key] = value;
-    }
-  }
-  return found;
-}
-
-const rows = [];
-{
-  assert.deepEqual(Object.keys(MOUNTS).sort(), Object.keys(UNCONVERTED).sort(),
-    "every unconverted type is still measured the old way, and named");
-  checks++;
-  for (const [type, mounts] of Object.entries(MOUNTS)) {
-    const a = boxOf(mounts.focused);
-    const b = boxOf(mounts.secondary);
-    const differ = [];
-    const painted = [];
-    for (const key of new Set([...Object.keys(a), ...Object.keys(b)])) {
-      if (ALLOWED[key] || a[key] === b[key]) continue;
-      const said = `${key} ${a[key] ?? "—"} vs ${b[key] ?? "—"}`;
-      (PAINT.includes(key) ? painted : differ).push(said);
-    }
-    rows.push([type, differ.length ? differ.join(" · ")
-                   : painted.length ? `ok · paint: ${painted.join(" · ")}` : "ok"]);
-    ok(differ.length === 0,
-      `${type}: the two mounts disagree on ${differ.join(" · ")}. The box goes ` +
-        "on the CLASS both mounts carry; only position and stacking go on the id.");
-  }
-}
 
 // ── B2 · the head is ONE builder, and it does not know about the focus ─────
 //
@@ -547,9 +510,10 @@ const rows = [];
     "`--palette-w` is published on the element that reserves the width, by " +
       "`buildResourcePanel` — which every area goes through");
   const tiles = Sorg.dentro(TS, "renderTiles");
-  ok((tiles.match(/buildResourcePanel\(/g) ?? []).length >= 2,
-    "…called for every area AND for the wrap, or a window with its panel open " +
-      "would be a different size depending on which one holds the wrap");
+  ok(Sorg.chiama(tiles, "buildResourcePanel"),
+    "…called by `renderTiles` for every area. It used to have to be called TWICE " +
+      "— once in the loop over the areas and once for the wrap — because the wrap " +
+      "was an area that was not in the loop. There is one loop now.");
 }
 
 // ── B5 · the nine of `#shelf-bar`, and where each of them went ────────────
@@ -599,10 +563,8 @@ for (const [type, ids] of Object.entries(CONVERTED)) {
   console.log(`    ${type.padEnd(10)} ok · ${ids.length} singleton${
     ids.length > 1 ? "s" : ""} retired: ${ids.join(", ")}`);
 }
-console.log("\n  NOT CONVERTED · measured the old way, and why");
-for (const [type, verdict] of rows) {
-  console.log(`    ${type.padEnd(10)} ${verdict.padEnd(6)} · ${UNCONVERTED[type]}`);
-}
+console.log("\n  NOT CONVERTED · none. Every window type has one constructor,");
+console.log("  and the focus does not enter any of them.");
 console.log("\n  the nine of #shelf-bar × where they went");
 for (const [what, , where] of NINE) {
   console.log(`    ${what.padEnd(18)} ${where}`);

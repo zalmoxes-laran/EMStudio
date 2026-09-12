@@ -145,7 +145,7 @@ import {
   type ThemeMode,
 } from "./theme";
 import { buildNodeList, type NodeListCallbacks } from "./nodelist";
-import { buildOverview } from "./overview";
+import { buildOverview, type OverviewApi } from "./overview";
 import { edgeStyle } from "./palette";
 import {
   buildPalette,
@@ -535,7 +535,9 @@ let lastDtcSource: "corpus" | "study" | "neighbourhood" | null = null;
  * it must never re-frame one somebody aimed by hand.
  */
 const touchedViews = new Set<string>();
-/** The size each secondary area's camera was last framed for. */
+/** The size each window's camera was last framed for — one per (window, mode),
+ *  because re-framing a camera aimed at a rectangle it no longer has is the
+ *  difference between a live area and an empty-looking one. */
 const framedSizes = new Map<string, string>();
 
 /** Record that this window's camera is now the user's, not the app's. */
@@ -630,9 +632,14 @@ let contextScene: Scene | null = null;
 const contextViewport = new Viewport();
 
 // ---------- dom ----------
-const canvas = document.getElementById("canvas") as HTMLCanvasElement;
-const ctx = canvas.getContext("2d")!;
-const wrap = document.getElementById("canvas-wrap")!;
+/*
+ * GONE (15 set 2026) · `canvas`, `ctx` and `wrap`.
+ *
+ * Three module singletons: the one canvas, its one 2D context, and the area it
+ * lived in — which had TWO names in this file (`wrap` here and `canvasWrapEl`
+ * further down, the same element fetched twice). A graph window builds its own
+ * canvas now (`mountGraphCanvas`), and the ten gestures are wired to it.
+ */
 const info = document.getElementById("info")!;
 const tooltip = document.getElementById("tooltip")!;
 const dropHint = document.getElementById("drop-hint")!;
@@ -1171,35 +1178,64 @@ function windowBarHeight(): number {
   return bar.offsetHeight;
 }
 
+/**
+ * The canvas of the window the hand is in — for the two CURSOR classes that used
+ * to be set on the one element (`placing`, `connecting`).
+ *
+ * A class that says "you are placing a node" or "you are drawing a connector" is
+ * about the gesture, and the gesture is in one window. So it is set on that
+ * window's canvas and cleared from every canvas, which is what makes it safe
+ * when the gesture ends somewhere else.
+ */
+function liveCanvas(): HTMLCanvasElement | null {
+  return graphWindows.get(activeWin().id)?.cv ?? null;
+}
+
+/** …and its AREA, for the two popups that are placed in canvas coordinates and
+ *  have to live inside the box those coordinates belong to (the edge menu, the
+ *  create menu). They used to be appended to the one `#canvas-wrap`. */
+function liveArea(): HTMLElement {
+  return winAreas.get(activeWin().id) ?? tileRoot;
+}
+function setCanvasCursor(cls: string, on: boolean): void {
+  for (const g of graphMounts()) g.cv.classList.remove(cls);
+  if (on) liveCanvas()?.classList.add(cls);
+}
+
+/**
+ * The drawing box of the window that has the focus.
+ *
+ * It used to read the one `canvas` and the one `wrap`. It reads the focused
+ * window's canvas now, and the fall-through is the same one for the same reason:
+ * during a transient relayout an element can report 0, and `fit()` must not
+ * collapse to the minimum scale because it asked at the wrong moment.
+ *
+ * Still "the focused window" rather than a parameter, and that is honest: its
+ * four callers (`fit`, `centerOn`, the overview click, `setViewOnLoad`) are all
+ * verbs of the window you are working in. A window you are not working in never
+ * asks how big it is — it is told, by `paintGraphWindow`, from its own element.
+ */
 function viewSize(): { w: number; h: number } {
-  // WIN4 · the CANVAS ELEMENT is the drawing area, and CSS gives it its box
-  // (`top: var(--winbar-h)` — i.e. below the docked bar). Reading the element
-  // rather than the wrapper means the two can never disagree about where the
-  // drawing starts. Fall back through wrapper → window if it reports 0 during a
-  // transient relayout, so fit() never collapses to the min-scale.
-  const w = canvas.clientWidth || wrap.clientWidth || window.innerWidth || 800;
+  const cv = graphWindows.get(activeWin().id)?.cv;
+  const area = winAreas.get(activeWin().id);
+  const w = cv?.clientWidth || area?.clientWidth || window.innerWidth || 800;
   const h =
-    canvas.clientHeight ||
-    Math.max(1, (wrap.clientHeight || 0) - windowBarHeight()) ||
+    cv?.clientHeight ||
+    Math.max(1, (area?.clientHeight || 0) - windowBarHeight()) ||
     window.innerHeight ||
     600;
   return { w, h };
 }
 
-function resizeCanvas(): void {
-  const dpr = window.devicePixelRatio || 1;
-  // publish the bar height so the canvas AND the canvas-area overlays (filters,
-  // chrono banner, add-epoch, drop hint, narrative) sit BELOW it — one
-  // measurement, one source, and CSS does the placing.
-  wrap.style.setProperty("--winbar-h", `${windowBarHeight()}px`);
-  const { w, h } = viewSize();
-  // only the backing store is set here: the element's CSS box is laid out by the
-  // stylesheet, so a missed observer callback can no longer leave a canvas that
-  // is the wrong SIZE on screen — just one frame at the wrong resolution.
-  canvas.width = Math.max(1, Math.round(w * dpr));
-  canvas.height = Math.max(1, Math.round(h * dpr));
-  draw();
-}
+/*
+ * GONE (15 set 2026) · `resizeCanvas()`.
+ *
+ * It sized the backing store of the one canvas and published `--winbar-h` on the
+ * one wrap. Every graph window sizes its own backing store in
+ * `paintGraphWindow` — where the numbers are already in hand — and every area
+ * publishes its own `--winbar-h` in `renderAreaHeaders`, as every other type's
+ * area has since 12 September.
+ */
 
 // Edges are filtered by the detail-rings (buildScenes drops hidden edge types
 // from the scene), so every edge in the scene is meant to be shown.
@@ -1333,34 +1369,94 @@ function viewport(): Viewport {
   return inContext() ? contextViewport : viewportFor(activeWin().id, view);
 }
 
-function draw(): void {
-  const s = scene();
-  const { w, h } = viewSize();
+/**
+ * ONE PAINTER, for ONE graph window. It does not know who has the focus.
+ *
+ * `draw()` and `drawTile(winId, mode, cv)` used to be two functions, and the
+ * difference between them was never the drawing — it was the INTERACTION STATE:
+ * the hover, the connector being pulled, the marquee, the insert boundary. So
+ * that state arrives here as an argument, and a window with no gesture in flight
+ * receives `null`. There is no branch on the focus in this function, and there
+ * must never be one: a `winId === activeWin().id` in here would be the twin
+ * rebuilt under another name, which is the way this change fails without
+ * anybody noticing.
+ *
+ * What is drawn in EVERY window and what only in the live one, decided by what
+ * the thing IS:
+ *  · the scene, the selection and the volatile ring are facts about the
+ *    DOCUMENT, so they are drawn wherever the document is drawn;
+ *  · the marquee is a gesture in flight, so it is drawn in the window whose
+ *    hand is making it, and nowhere else.
+ */
+interface LiveGesture {
+  hoverId: string | null;
+  hoverEdgeIdx: number | null;
+  connect: ConnectDrag | null;
+  insertBoundary: number | null;
+  marquee: { x0: number; y0: number; x1: number; y1: number } | null;
+}
+
+interface GraphPaint {
+  winId: string;
+  cv: HTMLCanvasElement;
+  mode: ViewKind;
+  scene: Scene | null;
+  vp: Viewport;
+  /** the gesture in flight IN THIS window — `null` in every other */
+  live: LiveGesture | null;
+  /** this window's own minimap, or null while it has none yet */
+  overview: OverviewApi | null;
+}
+
+function paintGraphWindow(p: GraphPaint): void {
+  const { cv, scene: s, vp, live } = p;
+  const dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth || 1;
+  const h = cv.clientHeight || 1;
+  cv.width = Math.max(1, Math.round(w * dpr));
+  cv.height = Math.max(1, Math.round(h * dpr));
+  const c = cv.getContext("2d");
+  if (!c) return;
   if (!s) {
-    const dpr = window.devicePixelRatio || 1;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, w, h);
-    overview.update(null, viewport(), w, h);
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    c.clearRect(0, 0, w, h);
+    p.overview?.update(null, vp, w, h);
     return;
+  }
+  // Frame it the first time this window shows this document (so a new area never
+  // opens on a blank patch of coordinates) — and RE-frame it when the area
+  // changes size under a camera the user never touched. A camera aimed at a
+  // full-width window and then squeezed into a quarter of it leaves the graph as
+  // a speck in the corner: technically live, in practice an empty area.
+  const key = viewportKey(p.winId, p.mode);
+  const size = `${Math.round(w)}x${Math.round(h)}`;
+  if (!framedViews.has(key)) {
+    framedViews.add(key);
+    vp.fit(sceneBounds(s), w, h);
+    framedSizes.set(key, size);
+  } else if (framedSizes.get(key) !== size && !touchedViews.has(key)) {
+    vp.fit(sceneBounds(s), w, h);
+    framedSizes.set(key, size);
   }
   const selectedEdgeIdx = selectedEdge
     ? s.edges.findIndex((se) => sameEdge(se.edge, selectedEdge!))
     : -1;
   render(
-    ctx,
+    c,
     s,
-    viewport(),
+    vp,
     {
-      hoverId,
+      hoverId: live?.hoverId ?? null,
       selectedId,
       selectedIds,
       edgeVisible,
-      hoverEdgeIdx,
+      hoverEdgeIdx: live?.hoverEdgeIdx ?? null,
       selectedEdgeIdx,
       filterKey: "all",
-      connect,
+      connect: live?.connect ?? null,
+      // every graph window is an editor now; `editable` says so to the renderer
       editable: true,
-      insertBoundary: view === "matrix" ? hoverInsertBoundary : null,
+      insertBoundary: live?.insertBoundary ?? null,
       monochrome,
       nameStatus, // NAME1: orange/red labels, one answer shared with the menu
       peerSelections: hubPeerSelections,   // P4.3 · awareness, never a lock
@@ -1368,16 +1464,14 @@ function draw(): void {
     w,
     h,
   );
-  overview.update(s, viewport(), w, h);
-  drawTiles(); // WIN5 · the other areas show the same document, live
+  p.overview?.update(s, vp, w, h);
   // selection overlay (screen space): a translucent wash + ring so the whole
   // multi-selection is unmistakable regardless of node colour. Active node is
-  // bolder than the other selected ones (two-tier feedback).
+  // bolder than the other selected ones (two-tier feedback). Drawn in EVERY
+  // window: the selection is a fact about the graph, not about a gesture.
   if (selectedIds.size) {
-    const vp = viewport();
-    const dpr = window.devicePixelRatio || 1;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.save();
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    c.save();
     for (const id of selectedIds) {
       const sn = s.byId.get(id);
       // BUGFIX-PDG · a collapsed-to-tablet PDG has no box on the canvas — the
@@ -1389,58 +1483,78 @@ function draw(): void {
       const bw = sn.w * vp.scale + 6;
       const bh = sn.h * vp.scale + 6;
       const active = id === selectedId;
-      ctx.fillStyle = active ? "rgba(31,111,235,0.22)" : "rgba(91,155,240,0.15)";
-      ctx.strokeStyle = active ? "#1F6FEB" : "#5b9bf0";
-      ctx.lineWidth = active ? 3 : 2;
-      ctx.fillRect(x, y, bw, bh);
-      ctx.strokeRect(x, y, bw, bh);
+      c.fillStyle = active ? "rgba(31,111,235,0.22)" : "rgba(91,155,240,0.15)";
+      c.strokeStyle = active ? "#1F6FEB" : "#5b9bf0";
+      c.lineWidth = active ? 3 : 2;
+      c.fillRect(x, y, bw, bh);
+      c.strokeRect(x, y, bw, bh);
     }
-    ctx.restore();
+    c.restore();
   }
   // AUX2 volatile overlay (screen space): a dashed accent-blue ring around every
   // mapped-but-not-baked node, so a volatile node is unmistakable on the canvas
   // regardless of its own colour — the SAME state the EM-Data table paints blue
   // (single source of truth: the VOLATILE_KEY marker read via isVolatile).
   if (store) {
-    const vp = viewport();
-    const dpr = window.devicePixelRatio || 1;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.save();
-    ctx.strokeStyle = "#4c8dff";
-    ctx.lineWidth = 2;
-    ctx.setLineDash([6, 4]);
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    c.save();
+    c.strokeStyle = "#4c8dff";
+    c.lineWidth = 2;
+    c.setLineDash([6, 4]);
     for (const sn of s.nodes) {
       if (sn.collapsed || !isVolatile(store.node(sn.id))) continue;
-      ctx.strokeRect(
+      c.strokeRect(
         sn.x * vp.scale + vp.x - 3,
         sn.y * vp.scale + vp.y - 3,
         sn.w * vp.scale + 6,
         sn.h * vp.scale + 6,
       );
     }
-    ctx.setLineDash([]);
-    ctx.restore();
+    c.setLineDash([]);
+    c.restore();
   }
-  if (marquee) {
-    const vp = viewport();
-    const dpr = window.devicePixelRatio || 1;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    const ax = marquee.x0 * vp.scale + vp.x;
-    const ay = marquee.y0 * vp.scale + vp.y;
-    const bx = marquee.x1 * vp.scale + vp.x;
-    const by = marquee.y1 * vp.scale + vp.y;
+  // …and the one thing that belongs to a HAND rather than to the document
+  if (live?.marquee) {
+    const m = live.marquee;
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const ax = m.x0 * vp.scale + vp.x;
+    const ay = m.y0 * vp.scale + vp.y;
+    const bx = m.x1 * vp.scale + vp.x;
+    const by = m.y1 * vp.scale + vp.y;
     const rx = Math.min(ax, bx),
       ry = Math.min(ay, by),
       rw = Math.abs(bx - ax),
       rh = Math.abs(by - ay);
-    ctx.save();
-    ctx.fillStyle = "rgba(31,111,235,0.12)";
-    ctx.strokeStyle = "#1F6FEB";
-    ctx.lineWidth = 1;
-    ctx.setLineDash([4, 3]);
-    ctx.fillRect(rx, ry, rw, rh);
-    ctx.strokeRect(rx, ry, rw, rh);
-    ctx.restore();
+    c.save();
+    c.fillStyle = "rgba(31,111,235,0.12)";
+    c.strokeStyle = "#1F6FEB";
+    c.lineWidth = 1;
+    c.setLineDash([4, 3]);
+    c.fillRect(rx, ry, rw, rh);
+    c.strokeRect(rx, ry, rw, rh);
+    c.restore();
+  }
+}
+
+/**
+ * Repaint every graph window on screen.
+ *
+ * Kept under the name `draw()` because fifty-nine call sites in this file mean
+ * exactly this — "the picture changed, show it" — and they were never about one
+ * canvas. THE CALLER is where the focus is read, and reading it here is what
+ * keeps `paintGraphWindow` free of it: the gesture state is module-wide because
+ * there is one pointer (see `wireGraphCanvas`), so it belongs to one window, and
+ * naming that window is a fact rather than a second drawing path.
+ */
+function draw(): void {
+  const liveId = activeWin().id;
+  const gesture: LiveGesture = {
+    hoverId, hoverEdgeIdx, connect,
+    insertBoundary: view === "matrix" ? hoverInsertBoundary : null,
+    marquee,
+  };
+  for (const g of graphMounts()) {
+    g.paint(g.winId === liveId ? gesture : null);
   }
 }
 
@@ -2474,7 +2588,6 @@ function setMode(m: CentralMode): void {
   updateWindowHeader();
   // WIN5 · entering a CANVAS mode also puts the canvas back in front: the other
   // surfaces belong to their window types, not to a mode.
-  if (win.type === "graph") applyWindowSurface("graph");
   // HDR1 · the "Edit" affordance does NOT come back to the master header here.
   // Writing is a mode of a NARRATIVE WINDOW (the ✎ toggle in that window's
   // header, `buildAreaHeader`), and the master header belongs to no window — an
@@ -2624,7 +2737,7 @@ function wireStore(s: DocumentStore): void {
     nodeList.refresh();
     refreshEMTree();          // node/edge counts and the dirty dot live there
     renderEmData();           // every mounted EM-Data table is a live view of it
-    refreshTileSurfaces();    // WIN7 · and so is every secondary area
+    refreshTileSurfaces();    // WIN7 · …and so is every other window on screen
     draw();
   });
   // forward local graph mutations to a connected peer (op-log, ADR-002 §2).
@@ -4898,7 +5011,7 @@ function buildPaletteForMode(host: HTMLElement, win: Win): void {
     // panel: every mounted palette shows it, so two Graph windows with their
     // panels open never disagree about what you are holding.
     for (const p of paletteUis) p.setActive(placingType ? (placingKind ? key : t) : null);
-    canvas.classList.toggle("placing", !!placingType);
+    setCanvasCursor("placing", !!placingType);
     if (placingType) {
       const what = placingKind ?? placingType;
       hintBar.textContent = `Click the canvas to place a ${what} — Esc to cancel`;
@@ -4984,7 +5097,7 @@ function setResourcesOpen(win: Win, open: boolean): void {
   setWinCurrent(win, "resources", open ? true : null);
   renderTiles(); // the panel is part of the area: the tree re-lays out with it
   requestAnimationFrame(() => {
-    resizeCanvas();
+    draw();
     draw();
   });
 }
@@ -5035,13 +5148,10 @@ function buildResourcePanel(area: HTMLElement, win: Win): void {
  *  must not cost a re-tile. */
 function renderResourcePanels(): void {
   paletteUis.length = 0;
-  for (const area of [
-    ...document.querySelectorAll<HTMLElement>(".tile-area"),
-    canvasWrapEl,
-  ]) {
+  for (const area of document.querySelectorAll<HTMLElement>(".tile-area")) {
     const panel = area.querySelector<HTMLElement>(":scope > .win-resources");
     if (!panel) continue;
-    const id = area === canvasWrapEl ? wrapOwnerId : area.dataset.win;
+    const id = area.dataset.win;
     const win = windowsOf().find((w) => w.id === id);
     const provider = win && RESOURCE_PROVIDERS[win.type];
     if (!win || !provider) continue;
@@ -5107,7 +5217,7 @@ function cancelPlacing(): void {
   placingKind = null;
   placingIsResource = false;
   for (const p of paletteUis) p.setActive(null);
-  canvas.classList.remove("placing");
+  setCanvasCursor("placing", false);
   hintBar.classList.add("hidden");
 }
 
@@ -5185,16 +5295,17 @@ const nodeList = {
   setSelected: (id: string | null): void => selectInSurfaces("emtree", id),
 };
 
-const overview = buildOverview(
-  document.getElementById("overview") as HTMLCanvasElement,
-  (wx, wy) => {
-    const vp = viewport();
-    const { w, h } = viewSize();
-    vp.x = w / 2 - wx * vp.scale;
-    vp.y = h / 2 - wy * vp.scale;
-    draw();
-  },
-);
+/*
+ * GONE (15 set 2026) · the ONE overview.
+ *
+ * The last singleton overlay: a minimap built at boot around `#overview`, which
+ * lived inside `#canvas-wrap` and therefore answered «where am I» for whichever
+ * window happened to have the focus. It is per instance now — `mountGraphCanvas`
+ * builds one into each graph area — and the choice is worth stating because the
+ * prompt offered the other one: an overlay that follows the focus is an overlay
+ * that does not know whose it is, and for three nights running that has been the
+ * seed of the next twin. A minimap belongs to the picture it is a map of.
+ */
 
 /**
  * DAG · the store THIS CANVAS writes to.
@@ -5506,7 +5617,7 @@ function handleDrop(nodeId: string, wx: number, wy: number): boolean {
 // ---------- connect (edge drawing with live socket validation) ----------
 function beginConnect(fromId: string): void {
   connect = { fromId, x: 0, y: 0, targetId: null, validity: null };
-  canvas.classList.add("connecting");
+  setCanvasCursor("connecting", true);
 }
 
 function updateConnect(wx: number, wy: number): void {
@@ -5535,7 +5646,7 @@ function finishConnect(forceCreate = false): void {
   if (!connect || !store) return;
   const { fromId, targetId, validity, x, y } = connect;
   connect = null;
-  canvas.classList.remove("connecting");
+  setCanvasCursor("connecting", false);
   draw();
   // Dropped in the void → offer to CREATE a target node. Hold Shift/Alt to
   // FORCE this even when the drop lands on a node or (often) inside a
@@ -5651,9 +5762,9 @@ function showEdgeMenu(
   const t = s.byId.get(target)!;
   const vp = viewport();
   edgeMenu.style.left =
-    Math.min((t.x + t.w) * vp.scale + vp.x + 10, wrap.clientWidth - 240) + "px";
+    Math.min((t.x + t.w) * vp.scale + vp.x + 10, liveArea().clientWidth - 240) + "px";
   edgeMenu.style.top =
-    Math.min(t.y * vp.scale + vp.y, wrap.clientHeight - 40 * (types.length + 2)) +
+    Math.min(t.y * vp.scale + vp.y, liveArea().clientHeight - 40 * (types.length + 2)) +
     "px";
   edgeMenu.classList.remove("hidden");
 }
@@ -5815,11 +5926,11 @@ function showCreateNodeMenu(fromId: string, wx: number, wy: number): void {
     setTimeout(() => search.focus(), 0);
   }
   const vp = viewport();
-  const sx = Math.min(wx * vp.scale + vp.x, wrap.clientWidth - 244);
-  const sy = Math.min(wy * vp.scale + vp.y, wrap.clientHeight - 280);
+  const sx = Math.min(wx * vp.scale + vp.x, liveArea().clientWidth - 244);
+  const sy = Math.min(wy * vp.scale + vp.y, liveArea().clientHeight - 280);
   menu.style.left = Math.max(4, sx) + "px";
   menu.style.top = Math.max(4, sy) + "px";
-  wrap.appendChild(menu);
+  liveArea().appendChild(menu);
   createMenuEl = menu;
   document.addEventListener("pointerdown", onCreateMenuOutside, true);
   document.addEventListener("keydown", onCreateMenuKey, true);
@@ -5981,11 +6092,11 @@ function openQualiaPicker(nodeId: string, wx: number, wy: number): void {
   search.addEventListener("input", () => render(search.value));
   render("");
   const vp = viewport();
-  const sx = Math.min(wx * vp.scale + vp.x, wrap.clientWidth - 264);
-  const sy = Math.min(wy * vp.scale + vp.y, wrap.clientHeight - 340);
+  const sx = Math.min(wx * vp.scale + vp.x, liveArea().clientWidth - 264);
+  const sy = Math.min(wy * vp.scale + vp.y, liveArea().clientHeight - 340);
   menu.style.left = Math.max(4, sx) + "px";
   menu.style.top = Math.max(4, sy) + "px";
-  wrap.appendChild(menu);
+  liveArea().appendChild(menu);
   vocabMenuEl = menu;
   setTimeout(() => search.focus(), 0);
   document.addEventListener("pointerdown", onVocabOutside, true);
@@ -10270,96 +10381,118 @@ function reflectWorkspaceInBar(id: WorkspaceId): void {
 
 // ── WIN5 · the tiled shell ──────────────────────────────────────────────────
 //
-// The split tree (workspace.ts) is rendered as nested flex boxes into
-// `#tile-root`. The ACTIVE window's area is the real `#canvas-wrap` — the
-// canvas, its docked bar and every overlay stay exactly where they were, so all
-// of the editing machinery is untouched. Every OTHER area is a light secondary
-// area: its own docked bar plus a canvas that draws that window's projection
-// with that window's camera, read-only. Clicking a secondary area makes it
-// active, which moves `#canvas-wrap` into it — so the editable window is
-// wherever you last clicked, and there is still exactly one editor.
+// The split tree (`workspace.ts`) becomes RECTANGLES (`shell/layout.ts`), and
+// every window owns one area, created once and never re-parented. An area's
+// content is built by its type's constructor (`shell/types.ts`) — the same one
+// whether or not the window has the focus.
 //
-// Declared limit: secondary areas are a live VIEW, not a second editor (no
-// selection, no drag). Promoting one is a click.
+// THE THIRD FALSE COMMENT (15 set 2026), and it was this one. It read: «The
+// ACTIVE window's area is the real `#canvas-wrap` […] Every OTHER area is a
+// light secondary area […] read-only. Clicking a secondary area makes it
+// active, which moves `#canvas-wrap` into it — so the editable window is
+// wherever you last clicked, and there is still exactly one editor.» And below
+// it: «Declared limit: secondary areas are a live VIEW, not a second editor (no
+// selection, no drag).»
+//
+// Every sentence of that was true when it was written and false by tonight —
+// and it was the module's own header, the first thing anybody reading this file
+// would meet. A comment that outlives the thing it describes does not go stale
+// quietly: it teaches the next person a shape of the program that is no longer
+// there, and they build against it. There is no privileged area, no secondary
+// one, no promoting click and no single editor: every graph window has its
+// canvas, its camera, its minimap and the same ten gestures.
 
 const tileRoot = document.getElementById("tile-root")!;
-// The live area, captured ONCE: `renderTiles` detaches it before rebuilding the
-// tree, and a detached element is no longer findable by id — looking it up
-// afterwards returned null and left the app with no canvas at all.
-const canvasWrapEl = document.getElementById("canvas-wrap")!;
-/** canvases of the secondary areas, by window id — redrawn with the main draw */
-const tileCanvases = new Map<string, HTMLCanvasElement>();
 
-/** The node the pointer is over in a SECONDARY area, per area. Hovering has to
- *  work before an area is promoted — otherwise "is that the node I want?" can
- *  only be answered by clicking, which is the thing you were trying to decide. */
-const tileHover = new Map<string, string | null>();
+/**
+ * THE GRAPH WINDOWS ON SCREEN, each with its own canvas, camera and minimap.
+ *
+ * This map is what `tileCanvases` used to be, and the difference is everything:
+ * that one held the READ-ONLY twins of the one real canvas, and this one holds
+ * editors. `paint(live)` is the whole interface — the surface mounts it, `draw()`
+ * runs it, and nothing else needs to know how a graph window is built.
+ */
+interface GraphMount {
+  winId: string;
+  cv: HTMLCanvasElement;
+  paint: (live: LiveGesture | null) => void;
+}
+const graphWindows = new Map<string, GraphMount>();
+function graphMounts(): GraphMount[] {
+  return [...graphWindows.values()].filter((g) => g.cv.isConnected);
+}
 
-/** Draw one secondary area: same renderer, that window's scene and camera. */
-function drawTile(winId: string, mode: ViewKind, cv: HTMLCanvasElement): void {
-  const dpr = window.devicePixelRatio || 1;
-  const w = cv.clientWidth || 1;
-  const h = cv.clientHeight || 1;
-  cv.width = Math.max(1, Math.round(w * dpr));
-  cv.height = Math.max(1, Math.round(h * dpr));
-  const c = cv.getContext("2d");
-  if (!c) return;
-  const s = scenes[mode] ?? null;
-  const vp = viewportFor(winId, mode);
-  if (!s) {
-    c.setTransform(dpr, 0, 0, dpr, 0, 0);
-    c.clearRect(0, 0, w, h);
-    return;
-  }
-  // Frame it the first time this area shows this document (same rule as the
-  // main canvas, so a new area never opens on a blank patch of coordinates) —
-  // and RE-frame it when the area changes size under a camera the user never
-  // touched. A camera aimed at a full-width window and then squeezed into a
-  // quarter of it leaves the graph as a speck in the corner: technically live,
-  // in practice an empty area, which is the thing WIN7 exists to end.
-  const key = viewportKey(winId, mode);
-  const size = `${Math.round(w)}x${Math.round(h)}`;
-  if (!framedViews.has(key)) {
-    framedViews.add(key);
-    vp.fit(sceneBounds(s), w, h);
-    framedSizes.set(key, size);
-  } else if (framedSizes.get(key) !== size && !touchedViews.has(key)) {
-    vp.fit(sceneBounds(s), w, h);
-    framedSizes.set(key, size);
-  }
-  render(
-    c,
-    s,
-    vp,
-    {
-      // a secondary area shows the SAME selection as the document (selection is
-      // a fact about the graph, not about a window) and its own hover
-      hoverId: tileHover.get(winId) ?? null,
-      selectedId,
-      selectedIds,
-      edgeVisible,
-      hoverEdgeIdx: null,
-      selectedEdgeIdx: -1,
-      filterKey: "all",
-      connect: null,
-      editable: false,
-      insertBoundary: null,
-      monochrome,
-      nameStatus,
+/**
+ * Build a graph window's canvas: wire its ten gestures, give it its own minimap,
+ * and hand back what `draw()` needs.
+ *
+ * `#canvas` and `#overview` were singletons in the markup until tonight, and
+ * `#canvas-wrap` was the area they lived in — the area that FOLLOWED THE FOCUS.
+ * Both are per instance now, which is what finally lets `WRAP_TYPES` be empty.
+ */
+function mountGraphCanvas(cv: HTMLCanvasElement, mini: HTMLCanvasElement,
+                          win: Win): GraphMount {
+  const winId = win.id;
+  wireGraphCanvas(cv, winId);
+  // …and its own minimap. Per instance rather than "one that follows the focus":
+  // an overlay that does not know whose it is was, three nights running, the
+  // seed of the next twin. Its click moves THIS window's camera.
+  const overview = buildOverview(mini, (wx, wy) => {
+    const w = cv.clientWidth || 1;
+    const h = cv.clientHeight || 1;
+    const vp = viewportFor(winId, graphModeOf(winId));
+    vp.x = w / 2 - wx * vp.scale;
+    vp.y = h / 2 - wy * vp.scale;
+    draw();
+  });
+  const mount: GraphMount = {
+    winId,
+    cv,
+    paint: (live) => {
+      const mode = graphModeOf(winId);
+      paintGraphWindow({
+        winId, cv, mode,
+        // the hypergraph context belongs to the window that entered it, and the
+        // context scene is the app's one — so a window in context draws it and
+        // every other draws its own projection
+        scene: live && inContext() ? contextScene : (scenes[mode] ?? null),
+        vp: live && inContext() ? contextViewport : viewportFor(winId, mode),
+        live,
+        overview,
+      });
     },
-    w,
-    h,
-  );
+  };
+  graphWindows.set(winId, mount);
+  return mount;
 }
 
-/** Redraw every secondary area (the active one is drawn by `draw`). */
-function drawTiles(): void {
-  for (const [winId, cv] of tileCanvases) {
-    const win = windowsOf().find((x) => x.id === winId);
-    if (!win) continue;
-    drawTile(winId, win.type === "graph" ? winMode(win) : "matrix", cv);
-  }
+/** Which projection a graph window is showing. */
+function graphModeOf(winId: string): ViewKind {
+  const win = windowsOf().find((w) => w.id === winId);
+  return win && win.type === "graph" ? winMode(win) : "matrix";
 }
+
+function unmountGraphCanvas(winId: string): void {
+  graphWindows.delete(winId);
+}
+/*
+ * GONE (15 set 2026) · `tileCanvases` and `tileHover`.
+ *
+ * The canvases of the SECONDARY areas — the read-only twins — and the node each
+ * of them had the pointer over. Both are `graphWindows` now, one map of real
+ * editors, and the hover is the module's one `hoverId`, because there is one
+ * pointer (`wireGraphCanvas`).
+ */
+
+/*
+ * GONE (15 set 2026) · `drawTile()` and `drawTiles()`.
+ *
+ * `drawTile` was the SECOND drawing: the same renderer, the same scene, the same
+ * camera — and no interaction state, because a secondary area was declared "a
+ * live VIEW, not a second editor". That declaration was the last shape the
+ * privileged area took. There is one painter now (`paintGraphWindow`), and
+ * `draw()` runs it over every graph window.
+ */
 
 // ── WIN5 · the corner gesture (Blender) ─────────────────────────────────────
 //
@@ -10379,15 +10512,9 @@ function drawTiles(): void {
 
 /** The area element under a point, and the window it holds. */
 function areaAt(x: number, y: number): { el: HTMLElement; winId: string } | null {
-  const areas: { el: HTMLElement; winId: string }[] = [
-    // …the wrap only when it HAS an owner: parked and hidden its rectangle
-    // collapses to 0×0 at the origin, which a hit test would happily match.
-    ...(wrapOwnerId ? [{ el: canvasWrapEl, winId: wrapOwnerId }] : []),
-    ...[...document.querySelectorAll<HTMLElement>(".tile-area")].map((el) => ({
-      el,
-      winId: el.dataset.win ?? "",
-    })),
-  ];
+  // every area, and there is no longer a special one to add on the side
+  const areas = [...document.querySelectorAll<HTMLElement>(".tile-area")].map(
+    (el) => ({ el, winId: el.dataset.win ?? "" }));
   for (const a of areas) {
     const r = a.el.getBoundingClientRect();
     if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return a;
@@ -10485,11 +10612,16 @@ function addCornerGrips(area: HTMLElement, winId: string, barOffset: string): vo
 // area and it only changes owner when the focus moves between two of THOSE
 // types. That residual migration is the graph's, and it is the next step.
 
-/** The types still drawn by the singleton wrap — the ones NOT converted. Named
- *  here, in one list, so the boundary of the conversion is readable rather than
- *  deducible from a fall-through. */
-const WRAP_TYPES: WindowType[] = ["graph"];
-const needsWrap = (type: WindowType): boolean => WRAP_TYPES.includes(type);
+/*
+ * GONE (15 set 2026) · `WRAP_TYPES` and `needsWrap()`.
+ *
+ * The list of types still drawn by the singleton wrap. Five members on
+ * 12 September, three on the 13th, one on the 14th, none tonight — and a list
+ * with no members is not a shorter privilege, it is none. `check-surfaces.mjs`
+ * asserts the same thing from the other side: every `WindowType` declared in
+ * `workspace.ts` has an entry in the surface registry, with no exceptions left
+ * to print.
+ */
 
 /** One area per window, for the lifetime of the window. */
 const winAreas = new Map<string, HTMLElement>();
@@ -10501,12 +10633,7 @@ const dividerInfo = new WeakMap<HTMLElement, DividerRect>();
 /** The rectangle last written to each element: a re-layout that changes nothing
  *  writes nothing, which is what makes `positionAreas` safe to call often. */
 const lastRects = new WeakMap<HTMLElement, Rect>();
-/** The window whose area IS `#canvas-wrap`. NOT the focused window — that
- *  distinction is the whole of tonight. Its TYPE is kept too, so a window
- *  transformed in place (Graph → Narrative) re-mounts while a window that only
- *  gained the focus does not. */
-let wrapOwnerId: string | null = null;
-let wrapOwnerType: WindowType | null = null;
+
 
 /** Wire an area's own gestures. Called ONCE per window: these listeners outlive
  *  every arrangement change, because the element does. */
@@ -10521,49 +10648,23 @@ function createArea(winId: string): HTMLElement {
   bar.className = "tile-bar win-header";
   area.appendChild(bar);
   const winNow = (): Win | undefined => windowsOf().find((w) => w.id === winId);
-  const modeOf = (): ViewKind => {
-    const w = winNow();
-    return w && w.type === "graph" ? winMode(w) : "matrix";
-  };
-  const worldAt = (e: { clientX: number; clientY: number }) => {
-    const cv = tileCanvases.get(winId);
-    const vp = viewportFor(winId, modeOf());
-    if (!cv) return null;
-    const r = cv.getBoundingClientRect();
-    return vp.toWorld(e.clientX - r.left, e.clientY - r.top);
-  };
-  area.addEventListener(
-    "wheel",
-    (e) => {
-      const cv = tileCanvases.get(winId);
-      if (!cv) return;
-      e.preventDefault();
-      const r = cv.getBoundingClientRect();
-      markCameraTouched(winId, modeOf()); // aimed by hand: never re-frame it
-      viewportFor(winId, modeOf()).zoomAt(
-        e.clientX - r.left,
-        e.clientY - r.top,
-        Math.exp(-e.deltaY * 0.0016),
-      );
-      drawTiles();
-    },
-    { passive: false },
-  );
-  area.addEventListener("pointermove", (e) => {
-    const w = worldAt(e);
-    const sc = scenes[modeOf()] ?? null;
-    const hit = w && sc ? hitTest(sc, w.x, w.y) : null;
-    const now = hit?.id ?? null;
-    if (tileHover.get(winId) === now) return;
-    tileHover.set(winId, now);
-    area.style.cursor = now ? "pointer" : "default";
-    drawTiles();
-  });
-  area.addEventListener("pointerleave", () => {
-    if (tileHover.get(winId) == null) return;
-    tileHover.set(winId, null);
-    drawTiles();
-  });
+  /*
+   * GONE (15 set 2026) · the area's own `wheel`, `pointermove` and
+   * `pointerleave`, and the `worldAt` they shared.
+   *
+   * They were the interaction of a SECONDARY GRAPH AREA — a read-only twin that
+   * could zoom and hover but not drag, because the ten real gestures were bound
+   * to the one `#canvas`. Every graph window has those ten wired to its own
+   * canvas now (`wireGraphCanvas`), and the canvas is a CHILD of this area: its
+   * events bubble here. So these handlers had stopped being a limited second
+   * machine and become a DUPLICATE one — a wheel would zoom twice, and the
+   * area's `pointerdown` would clear the selection a moment after the canvas's
+   * had started a drag.
+   *
+   * Found by the inventory, not by the screen: `tileCanvases` and `tileHover`
+   * were the two names of §3 still standing, and following them here is what
+   * showed the twin was alive.
+   */
   // ── FOCUS FOLLOWS MOUSE (Blender) ───────────────────────────────────────
   //
   // The editor moves to the area the pointer is IN, before any button is
@@ -10616,71 +10717,24 @@ function createArea(winId: string): HTMLElement {
       else void addFileToShelf(resource);
       return;
     }
-    const p = paletteDragPayload(e);
-    if (!p) return;
-    e.preventDefault();
-    if (!store) {
-      toast("Open a document first");
-      return;
-    }
-    const wpt = worldAt(e);
-    selectWindow(winId);
-    placingType = p.nodeType;
-    placingKind = p.kind ?? null;
-    placingIsResource = !!p.isResource;
-    if (wpt) placeNode(wpt.x, wpt.y);
-    else cancelPlacing();
+    // …and a PALETTE drop is the canvas's (`wireGraphCanvas`), which knows where
+    // in the graph the pointer was. The area used to catch it because a
+    // secondary area had no live canvas to catch it with.
   });
-  area.addEventListener("pointerdown", (e) => {
-    // PAN, same gesture as the canvas (middle button or Space held): this moves
-    // a CAMERA, not the document, so it must NOT steal the focus.
-    if (e.button === 1 || spaceHeld) {
-      e.preventDefault();
-      markCameraTouched(winId, modeOf());
-      const vp = viewportFor(winId, modeOf());
-      let lx = e.clientX;
-      let ly = e.clientY;
-      const move = (ev: PointerEvent): void => {
-        vp.x += ev.clientX - lx;
-        vp.y += ev.clientY - ly;
-        lx = ev.clientX;
-        ly = ev.clientY;
-        drawTiles();
-      };
-      const up = (): void => {
-        window.removeEventListener("pointermove", move);
-        window.removeEventListener("pointerup", up);
-      };
-      window.addEventListener("pointermove", move);
-      window.addEventListener("pointerup", up);
-      return;
-    }
-    // A press that reaches HERE means the pointer entered without the focus
-    // following (mid-drag, or placing a node): take the focus now and resolve the
-    // click in this area's own camera, so nothing is lost.
-    const wpt = worldAt(e);
-    const sc = scenes[modeOf()] ?? null;
-    const hit = wpt && sc ? hitTest(sc, wpt.x, wpt.y) : null;
-    selectWindow(winId);
-    select(hit ? hit.id : null);
-  });
+  /*
+   * GONE (15 set 2026) · the area's own `pointerdown`.
+   *
+   * Its two halves were «pan this area's camera» and «take the focus and resolve
+   * the click here» — the second one written on 12 September when the click
+   * reaching a secondary area had nowhere better to go. Both belong to the
+   * canvas, which every graph window now has and which handles them for real
+   * (pan with the middle button or Space, and a press that selects, drags or
+   * starts a connector). Leaving this one would mean every press in a graph
+   * window ran twice, the second time clearing what the first had begun.
+   */
   tileRoot.appendChild(area);
   return area;
 }
-
-// ── the wrap is an AREA now, so it needs an area's gestures ─────────────────
-//
-// Found by measuring, not by reading: `#canvas-wrap` used to BE the focused area
-// by definition, so nothing ever had to give it the focus. Since it belongs to
-// its owner rather than to the focus, a pointer coming back into the graph from
-// the table beside it had nothing to tell — the focus stayed on the table while
-// the cursor sat on the canvas. One listener, the same rule and the same guards
-// as every other area's.
-canvasWrapEl.addEventListener("pointerenter", () => {
-  if (dragMode !== "none" || connect || placingType) return;
-  if (!wrapOwnerId || activeWin().id === wrapOwnerId) return;
-  selectWindow(wrapOwnerId);
-});
 
 /** This window's area, created on first sight and kept. */
 function areaFor(win: Win): HTMLElement {
@@ -10699,14 +10753,6 @@ function syncAreaContent(area: HTMLElement, win: Win): void {
   if (area.dataset.surfaceType === win.type) return;
   clearAreaContent(area, win.id);
   area.dataset.surfaceType = win.type;
-  if (win.type === "graph") {
-    // FOCUS-NOJITTER / STEP A · the width the panel takes is published on the
-    // AREA (`--palette-w`) and the canvas reads it in CSS, in every area alike.
-    const cv = document.createElement("canvas");
-    area.appendChild(cv);
-    tileCanvases.set(win.id, cv);
-    return;
-  }
   // ONE constructor, for every type and every area, focused or not
   // (`shell/types.ts`). There is no `else` any more: a window type with no
   // registered surface is a bug the fence catches (`check-focus-parity.mjs`
@@ -10718,8 +10764,7 @@ function syncAreaContent(area: HTMLElement, win: Win): void {
 /** Everything an area holds that belongs to its TYPE — the bar and the grips
  *  belong to the area itself and stay. */
 function clearAreaContent(area: HTMLElement, winId: string): void {
-  unmountSurface(winId);
-  tileCanvases.delete(winId);
+  unmountSurface(winId);   // …which, for a graph, unwires its canvas too
   // (a panel used to be sent home here before its box was destroyed: it was one
   //  element, so destroying the box destroyed the panel. It is this window's own
   //  now, and `unmountSurface` above has already taken it down.)
@@ -10741,48 +10786,18 @@ function destroyArea(winId: string): void {
   lastRects.delete(area);
 }
 
-/** Which window owns `#canvas-wrap` right now.
+/*
+ * GONE (15 set 2026) · `wrapOwnerFor()` and `setWrapOwner()`.
  *
- *  The focused window when its type still needs the wrap; otherwise the wrap
- *  STAYS with the window that had it, so a graph keeps drawing while you work in
- *  the table beside it. Only a focus moving between two wrap types moves it. */
-function wrapOwnerFor(): string | null {
-  const placed = new Set(paneIds(layoutOf()));
-  const wins = windowsOf().filter((w) => placed.has(w.id));
-  const act = activeWin();
-  if (placed.has(act.id) && needsWrap(act.type)) return act.id;
-  const held = wins.find((w) => w.id === wrapOwnerId && needsWrap(w.type));
-  if (held) return held.id;
-  return wins.find((w) => needsWrap(w.type))?.id ?? null;
-}
-
-/**
- * Hand `#canvas-wrap` to another window — the ONE migration tonight leaves in
- * place, and the only place `FOCUSED_SURFACE_BOXES` is still needed.
+ * `#canvas-wrap` was "the area of the window that owns it", and these two
+ * decided who that was and handed it over. The hand-over was the last migration
+ * left in the app, measured on 14 September at +106/−97 nodes between two graph
+ * windows — every other crossing was already +0/−0.
  *
- * Declared: the narrative and the hosted panels are singleton elements inside
- * the wrap, so their content really does travel. The six converted types never
- * come through here.
+ * There is nothing to own. A graph window builds its own canvas in its own area
+ * like every other type, so a change of focus is two class writes and the wrap
+ * has no owner to change.
  */
-function setWrapOwner(id: string | null): void {
-  const win = windowsOf().find((w) => w.id === id) ?? null;
-  const type = win?.type ?? null;
-  if (wrapOwnerId === id && wrapOwnerType === type) return;
-  const moved = wrapOwnerId !== id;
-  if (moved) {
-    const prev = windowsOf().find((w) => w.id === wrapOwnerId);
-    wrapOwnerId = id;
-    canvasWrapEl.dataset.win = id ?? "";
-    canvasWrapEl.classList.toggle("hidden", !id);
-    if (prev) areaFor(prev);   // it needs an area of its own from now on
-    if (id) destroyArea(id);   // …and the new owner's area gives way to the wrap
-  }
-  wrapOwnerType = type;
-  if (!win) return;
-  // what the wrap SHOWS is decided by its owner's type, never by who has the
-  // focus — that is the sentence this whole night is about
-  mountWindow(win);
-}
 
 /** Write a rectangle onto an element — and only when it moved. */
 function placeAt(el: HTMLElement, r: Rect): void {
@@ -10799,7 +10814,7 @@ function positionAreas(): void {
   const root: Rect = { x: 0, y: 0, w: tileRoot.clientWidth, h: tileRoot.clientHeight };
   const { areas, dividers } = layoutRects(layoutOf(), root);
   for (const [id, r] of areas) {
-    const el = id === wrapOwnerId ? canvasWrapEl : winAreas.get(id);
+    const el = winAreas.get(id);
     if (el) placeAt(el, r);
   }
   while (tileDividers.length < dividers.length) {
@@ -10818,8 +10833,8 @@ function positionAreas(): void {
             : (ev.clientX - base.left - info.span.x) / Math.max(1, info.span.w);
         setSplitRatio(info.firstId, r);
         positionAreas();       // four numbers per area — nothing is rebuilt
-        resizeCanvas();
-        drawTiles();
+        draw();
+        draw();
       };
       const up = (): void => {
         div.classList.remove("dragging");
@@ -10844,10 +10859,56 @@ function positionAreas(): void {
 
 /** The focus ring and the input routing, and NOTHING else. */
 function setAreaFocused(winId: string, on: boolean): void {
-  const el = winId === wrapOwnerId ? canvasWrapEl : winAreas.get(winId);
+  const el = winAreas.get(winId);
   if (!el) return;
   el.classList.toggle("tile-active", on);
   surfaceOf(winId)?.setFocused(on);
+  if (!on) return;
+  reflectLiveArea();
+  // THE TWO OVERLAYS OF A CANVAS, which are the whole of what
+  // `applyWindowSurface` had left by tonight. The funnel filters nodes and
+  // connectors and the filter panel lists the circles of detail — both are
+  // questions only a graph window can answer, so on any other they would be
+  // acting on something that is not on screen. This is the one thing a focus
+  // change does besides the ring, and it changes no layout: the panel is an
+  // overlay, and closing one that cannot apply is not a re-arrangement.
+  if (windowsOf().find((w) => w.id === winId)?.type !== "graph"
+      && filterPanelOpen()) closeFilterPanel();
+  refreshFunnel();
+}
+
+/**
+ * WHERE THE FOCUSED AREA IS, published as four numbers on the shell.
+ *
+ * The overlays of the canvas — `+ epoch`, the view-properties button, the
+ * circles-of-detail panel, the chrono banner, the empty-state hint — used to be
+ * children of `#canvas-wrap`, so "the top-left of the canvas" was simply their
+ * own `left: 10px`. With the wrap gone they are children of `#tile-root`, which
+ * is the whole shell, and `left: 10px` would put the epoch button over whichever
+ * area happens to be in the corner.
+ *
+ * So the focused area's rectangle is published, and the CSS places them against
+ * it. The alternative was to move them into the focused window's area on every
+ * focus change — which is `#canvas-wrap` rebuilt under another name, and the
+ * thing three nights of work have been removing. Coordinates instead of
+ * re-parenting is the same choice `positionAreas()` made on 12 September.
+ *
+ * The ones that are NOT canvas overlays keep the shell: a toast, a transient
+ * hint bar and a menu opened at a point belong to the app, not to a window.
+ */
+function reflectLiveArea(): void {
+  const el = winAreas.get(activeWin().id);
+  const root = tileRoot.getBoundingClientRect();
+  const r = el ? el.getBoundingClientRect() : root;
+  const bar = el?.querySelector<HTMLElement>(":scope > .tile-bar");
+  tileRoot.style.setProperty("--live-x", `${Math.round(r.left - root.left)}px`);
+  tileRoot.style.setProperty("--live-y", `${Math.round(r.top - root.top)}px`);
+  tileRoot.style.setProperty("--live-w", `${Math.round(r.width)}px`);
+  tileRoot.style.setProperty("--live-h", `${Math.round(r.height)}px`);
+  tileRoot.style.setProperty("--winbar-h", `${bar?.offsetHeight ?? 0}px`);
+  tileRoot.style.setProperty(
+    "--palette-w",
+    el ? getComputedStyle(el).getPropertyValue("--palette-w").trim() || "0px" : "0px");
 }
 
 /**
@@ -10861,14 +10922,10 @@ function renderTiles(): void {
   // Any menu open right now belongs to a bar that is about to be rebuilt.
   closeAllDropdowns();
   closeAllSubmenus();
-  setWrapOwner(wrapOwnerFor());
   const placed = paneIds(layoutOf());
   const keep = new Set(placed);
-  for (const id of [...winAreas.keys()]) {
-    if (!keep.has(id) || id === wrapOwnerId) destroyArea(id);
-  }
+  for (const id of [...winAreas.keys()]) if (!keep.has(id)) destroyArea(id);
   for (const id of placed) {
-    if (id === wrapOwnerId) continue;
     const win = windowsOf().find((w) => w.id === id);
     if (win) areaFor(win);
   }
@@ -10883,20 +10940,13 @@ function renderTiles(): void {
     buildResourcePanel(area, win);
     addCornerGrips(area, id, "var(--winbar-h, 0px)");
   }
-  const ownerWin = windowsOf().find((w) => w.id === wrapOwnerId);
-  canvasWrapEl.querySelectorAll(".tile-corner, .win-resources, .win-res-chevron")
-    .forEach((g) => g.remove());
-  if (ownerWin) {
-    buildResourcePanel(canvasWrapEl, ownerWin);
-    addCornerGrips(canvasWrapEl, ownerWin.id, "var(--winbar-h, 0px)");
-  }
   positionAreas();
   renderAreaHeaders();
+  reflectLiveArea();
   renderEmData();
   renderStorage();
   refreshTileSurfaces();
-  resizeCanvas();
-  drawTiles();
+  draw();
   setAreaFocused(activeWin().id, true);
   for (const id of placed) if (id !== activeWin().id) setAreaFocused(id, false);
 }
@@ -11000,7 +11050,7 @@ function revealFromTable(nodeId: string): void {
   // a question about one row, not a decision to leave
   setActiveWin(previous);
   draw();
-  drawTiles();
+  draw();
 }
 
 /** The narrative this window is showing (the selected one, else the first). */
@@ -11073,29 +11123,6 @@ const TRANSFORM_TYPES: WindowType[] = [
  * visible, and this is the only place that decides — a window type maps to a
  * surface, and nothing else touches their visibility.
  */
-/**
- * What the WRAP shows — and by 14 September that is the graph, or nothing.
- *
- * It used to be the one place that decided which SINGLETON was lit, with a line
- * per window type: eight `show()` calls, one for each surface only the focused
- * window could use. Every night of this series took lines out of it, and what is
- * left is not about surfaces at all — it is about the two OVERLAYS of the canvas
- * (the map that answers "where am I", and the funnel that filters what is on
- * it), which belong to a graph window and to no other.
- *
- * Kept under its old name because nine call sites still mean exactly this: "the
- * wrap now belongs to a window of that type".
- */
-function applyWindowSurface(type: WindowType): void {
-  // The overview map answers "where am I on the canvas", and the funnel filters
-  // NODES AND CONNECTORS — both are questions only a canvas window has. On a
-  // table or a document they would act on something that is not on screen.
-  const isCanvasWindow = type === "graph";
-  document.getElementById("overview")?.classList.toggle("hidden", !isCanvasWindow);
-  if (!isCanvasWindow && filterPanelOpen()) closeFilterPanel();
-  refreshFunnel();
-}
-
 // ── WIN5 · the Doc window ───────────────────────────────────────────────────
 //
 // "Doc" in an EM graph means the SOURCES: the DocumentNodes the paradata chain
@@ -11281,10 +11308,10 @@ function syncShelfNameInputs(): void {
 /**
  * SURFACE-AUDIT · the shelf's LIST, into any body.
  *
- * Split out for the same reason `renderDocViewInto` was: a shelf window that
- * loses the focus becomes a secondary area, and until this existed that area
- * could only say its own name. One renderer, two mounts — not a second,
- * divergible rendering of the same list.
+ * Split out for the same reason `renderDocViewInto` was: before 12 September a
+ * shelf window that lost the focus could only say its own name. One renderer,
+ * as many mounts as there are Shelf windows — never a second, divergible
+ * rendering of the same list.
  */
 function renderShelfInto(win: Win, body: HTMLElement,
                          count: HTMLElement | null): void {
@@ -12301,10 +12328,11 @@ function renderAnnotator(): void {
  *  node like any other, and drawing it from the graph is what makes "the
  *  annotation is in the graph" visible instead of merely asserted. */
 /**
- * SURFACE-AUDIT · the annotator's PICTURE, into a secondary area's boxes.
+ * SURFACE-AUDIT · the annotator's PICTURE, into the boxes of a window that is
+ * not the one tracing.
  *
- * What an unfocused annotator window can honestly show: the image it is on, and
- * how many regions have been traced on it. Not the overlay — the overlay is a
+ * What such a window can honestly show: the image it is on, and how many
+ * regions have been traced on it. Not the overlay — the overlay is a
  * canvas sized to `#annotator-image` with the draft state of a gesture in
  * progress, and a second one would be a second annotator. This is the picture,
  * so the window is not blank, plus one line saying where the tracing is.
@@ -12959,7 +12987,7 @@ async function commitAnnotation(input: {
     drawAnnotatorOverlay();
     renderAnnotatorPanel();
     draw();
-    drawTiles();
+    draw();
     renderEmData();
     refreshInspector();
     for (const w of payload.warnings ?? []) toast(w);
@@ -15546,27 +15574,21 @@ function refreshTileSurfaces(): void {
  * decides which one. Two Inspector windows side by side are two inspectors.
  */
 
-/** Mount a window's editor in the central area. The ONE place that knows how a
- *  window type becomes something on screen — `applyWorkspace` and the transform
- *  both go through it, so they can never drift apart. */
-function mountWindow(win: Win): void {
-  // The wrap shows its OWNER and nobody else. A converted type has its own area
-  // and never comes through here; a call for a window that does not hold the
-  // wrap would blank the window that does.
-  if (win.id !== wrapOwnerId) return;
-  // The types still bound to a singleton inside the wrap. `narrative` left this
-  // list on 14 September — it was the only one that answered with `setMode`,
-  // because it was the only type that was also a mode.
-  if (win.type === "annotator") {
-    // WIN5 · a real window, not the dock: the surface fills the area. Leave the
-    // canvas mode alone underneath (never the narrative overlay) so switching
-    // back finds the projection you left.
-      applyWindowSurface(win.type);
-    return;
-  }
-  applyWindowSurface("graph");
-  setMode(winMode(win));
-}
+/*
+ * GONE (15 set 2026) · `mountWindow()` and `applyWindowSurface()`.
+ *
+ * `mountWindow` was «the ONE place that knows how a window type becomes
+ * something on screen» — true while a type became something on screen by
+ * lighting a singleton inside the shared wrap. A window type becomes something
+ * on screen by its CONSTRUCTOR now (`shell/types.ts`), in its own area, and
+ * `syncAreaContent` is where that happens.
+ *
+ * `applyWindowSurface` ended as two lines that had nothing to do with surfaces:
+ * it showed the overview and refreshed the funnel, i.e. the two overlays of a
+ * CANVAS window. The overview is per instance since tonight, and the funnel
+ * follows the focus — so both belong to `setAreaFocused`, which is where they
+ * are.
+ */
 
 /** Change the mode of the ACTIVE window (per-instance): record it on the window,
  *  then mount that projection. Another graph window keeps its own mode. */
@@ -15578,31 +15600,21 @@ function setWindowMode(mode: ViewKind): void {
 /**
  * Move the focus to another window.
  *
- * **This function no longer calls `renderTiles()`, and that is the criterion the
- * whole night was measured against.** A focus change is two calls —
- * `setFocused(false)` on the window leaving, `setFocused(true)` on the one
- * arriving — plus, for the types still bound to the singletons inside
- * `#canvas-wrap`, handing the wrap over. Nothing is built, nothing is
- * re-parented, nothing is re-measured: the focus decides where the events go,
- * never what is drawn.
+ * **Two calls and nothing else**, which is where three nights of work end up.
  *
- * The residual, named: `setWrapOwner` runs only when the incoming window is a
- * graph, a narrative, a hosted panel or the annotator AND the wrap is not
- * already its. A move between any of the six converted types — or from one of
- * them to a window whose neighbour holds the wrap — touches four class lists and
- * stops.
+ * It used to be `setActiveWin` + `renderTiles()` — a movement of the pointer
+ * destroying and rebuilding every area (12 September). Then it was that, minus
+ * the rebuild, plus a hand-over of `#canvas-wrap` for the types still bound to
+ * its singletons — measured on the 14th at +106/−97 nodes between two graph
+ * windows. There is no wrap and no hand-over: every window draws itself in its
+ * own area, so the focus does what the focus is for, and the canvas of the
+ * window you just left keeps drawing.
  */
 function selectWindow(winId: string): void {
   const previous = activeWin().id;
   const win = setActiveWin(winId);
-  if (previous !== win.id) setAreaFocused(previous, false);
-  if (needsWrap(win.type) && wrapOwnerId !== win.id) {
-    // the one migration left: its content is a singleton, so it travels
-    setWrapOwner(win.id);
-    positionAreas();
-    renderAreaHeaders();
-    drawTiles();
-  }
+  if (previous === win.id) return;
+  setAreaFocused(previous, false);
   setAreaFocused(win.id, true);
 }
 
@@ -15984,7 +15996,10 @@ function headerModesOf(win: Win): {
         run: () =>
           focusThen(win, () => {
             setWinModeOf(win, m);
-            mountWindow(win);
+            // a mode is a fact about THIS window: record it and repaint. It
+            // used to have to re-mount the shared wrap as well.
+            surfaceOf(win.id)?.refresh();
+            draw();
             renderAreaHeaders();
           }),
       })),
@@ -16277,15 +16292,8 @@ function buildHeaderStrip(win: Win): HTMLElement {
  * area. Same builder, same contents, one dimmed.
  */
 function renderAreaHeaders(): void {
-  const head = document.getElementById("window-header");
-  // `#window-header` is the bar of the window that OWNS the wrap, which since
-  // tonight is not necessarily the focused one — the wrap is the graph's area,
-  // not the focus's.
-  const owner = windowsOf().find((w) => w.id === wrapOwnerId);
-  if (head && owner) {
-    head.innerHTML = "";
-    head.appendChild(buildAreaHeader(owner));
-  }
+  // `#window-header` is gone with `#canvas-wrap`: every area has a `.tile-bar`,
+  // built here by the one builder, and there is no privileged one to do first.
   for (const bar of document.querySelectorAll<HTMLElement>(".tile-area > .tile-bar")) {
     const win = windowsOf().find((w) => w.id === bar.parentElement?.dataset.win);
     if (!win) continue;
@@ -16308,7 +16316,7 @@ function renderAreaHeaders(): void {
   // saying the same thing.
   if (windowsOf().some((w) => w.type === "storage")) renderStorage();
   if (windowsOf().some((w) => w.type === "table")) renderEmData();
-  resizeCanvas();
+  draw();
 }
 
 /** Kept as the name every caller already uses. The header IS rebuilt now rather
@@ -16825,18 +16833,14 @@ function highlightNarrative(query: string): void {
   first?.scrollIntoView({ block: "center", behavior: "auto" });
 }
 
-/** Apply a workspace: mount the editor of its ACTIVE window via the existing
- *  shell. WIN2 · the window decides, not the preset — the preset only seeded the
- *  first window, so a Canvas workspace left in DTC mode reopens in DTC, and one
- *  whose window was transformed into a table reopens as a table. */
-function applyWorkspace(id: WorkspaceId): void {
-  // ONE SURFACE · `mountWindow` only ever acts on the window that holds the wrap
-  // (it returns immediately for any other), and `renderTiles` has already
-  // mounted that one through `setWrapOwner`. This call is what remains of "the
-  // active window becomes the editor": it is now idempotent, and kept because
-  // the boot path reaches here without a workspace switch.
-  mountWindow(activeWin(id));
-}
+/*
+ * GONE (15 set 2026) · `applyWorkspace()`.
+ *
+ * «Mount the editor of its ACTIVE window via the existing shell» — the last
+ * sentence in this file that assumed a workspace HAS an editor, singular.
+ * `renderTiles()` mounts every window of the arrangement in its own area, which
+ * is all a workspace switch ever needed to mean.
+ */
 
 function setWorkspace(id: WorkspaceId): void {
   setActiveWorkspace(id);
@@ -16849,7 +16853,6 @@ function setWorkspace(id: WorkspaceId): void {
   // the tab follows the WORKSPACE and nothing else — mounting an editor never
   // moves it (that is what made a transformed window possible).
   reflectWorkspaceInBar(id);
-  applyWorkspace(id);
 }
 
 /**
@@ -17044,28 +17047,753 @@ const paletteDragPayload = (e: DragEvent): PaletteDragPayload | null => {
     return null; // a foreign drag claiming our MIME is not worth a crash
   }
 };
-canvas.addEventListener("dragover", (e) => {
-  if (!e.dataTransfer?.types?.includes(PALETTE_MIME)) return;
-  e.preventDefault(); // without this the drop event never fires
-  e.dataTransfer.dropEffect = "copy";
-  canvas.classList.add("drop-target");
-});
-canvas.addEventListener("dragleave", () => canvas.classList.remove("drop-target"));
-canvas.addEventListener("drop", (e) => {
-  canvas.classList.remove("drop-target");
-  const p = paletteDragPayload(e);
-  if (!p) return; // not ours (a file drop bubbles on to the window handler)
-  e.preventDefault();
-  if (!store) {
-    toast("Open a document first");
-    return;
+/**
+ * THE TEN GESTURES, wired to ONE window's canvas.
+ *
+ * This is the last privileged area giving itself up. Until tonight these ten
+ * listeners were bound to `#canvas` — the ONE canvas, inside `#canvas-wrap`,
+ * the area that followed the focus — and every other graph area got a
+ * read-only twin drawn by `drawTile()`. So a second graph window could select
+ * (the area took the focus on `pointerenter` and resolved the click in its own
+ * camera, since 12 September) but could not DRAG and could not draw a
+ * CONNECTOR, because those live in here.
+ *
+ * WHAT IS PER-INSTANCE AND WHAT IS NOT, because getting that backwards is the
+ * whole risk of this change:
+ *
+ *  · the ELEMENT is per instance — `canvas` is this function's PARAMETER now,
+ *    and the thirty-eight references below bind to it without one of them
+ *    being edited. That is not a trick: it is the measure of how little of this
+ *    code was ever about "the" canvas rather than "a" canvas;
+ *  · the CAMERA is per instance, and has been since WIN7 — `viewportFor(winId,
+ *    mode)`, `markCameraTouched(winId, mode)`, `tileHover`;
+ *  · the GESTURE STATE is deliberately NOT per instance. `dragMode`, `marquee`,
+ *    `spaceHeld`, `dragNodeId` and the rest stay at module scope, shared by
+ *    every wired canvas, and that is correct rather than convenient: **there is
+ *    one pointer.** Two machines would differ only in holding two half-finished
+ *    gestures at once — a marquee in one area while a connector hangs in the
+ *    other — which no hand can produce. The note of 12 September said this when
+ *    the focus began to follow the mouse; here it is the same sentence, and it
+ *    is what makes ten listeners per window cost nothing to reason about.
+ *
+ * `claim()` is the one thing added to the bodies. Focus-follows-mouse already
+ * puts the focus here before any button is pressed, so for the pointer gestures
+ * it is a no-op — but an HTML5 drag fires no pointer events at all, so a drop
+ * into a window that did not have the focus used to be resolved against another
+ * window's camera. Making it structural rather than incidental also means the
+ * ten gestures can be MEASURED starting from the unfocused window, which is the
+ * only way the claim "this works" is worth anything.
+ */
+function wireGraphCanvas(canvas: HTMLCanvasElement, winId: string): void {
+  /** Take the focus, unless a gesture is already in flight somewhere: a drag
+   *  that crosses a divider must not hand its node to another window. */
+  const claim = (): void => {
+    if (dragMode !== "none" || connect || placingType) return;
+    if (activeWin().id !== winId) selectWindow(winId);
+  };
+
+  function worldPos(e: MouseEvent): { x: number; y: number } {
+    const rect = canvas.getBoundingClientRect();
+    return viewport().toWorld(e.clientX - rect.left, e.clientY - rect.top);
   }
-  placingType = p.nodeType;
-  placingKind = p.kind ?? null;
-  placingIsResource = !!p.isResource;
-  const w = worldPos(e);
-  placeNode(w.x, w.y);
-});
+  canvas.addEventListener("dragover", (e) => {
+    claim();
+    if (!e.dataTransfer?.types?.includes(PALETTE_MIME)) return;
+    e.preventDefault(); // without this the drop event never fires
+    e.dataTransfer.dropEffect = "copy";
+    canvas.classList.add("drop-target");
+  });
+  canvas.addEventListener("dragleave", () => canvas.classList.remove("drop-target"));
+  canvas.addEventListener("drop", (e) => {
+    claim();
+    canvas.classList.remove("drop-target");
+    const p = paletteDragPayload(e);
+    if (!p) return; // not ours (a file drop bubbles on to the window handler)
+    e.preventDefault();
+    if (!store) {
+      toast("Open a document first");
+      return;
+    }
+    placingType = p.nodeType;
+    placingKind = p.kind ?? null;
+    placingIsResource = !!p.isResource;
+    const w = worldPos(e);
+    placeNode(w.x, w.y);
+  });
+  canvas.addEventListener("pointerdown", (e) => {
+    claim();
+    hideEdgeMenu();
+    moved = false;
+    lastX = e.clientX;
+    lastY = e.clientY;
+    // Pan-always gesture, evaluated BEFORE any hit logic: middle mouse button,
+    // or Space held (portable — Mac trackpads have no middle button). With many
+    // hypergraphs covering the canvas there may be no empty space to grab, so
+    // this pans regardless of what is under the cursor.
+    if (e.button === 1 || spaceHeld) {
+      dragMode = "pan";
+      markCameraTouched(activeWin().id, view);
+      canvas.classList.add("panning");
+      canvas.setPointerCapture(e.pointerId);
+      e.preventDefault();
+      return;
+    }
+    // "PD" tag in a lane / band label chip → enter that epoch/phase temporal PDG
+    // (same as double-clicking the old box). Resolved on pointerup as a click.
+    if (!placingType) {
+      const rect = canvas.getBoundingClientRect();
+      const lx = e.clientX - rect.left;
+      const ly = e.clientY - rect.top;
+      // EM-mode "insert epoch" boundary (left strip) takes priority over the
+      // epoch-label select that also lives in the left strip.
+      const ib = insertBoundaryAt(lx, ly);
+      if (ib != null) {
+        insertPending = ib;
+        dragMode = "none";
+        return;
+      }
+      // PD tag first (it sits inside the band chip): click it to ENTER the group
+      const pd = hitPdTag(lx, ly);
+      if (pd) {
+        pdTagPending = pd;
+        dragMode = "none";
+        return;
+      }
+      // "+" quick-add-phase button on an epoch's rail
+      const ap = hitAddPhase(lx, ly);
+      if (ap) {
+        addPhasePending = ap;
+        dragMode = "none";
+        return;
+      }
+      // elsewhere on a phase band label chip: click to SELECT the phase
+      const bl = hitBandLabel(lx, ly);
+      if (bl) {
+        bandSelectPending = bl;
+        dragMode = "none";
+        return;
+      }
+      // BADGE1/DEC1 · ornament badge (author/license/embargo) — SCREEN-space hit,
+      // like the PD tag. A click selects the REAL ornament node (a "+N" overflow
+      // chip carries the referent). Checked before the node hit-test: the badge
+      // sits on the referent's corner and a click there means "edit the ornament".
+      const ab = hitAdornmentBadge(lx, ly);
+      if (ab) {
+        adornmentPending = ab;
+        dragMode = "none";
+        return;
+      }
+      // PD1 · collapsed-PDG tablet (bottom-left) → single click selects the group;
+      // the double click that enters the hypergraph is handled in `dblclick`.
+      const pdd = hitPdDecorator(lx, ly);
+      if (pdd) {
+        pdDecoratorPending = pdd;
+        dragMode = "none";
+        return;
+      }
+    }
+    const s = scene();
+    if (!s) return;
+    const w = worldPos(e);
+    if (placingType) {
+      dragMode = "none";
+      return; // click placement handled on pointerup
+    }
+    // connect handle? The bullet shows on the hovered/selected node always, and
+    // on EVERY node when zoomed in (renderer) — so allow starting a connect from
+    // any node's right-edge handle there, not only the focused one (the handle
+    // sits just outside the body, where hover is otherwise lost).
+    const focus = hoverId ?? selectedId;
+    const fn = focus ? s.byId.get(focus) : null;
+    let handleNode =
+      fn && !fn.collapsed && hitHandle(fn, w.x, w.y, viewport().scale) ? fn : null;
+    if (!handleNode && viewport().scale > 0.5) {
+      for (const n of s.nodes) {
+        if (!n.collapsed && hitHandle(n, w.x, w.y, viewport().scale)) {
+          handleNode = n;
+          break;
+        }
+      }
+    }
+    if (handleNode) {
+      dragMode = "connect";
+      beginConnect(handleNode.id);
+      updateConnect(w.x, w.y);
+      canvas.setPointerCapture(e.pointerId);
+      return;
+    }
+    const hit = hitTest(s, w.x, w.y);
+    if (hit && (view === "matrix" || inContext())) {
+      dragMode = "node";
+      dragNodeId = hit.id;
+      dragStartScene = { x: hit.x, y: hit.y };
+      dragCheckpointed = false;
+      dragSceneDirty = false;
+      // Shift+drag a member node → detach it from its container (D2). Membership
+      // is read from the GRAPH (buildMembership.primaryOf), not the rendered
+      // memberOf map — the latter only covers relocate-type groups, not outline
+      // (is_part_of US/USD/VSF) containers.
+      dragDetachPending = false;
+      dragDetachSet = [];
+      if (e.shiftKey && !inContext() && store) {
+        const mm = buildMembership(store.doc);
+        // shift+drag detaches the WHOLE selection when dragging a selected node
+        const multi = selectedIds.has(hit.id) && selectedIds.size > 1;
+        const targets = multi ? [...selectedIds] : [hit.id];
+        for (const id of targets) {
+          const c = mm.primaryOf.get(id);
+          if (c) dragDetachSet.push({ id, container: c });
+        }
+        dragDetachPending = dragDetachSet.length > 0;
+      }
+      // dragging a group container moves the whole group — but only along
+      // the PRIMARY containment tree: a shared document whose master lives
+      // in another group must NOT follow (its local instance moves with the
+      // extractors of THIS group anyway)
+      dragMemberIds = null;
+      dragIsGroupMove = false;
+      if (s.groupsById?.has(hit.id) && store) {
+        const mm = buildMembership(store.doc);
+        const acc: string[] = [];
+        const stack = [hit.id];
+        while (stack.length) {
+          const g = stack.pop()!;
+          for (const m of mm.childrenOf.get(g) ?? []) {
+            if (m !== hit.id && !acc.includes(m)) {
+              acc.push(m);
+              stack.push(m);
+            }
+          }
+        }
+        dragMemberIds = acc;
+        dragIsGroupMove = true; // group node moves; members follow via container pass
+      }
+      // multi-selection: dragging any selected node moves the WHOLE selection
+      if (!dragMemberIds && selectedIds.has(hit.id) && selectedIds.size > 1) {
+        dragMemberIds = [...selectedIds].filter((id) => id !== hit.id);
+        dragIsGroupMove = false; // move each node respecting its own container
+      }
+    } else if (hit && canvasOverrides() && !inContext()) {
+      // Graph / DTC view: drag a node to place it (persisted as an override in
+      // THIS projection's map, see canvasOverrides).
+      // Shift = LIQUID — the connected 1-hop cluster follows, for manual grouping.
+      dragMode = "graphnode";
+      dragNodeId = hit.id;
+      graphLiquid = e.shiftKey;
+    } else {
+      // Matrix: a click in the left swimlane-label strip selects that epoch, so
+      // the Inspector exposes reorder + start/end (T7). Otherwise → marquee.
+      const rect = canvas.getBoundingClientRect();
+      const sxScreen = e.clientX - rect.left;
+      const syScreen = e.clientY - rect.top;
+      const vp2 = viewport();
+      const lane =
+        view === "matrix" && !inContext() && sxScreen < 160
+          ? scene()?.lanes.find((l) => {
+              const ly = l.y * vp2.scale + vp2.y;
+              return syScreen >= ly && syScreen <= ly + l.height * vp2.scale;
+            })
+          : undefined;
+      if (lane) {
+        dragMode = "none"; // prevent marquee; the select happens on pointerup
+        return;
+      }
+      // empty canvas → rubber-band marquee selection (pan is middle/Space, D1)
+      dragMode = "marquee";
+      marquee = { x0: w.x, y0: w.y, x1: w.x, y1: w.y };
+    }
+    canvas.setPointerCapture(e.pointerId);
+  });
+  canvas.addEventListener("pointermove", (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const sx = e.clientX - rect.left;
+    const sy = e.clientY - rect.top;
+    const vp = viewport();
+    const w = vp.toWorld(sx, sy);
+
+    // EM-mode insert-epoch hover indicator (idle only; cleared during any drag)
+    if (dragMode === "none") {
+      const ib = insertBoundaryAt(sx, sy);
+      if (ib !== hoverInsertBoundary) {
+        hoverInsertBoundary = ib;
+        canvas.style.cursor = ib != null ? "copy" : "";
+        draw();
+      }
+    } else if (hoverInsertBoundary !== null) {
+      hoverInsertBoundary = null;
+    }
+
+    if (dragMode === "connect") {
+      // CROSS-AREA CONNECTOR · a connector may end on a node that is not in this
+      // area at all — two units in the same graph rarely fit one framing. The
+      // pointer capture keeps sending these moves HERE even when the cursor has
+      // left this rectangle, so this is the one place that can notice, hand the
+      // editor over to the area under the cursor, and carry the connector across.
+      //
+      // `connect` itself is untouched by the hand-over: `fromId` is a node of the
+      // DOCUMENT, not of a window, so the connector stays the same connector. What
+      // changes is which camera and which scene resolve the target — which is
+      // exactly what has to change when the cursor is somewhere else.
+      const over =
+        e.clientX < rect.left ||
+        e.clientX > rect.right ||
+        e.clientY < rect.top ||
+        e.clientY > rect.bottom
+          ? areaAt(e.clientX, e.clientY)
+          : null;
+      if (over && over.winId !== activeWin().id) {
+        selectWindow(over.winId);
+        // resolve the pointer in the NEW area's camera before asking what is under it
+        const r2 = canvas.getBoundingClientRect();
+        const w2 = viewport().toWorld(e.clientX - r2.left, e.clientY - r2.top);
+        // Where the connector CAME IN: the pointer clamped to this area's frame.
+        // The source node may be nowhere near this view — the band then starts at
+        // that edge point instead of vanishing (renderer: `connect.fromAnchor`).
+        if (connect) {
+          const edge = viewport().toWorld(
+            Math.min(Math.max(e.clientX - r2.left, 0), r2.width),
+            Math.min(Math.max(e.clientY - r2.top, 0), r2.height),
+          );
+          connect.fromAnchor = { x: edge.x, y: edge.y };
+        }
+        updateConnect(w2.x, w2.y);
+        return;
+      }
+      updateConnect(w.x, w.y);
+      return;
+    }
+    if (dragMode === "pan") {
+      const dx = e.clientX - lastX;
+      const dy = e.clientY - lastY;
+      if (Math.abs(dx) + Math.abs(dy) > 3) moved = true;
+      if (moved) {
+        vp.x += dx;
+        vp.y += dy;
+        lastX = e.clientX;
+        lastY = e.clientY;
+        tooltip.classList.add("hidden");
+        draw();
+      }
+      return;
+    }
+    if (dragMode === "marquee") {
+      if (marquee) {
+        marquee.x1 = w.x;
+        marquee.y1 = w.y;
+        if (Math.abs(e.clientX - lastX) + Math.abs(e.clientY - lastY) > 3) moved = true;
+        draw();
+      }
+      return;
+    }
+    if (dragMode === "graphnode" && dragNodeId && store) {
+      if (Math.abs(e.clientX - lastX) + Math.abs(e.clientY - lastY) > 3)
+        moved = true;
+      if (moved) {
+        const ddx = (e.clientX - lastX) / vp.scale;
+        const ddy = (e.clientY - lastY) / vp.scale;
+        const s = scene();
+        const targets = new Set<string>([dragNodeId]);
+        if (graphLiquid) {
+          for (const ed of store.doc.graph.edges) {
+            if (ed.source === dragNodeId) targets.add(ed.target);
+            else if (ed.target === dragNodeId) targets.add(ed.source);
+          }
+        }
+        const overrides = canvasOverrides() ?? graphOverrides;
+        for (const id of targets) {
+          const sn = s?.byId.get(id);
+          const base = overrides.get(id) ?? (sn ? { x: sn.x, y: sn.y } : null);
+          if (base) overrides.set(id, { x: base.x + ddx, y: base.y + ddy });
+        }
+        lastX = e.clientX;
+        lastY = e.clientY;
+        buildScenes();
+        draw();
+      }
+      return;
+    }
+    if (dragMode === "node" && dragNodeId && store) {
+      const dx = e.clientX - lastX;
+      const dy = e.clientY - lastY;
+      if (Math.abs(dx) + Math.abs(dy) > 3) moved = true;
+      if (moved) {
+        const s = scene();
+        const n = s?.byId.get(dragNodeId);
+        // Shift+drag detach (D2): drop the membership edge, free the node at its
+        // current canvas position, then let subsequent frames move it normally.
+        if (dragDetachPending && n && s && store && dragDetachSet.length) {
+          for (const d of dragDetachSet) {
+            const dn = s.byId.get(d.id);
+            store.removeFromGroup(
+              d.id,
+              d.container,
+              dn ? { x: dn.x, y: dn.y, w: dn.w, h: dn.h } : undefined,
+            );
+          }
+          toast(
+            dragDetachSet.length > 1
+              ? `moved ${dragDetachSet.length} out of group`
+              : "moved out of group",
+          );
+          dragDetachPending = false;
+          dragDetachSet = [];
+          dragCheckpointed = true;
+          lastX = e.clientX;
+          lastY = e.clientY;
+          return;
+        }
+        if (n && s && dragMemberIds && store && !inContext()) {
+          if (dragIsGroupMove) {
+            // whole-group drag: move the group node; members follow (container pass)
+            store.moveNodesBy(
+              [dragNodeId, ...dragMemberIds],
+              dx / vp.scale,
+              dy / vp.scale,
+              !dragCheckpointed,
+            );
+          } else {
+            // multi-selection move: shift EACH node respecting its own container
+            for (const id of [dragNodeId, ...dragMemberIds])
+              moveOneByDelta(id, dx / vp.scale, dy / vp.scale, !dragCheckpointed);
+          }
+          dragCheckpointed = true;
+          lastX = e.clientX;
+          lastY = e.clientY;
+          return;
+        }
+        if (n && s) {
+          // single-node drag: move the SCENE node directly so it follows the
+          // cursor (a per-frame store rebuild would let the phase sub-band reflow
+          // snap it back / jump). Committed on pointerup by handleDrop or reset.
+          n.x += dx / vp.scale;
+          n.y += dy / vp.scale;
+          dragSceneDirty = true;
+          draw();
+        }
+        lastX = e.clientX;
+        lastY = e.clientY;
+      }
+      return;
+    }
+
+    // hover / tooltip
+    const s = scene();
+    if (!s) return;
+    const showId = getSettings().developer.showNodeIds;
+    const hit = hitTest(s, w.x, w.y);
+    // A group container's big box shouldn't swallow a connector line running
+    // through its empty interior: over a container we still probe for an edge,
+    // so hover (and thus selection) reach it. Leaf nodes keep priority.
+    const overContainer =
+      !!hit && (s.groupsById?.has(hit.id) || isGroupType(hit.node.node_type));
+    const eiHover =
+      placingType || (hit && !overContainer) ? -1 : pickEdgeAt(w.x, w.y);
+    const newHoverEdge = eiHover >= 0 ? eiHover : null;
+    // when a connector is hovered, don't also accent the node/container under it
+    const newHover = newHoverEdge != null ? null : (hit?.id ?? null);
+    if (newHover !== hoverId || newHoverEdge !== hoverEdgeIdx) {
+      hoverId = newHover;
+      hoverEdgeIdx = newHoverEdge;
+      draw();
+    }
+    // don't fight the Space-held pan cursor: leave the inline cursor empty so the
+    // `.space-pan` grab/grabbing CSS wins while the spacebar is down
+    canvas.style.cursor = spaceHeld
+      ? ""
+      : newHoverEdge != null
+        ? "pointer"
+        : "default";
+    if (
+      newHoverEdge != null &&
+      !placingType &&
+      getSettings().interaction.edgeTooltips
+    ) {
+      // connector tooltip: the edge type + its endpoints (endpoint labels follow
+      // the same id-hiding rule as node tooltips)
+      const se = s.edges[newHoverEdge];
+      const endName = (id: string): string => {
+        const n = s.byId.get(id)?.node;
+        return String(n?.name || (showId ? id : (n?.node_type ?? id)));
+      };
+      tooltip.innerHTML = `<b></b> <span class="tt-type"></span><br><span class="tt-desc"></span>`;
+      (tooltip.children[0] as HTMLElement).textContent = "connector";
+      (tooltip.children[1] as HTMLElement).textContent =
+        `[${se.edge.edge_type ?? "edge"}]`;
+      (tooltip.children[3] as HTMLElement).textContent =
+        `${endName(se.source)} → ${endName(se.target)}`;
+      tooltip.style.left = Math.min(e.clientX + 14, innerWidth - 380) + "px";
+      tooltip.style.top = e.clientY + 14 + "px";
+      tooltip.classList.remove("hidden");
+    } else if (hit && !placingType) {
+      // The node id only surfaces when the developer "show node ids" setting is
+      // on — otherwise both the title fallback and the type line stay id-free.
+      tooltip.innerHTML = `<b></b> <span class="tt-type"></span><br><span class="tt-desc"></span>`;
+      (tooltip.children[0] as HTMLElement).textContent = String(
+        hit.node.name || (showId ? hit.id : hit.node.node_type),
+      );
+      (tooltip.children[1] as HTMLElement).textContent = showId
+        ? `[${hit.node.node_type}] ${hit.id}`
+        : `[${hit.node.node_type}]`;
+      (tooltip.children[3] as HTMLElement).textContent = String(
+        hit.node.description ?? "",
+      ).slice(0, 220);
+      tooltip.style.left = Math.min(e.clientX + 14, innerWidth - 380) + "px";
+      tooltip.style.top = e.clientY + 14 + "px";
+      tooltip.classList.remove("hidden");
+    } else {
+      tooltip.classList.add("hidden");
+    }
+  });
+  canvas.addEventListener("pointerup", (e) => {
+    canvas.classList.remove("panning");
+    const mode = dragMode;
+    dragMode = "none";
+    dragDetachPending = false;
+    dragDetachSet = [];
+    // "PD" tag click → enter the epoch/phase temporal PDG (a click, not a drag)
+    if (pdTagPending) {
+      const pd = pdTagPending;
+      pdTagPending = null;
+      if (!moved) enterGroup(pd);
+      return;
+    }
+    // ornament badge click → select the real author/license/embargo node so the
+    // Inspector edits it (the badge is only its view representation)
+    if (adornmentPending) {
+      const id = adornmentPending;
+      adornmentPending = null;
+      if (!moved) select(id);
+      return;
+    }
+    // PD tablet single click → select the collapsed group (Inspector); the double
+    // click is a separate handler that enters the hypergraph.
+    if (pdDecoratorPending) {
+      const id = pdDecoratorPending;
+      pdDecoratorPending = null;
+      if (!moved) select(id);
+      return;
+    }
+    // phase band label click → select that phase (residual → the epoch)
+    if (bandSelectPending) {
+      const id = bandSelectPending;
+      bandSelectPending = null;
+      if (!moved) select(id);
+      return;
+    }
+    // epoch "+" button click → add a phase to that epoch
+    if (addPhasePending) {
+      const epochId = addPhasePending;
+      addPhasePending = null;
+      if (!moved && store) {
+        const ph = store.addPhase(epochId);
+        select(ph.id);
+        toast(`phase ${ph.name} created`);
+      }
+      return;
+    }
+    // lane-boundary "+" click → insert an epoch at that chronological slot, with
+    // start/end interpolated to fill the gap between the two neighbours
+    if (insertPending != null) {
+      const bi = insertPending;
+      insertPending = null;
+      hoverInsertBoundary = null;
+      if (!moved) {
+        const { start, end } = insertSlotDates(bi);
+        addEpochEmMode(bi, start, end);
+      }
+      return;
+    }
+    if (mode === "connect") {
+      finishConnect(e.shiftKey || e.altKey); // Shift/Alt = force "create node"
+      return;
+    }
+    if (mode === "graphnode") {
+      if (!moved && dragNodeId) select(dragNodeId); // click (no drag) = select
+      dragNodeId = null;
+      graphLiquid = false;
+      return;
+    }
+    const s = scene();
+    if (!s) return;
+    const w = worldPos(e);
+    if (placingType) {
+      placeNode(w.x, w.y);
+      return;
+    }
+    if (mode === "marquee") {
+      const m = marquee;
+      marquee = null;
+      if (moved && m) {
+        const x0 = Math.min(m.x0, m.x1),
+          x1 = Math.max(m.x0, m.x1),
+          y0 = Math.min(m.y0, m.y1),
+          y1 = Math.max(m.y0, m.y1);
+        const ids = s.nodes
+          .filter(
+            (n) =>
+              // BUGFIX-PDG · a collapsed-to-tablet PDG is not on the canvas: the
+              // marquee must not sweep it up (it would select a phantom box in the
+              // empty space where the PDG's layout rect sits).
+              !n.collapsed &&
+              n.x < x1 && n.x + n.w > x0 && n.y < y1 && n.y + n.h > y0,
+          )
+          .map((n) => n.id);
+        selectMany(ids);
+      } else {
+        // a click (no drag) on empty canvas: select a connector if one is under
+        // the cursor, otherwise clear the selection
+        const ei = pickEdgeAt(w.x, w.y);
+        if (ei >= 0) selectEdge(s.edges[ei].edge);
+        else select(null);
+      }
+      dragNodeId = null;
+      dragMemberIds = null;
+      return;
+    }
+    if (!moved) {
+      const hit = hitTest(s, w.x, w.y);
+      // group container ± toggle
+      const toggle = hitGroupToggle(s, w.x, w.y);
+      if (toggle && store) {
+        requestFold(toggle.id);
+        return;
+      }
+      // matrix: click in the left swimlane-label strip → select that epoch (T7),
+      // but only when no node/box is under the cursor there (else the box wins).
+      const rect2 = canvas.getBoundingClientRect();
+      const sxS = e.clientX - rect2.left;
+      const syS = e.clientY - rect2.top;
+      if (view === "matrix" && !inContext() && sxS < 160 && !hit) {
+        const vp2 = viewport();
+        const lane = s.lanes.find((l) => {
+          const ly = l.y * vp2.scale + vp2.y;
+          return syS >= ly && syS <= ly + l.height * vp2.scale;
+        });
+        if (lane) {
+          select(lane.id);
+          return;
+        }
+      }
+      // A connector passing through a group container's empty interior would be
+      // swallowed by the big box — if the click landed on an edge line, select
+      // the connector instead. Leaf nodes still win (only containers defer).
+      if (hit && (s.groupsById?.has(hit.id) || isGroupType(hit.node.node_type))) {
+        const ei = pickEdgeAt(w.x, w.y);
+        if (ei >= 0) {
+          selectEdge(s.edges[ei].edge);
+          dragNodeId = null;
+          dragMemberIds = null;
+          return;
+        }
+      }
+      // a document instance resolves to its real node (same outliner row);
+      // Shift/Cmd-click toggles it in the multi-selection (D3)
+      if (hit && (e.shiftKey || e.metaKey || e.ctrlKey))
+        toggleSelect(hit.instanceOf ?? hit.id);
+      else select(hit ? (hit.instanceOf ?? hit.id) : null);
+    } else if (mode === "node" && dragNodeId) {
+      // drag ended → route the drop (into a group box, or a different epoch lane)
+      const reassigned = handleDrop(dragNodeId, w.x, w.y);
+      // a single-node drag moved the SCENE node directly. If the drop did NOT
+      // reassign it (dropped where it already belongs), PERSIST the freely-dragged
+      // position to layout.positions — otherwise the rebuild snaps it back. Use the
+      // net delta (not the absolute scene y, which bakes in the view-side lane
+      // re-stack / sub-band shift and would make the node run away — cf. 203c6c8).
+      if (dragSceneDirty && !reassigned && dragStartScene) {
+        const sn = scene()?.byId.get(dragNodeId);
+        if (sn) {
+          const ddx = sn.x - dragStartScene.x;
+          const ddy = sn.y - dragStartScene.y;
+          if (Math.abs(ddx) + Math.abs(ddy) > 0.5)
+            moveOneByDelta(dragNodeId, ddx, ddy, true);
+        }
+      }
+      // rebuild so the node settles into its committed spot (persisted position,
+      // or reassigned band/lane)
+      if (dragSceneDirty) {
+        buildScenes();
+        draw();
+      }
+    }
+    dragSceneDirty = false;
+    dragNodeId = null;
+    dragStartScene = null;
+    dragMemberIds = null;
+  });
+  // Double-click a group container → enter its isolated canvas. Uses the native
+  // dblclick event (browser fires it on a genuine double-click) instead of a
+  // manual two-pointerup timer — the timer was unreliable because heavy per-click
+  // work (buildMembership + a full redraw) could push the gap past its window.
+  canvas.addEventListener("dblclick", (e) => {
+    claim();
+    const s = scene();
+    if (!s) return;
+    // PD1 · double-clicking the collapsed-PDG tablet enters the hypergraph
+    const rect = canvas.getBoundingClientRect();
+    const pdd = hitPdDecorator(e.clientX - rect.left, e.clientY - rect.top);
+    if (pdd) {
+      e.preventDefault();
+      enterGroup(pdd);
+      return;
+    }
+    const w = worldPos(e);
+    const hit = hitTest(s, w.x, w.y);
+    if (!hit) return;
+    if (isGroupType(hit.node.node_type)) {
+      e.preventDefault();
+      enterGroup(hit.id);
+      return;
+    }
+    // DTC seam: double-clicking a RepresentationModel / Document / the Resource
+    // itself that resolves to a DTC-output Resource folds into its upstream DTC
+    // genesis (process → input resources), reusing the hypergraph context.
+    const res = resolveDtcResource(hit.id);
+    if (res) {
+      e.preventDefault();
+      enterGroup(res);
+    }
+  });
+  canvas.addEventListener("pointerleave", () => {
+    tooltip.classList.add("hidden");
+    canvas.style.cursor = "default";
+    if (hoverId || hoverEdgeIdx != null) {
+      hoverId = null;
+      hoverEdgeIdx = null;
+      draw();
+    }
+  });
+  canvas.addEventListener(
+    "wheel",
+    (e) => {
+      claim();
+      e.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      markCameraTouched(activeWin().id, view);
+      viewport().zoomAt(
+        e.clientX - rect.left,
+        e.clientY - rect.top,
+        Math.exp(-e.deltaY * 0.0016),
+      );
+      draw();
+    },
+    { passive: false },
+  );
+  canvas.addEventListener("contextmenu", (e) => {
+    claim();
+    e.preventDefault();
+    const wp = worldPos(e);
+    const s = scene();
+    const hit = s ? hitTest(s, wp.x, wp.y) : null;
+    // right-clicking a node outside the current selection selects it first
+    if (hit && !selectedIds.has(hit.id)) select(hit.instanceOf ?? hit.id);
+    if (!selectedIds.size) {
+      hideContextMenu();
+      return;
+    }
+    showContextMenu(e.clientX, e.clientY);
+  });
+}
+
 
 // W1 · STORAGE → VIEWER. A resource drop, NOT a node-type drop: the Viewer is
 // still absent from `RESOURCE_PROVIDERS` (it places nothing, so no palette and
@@ -17170,10 +17898,6 @@ function insertSlotDates(bi: number): { start?: number; end?: number } {
 // on pointerup (reassign via handleDrop, else the scene resets on rebuild).
 let dragSceneDirty = false;
 
-function worldPos(e: MouseEvent): { x: number; y: number } {
-  const rect = canvas.getBoundingClientRect();
-  return viewport().toWorld(e.clientX - rect.left, e.clientY - rect.top);
-}
 
 // Move ONE node by a world delta, respecting its container: a member of an
 // open container keeps its group-local position (moveInGroupSpace); a free
@@ -17223,666 +17947,11 @@ function moveOneByDelta(
   }
 }
 
-canvas.addEventListener("pointerdown", (e) => {
-  hideEdgeMenu();
-  moved = false;
-  lastX = e.clientX;
-  lastY = e.clientY;
-  // Pan-always gesture, evaluated BEFORE any hit logic: middle mouse button,
-  // or Space held (portable — Mac trackpads have no middle button). With many
-  // hypergraphs covering the canvas there may be no empty space to grab, so
-  // this pans regardless of what is under the cursor.
-  if (e.button === 1 || spaceHeld) {
-    dragMode = "pan";
-    markCameraTouched(activeWin().id, view);
-    canvas.classList.add("panning");
-    canvas.setPointerCapture(e.pointerId);
-    e.preventDefault();
-    return;
-  }
-  // "PD" tag in a lane / band label chip → enter that epoch/phase temporal PDG
-  // (same as double-clicking the old box). Resolved on pointerup as a click.
-  if (!placingType) {
-    const rect = canvas.getBoundingClientRect();
-    const lx = e.clientX - rect.left;
-    const ly = e.clientY - rect.top;
-    // EM-mode "insert epoch" boundary (left strip) takes priority over the
-    // epoch-label select that also lives in the left strip.
-    const ib = insertBoundaryAt(lx, ly);
-    if (ib != null) {
-      insertPending = ib;
-      dragMode = "none";
-      return;
-    }
-    // PD tag first (it sits inside the band chip): click it to ENTER the group
-    const pd = hitPdTag(lx, ly);
-    if (pd) {
-      pdTagPending = pd;
-      dragMode = "none";
-      return;
-    }
-    // "+" quick-add-phase button on an epoch's rail
-    const ap = hitAddPhase(lx, ly);
-    if (ap) {
-      addPhasePending = ap;
-      dragMode = "none";
-      return;
-    }
-    // elsewhere on a phase band label chip: click to SELECT the phase
-    const bl = hitBandLabel(lx, ly);
-    if (bl) {
-      bandSelectPending = bl;
-      dragMode = "none";
-      return;
-    }
-    // BADGE1/DEC1 · ornament badge (author/license/embargo) — SCREEN-space hit,
-    // like the PD tag. A click selects the REAL ornament node (a "+N" overflow
-    // chip carries the referent). Checked before the node hit-test: the badge
-    // sits on the referent's corner and a click there means "edit the ornament".
-    const ab = hitAdornmentBadge(lx, ly);
-    if (ab) {
-      adornmentPending = ab;
-      dragMode = "none";
-      return;
-    }
-    // PD1 · collapsed-PDG tablet (bottom-left) → single click selects the group;
-    // the double click that enters the hypergraph is handled in `dblclick`.
-    const pdd = hitPdDecorator(lx, ly);
-    if (pdd) {
-      pdDecoratorPending = pdd;
-      dragMode = "none";
-      return;
-    }
-  }
-  const s = scene();
-  if (!s) return;
-  const w = worldPos(e);
-  if (placingType) {
-    dragMode = "none";
-    return; // click placement handled on pointerup
-  }
-  // connect handle? The bullet shows on the hovered/selected node always, and
-  // on EVERY node when zoomed in (renderer) — so allow starting a connect from
-  // any node's right-edge handle there, not only the focused one (the handle
-  // sits just outside the body, where hover is otherwise lost).
-  const focus = hoverId ?? selectedId;
-  const fn = focus ? s.byId.get(focus) : null;
-  let handleNode =
-    fn && !fn.collapsed && hitHandle(fn, w.x, w.y, viewport().scale) ? fn : null;
-  if (!handleNode && viewport().scale > 0.5) {
-    for (const n of s.nodes) {
-      if (!n.collapsed && hitHandle(n, w.x, w.y, viewport().scale)) {
-        handleNode = n;
-        break;
-      }
-    }
-  }
-  if (handleNode) {
-    dragMode = "connect";
-    beginConnect(handleNode.id);
-    updateConnect(w.x, w.y);
-    canvas.setPointerCapture(e.pointerId);
-    return;
-  }
-  const hit = hitTest(s, w.x, w.y);
-  if (hit && (view === "matrix" || inContext())) {
-    dragMode = "node";
-    dragNodeId = hit.id;
-    dragStartScene = { x: hit.x, y: hit.y };
-    dragCheckpointed = false;
-    dragSceneDirty = false;
-    // Shift+drag a member node → detach it from its container (D2). Membership
-    // is read from the GRAPH (buildMembership.primaryOf), not the rendered
-    // memberOf map — the latter only covers relocate-type groups, not outline
-    // (is_part_of US/USD/VSF) containers.
-    dragDetachPending = false;
-    dragDetachSet = [];
-    if (e.shiftKey && !inContext() && store) {
-      const mm = buildMembership(store.doc);
-      // shift+drag detaches the WHOLE selection when dragging a selected node
-      const multi = selectedIds.has(hit.id) && selectedIds.size > 1;
-      const targets = multi ? [...selectedIds] : [hit.id];
-      for (const id of targets) {
-        const c = mm.primaryOf.get(id);
-        if (c) dragDetachSet.push({ id, container: c });
-      }
-      dragDetachPending = dragDetachSet.length > 0;
-    }
-    // dragging a group container moves the whole group — but only along
-    // the PRIMARY containment tree: a shared document whose master lives
-    // in another group must NOT follow (its local instance moves with the
-    // extractors of THIS group anyway)
-    dragMemberIds = null;
-    dragIsGroupMove = false;
-    if (s.groupsById?.has(hit.id) && store) {
-      const mm = buildMembership(store.doc);
-      const acc: string[] = [];
-      const stack = [hit.id];
-      while (stack.length) {
-        const g = stack.pop()!;
-        for (const m of mm.childrenOf.get(g) ?? []) {
-          if (m !== hit.id && !acc.includes(m)) {
-            acc.push(m);
-            stack.push(m);
-          }
-        }
-      }
-      dragMemberIds = acc;
-      dragIsGroupMove = true; // group node moves; members follow via container pass
-    }
-    // multi-selection: dragging any selected node moves the WHOLE selection
-    if (!dragMemberIds && selectedIds.has(hit.id) && selectedIds.size > 1) {
-      dragMemberIds = [...selectedIds].filter((id) => id !== hit.id);
-      dragIsGroupMove = false; // move each node respecting its own container
-    }
-  } else if (hit && canvasOverrides() && !inContext()) {
-    // Graph / DTC view: drag a node to place it (persisted as an override in
-    // THIS projection's map, see canvasOverrides).
-    // Shift = LIQUID — the connected 1-hop cluster follows, for manual grouping.
-    dragMode = "graphnode";
-    dragNodeId = hit.id;
-    graphLiquid = e.shiftKey;
-  } else {
-    // Matrix: a click in the left swimlane-label strip selects that epoch, so
-    // the Inspector exposes reorder + start/end (T7). Otherwise → marquee.
-    const rect = canvas.getBoundingClientRect();
-    const sxScreen = e.clientX - rect.left;
-    const syScreen = e.clientY - rect.top;
-    const vp2 = viewport();
-    const lane =
-      view === "matrix" && !inContext() && sxScreen < 160
-        ? scene()?.lanes.find((l) => {
-            const ly = l.y * vp2.scale + vp2.y;
-            return syScreen >= ly && syScreen <= ly + l.height * vp2.scale;
-          })
-        : undefined;
-    if (lane) {
-      dragMode = "none"; // prevent marquee; the select happens on pointerup
-      return;
-    }
-    // empty canvas → rubber-band marquee selection (pan is middle/Space, D1)
-    dragMode = "marquee";
-    marquee = { x0: w.x, y0: w.y, x1: w.x, y1: w.y };
-  }
-  canvas.setPointerCapture(e.pointerId);
-});
 
-canvas.addEventListener("pointermove", (e) => {
-  const rect = canvas.getBoundingClientRect();
-  const sx = e.clientX - rect.left;
-  const sy = e.clientY - rect.top;
-  const vp = viewport();
-  const w = vp.toWorld(sx, sy);
 
-  // EM-mode insert-epoch hover indicator (idle only; cleared during any drag)
-  if (dragMode === "none") {
-    const ib = insertBoundaryAt(sx, sy);
-    if (ib !== hoverInsertBoundary) {
-      hoverInsertBoundary = ib;
-      canvas.style.cursor = ib != null ? "copy" : "";
-      draw();
-    }
-  } else if (hoverInsertBoundary !== null) {
-    hoverInsertBoundary = null;
-  }
 
-  if (dragMode === "connect") {
-    // CROSS-AREA CONNECTOR · a connector may end on a node that is not in this
-    // area at all — two units in the same graph rarely fit one framing. The
-    // pointer capture keeps sending these moves HERE even when the cursor has
-    // left this rectangle, so this is the one place that can notice, hand the
-    // editor over to the area under the cursor, and carry the connector across.
-    //
-    // `connect` itself is untouched by the hand-over: `fromId` is a node of the
-    // DOCUMENT, not of a window, so the connector stays the same connector. What
-    // changes is which camera and which scene resolve the target — which is
-    // exactly what has to change when the cursor is somewhere else.
-    const over =
-      e.clientX < rect.left ||
-      e.clientX > rect.right ||
-      e.clientY < rect.top ||
-      e.clientY > rect.bottom
-        ? areaAt(e.clientX, e.clientY)
-        : null;
-    if (over && over.winId !== activeWin().id) {
-      selectWindow(over.winId);
-      // resolve the pointer in the NEW area's camera before asking what is under it
-      const r2 = canvas.getBoundingClientRect();
-      const w2 = viewport().toWorld(e.clientX - r2.left, e.clientY - r2.top);
-      // Where the connector CAME IN: the pointer clamped to this area's frame.
-      // The source node may be nowhere near this view — the band then starts at
-      // that edge point instead of vanishing (renderer: `connect.fromAnchor`).
-      if (connect) {
-        const edge = viewport().toWorld(
-          Math.min(Math.max(e.clientX - r2.left, 0), r2.width),
-          Math.min(Math.max(e.clientY - r2.top, 0), r2.height),
-        );
-        connect.fromAnchor = { x: edge.x, y: edge.y };
-      }
-      updateConnect(w2.x, w2.y);
-      return;
-    }
-    updateConnect(w.x, w.y);
-    return;
-  }
-  if (dragMode === "pan") {
-    const dx = e.clientX - lastX;
-    const dy = e.clientY - lastY;
-    if (Math.abs(dx) + Math.abs(dy) > 3) moved = true;
-    if (moved) {
-      vp.x += dx;
-      vp.y += dy;
-      lastX = e.clientX;
-      lastY = e.clientY;
-      tooltip.classList.add("hidden");
-      draw();
-    }
-    return;
-  }
-  if (dragMode === "marquee") {
-    if (marquee) {
-      marquee.x1 = w.x;
-      marquee.y1 = w.y;
-      if (Math.abs(e.clientX - lastX) + Math.abs(e.clientY - lastY) > 3) moved = true;
-      draw();
-    }
-    return;
-  }
-  if (dragMode === "graphnode" && dragNodeId && store) {
-    if (Math.abs(e.clientX - lastX) + Math.abs(e.clientY - lastY) > 3)
-      moved = true;
-    if (moved) {
-      const ddx = (e.clientX - lastX) / vp.scale;
-      const ddy = (e.clientY - lastY) / vp.scale;
-      const s = scene();
-      const targets = new Set<string>([dragNodeId]);
-      if (graphLiquid) {
-        for (const ed of store.doc.graph.edges) {
-          if (ed.source === dragNodeId) targets.add(ed.target);
-          else if (ed.target === dragNodeId) targets.add(ed.source);
-        }
-      }
-      const overrides = canvasOverrides() ?? graphOverrides;
-      for (const id of targets) {
-        const sn = s?.byId.get(id);
-        const base = overrides.get(id) ?? (sn ? { x: sn.x, y: sn.y } : null);
-        if (base) overrides.set(id, { x: base.x + ddx, y: base.y + ddy });
-      }
-      lastX = e.clientX;
-      lastY = e.clientY;
-      buildScenes();
-      draw();
-    }
-    return;
-  }
-  if (dragMode === "node" && dragNodeId && store) {
-    const dx = e.clientX - lastX;
-    const dy = e.clientY - lastY;
-    if (Math.abs(dx) + Math.abs(dy) > 3) moved = true;
-    if (moved) {
-      const s = scene();
-      const n = s?.byId.get(dragNodeId);
-      // Shift+drag detach (D2): drop the membership edge, free the node at its
-      // current canvas position, then let subsequent frames move it normally.
-      if (dragDetachPending && n && s && store && dragDetachSet.length) {
-        for (const d of dragDetachSet) {
-          const dn = s.byId.get(d.id);
-          store.removeFromGroup(
-            d.id,
-            d.container,
-            dn ? { x: dn.x, y: dn.y, w: dn.w, h: dn.h } : undefined,
-          );
-        }
-        toast(
-          dragDetachSet.length > 1
-            ? `moved ${dragDetachSet.length} out of group`
-            : "moved out of group",
-        );
-        dragDetachPending = false;
-        dragDetachSet = [];
-        dragCheckpointed = true;
-        lastX = e.clientX;
-        lastY = e.clientY;
-        return;
-      }
-      if (n && s && dragMemberIds && store && !inContext()) {
-        if (dragIsGroupMove) {
-          // whole-group drag: move the group node; members follow (container pass)
-          store.moveNodesBy(
-            [dragNodeId, ...dragMemberIds],
-            dx / vp.scale,
-            dy / vp.scale,
-            !dragCheckpointed,
-          );
-        } else {
-          // multi-selection move: shift EACH node respecting its own container
-          for (const id of [dragNodeId, ...dragMemberIds])
-            moveOneByDelta(id, dx / vp.scale, dy / vp.scale, !dragCheckpointed);
-        }
-        dragCheckpointed = true;
-        lastX = e.clientX;
-        lastY = e.clientY;
-        return;
-      }
-      if (n && s) {
-        // single-node drag: move the SCENE node directly so it follows the
-        // cursor (a per-frame store rebuild would let the phase sub-band reflow
-        // snap it back / jump). Committed on pointerup by handleDrop or reset.
-        n.x += dx / vp.scale;
-        n.y += dy / vp.scale;
-        dragSceneDirty = true;
-        draw();
-      }
-      lastX = e.clientX;
-      lastY = e.clientY;
-    }
-    return;
-  }
 
-  // hover / tooltip
-  const s = scene();
-  if (!s) return;
-  const showId = getSettings().developer.showNodeIds;
-  const hit = hitTest(s, w.x, w.y);
-  // A group container's big box shouldn't swallow a connector line running
-  // through its empty interior: over a container we still probe for an edge,
-  // so hover (and thus selection) reach it. Leaf nodes keep priority.
-  const overContainer =
-    !!hit && (s.groupsById?.has(hit.id) || isGroupType(hit.node.node_type));
-  const eiHover =
-    placingType || (hit && !overContainer) ? -1 : pickEdgeAt(w.x, w.y);
-  const newHoverEdge = eiHover >= 0 ? eiHover : null;
-  // when a connector is hovered, don't also accent the node/container under it
-  const newHover = newHoverEdge != null ? null : (hit?.id ?? null);
-  if (newHover !== hoverId || newHoverEdge !== hoverEdgeIdx) {
-    hoverId = newHover;
-    hoverEdgeIdx = newHoverEdge;
-    draw();
-  }
-  // don't fight the Space-held pan cursor: leave the inline cursor empty so the
-  // `.space-pan` grab/grabbing CSS wins while the spacebar is down
-  canvas.style.cursor = spaceHeld
-    ? ""
-    : newHoverEdge != null
-      ? "pointer"
-      : "default";
-  if (
-    newHoverEdge != null &&
-    !placingType &&
-    getSettings().interaction.edgeTooltips
-  ) {
-    // connector tooltip: the edge type + its endpoints (endpoint labels follow
-    // the same id-hiding rule as node tooltips)
-    const se = s.edges[newHoverEdge];
-    const endName = (id: string): string => {
-      const n = s.byId.get(id)?.node;
-      return String(n?.name || (showId ? id : (n?.node_type ?? id)));
-    };
-    tooltip.innerHTML = `<b></b> <span class="tt-type"></span><br><span class="tt-desc"></span>`;
-    (tooltip.children[0] as HTMLElement).textContent = "connector";
-    (tooltip.children[1] as HTMLElement).textContent =
-      `[${se.edge.edge_type ?? "edge"}]`;
-    (tooltip.children[3] as HTMLElement).textContent =
-      `${endName(se.source)} → ${endName(se.target)}`;
-    tooltip.style.left = Math.min(e.clientX + 14, innerWidth - 380) + "px";
-    tooltip.style.top = e.clientY + 14 + "px";
-    tooltip.classList.remove("hidden");
-  } else if (hit && !placingType) {
-    // The node id only surfaces when the developer "show node ids" setting is
-    // on — otherwise both the title fallback and the type line stay id-free.
-    tooltip.innerHTML = `<b></b> <span class="tt-type"></span><br><span class="tt-desc"></span>`;
-    (tooltip.children[0] as HTMLElement).textContent = String(
-      hit.node.name || (showId ? hit.id : hit.node.node_type),
-    );
-    (tooltip.children[1] as HTMLElement).textContent = showId
-      ? `[${hit.node.node_type}] ${hit.id}`
-      : `[${hit.node.node_type}]`;
-    (tooltip.children[3] as HTMLElement).textContent = String(
-      hit.node.description ?? "",
-    ).slice(0, 220);
-    tooltip.style.left = Math.min(e.clientX + 14, innerWidth - 380) + "px";
-    tooltip.style.top = e.clientY + 14 + "px";
-    tooltip.classList.remove("hidden");
-  } else {
-    tooltip.classList.add("hidden");
-  }
-});
 
-canvas.addEventListener("pointerup", (e) => {
-  canvas.classList.remove("panning");
-  const mode = dragMode;
-  dragMode = "none";
-  dragDetachPending = false;
-  dragDetachSet = [];
-  // "PD" tag click → enter the epoch/phase temporal PDG (a click, not a drag)
-  if (pdTagPending) {
-    const pd = pdTagPending;
-    pdTagPending = null;
-    if (!moved) enterGroup(pd);
-    return;
-  }
-  // ornament badge click → select the real author/license/embargo node so the
-  // Inspector edits it (the badge is only its view representation)
-  if (adornmentPending) {
-    const id = adornmentPending;
-    adornmentPending = null;
-    if (!moved) select(id);
-    return;
-  }
-  // PD tablet single click → select the collapsed group (Inspector); the double
-  // click is a separate handler that enters the hypergraph.
-  if (pdDecoratorPending) {
-    const id = pdDecoratorPending;
-    pdDecoratorPending = null;
-    if (!moved) select(id);
-    return;
-  }
-  // phase band label click → select that phase (residual → the epoch)
-  if (bandSelectPending) {
-    const id = bandSelectPending;
-    bandSelectPending = null;
-    if (!moved) select(id);
-    return;
-  }
-  // epoch "+" button click → add a phase to that epoch
-  if (addPhasePending) {
-    const epochId = addPhasePending;
-    addPhasePending = null;
-    if (!moved && store) {
-      const ph = store.addPhase(epochId);
-      select(ph.id);
-      toast(`phase ${ph.name} created`);
-    }
-    return;
-  }
-  // lane-boundary "+" click → insert an epoch at that chronological slot, with
-  // start/end interpolated to fill the gap between the two neighbours
-  if (insertPending != null) {
-    const bi = insertPending;
-    insertPending = null;
-    hoverInsertBoundary = null;
-    if (!moved) {
-      const { start, end } = insertSlotDates(bi);
-      addEpochEmMode(bi, start, end);
-    }
-    return;
-  }
-  if (mode === "connect") {
-    finishConnect(e.shiftKey || e.altKey); // Shift/Alt = force "create node"
-    return;
-  }
-  if (mode === "graphnode") {
-    if (!moved && dragNodeId) select(dragNodeId); // click (no drag) = select
-    dragNodeId = null;
-    graphLiquid = false;
-    return;
-  }
-  const s = scene();
-  if (!s) return;
-  const w = worldPos(e);
-  if (placingType) {
-    placeNode(w.x, w.y);
-    return;
-  }
-  if (mode === "marquee") {
-    const m = marquee;
-    marquee = null;
-    if (moved && m) {
-      const x0 = Math.min(m.x0, m.x1),
-        x1 = Math.max(m.x0, m.x1),
-        y0 = Math.min(m.y0, m.y1),
-        y1 = Math.max(m.y0, m.y1);
-      const ids = s.nodes
-        .filter(
-          (n) =>
-            // BUGFIX-PDG · a collapsed-to-tablet PDG is not on the canvas: the
-            // marquee must not sweep it up (it would select a phantom box in the
-            // empty space where the PDG's layout rect sits).
-            !n.collapsed &&
-            n.x < x1 && n.x + n.w > x0 && n.y < y1 && n.y + n.h > y0,
-        )
-        .map((n) => n.id);
-      selectMany(ids);
-    } else {
-      // a click (no drag) on empty canvas: select a connector if one is under
-      // the cursor, otherwise clear the selection
-      const ei = pickEdgeAt(w.x, w.y);
-      if (ei >= 0) selectEdge(s.edges[ei].edge);
-      else select(null);
-    }
-    dragNodeId = null;
-    dragMemberIds = null;
-    return;
-  }
-  if (!moved) {
-    const hit = hitTest(s, w.x, w.y);
-    // group container ± toggle
-    const toggle = hitGroupToggle(s, w.x, w.y);
-    if (toggle && store) {
-      requestFold(toggle.id);
-      return;
-    }
-    // matrix: click in the left swimlane-label strip → select that epoch (T7),
-    // but only when no node/box is under the cursor there (else the box wins).
-    const rect2 = canvas.getBoundingClientRect();
-    const sxS = e.clientX - rect2.left;
-    const syS = e.clientY - rect2.top;
-    if (view === "matrix" && !inContext() && sxS < 160 && !hit) {
-      const vp2 = viewport();
-      const lane = s.lanes.find((l) => {
-        const ly = l.y * vp2.scale + vp2.y;
-        return syS >= ly && syS <= ly + l.height * vp2.scale;
-      });
-      if (lane) {
-        select(lane.id);
-        return;
-      }
-    }
-    // A connector passing through a group container's empty interior would be
-    // swallowed by the big box — if the click landed on an edge line, select
-    // the connector instead. Leaf nodes still win (only containers defer).
-    if (hit && (s.groupsById?.has(hit.id) || isGroupType(hit.node.node_type))) {
-      const ei = pickEdgeAt(w.x, w.y);
-      if (ei >= 0) {
-        selectEdge(s.edges[ei].edge);
-        dragNodeId = null;
-        dragMemberIds = null;
-        return;
-      }
-    }
-    // a document instance resolves to its real node (same outliner row);
-    // Shift/Cmd-click toggles it in the multi-selection (D3)
-    if (hit && (e.shiftKey || e.metaKey || e.ctrlKey))
-      toggleSelect(hit.instanceOf ?? hit.id);
-    else select(hit ? (hit.instanceOf ?? hit.id) : null);
-  } else if (mode === "node" && dragNodeId) {
-    // drag ended → route the drop (into a group box, or a different epoch lane)
-    const reassigned = handleDrop(dragNodeId, w.x, w.y);
-    // a single-node drag moved the SCENE node directly. If the drop did NOT
-    // reassign it (dropped where it already belongs), PERSIST the freely-dragged
-    // position to layout.positions — otherwise the rebuild snaps it back. Use the
-    // net delta (not the absolute scene y, which bakes in the view-side lane
-    // re-stack / sub-band shift and would make the node run away — cf. 203c6c8).
-    if (dragSceneDirty && !reassigned && dragStartScene) {
-      const sn = scene()?.byId.get(dragNodeId);
-      if (sn) {
-        const ddx = sn.x - dragStartScene.x;
-        const ddy = sn.y - dragStartScene.y;
-        if (Math.abs(ddx) + Math.abs(ddy) > 0.5)
-          moveOneByDelta(dragNodeId, ddx, ddy, true);
-      }
-    }
-    // rebuild so the node settles into its committed spot (persisted position,
-    // or reassigned band/lane)
-    if (dragSceneDirty) {
-      buildScenes();
-      draw();
-    }
-  }
-  dragSceneDirty = false;
-  dragNodeId = null;
-  dragStartScene = null;
-  dragMemberIds = null;
-});
-
-// Double-click a group container → enter its isolated canvas. Uses the native
-// dblclick event (browser fires it on a genuine double-click) instead of a
-// manual two-pointerup timer — the timer was unreliable because heavy per-click
-// work (buildMembership + a full redraw) could push the gap past its window.
-canvas.addEventListener("dblclick", (e) => {
-  const s = scene();
-  if (!s) return;
-  // PD1 · double-clicking the collapsed-PDG tablet enters the hypergraph
-  const rect = canvas.getBoundingClientRect();
-  const pdd = hitPdDecorator(e.clientX - rect.left, e.clientY - rect.top);
-  if (pdd) {
-    e.preventDefault();
-    enterGroup(pdd);
-    return;
-  }
-  const w = worldPos(e);
-  const hit = hitTest(s, w.x, w.y);
-  if (!hit) return;
-  if (isGroupType(hit.node.node_type)) {
-    e.preventDefault();
-    enterGroup(hit.id);
-    return;
-  }
-  // DTC seam: double-clicking a RepresentationModel / Document / the Resource
-  // itself that resolves to a DTC-output Resource folds into its upstream DTC
-  // genesis (process → input resources), reusing the hypergraph context.
-  const res = resolveDtcResource(hit.id);
-  if (res) {
-    e.preventDefault();
-    enterGroup(res);
-  }
-});
-
-canvas.addEventListener("pointerleave", () => {
-  tooltip.classList.add("hidden");
-  canvas.style.cursor = "default";
-  if (hoverId || hoverEdgeIdx != null) {
-    hoverId = null;
-    hoverEdgeIdx = null;
-    draw();
-  }
-});
-
-canvas.addEventListener(
-  "wheel",
-  (e) => {
-    e.preventDefault();
-    const rect = canvas.getBoundingClientRect();
-    markCameraTouched(activeWin().id, view);
-    viewport().zoomAt(
-      e.clientX - rect.left,
-      e.clientY - rect.top,
-      Math.exp(-e.deltaY * 0.0016),
-    );
-    draw();
-  },
-  { passive: false },
-);
 
 // ---------- right-click context menu → Group (D3) ----------
 const GROUP_CANDIDATES = [
@@ -17990,19 +18059,6 @@ function showContextMenu(clientX: number, clientY: number): void {
   ctxMenuEl = menu;
 }
 
-canvas.addEventListener("contextmenu", (e) => {
-  e.preventDefault();
-  const wp = worldPos(e);
-  const s = scene();
-  const hit = s ? hitTest(s, wp.x, wp.y) : null;
-  // right-clicking a node outside the current selection selects it first
-  if (hit && !selectedIds.has(hit.id)) select(hit.instanceOf ?? hit.id);
-  if (!selectedIds.size) {
-    hideContextMenu();
-    return;
-  }
-  showContextMenu(e.clientX, e.clientY);
-});
 // close the menu on any pointerdown outside it
 window.addEventListener(
   "pointerdown",
@@ -18034,10 +18090,14 @@ window.addEventListener("keydown", (e) => {
   if (e.code === "Space" && !spaceHeld) {
     // hold Space → pan-always (grab) gesture; prevent page scroll.
     spaceHeld = true;
-    canvas.classList.add("space-pan");
-    // clear the inline cursor NOW (a prior hover left it "default"/"pointer",
-    // which would override the .space-pan grab until the mouse next moves)
-    canvas.style.cursor = "";
+    // every graph canvas: Space is held for the APP, and the hand may be over
+    // any of them by the time it is pressed
+    for (const g of graphMounts()) {
+      g.cv.classList.add("space-pan");
+      // clear the inline cursor NOW (a prior hover left it "default"/"pointer",
+      // which would override the .space-pan grab until the mouse next moves)
+      g.cv.style.cursor = "";
+    }
     e.preventDefault();
     return;
   }
@@ -18119,10 +18179,12 @@ window.addEventListener("keydown", (e) => {
 window.addEventListener("keyup", (e) => {
   if (e.code === "Space") {
     spaceHeld = false;
-    canvas.classList.remove("space-pan");
-    // restore a normal cursor immediately (the inline style was cleared to ""
-    // while Space was held so the .space-pan grab cursor could show)
-    canvas.style.cursor = "default";
+    for (const g of graphMounts()) {
+      g.cv.classList.remove("space-pan");
+      // restore a normal cursor immediately (the inline style was cleared to ""
+      // while Space was held so the .space-pan grab cursor could show)
+      g.cv.style.cursor = "default";
+    }
   }
 });
 
@@ -18130,17 +18192,17 @@ window.addEventListener("beforeunload", (e) => {
   if (store?.dirty) e.preventDefault();
 });
 
-new ResizeObserver(resizeCanvas).observe(wrap);
 // ONE SURFACE · the arrangement is coordinates now, so the browser no longer
 // reflows it on its own: when the shell changes size the rectangles are
 // recomputed. Stated as the declared cost of the choice (`shell/layout.ts`) —
 // one observer, on the element that was already being observed for the canvas.
 new ResizeObserver(() => {
   positionAreas();
-  resizeCanvas();
-  drawTiles();
+  reflectLiveArea();
+  draw();
+  draw();
 }).observe(tileRoot);
-resizeCanvas();
+draw();
 // repaint when an official icon finishes decoding
 import("./icons").then(({ setIconRedraw }) => setIconRedraw(() => draw()));
 
@@ -18193,9 +18255,13 @@ registerBuiltinSurfaces({
   // …and the last two types to cross over: the narrative (which stopped being a
   // MODE on 14 September) and the annotator (one constructor, a declared limit).
   renderNarrativeInto, renderAnnotatorInto,
+  // …and the last one to cross over: a graph window's canvas, its ten gestures
+  // and its own minimap.
+  mountGraph: (cv, mini, win) => { mountGraphCanvas(cv, mini, win); },
+  unmountGraph: unmountGraphCanvas,
+  repaintGraphs: draw,
 });
 renderTiles(); // WIN5 · lay out the arrangement this session was left in
-applyWorkspace(activeWorkspace());
 
 // …and THEN what this page was asked to be about. One function, because the
 // three steps have to happen in one order and that order is the whole repair:

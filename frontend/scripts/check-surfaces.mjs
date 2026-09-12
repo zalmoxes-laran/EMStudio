@@ -416,8 +416,8 @@ ok(typeof globalThis.requestAnimationFrame === "function",
   }));
   const makeEl2 = () => {
     const el = {
-      className: "", dataset: {}, isConnected: true, children: [],
-      scrollTop: 0, scrollHeight: 0, clientHeight: 0,
+      className: "", dataset: {}, isConnected: true, children: [], title: "",
+      scrollTop: 0, scrollHeight: 0, clientHeight: 0, clientWidth: 0,
       classList: { toggle() {}, add() {}, contains: () => false },
       parentElement: null,
       appendChild(c) { el.children.push(c); c.parentElement = el; return c; },
@@ -530,6 +530,10 @@ ok(typeof globalThis.requestAnimationFrame === "function",
     // single element somebody else was holding.
     emtree:    "mountPanel",
     inspector: "mountPanel",
+    // 15 set 2026 · the last one. A graph window asks for its canvas to be
+    // wired; what proves it draws is that it asked at all — which is the call
+    // that could not exist while ten handlers were bound to one element.
+    graph:     "mountGraph",
   };
   for (const [type, renderer] of Object.entries(PAINTS)) {
     called.clear();
@@ -614,12 +618,21 @@ ok(typeof globalThis.requestAnimationFrame === "function",
   const declared = Object.keys(W.WINDOW_TYPE_META);
   ok(declared.length > 8, `the model declares ${declared.length} window types`);
 
-  // …minus the ones still drawn the old way, named here with the reason. THIS
-  // LIST MUST BECOME EMPTY, and while it is not, the fence says what is in it.
-  const STILL_PRIVILEGED = {
-    graph: "#canvas — ten pointer handlers and the whole interaction machine " +
-           "are bound to the one canvas element",
-  };
+  // …minus the ones still drawn the old way, named here with the reason.
+  //
+  // **IT IS EMPTY (15 settembre 2026), and that is the end of the audit.** The
+  // graph was the last: ten pointer handlers bound to one `#canvas` inside
+  // `#canvas-wrap`, the area that followed the focus. `wireGraphCanvas` binds
+  // the same ten to each window's own canvas, so the clause below now has no
+  // exception to make — every `WindowType` the model declares has a constructor,
+  // and the fence says one sentence instead of a list.
+  //
+  // Left as a (now empty) table rather than deleted, and that is deliberate:
+  // this one is not a description of the defect (those were deleted — an empty
+  // `FOCUSED_SURFACE_BOXES` would be an invitation to add a row). This is the
+  // SEAM for the next honest exception, and it fails loudly if anything is put
+  // in it that is in fact registered.
+  const STILL_PRIVILEGED = {};
   for (const type of declared) {
     if (STILL_PRIVILEGED[type]) {
       ok(!registered.has(type),

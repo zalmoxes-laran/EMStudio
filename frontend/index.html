@@ -262,21 +262,21 @@
     </header>
     <main>
       <div id="tile-root">
-      <div id="canvas-wrap">
-        <canvas id="canvas"></canvas>
-        <!-- WIN4/HDR1 · the window header is a DOCKED bar, full width at the
-             top of the window area: the canvas starts BELOW it and is shorter by
-             its height (viewSize subtracts it), so the bar never floats over the
-             epoch bands anchored at the top of the matrix.
-             WIN-FIX1 · EVERY area now carries one — this element is the ACTIVE
-             area's, and the secondary areas get the same bar built by the same
-             function (`buildAreaHeader` in main.ts). Its contents are therefore
-             GENERATED, not markup: type (icon only) · mode · the per-type menus
-             · the window actions · split/magnify · that window's own search.
-             The toolbar's own view-toggle / fit / layout / algorithm stay in the
-             DOM, hidden: they remain the single owners of the behaviour and
-             these bars drive them. -->
-        <div id="window-header" class="win-header"></div>
+      <!-- GONE (15 set 2026) · `#canvas-wrap`, `#canvas`, `#window-header`
+           and `#overview`.
+           `#canvas-wrap` was THE PRIVILEGED AREA: the one the focus moved into,
+           holding the one `<canvas>` the ten pointer gestures were bound to, the
+           one docked header, and the one minimap. Every other graph area got a
+           read-only twin painted by `drawTile()`, which is why a second graph
+           window could select but could not drag a node or draw a connector.
+           A graph window builds its own canvas and its own minimap now
+           (`mountGraphCanvas`), every area has a `.tile-bar` from the one
+           builder, and `wireGraphCanvas` binds the same ten gestures to each
+           canvas. There is no area to move into, so `WRAP_TYPES` is gone.
+           What is left below are the OVERLAYS OF THE APP. They were children of
+           the wrap because the wrap was where the canvas was, not because they
+           belong to a window — so they are children of `#tile-root` now, which
+           is the shell. -->
         <!-- STEP A · the RESOURCES panel and its chevron are BUILT PER AREA
              (`buildResourcePanel` in main.ts), not written here. They used to be
              a single `#left-col` inside this element — which is the focused
@@ -398,8 +398,6 @@
         <span id="annotator-title" class="hidden"></span>
         <span id="annotator-hint" class="hidden"></span>
         <div id="annotator-panel" class="hidden"></div>
-        <canvas id="overview" title="Overview — click to move the viewport"></canvas>
-      </div>
       </div>
       <!-- GONE (13 set 2026) · the `#side` PARKING PLACE, and the four panels
            it held.

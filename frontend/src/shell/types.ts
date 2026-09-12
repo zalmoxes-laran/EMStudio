@@ -26,6 +26,7 @@ import { registerSurfaceType, surfacesOfType } from "./surface";
 // registry what is in it without a second entry point.
 export { convertedTypes, surfaceTypeOf, mountSurface, unmountSurface } from "./surface";
 import { paintSurface, surfacePlace } from "../surface-scroll";
+import { t } from "../i18n";
 
 /** Just what this module needs of an EM-Data mount (`emdata.ts` owns the type). */
 export interface TableMount {
@@ -87,6 +88,11 @@ export interface SurfaceDeps {
   /** …and the annotator's PICTURE, into any stage. */
   renderAnnotatorInto(stage: HTMLElement, caption: HTMLElement, win: Win,
                       tools: HTMLElement | null): void;
+  /** Wire THIS window's canvas — its ten gestures, its camera, its minimap —
+   *  and hand back how to repaint it. The last type to cross over. */
+  mountGraph(cv: HTMLCanvasElement, mini: HTMLCanvasElement, win: Win): void;
+  unmountGraph(winId: string): void;
+  repaintGraphs(): void;
 }
 
 /** An element of this area's own header strip — the row count, the crumb, the
@@ -438,6 +444,61 @@ export function registerBuiltinSurfaces(deps: SurfaceDeps): void {
         },
         setFocused(on) { markFocus(host, on); },
         destroy() { host?.remove(); host = null; win = null; },
+      };
+    },
+  });
+
+  // ── GRAPH · the last privileged area ─────────────────────────────────────
+  //
+  // The one that was left, and the one the whole audit was about.
+  //
+  // Until tonight the graph had TWO drawings and ONE editor: `#canvas`, inside
+  // `#canvas-wrap` — the area that followed the focus — plus a read-only twin
+  // per other graph area, painted by `drawTile()`. So a second graph window
+  // could select (the area took the focus on `pointerenter` and resolved the
+  // click in its own camera, since 12 September) but could not drag a node and
+  // could not draw a connector, because those live in the ten gesture handlers
+  // that were bound to the one element.
+  //
+  // Now a graph window builds its own canvas and its own minimap, and
+  // `wireGraphCanvas` binds the same ten gestures to it. What is shared is the
+  // gesture STATE — and that is correct, not a compromise: there is one pointer,
+  // so there is one gesture, and two windows differing only in holding two
+  // half-finished gestures at once is not a thing a hand can produce.
+  registerSurfaceType({
+    id: "graph",
+    create(): Surface {
+      let cv: HTMLCanvasElement | null = null;
+      let mini: HTMLCanvasElement | null = null;
+      let win: Win | null = null;
+      return {
+        mount(area, w) {
+          win = w;
+          cv = document.createElement("canvas");
+          // FOCUS-NOJITTER / STEP A · the width the resources panel takes is
+          // published on the AREA (`--palette-w`) and the canvas reads it in
+          // CSS, so a window with its panel open is the same size whether or
+          // not it has the focus.
+          area.appendChild(cv);
+          mini = document.createElement("canvas");
+          mini.className = "win-overview";
+          mini.title = t("overview.title");
+          area.appendChild(mini);
+          deps.mountGraph(cv, mini, w);
+          deps.repaintGraphs();
+        },
+        refresh() { deps.repaintGraphs(); },
+        // ONLY the ring. The ten gestures are wired to THIS canvas and are
+        // always live — that is the whole of tonight — so there is nothing to
+        // turn on or off here.
+        setFocused(on) { markFocus(cv, on); },
+        destroy() {
+          if (win) deps.unmountGraph(win.id);
+          cv?.remove();
+          mini?.remove();
+          cv = mini = null;
+          win = null;
+        },
       };
     },
   });

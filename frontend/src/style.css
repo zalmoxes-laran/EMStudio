@@ -1012,36 +1012,20 @@ body.sync-active #mode-indicator::before {
   filter: brightness(0.97);
 }
 
-/* ONE SURFACE · `#canvas-wrap` is THE GRAPH'S AREA now, not "the focused area":
-   it is placed by `positionAreas()` like every other area, and it changes owner
-   only when the focus moves between two of the types still bound to the
-   singletons inside it (graph, narrative, the hosted panels, the annotator). */
-#canvas-wrap {
-  background: var(--canvas-bg);
-  overflow: hidden;
-}
-
-/* WIN4 · the canvas is anchored to the BOTTOM of its wrapper and sized by
-   `resizeCanvas` (wrapper height minus the docked window bar). It no longer
-   fills the wrapper via `inset: 0`, which is what let the floating bar cover
-   the epoch bands pinned to the top of the matrix. */
-#canvas {
-  position: absolute;
-  /* PALETTE-FIX · the in-area palette narrows the canvas the same way the docked
-     header shortens it: one declared measurement, and the drawing area never
-     hides behind a panel you can drop onto. */
-  left: var(--palette-w, 0px);
-  bottom: 0;
-  /* A <canvas> is replaced content: offsets alone do NOT stretch it (width/height
-     resolve to the intrinsic 300x150), which is why the box is stated here.
-     `calc` keeps the drawing area exactly the wrapper minus the docked bar, with
-     no dependency on a JS callback having run first. */
-  width: calc(100% - var(--palette-w, 0px));
-  height: calc(100% - var(--winbar-h, 0px));
+/* GONE (15 set 2026) · `#canvas-wrap` and `#canvas`. The first was the
+   privileged area — the one the focus moved into — and the second the one canvas
+   the ten gestures were bound to. A graph window builds its own canvas in its
+   own `.tile-area`, so the box it needs is the box every other surface needs:
+   a flex child that fills what the docked bar leaves. WIN4's anchoring (bottom,
+   `height: calc(100% - var(--winbar-h))`) was the ABSOLUTE form of the same
+   sentence, and it is not needed when the bar is a sibling above rather than an
+   overlay on top. The graph's cursors live here; the minimap is the other
+   `<canvas>` in the area and is excluded. */
+.tile-area > canvas:not(.win-overview) {
   cursor: grab;
 }
 
-#canvas.panning {
+.tile-area > canvas.panning {
   cursor: grabbing;
 }
 /* header dropdown menus (File / Export) */
@@ -1232,16 +1216,19 @@ body.sync-active #mode-indicator::before {
 }
 
 /* Space held → pan-always mode: show the grab cursor even over nodes/groups */
-#canvas.space-pan {
+.tile-area > canvas.space-pan {
   cursor: grab;
 }
-#canvas.space-pan.panning {
+.tile-area > canvas.space-pan.panning {
   cursor: grabbing;
 }
 
 #drop-hint {
-  position: absolute;
-  inset: var(--winbar-h, 0px) 0 0 var(--palette-w, 0px); /* WIN4 · below the docked bar; STEP A · beside the resources panel */
+  position: absolute; /* WIN4 · below the docked bar; STEP A · beside the panel */
+  top: calc(var(--live-y, 0px) + var(--winbar-h, 0px));
+  left: calc(var(--live-x, 0px) + var(--palette-w, 0px));
+  width: calc(var(--live-w, 100%) - var(--palette-w, 0px));
+  height: calc(var(--live-h, 100%) - var(--winbar-h, 0px));
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -1658,31 +1645,10 @@ body.sync-active #mode-indicator::before {
 :root {
   --winbar-row: 30px;
 }
-#window-header {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  z-index: 25;
-  display: flex;
-  align-items: center;
-  /* ONE row, always: wrapping made the focused area's bar grow to two rows on a
-     narrow area, and then two neighbouring bars had two different heights. When
-     the controls do not fit, the bar scrolls. */
-  flex-wrap: nowrap;
-  overflow-x: auto;
-  /* never scrolls vertically: the bar is one row by construction, and the menus
-     are `fixed`, so nothing of theirs is clipped by this scroller */
-  overflow-y: hidden;
-  scrollbar-width: thin;
-  gap: 6px;
-  padding: 5px 8px;
-  height: calc(var(--winbar-row) + 10px);
-  box-sizing: border-box;
-  background: var(--bg-panel);
-  border-bottom: 1px solid var(--border);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.10);
-}
+/* GONE (15 set 2026) · `#window-header`. It was the docked bar of the PRIVILEGED
+   area — the one `#canvas-wrap` carried — and every other area had a `.tile-bar`
+   built by the same builder. With the wrap gone there is one kind of bar, and
+   `.tile-area > .tile-bar` below is it. */
 .win-header .win-type-toggle,
 .win-header .win-mode-toggle {
   display: inline-flex;
@@ -1858,9 +1824,9 @@ body.sync-active #mode-indicator::before {
 
 #btn-view-props {
   position: absolute;
-  /* WIN4 · below the docked window bar, never under it */
-  top: calc(var(--winbar-h, 0px) + 10px);
-  right: 10px;
+  /* WIN4 · below the docked bar of the FOCUSED area (`--live-*`) */
+  top: calc(var(--live-y, 0px) + var(--winbar-h, 0px) + 10px);
+  left: calc(var(--live-x, 0px) + var(--live-w, 100%) - 40px);
   z-index: 21;
   width: 30px;
   height: 30px;
@@ -1904,9 +1870,10 @@ body.sync-active #mode-indicator::before {
 
 #filter-panel {
   position: absolute;
-  /* WIN4 · below the docked window bar, never under it */
-  top: calc(var(--winbar-h, 0px) + 10px);
-  right: 10px;
+  /* WIN4 · below the docked bar of the FOCUSED area (`--live-*`) */
+  top: calc(var(--live-y, 0px) + var(--winbar-h, 0px) + 10px);
+  left: calc(var(--live-x, 0px) + var(--live-w, 100%) - 10px);
+  transform: translateX(-100%);
   width: 250px;
   max-height: 70vh;
   overflow-y: auto;
@@ -2063,7 +2030,10 @@ body.sync-active #mode-indicator::before {
 }
 
 /* ---------- overview minimap ---------- */
-#overview {
+/* ONE PER GRAPH WINDOW (15 set 2026) · it was `#overview`, a single minimap
+   inside the privileged area, so it answered «where am I» for whichever window
+   had the focus. A map belongs to the picture it is a map of. */
+.win-overview {
   position: absolute;
   right: 10px;
   bottom: 10px;
@@ -2700,13 +2670,13 @@ body.sync-active #footer-brand #em-version {
   text-decoration: underline;
 }
 
-#canvas.placing {
+.tile-area > canvas.placing {
   cursor: crosshair;
 }
 
 /* palette item dragged over the canvas (DND1) — the drag image is the browser's,
    so the only feedback we can give is on the target itself */
-#canvas.drop-target {
+.tile-area > canvas.drop-target {
   outline: 2px dashed var(--accent);
   outline-offset: -3px;
 }
@@ -2715,19 +2685,19 @@ body.sync-active #footer-brand #em-version {
    is outlined: after the connector crosses into another area its start node may
    be off-screen (no rubber band to see), and without this the only feedback
    would be the target lighting up. */
-#canvas-wrap.tile-active:has(#canvas.connecting) {
+.tile-area.tile-active:has(canvas.connecting) {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
 }
-#canvas.connecting {
+.tile-area > canvas.connecting {
   cursor: alias;
 }
 
 #hint-bar {
   position: absolute;
-  /* WIN4 · below the docked window bar, never under it */
-  top: calc(var(--winbar-h, 0px) + 10px);
-  left: 50%;
+  /* WIN4 · below the docked bar of the FOCUSED area (`--live-*`) */
+  top: calc(var(--live-y, 0px) + var(--winbar-h, 0px) + 10px);
+  left: calc(var(--live-x, 0px) + var(--live-w, 100%) / 2);
   transform: translateX(-50%);
   background: var(--accent);
   color: var(--on-brand);
@@ -2737,12 +2707,18 @@ body.sync-active #footer-brand #em-version {
   z-index: 20;
 }
 
+/* ONE SURFACE (15 set) · placed against the FOCUSED AREA, whose rectangle the
+   shell publishes as `--live-*`. This was a child of `#canvas-wrap`, so its own
+   `left: 12px` meant "the left of the canvas"; it is a child of the shell now
+   and has to say WHICH canvas it means. Coordinates, not re-parenting: moving
+   these into the focused area on every focus change would be `#canvas-wrap`
+   rebuilt under another name. */
 #chrono-banner {
   position: absolute;
   /* WIN4 · below the docked window bar, never under it */
-  top: calc(var(--winbar-h, 0px) + 10px);
-  left: 12px;
-  right: 12px;
+  top: calc(var(--live-y, 0px) + var(--winbar-h, 0px) + 10px);
+  left: calc(var(--live-x, 0px) + 12px);
+  width: calc(var(--live-w, 100%) - 24px);
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -4599,9 +4575,9 @@ body.sync-active #footer-brand #em-version {
    must not look like a canvas decoration — hence a real button chrome. */
 #btn-add-epoch {
   position: absolute;
-  /* WIN4 · below the docked window bar, never under it */
-  top: calc(var(--winbar-h, 0px) + 10px);
-  left: 10px;
+  /* WIN4 · below the docked bar of the FOCUSED area (`--live-*`) */
+  top: calc(var(--live-y, 0px) + var(--winbar-h, 0px) + 10px);
+  left: calc(var(--live-x, 0px) + var(--palette-w, 0px) + 10px);
   z-index: 5;
   display: flex;
   align-items: center;
@@ -4811,7 +4787,9 @@ body.sync-active #footer-brand #em-version {
    panel and invalidates every registered mount, and three mechanisms existed to
    put those back. Areas that never move need none of them.
 
-   Each area is created once and positioned; `#canvas-wrap` is one of them. */
+   Each area is created once and positioned, and since 15 September there is no
+   privileged one among them: the graph builds its canvas in its area like every
+   other type builds its surface. */
 #tile-root {
   flex: 1;
   position: relative;
@@ -4819,8 +4797,7 @@ body.sync-active #footer-brand #em-version {
   min-height: 0;
   overflow: hidden;
 }
-/* every area — the wrap and the others alike — is placed, not flowed */
-#tile-root > #canvas-wrap,
+/* every area is placed, not flowed */
 #tile-root > .tile-area,
 #tile-root > .tile-div {
   position: absolute;
@@ -4857,11 +4834,12 @@ body.sync-active #footer-brand #em-version {
   color: #fff;
   border-color: var(--accent);
 }
-.tile-area > canvas {
+/* the graph's drawing surface fills what the bar leaves. STEP A · the in-area
+   resources panel narrows it by one declared measurement, so a window with its
+   panel open measures the same whether or not it has the focus. */
+.tile-area > canvas:not(.win-overview) {
   flex: 1;
   min-height: 0;
-  /* STEP A · the same width the focused area's canvas reserves, so a window with
-     its panel open measures the same whether or not it has the focus */
   margin-left: var(--palette-w, 0px);
   width: calc(100% - var(--palette-w, 0px));
 }
@@ -4889,15 +4867,12 @@ body.sync-active #footer-brand #em-version {
   --win-frame: rgba(255, 255, 255, 0.10);
   --win-frame-active: rgba(255, 255, 255, 0.30);
 }
-#tile-root .tile-area,
-#tile-root > #canvas-wrap {
+#tile-root .tile-area {
   border: 1px solid var(--win-frame);
   box-sizing: border-box;
 }
-/* the focused one at full strength — specific enough to beat the id selectors
-   above (a class alone lost to `#tile-root > #canvas-wrap`) */
-#tile-root .tile-area.tile-active,
-#tile-root #canvas-wrap.tile-active {
+/* the focused one at full strength */
+#tile-root .tile-area.tile-active {
   border-color: var(--win-frame-active);
 }
 /* the divider between two areas. Its thickness is the one `DIVIDER` in
@@ -6906,7 +6881,6 @@ body.nv-standalone main.nv-standalone-main {
 
 /* ACTIVE IS A STYLE, not a row. The focused area's header carries the accent;
    the others are the same bar, quieter. */
-#window-header.win-header { border-bottom: 1px solid var(--border); }
 .tile-area > .tile-bar.win-header { opacity: 0.82; }
 .tile-area.tile-active > .tile-bar.win-header { opacity: 1; }
 
