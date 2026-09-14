@@ -557,6 +557,88 @@ const NINE = [
   }
 }
 
+// ════════════════════════════════════════════════════════════════════════════
+// C · THE FOCUS IS NOT READ AFTER THE PROGRAM HAS WAITED  (14 set 2026)
+// ════════════════════════════════════════════════════════════════════════════
+//
+// The rebuilding of the windows left one thing of the old architecture standing,
+// by a declared choice: the focus is AMBIENT. `commands.ts` knows no context, so
+// a command is not addressed to a window — it is addressed to «whoever has the
+// focus now». While there was one editor, «now» was an innocent question.
+//
+// It is not innocent any more, and the reason is exactly what the rebuilding
+// made normal: the focus FOLLOWS THE MOUSE, across eleven window types. It does
+// not move on a click, it moves on a movement — continuously, and also while the
+// application is waiting for something.
+//
+// So: no read of `activeWin()` after a suspension point in the same body. What
+// the read is FOR does not matter here; what matters is that between the body's
+// entry and the read the program gave the event loop a turn, and a pointermove
+// is one event.
+//
+// Measured when this clause was written: `main.ts` spells `activeWin()` 57
+// times and CALLS it 54 — three sit inside comments. Of the 54, three were
+// exposed. One was a defect and was repaired (`addStorageRootPath`, reproduced
+// with two Storage windows: the root added from the left one, the pointer moved
+// right while the POST was in flight, and the RIGHT window went back to the
+// roots). The other two are declared below.
+{
+  const esposte = Sorg.dopoUnaSospensione(TS, "activeWin", "main.ts");
+
+  // The declared exceptions, by name and with the reason — a guard that
+  // compares against a window CAPTURED BEFORE the wait. This is the same thing
+  // this clause says, written by hand in one place before the rule existed, and
+  // it is left exactly as it was found.
+  //
+  // What it is NOT, and this is worth saying rather than blurring: the rule
+  // completes the command on the window it started from; this guard ABANDONS the
+  // work when the focus has moved. For an image loading off a disk that means a
+  // slow disk shows nothing at all. It is defensible — nothing is written to the
+  // wrong window — and it is not the same sentence. Named here, not changed.
+  const DICHIARATE = [
+    { riga: 12315, in: "renderAnnotator",
+      perche: "guard: compares with `win`, the annotator's own window, captured " +
+              "before `collectionFromFile` — the image lands in the window that " +
+              "asked for it, or in none" },
+    { riga: 12320, in: "renderAnnotator",
+      perche: "the same guard on the failing branch: the error message must not " +
+              "be written into somebody else's annotator" },
+  ];
+
+  for (const e of esposte) {
+    const d = DICHIARATE.find((x) => x.riga === e.riga);
+    ok(d, `main.ts:${e.riga} reads \`activeWin()\` after ${e.motivo} (line ` +
+      `${e.dove}), in \`${e.funzione}\`. Between the two the program gave the ` +
+      "event loop a turn, and the focus FOLLOWS THE MOUSE: that read can answer " +
+      "with a window the user merely drifted over. Capture the window at the top " +
+      "of the body and use it — a command acts on the window it started from. " +
+      "If the environment really is the right answer here, declare it in " +
+      "`DICHIARATE` with the reason.");
+  }
+  for (const d of DICHIARATE)
+    ok(esposte.some((e) => e.riga === d.riga),
+      `the declared exception at main.ts:${d.riga} (${d.in}) is no longer an ` +
+      "exposed read — a declaration that protects nothing is a line that will " +
+      "outlive its reason. Delete it.");
+
+  // …and the shape this reader cannot decide: a body handed to a function that
+  // may run it now or store it and run it later. Never swallowed.
+  const IGNOTE = {
+    8073: "onShelfChange — `shelf.ts` pushes the listener onto a list and calls " +
+          "it from `changed()`, which runs inside the mutation: the shelf is " +
+          "changed by a gesture, not after a wait",
+  };
+  for (const t of Sorg.tempoIgnoto(TS, "activeWin", "main.ts"))
+    ok(IGNOTE[t.riga], `main.ts:${t.riga} reads \`activeWin()\` inside a body ` +
+      `handed to \`${t.passataA}\`, which this reader cannot classify: it may ` +
+      "run inside its caller or be stored and run an hour later, and the " +
+      "difference is in the callee, not at this call. Say which, in `IGNOTE`.");
+
+  console.log(`\n  FOCUS AFTER A WAIT · ${esposte.length} exposed read(s), ` +
+    `${esposte.length} declared, 0 undeclared`);
+  for (const d of DICHIARATE) console.log(`    main.ts:${d.riga}  ${d.in} — ${d.perche.slice(0, 64)}…`);
+}
+
 // ── the tables, because "it is fine" has to be readable ───────────────────
 console.log("\n  CONVERTED · one surface, and no second path");
 for (const [type, ids] of Object.entries(CONVERTED)) {

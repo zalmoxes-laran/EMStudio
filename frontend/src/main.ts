@@ -400,6 +400,23 @@ import { buildDtcGenesisScene, buildGroupScene } from "./views/context";
 import { buildDtcScene } from "./views/dtc";
 import { adaptNeighbourhood } from "./views/neighbourhood";
 import type { NeighbourhoodAnswer } from "./views/neighbourhood";
+// DTCEMS1 · il timbro, letto dal disco. `stamp.ts` risolve (per impronta, mai
+// per nome), `views/stamps.ts` adatta alla scena che c'è già, `stamp-hints.ts`
+// scrive l'unica cosa che questa notte scrive.
+import {
+  identityOf,
+  reportFolder,
+  resolveFile,
+  searchForParent,
+  setStampBridgeResolver,
+  walkChain,
+  type Chain as StampChain,
+  type FolderReport,
+  type Stamp,
+  type StampParent,
+} from "./stamp";
+import { adaptChain, missingDigests, type StampScene } from "./views/stamps";
+import { hintsPathFor, readHints, recordFound, setHintsBridgeResolver } from "./stamp-hints";
 import { buildGraphScene, type GraphAlgorithm } from "./views/graph";
 import { buildMatrixScene } from "./views/matrix";
 import { renderStudyPanel } from "./study-panel";
@@ -526,7 +543,7 @@ const framedViews = new Set<string>();
 //: 2026-09-03: an answer from the node is a third source, and the camera has to
 //: be re-framed when the source changes for the same reason it always did — the
 //: camera it was left with belonged to a different picture.
-let lastDtcSource: "corpus" | "study" | "neighbourhood" | null = null;
+let lastDtcSource: "corpus" | "study" | "neighbourhood" | "stamps" | null = null;
 /**
  * WIN7 · (window, mode) pairs whose camera the USER has moved — a pan, a zoom, a
  * fit they asked for. The app may re-frame a view it framed itself (see
@@ -2416,9 +2433,19 @@ function buildScenes(): void {
   // the two pictures are one.
   const neighbour = dtcNeighbourhood.status === "answered"
     ? adaptNeighbourhood(dtcNeighbourhood.answer) : null;
-  const dtcSource = neighbour ? "neighbourhood"
+  // DTCEMS1 · IL DISCO VIENE PRIMA quando ha risolto, e non per velocità: quel
+  // timbro è stato accettato perché l'impronta di QUESTI byte è quella che
+  // dichiara, qui e adesso. La risposta del nodo è più ricca ma parla di un
+  // digest, non di un file — e le due cose smettono di coincidere nel momento
+  // esatto in cui qualcuno riesporta sopra, che è il caso per cui la notte
+  // esiste.
+  const fromDisk = diskStamps.status === "stamped" ? diskStamps.scene : null;
+  const dtcSource = fromDisk ? "stamps"
+    : neighbour ? "neighbourhood"
     : corpusNodes.length ? "corpus" : "study";
-  scenes.dtc = neighbour
+  scenes.dtc = fromDisk
+    ? buildDtcScene(fromDisk.nodes, fromDisk.edges, dtcOverrides)
+    : neighbour
     ? buildDtcScene(neighbour.nodes, neighbour.edges, dtcOverrides)
     : corpusNodes.length
     ? buildDtcScene(corpusNodes, corpusForView!.liveEdges(), dtcOverrides)
@@ -2648,6 +2675,32 @@ function applyCanvasView(v: ViewKind): void {
   if (scenes[v] === null && v === "matrix") {
     info.textContent =
       "no layout section — run: emstudio layout file.em.json -o out.em.json";
+  } else if (v === "dtc" && diskStamps.status !== "idle"
+             && diskStamps.status !== "unstamped") {
+    // DTCEMS1 · LE CINQUE FRASI DEL DISCO, e sono cinque perché sono cinque
+    // fatti diversi con cinque rimedi diversi. In particolare le ultime due:
+    // «questi byte non hanno un verbale» e «accanto c'è un verbale che parla di
+    // altri byte» sono la differenza fra un file nuovo e un file riesportato
+    // sopra, e confonderle è riattaccare la vecchia provenienza ai byte nuovi.
+    //
+    // `unstamped` NON entra in questo ramo: è lo stato NORMALE della maggior
+    // parte dei file di un progetto vero, e una barra che lo annuncia come un
+    // esito fa sembrare un guasto la normalità. Cade al ramo successivo, che
+    // parla del documento.
+    const name = baseName(diskStamps.path);
+    info.textContent = diskStamps.status === "reading"
+      ? t("stamp.reading", { name })
+      : diskStamps.status === "superseded"
+      // IL CASO CHE DECIDE IL DISEGNO, detto per intero.
+      ? t("stamp.superseded", { name, why: diskStamps.why })
+      : diskStamps.status === "failed"
+      ? t("stamp.failed", { name, why: diskStamps.why })
+      : diskStamps.scene.missing
+      ? t("stamp.chainPartial", {
+          name, n: String(diskStamps.chain.resolved.size + 1),
+          missing: String(diskStamps.scene.missing) })
+      : t("stamp.chain", {
+          name, n: String(diskStamps.chain.resolved.size + 1) });
   } else if (v === "dtc" && dtcNeighbourhood.status !== "idle") {
     // THE THREE STATES, and the reason they are three sentences and not one
     // spinner: a picture that is empty because a request is in flight, one that
@@ -6400,6 +6453,10 @@ const BRIDGE_UNREACHABLE =
 setBridgeResolver(bridgeUrl);
 // W1 · the Storage/Viewer file routes need the same endpoint, by the same rule.
 setStorageBridgeResolver(bridgeUrl);
+// …e le stesse due, per il timbro e per le piste: UN posto decide dov'è il
+// bridge, e nessun modulo se lo ricostruisce (DTCEMS1).
+setStampBridgeResolver(bridgeUrl);
+setHintsBridgeResolver(bridgeUrl);
 document.getElementById("btn-graphml")!.addEventListener("click", async () => {
   if (!store) {
     toast("Open a document first");
@@ -13072,6 +13129,42 @@ type NeighbourhoodState =
 
 let dtcNeighbourhood: NeighbourhoodState = { status: "idle" };
 
+// ── …e la stessa domanda posta AL DISCO (DTCEMS1) ───────────────────────────
+//
+// «Che cosa si sa di questo file?» ha due risposte e vengono da due posti: il
+// NODO, interrogato per digest sul suo corpus residente (sopra), e i
+// `.stamp.json` che stanno **accanto ai byte**. La seconda funziona offline, su
+// una chiavetta, senza nessun server — che è il caso in cui un timbro serve di
+// più.
+//
+// Il disco viene PRIMA quando risolve, e la ragione non è la velocità: quel
+// timbro è stato accettato perché **l'impronta di questi byte è quella che
+// dichiara**, qui, adesso. La risposta del nodo è vera e più ricca, ma parla di
+// un digest e non di un file: le due cose coincidono finché nessuno ha
+// riesportato sopra, ed è esattamente il caso che questa notte esiste per non
+// sbagliare.
+//
+// I DUE MODI DI NON AVERE UN TIMBRO sono stati diversi e si dicono diversi:
+// `unstamped` è «questi byte non hanno un verbale», `superseded` è «accanto c'è
+// un verbale e parla di ALTRI byte» — cioè il file è stato riesportato sopra.
+// Un'interfaccia che li confondesse riattaccherebbe la vecchia provenienza ai
+// byte nuovi nella testa di chi legge, se non nei dati.
+type StampState =
+  | { status: "idle" }
+  | { status: "reading"; path: string }
+  | { status: "stamped"; path: string; chain: StampChain;
+      scene: StampScene; digest: string }
+  | { status: "unstamped"; path: string }
+  | { status: "superseded"; path: string; stamp: Stamp; why: string }
+  | { status: "failed"; path: string; why: string };
+
+let diskStamps: StampState = { status: "idle" };
+let diskStampSeq = 0;
+
+/** Il referto delle tre classi sull'ultima cartella guardata, quando qualcuno
+ *  l'ha chiesto. Non si calcola da solo: costa impronte. */
+let folderReport: FolderReport | null = null;
+
 
 /** The DTC picture is the only thing that changed, so this rebuilds and draws —
  *  the pair every other state change in this module uses. */
@@ -13195,6 +13288,77 @@ async function askNeighbourhood(path: string | null): Promise<void> {
   redrawNeighbourhood();
 }
 
+/**
+ * Chiedi AL DISCO che cosa si sa di questo file. (DTCEMS1)
+ *
+ * Il gemello di `askNeighbourhood`, e la simmetria è deliberata: stessa domanda,
+ * altra sorgente, stessa strada verso lo schermo. La differenza è che qui non
+ * c'è nessun server — si legge `<file>.stamp.json`, si accetta **solo per
+ * impronta**, e si risale la catena dentro la cartella.
+ *
+ * Il `seq` è la stessa guardia dell'altro: una selezione veloce fra tre file
+ * lascia tre risposte in volo, e la prima che torna non è la buona.
+ */
+async function askStamps(path: string | null): Promise<void> {
+  const seq = ++diskStampSeq;
+  if (!path) {
+    diskStamps = { status: "idle" };
+    redrawNeighbourhood();
+    return;
+  }
+  diskStamps = { status: "reading", path };
+  redrawNeighbourhood();
+  try {
+    const folder = path.slice(0, path.lastIndexOf("/")) || "/";
+    const listing = await fsList(folder);
+    const entry = listing.entries.find((e) => e.path === path);
+    if (!entry) {
+      diskStamps = { status: "failed", path, why: t("stamp.gone") };
+      redrawNeighbourhood();
+      return;
+    }
+    const resolution = await resolveFile(entry);
+    if (seq !== diskStampSeq) return;
+    if (resolution.why === "digest-mismatch" && resolution.rejected) {
+      // IL CASO CHE DECIDE IL DISEGNO. Non un timbro rotto: un'affermazione vera
+      // su qualcos'altro, e questi byte sono NON TIMBRATI.
+      diskStamps = {
+        status: "superseded", path, stamp: resolution.rejected,
+        why: resolution.note ?? t("stamp.otherBytes"),
+      };
+      redrawNeighbourhood();
+      return;
+    }
+    if (resolution.why !== "by-digest" || !resolution.stamp) {
+      diskStamps = resolution.why === "unreadable"
+        ? { status: "failed", path, why: resolution.note ?? "unreadable" }
+        : { status: "unstamped", path };
+      redrawNeighbourhood();
+      return;
+    }
+    // …e le PISTE accanto a questo file: i posti in cui una ricerca precedente
+    // ha già visto qualcosa. Si provano per primi e si accettano comunque per
+    // impronta — una pista è un'osservazione, non un'autorità.
+    const hints = await readHints(hintsPathFor(path));
+    const chain = await walkChain(
+      resolution.stamp, path, folder, 6,
+      (hints?.seen ?? []).map((h) => h.locator));
+    if (seq !== diskStampSeq) return;
+    // la FRASE sulla forza dell'identità dei genitori mancanti la dice
+    // s3Dgraphy, attraverso il bridge: qui non se ne compone nessuna
+    const words = await identityOf(missingDigests(chain));
+    if (seq !== diskStampSeq) return;
+    diskStamps = {
+      status: "stamped", path, chain, digest: resolution.digest ?? "",
+      scene: adaptChain(chain, words),
+    };
+  } catch (err) {
+    if (seq !== diskStampSeq) return;
+    diskStamps = { status: "failed", path, why: String((err as Error).message) };
+  }
+  redrawNeighbourhood();
+}
+
 /** WHAT IS SELECTED in this Storage window — a path, per window, persisted.
  *
  *  There was no selection at all: a double click entered a folder and that was
@@ -13221,6 +13385,8 @@ function setStorageSelected(win: Win, path: string | null): void {
   renderStorage();
   renderAreaHeaders();            // the window says what it is holding
   void askNeighbourhood(path);
+  // …e al DISCO, che risponde anche quando non c'è nessun nodo (DTCEMS1)
+  void askStamps(path);
 }
 
 /**
@@ -13348,6 +13514,13 @@ function renderStorageInto(host: StorageHost): void {
       body.appendChild(storageEmpty(t("storage.emptyFolder")));
       return;
     }
+    // DTCEMS1 · il referto delle tre classi su QUESTA cartella, quando qualcuno
+    // l'ha chiesto. Sopra l'elenco perché è una frase sull'elenco.
+    if (folderReport && folderReport.folder === listing.path) {
+      body.appendChild(stampReportBox(folderReport));
+    } else if (!listing.roots) {
+      body.appendChild(stampReportButton(listing.path));
+    }
     const list = document.createElement("div");
     list.className = "storage-list";
     for (const entry of listing.entries) {
@@ -13358,6 +13531,90 @@ function renderStorageInto(host: StorageHost): void {
     // jump to the top because the pointer crossed a divider
     restoreSurfaceScroll(win, body, wasAt);
   })();
+}
+
+/** Il bottone che CHIEDE il referto. Non si calcola da solo, e non è pigrizia:
+ *  costa impronte, e un pannello che hashasse una cartella ogni volta che ci si
+ *  entra sarebbe inutilizzabile sull'unico albero che conta — quello vero. */
+function stampReportButton(folder: string): HTMLElement {
+  const box = document.createElement("div");
+  box.className = "stamp-report-ask";
+  const b = document.createElement("button");
+  b.className = "ghost";
+  b.textContent = t("stamp.reportAsk");
+  b.onclick = () => {
+    b.disabled = true;
+    b.textContent = t("stamp.reportWorking");
+    void (async () => {
+      try {
+        folderReport = await reportFolder(folder);
+      } catch (err) {
+        toast(String((err as Error).message));
+        b.disabled = false;
+        b.textContent = t("stamp.reportAsk");
+        return;
+      }
+      renderStorage();
+    })();
+  };
+  box.appendChild(b);
+  return box;
+}
+
+/**
+ * IL REFERTO DELLE TRE CLASSI, e la terza è la maggioranza.
+ *
+ * **«Byte senza timbro» è lo stato NORMALE** di un albero di lavoro: in un
+ * progetto vero quasi nessun file è timbrato. Quindi non è rosso, non ha
+ * un'icona d'allarme e non è in cima: è una riga come le altre due, con il tono
+ * neutro, e la sua frase dice che è normale invece di lasciarlo dedurre. Una
+ * interfaccia che li marchiasse tutti in rosso sarebbe illeggibile al primo uso.
+ *
+ * E un timbro senza byte **non dice da solo** se il file è stato spostato,
+ * rinominato fuori dall'albero, cancellato o modificato: sono quattro cose
+ * diverse, e questo referto **non indovina quale**. L'unica cosa che afferma è
+ * quella che ha misurato — in questa cartella non ci sono byte con quell'impronta
+ * — e le quattro possibilità sono elencate come possibilità.
+ */
+function stampReportBox(report: FolderReport): HTMLElement {
+  const box = document.createElement("div");
+  box.className = "stamp-report";
+  const head = document.createElement("div");
+  head.className = "stamp-report-head";
+  head.textContent = t("stamp.reportHead", {
+    files: String(report.files), hashed: String(report.hashed),
+  });
+  box.appendChild(head);
+
+  const row = (cls: string, label: string, n: number, note: string): void => {
+    const el = document.createElement("div");
+    el.className = `stamp-report-row ${cls}`;
+    const count = document.createElement("b");
+    count.textContent = String(n);
+    const text = document.createElement("span");
+    text.textContent = ` ${label}`;
+    const why = document.createElement("i");
+    why.textContent = note;
+    el.append(count, text, why);
+    box.appendChild(el);
+  };
+  row("paired", t("stamp.classPaired"), report.paired.length,
+      t("stamp.classPairedNote"));
+  row("orphan-stamp", t("stamp.classStampNoBytes"),
+      report.stampsWithoutBytes.length, t("stamp.classStampNoBytesNote"));
+  // …e la terza, col tono NEUTRO: è la normalità, non un guasto
+  row("plain", t("stamp.classNoStamp"), report.bytesWithoutStamp.length,
+      t("stamp.classNoStampNote"));
+  if (report.unreadable.length) {
+    row("broken", t("stamp.classUnreadable"), report.unreadable.length,
+        t("stamp.classUnreadableNote"));
+  }
+  const close = document.createElement("button");
+  close.className = "ghost";
+  close.textContent = t("stamp.reportClose");
+  close.onclick = () => { folderReport = null; renderStorage(); };
+  box.appendChild(close);
+  return box;
 }
 
 /**
@@ -14897,7 +15154,7 @@ function formatBytes(n: number): string {
  * the bridge from the machine), each row granting that folder; typing a path is
  * still there, as the last entry, for a folder that is nobody's standard place.
  */
-async function openStoragePlaces(anchor?: HTMLElement): Promise<void> {
+async function openStoragePlaces(win: Win, anchor?: HTMLElement): Promise<void> {
   // The button lives in the WINDOW HEADER (`buildHeaderStrip`), one per storage
   // window — so the menu is a body-level element positioned under whichever
   // button was pressed, rather than a fixed node next to one of them.
@@ -14939,7 +15196,7 @@ async function openStoragePlaces(anchor?: HTMLElement): Promise<void> {
     row.disabled = already;
     row.addEventListener("click", () => {
       menu.remove();
-      void addStorageRootPath(place.path);
+      void addStorageRootPath(place.path, win);
     });
     menu.appendChild(row);
   }
@@ -14948,7 +15205,7 @@ async function openStoragePlaces(anchor?: HTMLElement): Promise<void> {
   other.textContent = t("storage.rootOther");
   other.addEventListener("click", () => {
     menu.remove();
-    void addStorageRoot();
+    void addStorageRoot(win);
   });
   menu.appendChild(other);
   // …and it closes the way every menu closes: the next click elsewhere
@@ -14967,7 +15224,7 @@ function anchorKey(anchor?: HTMLElement): string {
   return `${Math.round(rect.left)}:${Math.round(rect.top)}`;
 }
 
-async function addStorageRoot(): Promise<void> {
+async function addStorageRoot(win: Win): Promise<void> {
   // THE DESKTOP DIALOG FIRST. `pickFolder()` has existed since StratiMiner and
   // this button never called it — so on the desktop, where a native folder
   // dialog was one line away, people got a `prompt` asking them to type an
@@ -14980,10 +15237,10 @@ async function addStorageRoot(): Promise<void> {
   let path = isTauri() ? await pickFolder() : null;
   if (!path) path = window.prompt(t("storage.rootPrompt"), "");
   if (!path?.trim()) return;
-  await addStorageRootPath(path.trim());
+  await addStorageRootPath(path.trim(), win);
 }
 
-async function addStorageRootPath(path: string): Promise<void> {
+async function addStorageRootPath(path: string, win: Win): Promise<void> {
   try {
     const res = await fetch(`${await bridgeUrl()}/fs/roots`, {
       method: "POST",
@@ -14998,7 +15255,14 @@ async function addStorageRootPath(path: string): Promise<void> {
     }
     toast(t("storage.rootAdded", { name: path.split("/").filter(Boolean).pop() ?? path }));
     await loadMappingPlaces();           // the place is served now: reflect it
-    setStoragePath(activeWin(), null);   // back to the roots, where it now shows
+    // FUOCO · `win`, not `activeWin()`. Two awaits happened above, and the focus
+    // follows the MOUSE: by the time the bridge answers, the pointer has very
+    // likely left. Measured, not feared — two Storage windows, the root added
+    // from the left one, the pointer moved right while the POST was in flight:
+    // the RIGHT window went back to the roots and the left one never moved.
+    // A command acts on the window it started from, which is the window whose
+    // button was pressed — known here without asking the room.
+    setStoragePath(win, null);           // back to the roots, where it now shows
   } catch (err) {
     toast(t("storage.rootFailed", { detail: err instanceof Error ? err.message : String(err) }));
   }
@@ -16159,7 +16423,7 @@ function buildHeaderStrip(win: Win): HTMLElement {
     root.title = t("storage.rootTitle");
     root.addEventListener("click", (e) => {
       e.stopPropagation();
-      focusThen(win, () => void openStoragePlaces(root));
+      focusThen(win, () => void openStoragePlaces(win, root));
     });
     strip.append(up, crumb, root);
     return strip;
@@ -17797,6 +18061,17 @@ function wireGraphCanvas(canvas: HTMLCanvasElement, winId: string): void {
     const wp = worldPos(e);
     const s = scene();
     const hit = s ? hitTest(s, wp.x, wp.y) : null;
+    // DTCEMS1 · a parent that did NOT resolve gets a menu of its own, and the
+    // reason is not cosmetic: that node is in no document at all — it is the
+    // drawing of an absence — so the document's own menu (group, rename,
+    // delete) has nothing to say to it. There is exactly one thing worth asking
+    // of it: GO AND LOOK FOR IT.
+    const ghost = hit ? missingParentAt(hit.id) : null;
+    if (ghost) {
+      hideContextMenu();
+      showMissingParentMenu(e.clientX, e.clientY, ghost);
+      return;
+    }
     // right-clicking a node outside the current selection selects it first
     if (hit && !selectedIds.has(hit.id)) select(hit.instanceOf ?? hit.id);
     if (!selectedIds.size) {
@@ -18001,6 +18276,85 @@ function hideContextMenu(): void {
   ctxMenuEl?.remove();
   ctxMenuEl = null;
 }
+/** Il genitore irrisolto che sta dietro questo nodo della scena, o null.
+ *
+ *  Chiesto alla CATENA e non al nodo disegnato: il nodo porta un marcatore di
+ *  disegno, la catena porta il fatto (`id`, `digest`, `label`) — e la ricerca
+ *  ha bisogno del fatto. */
+function missingParentAt(nodeId: string): StampParent | null {
+  if (diskStamps.status !== "stamped") return null;
+  if (!nodeId.startsWith("missing:")) return null;
+  const wanted = nodeId.slice("missing:".length);
+  return diskStamps.chain.missing.find((m) => m.resource_id === wanted) ?? null;
+}
+
+/**
+ * «Cerca questo genitore» — e quando lo trova **scrive una pista, non il timbro**.
+ *
+ * Due posti, e sono i due che il disegno nomina: **intorno** a dove ci si
+ * aspettava di trovarlo (la cartella del file di partenza, ricorsivamente), e in
+ * **un albero scelto da chi guarda**. In tutti e due i casi l'ordine lo dà la
+ * somiglianza del nome e **l'accettazione la dà l'impronta, mai il nome**.
+ */
+function showMissingParentMenu(
+  clientX: number, clientY: number, parent: StampParent,
+): void {
+  const menu = document.createElement("div");
+  menu.className = "ctx-menu";
+  menu.style.left = Math.min(clientX, innerWidth - 260) + "px";
+  menu.style.top = clientY + "px";
+  const header = document.createElement("div");
+  header.className = "ctx-header";
+  header.textContent = t("stamp.missingHeader",
+                         { label: parent.label || parent.resource_id });
+  menu.appendChild(header);
+
+  const anchor = diskStamps.status === "stamped" ? diskStamps.path : "";
+  const near = anchor.slice(0, anchor.lastIndexOf("/")) || "";
+  const run = async (folder: string, recursive: boolean): Promise<void> => {
+    hideContextMenu();
+    if (!folder) return;
+    toast(t("stamp.searching", { where: baseName(folder) || folder }));
+    const found = await searchForParent(parent, folder, {
+      recursive, maxFiles: 800,
+    });
+    if (!found) {
+      toast(t("stamp.searchNothing",
+              { label: parent.label || parent.resource_id }));
+      return;
+    }
+    // LA PISTA, e nient'altro. Il timbro resta quello che era: non esiste in
+    // questo programma un percorso che ne scriva uno (`check-stamps-readonly`).
+    const noted = await recordFound(found.digest, found.path, { anchor });
+    toast(noted.written
+      ? t("stamp.searchFound", { name: baseName(found.path) })
+      : t("stamp.searchFoundNoWrite", { name: baseName(found.path) }));
+    void askStamps(anchor);       // read it again: the hint now resolves it
+  };
+
+  const item = (label: string, onClick: () => void): void => {
+    const b = document.createElement("button");
+    b.textContent = label;
+    b.onclick = onClick;
+    menu.appendChild(b);
+  };
+  if (near) {
+    item(t("stamp.searchNear", { where: baseName(near) || near }),
+         () => void run(near, true));
+  }
+  item(t("stamp.searchElsewhere"), () => {
+    void (async () => {
+      const folder = await pickFolder();
+      if (folder) await run(folder, true);
+    })();
+  });
+  document.body.appendChild(menu);
+  // LO STESSO elemento del menu del documento: la chiusura al pointerdown fuori
+  // esiste già una volta sola (window listener, più in basso), e un secondo
+  // meccanismo di chiusura sarebbe un secondo modo di lasciare un menu aperto.
+  ctxMenuEl = menu;
+}
+
 function showContextMenu(clientX: number, clientY: number): void {
   hideContextMenu();
   if (!store || !selectedIds.size) return;

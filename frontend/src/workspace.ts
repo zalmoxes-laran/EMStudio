@@ -287,6 +287,40 @@ const BUILTIN_WORKSPACES: WorkspacePreset[] = [
                 b: { win: "inspector" } },
     },
   },
+  // 3-bis · PROVENANCE — il disco a sinistra, e quello che di quel file si SA a
+  // destra. Due riquadri, e sono due window types che esistono già: una Storage
+  // in modo `filesystem` e una Graph in modo `dtc`.
+  //
+  // È una TAB e non un meccanismo nuovo, ed è il punto: il sistema di finestre
+  // c'è (`workspace.ts` + `shell/surface.ts`), la vista DTC c'è, la selezione di
+  // un file c'è, e da stanotte c'è una quarta sorgente per quella vista — i
+  // `.stamp.json` sul disco. Questa riga è tutto ciò che serviva a metterle una
+  // accanto all'altra.
+  //
+  // Perché non riusare la tab `dtc`: quella è la PROVENIENZA DEL DOCUMENTO
+  // aperto (il corpus, con l'Inspector accanto) e si guarda senza un disco
+  // davanti. Questa parte dai byte. Stessa vista, due gesti diversi — la stessa
+  // ragione per cui `assets` e `canvas` sono due tab e non due modi di una.
+  {
+    id: "provenance", labelKey: "ws.provenance", hintKey: "ws.provenanceHint",
+    icon: "⌖", windowType: "storage", builtin: true,
+    arrangement: {
+      wins: [
+        { name: "disk", type: "storage", state: { "mode.storage": "filesystem" } },
+        // `mode` e NON `mode.graph`: lo slot di una finestra grafo è la chiave
+        // nuda (`modeKey`), e il commento della tab `assets` qui sopra racconta
+        // che cosa costa sbagliarlo — la finestra si apre in Matrix, in
+        // silenzio, perché `applyArrangement` sparge solo `w.state`.
+        { name: "chain", type: "graph", state: { mode: "dtc" } },
+        { name: "inspector", type: "inspector" },
+      ],
+      // si apre sul DISCO: il gesto comincia scegliendo un file
+      active: "disk",
+      layout: { dir: "row", ratio: 0.3, a: { win: "disk" },
+                b: { dir: "row", ratio: 0.68, a: { win: "chain" },
+                     b: { win: "inspector" } } },
+    },
+  },
   // 4 · COMPARISONS — what is NOT yours: the shelf's three fences (own-study /
   // own-HDT / other-HDT), what you are looking at, and what it is.
   {

@@ -741,6 +741,32 @@ def make_handler(api):
                 if not self._fs_gate():
                     return
                 self._fs_stage(raw)
+            elif route == "/stamp/identity":
+                # DTCEMS1 · quanto è forte un'identità — `verifiable` /
+                # `comparable` / `unknown`. La regola sta in s3Dgraphy e si
+                # CHIEDE: una seconda implementazione in TypeScript sarebbe due
+                # fonti per un fatto solo, e su questo fatto in particolare,
+                # perché un'interfaccia che scrive «verificato» dove la libreria
+                # dice `comparable` sta mentendo per conto di qualcun altro.
+                try:
+                    body = json.loads(raw.decode("utf-8")) if raw else {}
+                except Exception as exc:
+                    self._fail(400, f"invalid JSON body: {exc}")
+                    return
+                self._stamp_identity(body)
+            elif route == "/stamp/hints":
+                # …e l'unica scrittura della notte. `<asset>.hints.json`, mai un
+                # `.stamp.json`: il rifiuto è QUI oltre che nel frontend, perché
+                # un invariante custodito in un posto solo è custodito finché
+                # qualcuno non scrive un secondo chiamante.
+                if not self._fs_gate():
+                    return
+                try:
+                    body = json.loads(raw.decode("utf-8")) if raw else {}
+                except Exception as exc:
+                    self._fail(400, f"invalid JSON body: {exc}")
+                    return
+                self._stamp_hints(body)
             elif route in ("/mapping-fields", "/mapping-catalog",
                            "/mapping-edges", "/mapping-validate",
                            "/mapping-apply", "/mapping-save"):
@@ -760,6 +786,80 @@ def make_handler(api):
                 self._shelf(route, body)
             else:
                 self.send_error(404, "unknown endpoint")
+
+        # ── DTCEMS1 · il timbro: si LEGGE, e l'unica scrittura è una pista ──
+
+        def _stamp_identity(self, body):
+            """La forza di una o più identità, chiesta a s3Dgraphy.
+
+            Passa per `api.stamp_identity`, che è la superficie d'accesso — non
+            per un import ad hoc di `s3dgraphy.stamp.identity` — perché la testa
+            di `_load_s3dgraphy` dice che tutti gli endpoint guidano quella. Il
+            valore nudo viene avvolto nel timbro minimo che quella funzione
+            vuole: è un adattamento di forma, non una regola.
+
+            Un valore che la libreria non sa classificare torna con
+            `strength: "unknown"` — che è una risposta e non un errore, ed è la
+            terza delle tre: «un'identità senza algoritmo dichiarato» non è né
+            verificabile né confrontabile, e promuoverla sarebbe indovinare
+            l'algoritmo e poi affermarlo.
+            """
+            values = body.get("values")
+            if not isinstance(values, list):
+                self._fail(400, "POST /stamp/identity wants {\"values\": [...]}")
+                return
+            ask = getattr(api, "stamp_identity", None)
+            if not callable(ask):
+                self._fail(501,
+                           "this s3dgraphy has no `stamp_identity` on its access "
+                           "surface: the stamp landed on 14-09-2026 "
+                           "(s3dgraphy.stamp). Point the bridge at a newer "
+                           "checkout with --s3dgraphy.")
+                return
+            out = {}
+            for value in values[:256]:
+                text = str(value or "")
+                out[text] = ask({"stamp": 1,
+                                 "self": {"resource_id": "ask", "digest": text}})
+            self._json({"ok": True, "identities": out})
+
+        def _stamp_hints(self, body):
+            """Scrive `<asset>.hints.json`. **L'unica scrittura, e mai un timbro.**
+
+            Tre rifiuti, e tutti e tre sono la stessa frase detta a tre livelli:
+
+            * il nome DEVE finire in `.hints.json`. Un `.stamp.json` è respinto
+              per nome, prima di guardare qualunque altra cosa — un timbro è un
+              verbale immutabile e questo processo non ha una rotta per
+              modificarne uno;
+            * il percorso deve stare dentro le radici servite, come ogni `/fs/*`;
+            * il corpo deve essere un registro di piste (`hints: 1`), non un
+              JSON qualunque: questa non è una rotta per scrivere file.
+            """
+            raw_path = str(body.get("path") or "").strip()
+            payload = body.get("hints")
+            if not raw_path.endswith(".hints.json"):
+                self._fail(400,
+                           "this route writes `<asset>.hints.json` and nothing "
+                           "else. A stamp is the immutable record of a step: "
+                           "there is no route here that modifies one, and that "
+                           "is deliberate.")
+                return
+            if not isinstance(payload, dict) or payload.get("hints") != 1:
+                self._fail(400, "the body must be a hints register: {hints: 1, ...}")
+                return
+            full = os.path.abspath(os.path.expanduser(raw_path))
+            if not _fs_inside_roots(full):
+                self._fail(403, "that path is outside the folders this bridge serves")
+                return
+            try:
+                with open(full, "w", encoding="utf-8") as fh:
+                    json.dump(payload, fh, ensure_ascii=False, indent=1)
+                    fh.write("\n")
+            except OSError as exc:
+                self._fail(500, f"cannot write the hints: {exc}")
+                return
+            self._json({"ok": True, "path": full})
 
         # ── STAGING: what the OS dialog can give a web page ─────────────────
         #

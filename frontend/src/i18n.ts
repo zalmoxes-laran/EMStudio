@@ -1044,6 +1044,44 @@ const EN: Dict = {
   // 2026-09-03 · the NODE's answer, and its three states. Three sentences and
   // not one spinner: empty-because-asking, empty-because-the-node-never-saw-
   // these-bytes and empty-because-the-node-is-off are three different facts.
+  // ── DTCEMS1 · il timbro, letto dal disco ──────────────────────────────────
+  "stamp.reading": "Reading what is beside {name}…",
+  "stamp.chain": "{name}: a chain of {n} stamped steps, read from disk",
+  "stamp.chainPartial":
+    "{name}: {n} stamped steps, and {missing} parent(s) not found here — the ? nodes",
+  // IL CASO CHE DECIDE IL DISEGNO, detto per intero e senza colpevolizzare
+  "stamp.superseded":
+    "{name} is NOT stamped: the stamp beside it describes other bytes ({why}). "
+    + "That stamp is not broken — it is a true statement about something else, "
+    + "and this file has been re-exported over it.",
+  "stamp.failed": "Could not read the stamp beside {name} — {why}",
+  "stamp.gone": "the file is no longer in that folder",
+  "stamp.otherBytes": "the digest does not match",
+  "stamp.missingHeader": "Not found here: {label}",
+  "stamp.searchNear": "Search around {where}…",
+  "stamp.searchElsewhere": "Search in another folder…",
+  "stamp.searching": "Looking in {where} — accepting by digest, never by name",
+  "stamp.searchNothing": "Nothing in there has {label}'s digest",
+  "stamp.searchFound": "Found: {name}. A hint was written — the stamp was not touched.",
+  "stamp.searchFoundNoWrite":
+    "Found: {name}. The hint could NOT be written (the bridge refused) — the stamp was not touched.",
+  "stamp.reportAsk": "Stamps in this folder…",
+  "stamp.reportWorking": "hashing…",
+  "stamp.reportHead": "{files} files · {hashed} digests computed",
+  "stamp.reportClose": "close",
+  "stamp.classPaired": "paired",
+  "stamp.classPairedNote": " — bytes and stamp agree on the digest",
+  "stamp.classStampNoBytes": "stamps without bytes",
+  "stamp.classStampNoBytesNote":
+    " — moved, renamed out of this tree, deleted or modified: four different "
+    + "things, and this does not guess which",
+  "stamp.classNoStamp": "bytes without a stamp",
+  "stamp.classNoStampNote": " — the normal state of a working folder",
+  "stamp.classUnreadable": "unreadable",
+  "stamp.classUnreadableNote": " — a .stamp.json that is not a stamp",
+  "ws.provenance": "Provenance",
+  "ws.provenanceHint":
+    "The disk on the left, what each file's stamp says on the right — read, never written.",
   "dtc.asking": "Asking the node about {name}…",
   "dtc.fromNode":
     "{n} node(s) — the chain the node holds for {digest}… Replaces the corpus picture: they are two documents, and a highlight only means something inside one graph.",
@@ -2150,6 +2188,43 @@ const IT: Dict = {
   "doc.description": "Descrizione",
   "doc.extractors": "{n} estrazione/i pendono da questo documento",
   "doc.reveal": "Mostra sul canvas",
+  // ── DTCEMS1 · il timbro, letto dal disco ──────────────────────────────────
+  "stamp.reading": "Leggo che cosa c'è accanto a {name}…",
+  "stamp.chain": "{name}: una catena di {n} passi timbrati, letta dal disco",
+  "stamp.chainPartial":
+    "{name}: {n} passi timbrati, e {missing} genitori che qui non ci sono — i nodi col ?",
+  "stamp.superseded":
+    "{name} NON è timbrato: il timbro accanto descrive altri byte ({why}). "
+    + "Quel timbro non è rotto — è un'affermazione vera su qualcos'altro, e "
+    + "questo file è stato riesportato sopra.",
+  "stamp.failed": "Non ho potuto leggere il timbro accanto a {name} — {why}",
+  "stamp.gone": "il file non è più in quella cartella",
+  "stamp.otherBytes": "l'impronta non corrisponde",
+  "stamp.missingHeader": "Qui non c'è: {label}",
+  "stamp.searchNear": "Cerca intorno a {where}…",
+  "stamp.searchElsewhere": "Cerca in un'altra cartella…",
+  "stamp.searching": "Cerco in {where} — accetto per impronta, mai per nome",
+  "stamp.searchNothing": "Lì dentro non c'è niente con l'impronta di {label}",
+  "stamp.searchFound": "Trovato: {name}. Ho scritto una pista — il timbro non l'ho toccato.",
+  "stamp.searchFoundNoWrite":
+    "Trovato: {name}. La pista NON si è potuta scrivere (il bridge ha rifiutato) — il timbro non l'ho toccato.",
+  "stamp.reportAsk": "I timbri di questa cartella…",
+  "stamp.reportWorking": "calcolo le impronte…",
+  "stamp.reportHead": "{files} file · {hashed} impronte calcolate",
+  "stamp.reportClose": "chiudi",
+  "stamp.classPaired": "accoppiati",
+  "stamp.classPairedNote": " — byte e timbro d'accordo sull'impronta",
+  "stamp.classStampNoBytes": "timbri senza byte",
+  "stamp.classStampNoBytesNote":
+    " — spostato, rinominato fuori da questo albero, cancellato o modificato: "
+    + "quattro cose diverse, e qui non si indovina quale",
+  "stamp.classNoStamp": "byte senza timbro",
+  "stamp.classNoStampNote": " — lo stato normale di una cartella di lavoro",
+  "stamp.classUnreadable": "illeggibili",
+  "stamp.classUnreadableNote": " — un .stamp.json che non è un timbro",
+  "ws.provenance": "Provenienza",
+  "ws.provenanceHint":
+    "Il disco a sinistra, quello che il timbro di ogni file dice a destra — si legge, non si scrive.",
   "dtc.asking": "Sto chiedendo al nodo di {name}…",
   "dtc.fromNode":
     "{n} nodi — la catena che il nodo tiene per {digest}… Sostituisce il disegno del corpus: sono due documenti, e un'evidenziazione ha senso solo dentro un grafo solo.",

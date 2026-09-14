@@ -371,6 +371,24 @@ const CONFLICT_EXEMPT = new Set<string>([
   "has_first_epoch",
   "survive_in_epoch",
   "has_paradata_nodegroup",
+  // DTCEMS1 · LA CATENA DTC, e non è un'esenzione di comodo: è la stessa
+  // ragione per cui ci sono le sette righe qui sopra. L'invariante 3 governa
+  // l'ORDINE STRATIGRAFICO — «chronologically earlier = lower on screen» — e la
+  // catena digitale non è stratigrafia.
+  //
+  // In più la proiezione DTC disegna questi archi CONTRO la loro direzione, e lo
+  // dichiara: «the flow is not the edge direction: `dtc_had_input` points from
+  // the process to the resource it CONSUMED» (`views/dtc.ts`, il calcolo dei
+  // ranghi). Quindi un `dtc_had_input` in quella vista punta all'insù per
+  // costruzione, sempre.
+  //
+  // MISURATO stanotte, e la misura è che ogni singolo `dtc_had_input` di ogni
+  // figura DTC era dipinto del colore del conflitto — anche quelli del corpus e
+  // quelli della risposta del nodo, che passano di qui da prima. Un segnale che
+  // si accende sempre non è un segnale; e sui legami verso un genitore
+  // irrisolto faceva sembrare un ERRORE quella che è un'assenza dichiarata.
+  "dtc_had_input",
+  "dtc_derived_from",
 ]);
 function upwardConflict(scene: Scene, e: Scene["edges"][number]): boolean {
   if (CONFLICT_EXEMPT.has(e.edge.edge_type ?? "")) return false;
@@ -494,7 +512,20 @@ export function render(
     ctx.globalAlpha = conflict ? 1 : e.edge.edge_type === "is_after" ? 0.85 : 0.45;
     ctx.lineWidth =
       (conflict ? Math.max(st.width, 2.5) : st.width) / Math.sqrt(vp.scale);
-    ctx.setLineDash(conflict ? [] : st.dash.map((d) => d / Math.sqrt(vp.scale)));
+    // DTCEMS1 · the link to a parent that did not resolve. A DRAWING rule about
+    // a drawing-only construct — a chain read off the disk is in no graph — and
+    // NOT an EM edge type invented at a call site.
+    //
+    // It needs its own pattern because the obvious one was already taken:
+    // measured on `em_visual_rules.json`, the three DTC chain edges declare no
+    // style at all and fall to `edgeStyle`'s generic `[4, 3]`, so in the DTC
+    // view EVERY chain edge is already dashed. A dash here would have been a
+    // signal identical to its background.
+    const unresolved = !!(e.edge as { data?: { unresolved?: boolean } })
+      .data?.unresolved;
+    ctx.setLineDash(conflict ? [] : unresolved
+      ? [11 / Math.sqrt(vp.scale), 7 / Math.sqrt(vp.scale)]
+      : st.dash.map((d) => d / Math.sqrt(vp.scale)));
     ctx.beginPath();
     traceRoute(ctx, routes[i], bridgeR);
     ctx.stroke();
@@ -850,12 +881,20 @@ export function render(
     // it look thin once you zoomed IN on a node. A screen-space floor keeps it
     // visible when zoomed far out.
     ctx.lineWidth = Math.max(st.borderWidth, 1.4 / vp.scale);
+    // DTCEMS1 · a parent that did not resolve is drawn as an ABSENCE WITH A
+    // NAME: dashed border, so it reads as "there was one and I do not have it"
+    // rather than as a fault. Same species as the funnel-inherited badge below
+    // — attenuation for something that is drawn without being in the graph.
+    const absent = !!(n.node.data as { unresolved?: boolean } | undefined)
+      ?.unresolved;
     ctx.setLineDash(
-      st.borderStyle === "dashed"
-        ? [5, 3]
-        : st.borderStyle === "dotted"
-          ? [2, 2]
-          : [],
+      absent
+        ? [7 / vp.scale, 4 / vp.scale]
+        : st.borderStyle === "dashed"
+          ? [5, 3]
+          : st.borderStyle === "dotted"
+            ? [2, 2]
+            : [],
     );
     ctx.stroke();
     ctx.setLineDash([]);

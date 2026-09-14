@@ -378,3 +378,151 @@ export function indirizzi(source) {
 /** The URL-shaped string literals a PROGRAM contains — a subset of the above. */
 export const indirizziNelCodice = (source) =>
   stringheLetterali(source).filter((s) => /^[a-z][\w+.-]*:\/\/|^\/\/|localhost/i.test(s));
+
+/**
+ * Every call to `nome()` that can observe state which MOVED while the program
+ * was waiting — the reads whose answer is «now», asked after a «now» went by.
+ *
+ * Why the compiler and not a search: the whole question is the FUNCTION
+ * BOUNDARY. A read inside `addEventListener` is not «after» the `await` three
+ * lines above it in the file — the handler is a fresh entry on a later event,
+ * and there the environment is the honest answer. A text search cannot tell
+ * those two apart, and would report the one case where ambient is CORRECT as
+ * the defect. Measured on `main.ts`: the file spells `activeWin()` 57 times and
+ * the program calls it 54 — three of them sit inside comments, one of which is
+ * a comment WARNING against the pattern.
+ *
+ * How a body's entry is classified, because «a callback that runs later» is
+ * not one thing:
+ *
+ *   · `await` / `yield` before the read, in THIS body        → exposed
+ *   · the body is an argument to `then` `catch` `finally`
+ *     `setTimeout` `setInterval` `requestAnimationFrame`
+ *     `requestIdleCallback` `queueMicrotask`                  → exposed at entry
+ *   · the body is an argument to `addEventListener`           → NOT exposed:
+ *     a fresh event, where «now» is the question being asked
+ *   · the body is an argument to `map` `forEach` `filter`
+ *     `find` `some` `every` `reduce` `sort` `flatMap`         → it runs inside
+ *     its caller, so it inherits the caller's state AT THE CALL
+ *   · anything else (declared, assigned, handed to an unknown
+ *     function that may store it)                             → timing unknown:
+ *     reported separately by `raggiunteDopoUnaSospensione`, never silently
+ *
+ * Returns `[{ riga, funzione, motivo, dove }]`, sorted by line.
+ */
+export function dopoUnaSospensione(source, nome, nomeFile = "x.ts") {
+  const sf = albero(source, nomeFile);
+  const riga = (p) => sf.getLineAndCharacterOfPosition(p).line + 1;
+  const sospese = [];
+  for (const { chiamata, corpo } of chiamateDi(sf, nome)) {
+    const e = espostaAllaPosizione(sf, chiamata.getStart(sf), corpo, new Set());
+    if (e) sospese.push({ riga: riga(chiamata.getStart(sf)),
+                          funzione: nomeFunzione(sf, corpo), ...e });
+  }
+  return sospese.sort((a, b) => a.riga - b.riga);
+}
+
+const FUNZIONE = (n) =>
+  ts.isFunctionDeclaration(n) || ts.isFunctionExpression(n) || ts.isArrowFunction(n) ||
+  ts.isMethodDeclaration(n) || ts.isGetAccessor(n) || ts.isSetAccessor(n) ||
+  ts.isConstructorDeclaration(n);
+
+const DIFFERISCONO = new Set(["then", "catch", "finally", "setTimeout", "setInterval",
+  "requestAnimationFrame", "requestIdleCallback", "queueMicrotask"]);
+const ASCOLTANO = new Set(["addEventListener"]);
+const SCORRONO = new Set(["map", "forEach", "filter", "find", "findIndex", "findLast",
+  "some", "every", "reduce", "reduceRight", "sort", "flatMap"]);
+
+const contenitore = (n) => { let p = n.parent; while (p && !FUNZIONE(p)) p = p.parent; return p; };
+
+function chiamateDi(sf, nome) {
+  const fuori = [];
+  cammina(sf, (n) => {
+    if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === nome)
+      fuori.push({ chiamata: n, corpo: contenitore(n) ?? sf });
+  });
+  return fuori;
+}
+
+function nomeFunzione(sf, fn) {
+  if (!fn || fn === sf) return "(modulo)";
+  if (fn.name && ts.isIdentifier(fn.name)) return fn.name.text;
+  const p = fn.parent;
+  if (p && ts.isVariableDeclaration(p) && ts.isIdentifier(p.name)) return p.name.text;
+  if (p && ts.isPropertyAssignment(p)) return p.name.getText(sf);
+  const su = contenitore(fn);
+  return su ? `(dentro ${nomeFunzione(sf, su)})` : "(anonima)";
+}
+
+/** The call this function is an ARGUMENT of, with the name being called. */
+function passataA(fn) {
+  const p = fn.parent;
+  if (!p || !ts.isCallExpression(p) || !p.arguments.includes(fn)) return null;
+  let e = p.expression; const catena = [];
+  while (ts.isPropertyAccessExpression(e)) { catena.unshift(e.name.text); e = e.expression; }
+  if (ts.isIdentifier(e)) catena.unshift(e.text);
+  return { chiamata: p, nome: catena.join("."), verbo: catena[catena.length - 1] };
+}
+
+/** `await` / `yield` written DIRECTLY in this body — a nested body is its own. */
+function sospensioniDirette(sf, fn) {
+  const corpo = fn.body ?? fn;
+  const fuori = [];
+  const giu = (n) => {
+    if (n !== corpo && FUNZIONE(n)) return;
+    if (ts.isAwaitExpression(n) || n.kind === ts.SyntaxKind.YieldExpression)
+      fuori.push(n.getStart(sf));
+    ts.forEachChild(n, giu);
+  };
+  ts.forEachChild(corpo, giu);
+  return fuori.sort((a, b) => a - b);
+}
+
+function espostaAllaPosizione(sf, pos, fn, visti) {
+  const riga = (p) => sf.getLineAndCharacterOfPosition(p).line + 1;
+  if (!fn || fn === sf || visti.has(fn)) return null;
+  visti.add(fn);
+  const prima = sospensioniDirette(sf, fn).filter((p) => p < pos);
+  if (prima.length)
+    return { motivo: "await", dove: riga(prima[prima.length - 1]) };
+  const via = passataA(fn);
+  if (!via) return null;
+  if (DIFFERISCONO.has(via.verbo))
+    return { motivo: `richiamata di ${via.nome}`, dove: riga(via.chiamata.getStart(sf)) };
+  if (ASCOLTANO.has(via.verbo)) return null;
+  if (SCORRONO.has(via.verbo)) {
+    // it runs INSIDE its caller, now: inherit the caller's state at the call
+    const su = espostaAllaPosizione(sf, via.chiamata.getStart(sf),
+                                   contenitore(via.chiamata), visti);
+    return su ? { ...su, tramite: via.nome } : null;
+  }
+  // handed to something this reader cannot classify: it may run now, it may be
+  // stored and run later. Not decided here and NOT swallowed — `tempoIgnoto`
+  // reports it so a fence can require it to be named.
+  return null;
+}
+
+/**
+ * The reads whose body is handed to a function this reader cannot classify —
+ * neither a known deferrer, nor a listener, nor a scan. Such a body may run
+ * inside its caller or be stored and run an hour later, and the difference is
+ * in the callee's source, not at this call.
+ *
+ * It exists so that `dopoUnaSospensione` can be OPTIMISTIC without being quiet:
+ * measured on `main.ts`, exactly one read is of this shape — the listener given
+ * to `onShelfChange`, which `shelf.ts` pushes onto a list and calls from
+ * `changed()`. A fence that had simply assumed «runs now» would have been right
+ * by luck and silent about it.
+ */
+export function tempoIgnoto(source, nome, nomeFile = "x.ts") {
+  const sf = albero(source, nomeFile);
+  const riga = (p) => sf.getLineAndCharacterOfPosition(p).line + 1;
+  const fuori = [];
+  for (const { chiamata, corpo } of chiamateDi(sf, nome)) {
+    const via = corpo && corpo !== sf ? passataA(corpo) : null;
+    if (via && !DIFFERISCONO.has(via.verbo) && !ASCOLTANO.has(via.verbo) &&
+        !SCORRONO.has(via.verbo))
+      fuori.push({ riga: riga(chiamata.getStart(sf)), passataA: via.nome });
+  }
+  return fuori.sort((a, b) => a.riga - b.riga);
+}
