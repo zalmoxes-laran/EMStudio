@@ -595,48 +595,129 @@ const NINE = [
   // work when the focus has moved. For an image loading off a disk that means a
   // slow disk shows nothing at all. It is defensible — nothing is written to the
   // wrong window — and it is not the same sentence. Named here, not changed.
+  // ── how an exception is NAMED here, and why it is not a line number ──────
+  //
+  // 15 set 2026. These two were declared by line — `{ riga: 12315 }` and
+  // `{ riga: 12320 }` — and this fence was BORN RED because of it. The numbers
+  // were true of `main.ts` as it stood when the clause was written (b533888);
+  // it was committed one commit later (c65def1), together with the work that
+  // had added fifty-odd lines above `renderAnnotator`, and the two reads were
+  // at 12372 and 12377 the moment it landed in `main`. Nothing was wrong with
+  // the code and nothing was wrong with the reasons below. The coordinate had
+  // expired between being written and being pushed — and in a file of eighteen
+  // thousand lines edited by two hands, that is the normal case, not bad luck.
+  //
+  // So the key is `Sorg.identita`: the BODY the read is in, the BRANCH it sits
+  // on, and the SENTENCE it is written in. Measured across the six commits of
+  // this series the two lines travelled from 12192/12197 to 12390/12395 — two
+  // hundred lines — and both identities were byte-identical at every one.
+  //
+  // The branch is not decoration: it is what separates these two from each
+  // other, and it is what their two reasons are about. One is the good path,
+  // one is the failure.
   const DICHIARATE = [
-    { riga: 12315, in: "renderAnnotator",
+    { chi: "(dentro renderAnnotator)", ramo: "try",
+      testo: "activeWin().id !== win.id || annotatorNodeId() !== nodeId",
       perche: "guard: compares with `win`, the annotator's own window, captured " +
               "before `collectionFromFile` — the image lands in the window that " +
               "asked for it, or in none" },
-    { riga: 12320, in: "renderAnnotator",
+    { chi: "(dentro renderAnnotator)", ramo: "catch",
+      testo: "activeWin().id !== win.id",
       perche: "the same guard on the failing branch: the error message must not " +
               "be written into somebody else's annotator" },
   ];
+  const nome = (d) => Sorg.identita({ funzione: d.chi, ramo: d.ramo, testo: d.testo });
 
   for (const e of esposte) {
-    const d = DICHIARATE.find((x) => x.riga === e.riga);
+    const d = DICHIARATE.find((x) => nome(x) === Sorg.identita(e));
     ok(d, `main.ts:${e.riga} reads \`activeWin()\` after ${e.motivo} (line ` +
-      `${e.dove}), in \`${e.funzione}\`. Between the two the program gave the ` +
+      `${e.dove}), in \`${e.funzione}\`${e.ramo ? ` (${e.ramo})` : ""}: ` +
+      `\`${e.testo}\`. Between the two the program gave the ` +
       "event loop a turn, and the focus FOLLOWS THE MOUSE: that read can answer " +
       "with a window the user merely drifted over. Capture the window at the top " +
       "of the body and use it — a command acts on the window it started from. " +
       "If the environment really is the right answer here, declare it in " +
-      "`DICHIARATE` with the reason.");
+      "`DICHIARATE` with the reason — by identity, never by line.");
   }
   for (const d of DICHIARATE)
-    ok(esposte.some((e) => e.riga === d.riga),
-      `the declared exception at main.ts:${d.riga} (${d.in}) is no longer an ` +
-      "exposed read — a declaration that protects nothing is a line that will " +
-      "outlive its reason. Delete it.");
+    ok(esposte.some((e) => Sorg.identita(e) === nome(d)),
+      `the declared exception «${nome(d)}» is no longer an ` +
+      "exposed read — either it was repaired, or it was rewritten and its reason " +
+      "no longer describes it. A declaration that protects nothing is a line " +
+      "that will outlive its reason. Read it again, then delete it or restate it.");
 
   // …and the shape this reader cannot decide: a body handed to a function that
   // may run it now or store it and run it later. Never swallowed.
-  const IGNOTE = {
-    8073: "onShelfChange — `shelf.ts` pushes the listener onto a list and calls " +
-          "it from `changed()`, which runs inside the mutation: the shelf is " +
-          "changed by a gesture, not after a wait",
-  };
+  //
+  // …and this table had the SAME defect, one paragraph below the one that was
+  // repaired: `{ 8073: … }` was the line of that read at b533888 and it is 8148
+  // now. It never failed only because the loop above threw first — the fence
+  // was red in two places and could report one. Keyed by identity like the
+  // other, and the reader now names an anonymous listener by what it was handed
+  // to rather than "(anonima)", which is what made this key writable at all.
+  const IGNOTE = [
+    { chi: "(argomento di onShelfChange)", ramo: "",
+      testo: 'activeWin().type === "shelf"',
+      perche: "`shelf.ts` pushes the listener onto a list and calls it from " +
+              "`changed()`, which runs inside the mutation: the shelf is changed " +
+              "by a gesture, not after a wait" },
+  ];
   for (const t of Sorg.tempoIgnoto(TS, "activeWin", "main.ts"))
-    ok(IGNOTE[t.riga], `main.ts:${t.riga} reads \`activeWin()\` inside a body ` +
+    ok(IGNOTE.some((i) => nome(i) === Sorg.identita(t)),
+      `main.ts:${t.riga} reads \`activeWin()\` inside a body ` +
       `handed to \`${t.passataA}\`, which this reader cannot classify: it may ` +
       "run inside its caller or be stored and run an hour later, and the " +
-      "difference is in the callee, not at this call. Say which, in `IGNOTE`.");
+      "difference is in the callee, not at this call. Say which, in `IGNOTE` — " +
+      `by identity: «${Sorg.identita(t)}».`);
+  for (const i of IGNOTE)
+    ok(Sorg.tempoIgnoto(TS, "activeWin", "main.ts")
+       .some((t) => Sorg.identita(t) === nome(i)),
+      `the classified read «${nome(i)}» is not of unknown timing any more: ` +
+      "either it is gone, or the reader learned to place it. Either way this " +
+      "row no longer says anything true.");
 
   console.log(`\n  FOCUS AFTER A WAIT · ${esposte.length} exposed read(s), ` +
     `${esposte.length} declared, 0 undeclared`);
-  for (const d of DICHIARATE) console.log(`    main.ts:${d.riga}  ${d.in} — ${d.perche.slice(0, 64)}…`);
+  for (const e of esposte) {
+    const d = DICHIARATE.find((x) => nome(x) === Sorg.identita(e));
+    console.log(`    main.ts:${e.riga}  ${e.funzione} · ${e.ramo} — ${d.perche.slice(0, 56)}…`);
+  }
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// D · THE WINDOW MENU REGISTRY RECEIVES ITS WINDOW  (15 set 2026)
+// ════════════════════════════════════════════════════════════════════════════
+//
+// `WINDOW_MENUS` is a module constant, and `buildAreaHeader(win)` walks it to
+// build the bar of ONE window. So the window existed at the point the menu was
+// built and was lost crossing into the registry — and every entry that needed
+// one reached for `activeWin()` instead. Four did, and the Viewer entry opened
+// with `const win = activeWin();` and then used `win` correctly everywhere
+// below: the shape was already right, only the source of the value was wrong.
+//
+// `items(win)` is the whole of carrying it across. This clause is what keeps it
+// carried: an entry added later gets the window handed to it, and if it reaches
+// past the parameter for the environment the fence says so — because the
+// environment is NOT the same window. Measured the night this was written, with
+// two areas and the focus on the second: opening a menu from the FIRST area's
+// bar leaves `activeWin()` on the second, while the menu the user is about to
+// use belongs to the first. That is why the bar's verbs are wrapped in
+// `focusThen` — a compensation at seventeen call sites for exactly this gap.
+{
+  const registro = Sorg.valoreDi(TS, "WINDOW_MENUS");
+  ok(registro.length > 0,
+    "`WINDOW_MENUS` is still a declaration in `main.ts` — this clause asserts " +
+    "something about ITS value, and a rename must make the fence fail rather " +
+    "than let it pass on an empty string");
+  ok(!Sorg.chiama(registro, "activeWin"),
+    "an entry of `WINDOW_MENUS` calls `activeWin()`. The registry is walked by " +
+    "`buildAreaHeader(win)` to build the bar of ONE window, and that window is " +
+    "handed to every entry as `items(win)` — so reaching for the focus here " +
+    "asks a different question than the one the bar is answering. While a menu " +
+    "is open the focus can be in another area entirely: use the parameter.");
+  ok(Sorg.chiama(registro, "winMode") || Sorg.chiama(registro, "winCurrent"),
+    "…and the registry still reads per-window state at all — if it stopped, " +
+    "this clause would be guarding a rule with no subject");
 }
 
 // ── the tables, because "it is fine" has to be readable ───────────────────

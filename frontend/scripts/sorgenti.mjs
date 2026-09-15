@@ -238,6 +238,31 @@ export function corpoDi(source, nome) {
 }
 
 /**
+ * The VALUE a top-level name is declared with, as a snippet every other
+ * primitive here can read — the twin of `dentro` for a declaration that is not
+ * a function.
+ *
+ *     chiama(valoreDi(main, "WINDOW_MENUS"), "activeWin")
+ *
+ * asks whether a REGISTRY reaches for something, which `corpoDi` cannot: a
+ * `Record<…, …[]>` of objects holding arrow functions has no body of its own,
+ * and slicing it out of the file by brace counting is the very thing this
+ * module exists to replace. `""` when there is no such declaration, so a rename
+ * makes an assertion FAIL rather than pass on an empty string.
+ */
+export function valoreDi(source, nome) {
+  const sf = albero(source);
+  let testo = "";
+  cammina(sf, (n) => {
+    if (testo) return;
+    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) &&
+        n.name.text === nome && n.initializer)
+      testo = `const __ = ${n.initializer.getText(sf)};`;
+  });
+  return testo;
+}
+
+/**
  * A function's body as a snippet every other primitive here can read.
  *
  * One composition instead of five variants: `chiama(dentro(main, "f"), "fetch")`
@@ -408,18 +433,141 @@ export const indirizziNelCodice = (source) =>
  *     function that may store it)                             → timing unknown:
  *     reported separately by `raggiunteDopoUnaSospensione`, never silently
  *
- * Returns `[{ riga, funzione, motivo, dove }]`, sorted by line.
+ * Returns `[{ riga, funzione, ramo, testo, ordinale, motivo, dove }]`, sorted
+ * by line. The line is for the READER — it is where to go and look. The other
+ * three are the NAME of the read, and the difference matters: a fence that
+ * declares an exception must index it on something that survives an edit two
+ * thousand lines above it. See `identita`.
  */
 export function dopoUnaSospensione(source, nome, nomeFile = "x.ts") {
   const sf = albero(source, nomeFile);
   const riga = (p) => sf.getLineAndCharacterOfPosition(p).line + 1;
   const sospese = [];
-  for (const { chiamata, corpo } of chiamateDi(sf, nome)) {
+  for (const { chiamata, corpo, ordinale } of chiamateDi(sf, nome)) {
     const e = espostaAllaPosizione(sf, chiamata.getStart(sf), corpo, new Set());
     if (e) sospese.push({ riga: riga(chiamata.getStart(sf)),
-                          funzione: nomeFunzione(sf, corpo), ...e });
+                          funzione: nomeFunzione(sf, corpo),
+                          ramo: rami(chiamata, corpo), testo: frase(sf, chiamata),
+                          ordinale, ...e });
   }
   return sospese.sort((a, b) => a.riga - b.riga);
+}
+
+/**
+ * THE NAME OF A READ — what `dopoUnaSospensione` and `tempoIgnoto` found, said
+ * in a way that does not move when the file does.
+ *
+ * Written on 15 settembre 2026, and the reason is a fence that was BORN RED:
+ * `check-focus-parity.mjs` declared its two legitimate exceptions by line
+ * number, against the file as it stood in one commit, and was committed in the
+ * next — which had added lines above them. Nothing was wrong with the code and
+ * nothing was wrong with the declaration; the coordinate had simply expired
+ * between being written and being pushed.
+ *
+ * Three parts, and each earns its place:
+ *
+ *   · `funzione` — which body the read is in. Alone it does not separate two
+ *     reads of the same function, and the case that prompted this has two.
+ *   · `ramo`     — the branch path inside that body (`try` · `catch` ·
+ *     `finally` · `if` · `else`, innermost last, joined by `>`). This is what
+ *     actually distinguishes the annotator's two guards, and it is also what
+ *     their two reasons are ABOUT: one is the good path, one is the failure.
+ *   · `testo`    — the sentence the read is written in, whitespace collapsed:
+ *     the smallest expression whose parent is a statement. It is the part a
+ *     human recognises, and it is deliberately brittle in ONE direction — if
+ *     the guard itself is rewritten, the declaration stops matching and has to
+ *     be re-read. That is correct: the reason was written about that sentence.
+ *
+ * `ordinale` (the read's rank among calls to the same name inside the same
+ * body) is returned but NOT part of the name: it is a coordinate too, finer but
+ * still a coordinate, and a second read added above it would shift it.
+ */
+/**
+ * EVERY call to `nome()`, each with its identity — the census `identita` names.
+ *
+ * `dopoUnaSospensione` answers «which of these can observe a focus that moved»;
+ * this answers the question BEFORE it: which are there at all, and where. An
+ * inventory that has to survive a commit landing on top of it cannot be a list
+ * of line numbers — that is the mistake `identita` was written for, and this is
+ * the primitive that keeps the whole census on the same footing as the two
+ * declarations inside the fence.
+ *
+ * Each entry carries `funzione` · `ramo` · `testo` · `ordinale` · `riga` — the
+ * line last, and for reading only. Plus `usoDi`, the shape the read's VALUE is
+ * put to, taken from the parent node rather than from the sentence: whether the
+ * program asks this window for its id, for its type, hands it to something, or
+ * keeps it in a name of its own.
+ */
+export function letture(source, nome, nomeFile = "x.ts") {
+  const sf = albero(source, nomeFile);
+  const riga = (p) => sf.getLineAndCharacterOfPosition(p).line + 1;
+  const fuori = [];
+  for (const { chiamata, corpo, ordinale } of chiamateDi(sf, nome))
+    fuori.push({
+      riga: riga(chiamata.getStart(sf)),
+      funzione: nomeFunzione(sf, corpo),
+      ramo: rami(chiamata, corpo),
+      testo: frase(sf, chiamata),
+      ordinale,
+      usoDi: usoDi(sf, chiamata),
+    });
+  return fuori.sort((a, b) => a.riga - b.riga);
+}
+
+/** What the program does with the value, from the node that receives it. */
+function usoDi(sf, chiamata) {
+  const p = chiamata.parent;
+  if (p && ts.isPropertyAccessExpression(p)) {
+    const prop = p.name.text;
+    const su = p.parent;
+    if (su && ts.isBinaryExpression(su) &&
+        [ts.SyntaxKind.EqualsEqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsEqualsToken]
+          .includes(su.operatorToken.kind))
+      return { forma: "confronto", campo: prop };
+    return { forma: "campo", campo: prop };
+  }
+  if (p && ts.isCallExpression(p) && p.arguments.includes(chiamata)) {
+    let e = p.expression, catena = [];
+    while (ts.isPropertyAccessExpression(e)) { catena.unshift(e.name.text); e = e.expression; }
+    if (ts.isIdentifier(e)) catena.unshift(e.text);
+    return { forma: "passata", a: catena.join(".") };
+  }
+  if (p && ts.isVariableDeclaration(p) && ts.isIdentifier(p.name))
+    return { forma: "catturata", nome: p.name.text };
+  return { forma: "altro" };
+}
+
+export const identita = (r) => `${r.funzione} · ${r.ramo || "—"} · ${r.testo}`;
+
+/** The branch path from a body's entry down to a node: `try` · `catch` ·
+ *  `finally` · `if` · `else`, outermost first, and it stops at the function —
+ *  a `try` outside this body is not this read's branch. */
+function rami(n, fn) {
+  const fuori = [];
+  let c = n, p = c.parent;
+  while (p && c !== fn) {
+    if (ts.isTryStatement(p)) {
+      if (p.tryBlock === c) fuori.unshift("try");
+      else if (p.catchClause === c) fuori.unshift("catch");
+      else if (p.finallyBlock === c) fuori.unshift("finally");
+    } else if (ts.isIfStatement(p)) {
+      if (p.thenStatement === c) fuori.unshift("if");
+      else if (p.elseStatement === c) fuori.unshift("else");
+    }
+    c = p; p = c.parent;
+  }
+  return fuori.join(">");
+}
+
+/** The sentence a call is written in: climb out of the expression until the
+ *  parent is a statement, a block or a function body, and collapse the
+ *  whitespace — so that re-indenting is not a rename. */
+function frase(sf, chiamata) {
+  let n = chiamata;
+  while (n.parent && !ts.isStatement(n.parent) && !ts.isBlock(n.parent) &&
+         !ts.isSourceFile(n.parent) && !FUNZIONE(n.parent))
+    n = n.parent;
+  return n.getText(sf).replace(/\s+/g, " ").trim();
 }
 
 const FUNZIONE = (n) =>
@@ -437,9 +585,14 @@ const contenitore = (n) => { let p = n.parent; while (p && !FUNZIONE(p)) p = p.p
 
 function chiamateDi(sf, nome) {
   const fuori = [];
+  const quante = new Map();            // how many of these this body has had
   cammina(sf, (n) => {
-    if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === nome)
-      fuori.push({ chiamata: n, corpo: contenitore(n) ?? sf });
+    if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === nome) {
+      const corpo = contenitore(n) ?? sf;
+      const ordinale = (quante.get(corpo) ?? 0) + 1;
+      quante.set(corpo, ordinale);
+      fuori.push({ chiamata: n, corpo, ordinale });
+    }
   });
   return fuori;
 }
@@ -450,6 +603,12 @@ function nomeFunzione(sf, fn) {
   const p = fn.parent;
   if (p && ts.isVariableDeclaration(p) && ts.isIdentifier(p.name)) return p.name.text;
   if (p && ts.isPropertyAssignment(p)) return p.name.getText(sf);
+  // a body with no name of its own, handed to somebody: the thing it was handed
+  // to IS its name. Before this, a listener at the top of the module came back
+  // as "(anonima)" — which is the reader admitting it does not know, in a field
+  // a fence is about to use as an identity.
+  const via = passataA(fn);
+  if (via) return `(argomento di ${via.nome})`;
   const su = contenitore(fn);
   return su ? `(dentro ${nomeFunzione(sf, su)})` : "(anonima)";
 }
@@ -518,11 +677,13 @@ export function tempoIgnoto(source, nome, nomeFile = "x.ts") {
   const sf = albero(source, nomeFile);
   const riga = (p) => sf.getLineAndCharacterOfPosition(p).line + 1;
   const fuori = [];
-  for (const { chiamata, corpo } of chiamateDi(sf, nome)) {
+  for (const { chiamata, corpo, ordinale } of chiamateDi(sf, nome)) {
     const via = corpo && corpo !== sf ? passataA(corpo) : null;
     if (via && !DIFFERISCONO.has(via.verbo) && !ASCOLTANO.has(via.verbo) &&
         !SCORRONO.has(via.verbo))
-      fuori.push({ riga: riga(chiamata.getStart(sf)), passataA: via.nome });
+      fuori.push({ riga: riga(chiamata.getStart(sf)), passataA: via.nome,
+                   funzione: nomeFunzione(sf, corpo), ramo: rami(chiamata, corpo),
+                   testo: frase(sf, chiamata), ordinale });
   }
   return fuori.sort((a, b) => a.riga - b.riga);
 }

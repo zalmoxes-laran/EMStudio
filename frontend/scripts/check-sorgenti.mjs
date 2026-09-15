@@ -114,4 +114,69 @@ ok(S.prosa("Sign in and open it again", "sign in"),
 ok(!S.prosa("This study is restricted.", "sign in"),
    "prosa · …and says so when the instruction is gone");
 
+// ── the NAME of a read, and the two things a name has to do ────────────────
+//
+// 15 set 2026 · added with `identita`, and it exists because of a fence that was
+// born red: `check-focus-parity` declared its two legitimate exceptions by LINE,
+// and the lines moved between the commit it was written against and the commit
+// it landed in. A name has exactly two jobs — tell two reads apart, and stay the
+// same when the file moves — so both are asked here, and both with the twin that
+// makes the answer worth something.
+{
+  const corpo = (spazio) => spazio + `
+async function f(win) {
+  try {
+    const c = await load();
+    if (activeWin().id !== win.id) return;
+    use(c);
+  } catch (err) {
+    if (activeWin().id !== win.id) return;
+    fail(err);
+  }
+}
+`;
+  const letto = (src) => S.dopoUnaSospensione(src, "activeWin", "x.ts");
+  const a = letto(corpo(""));
+  ok(a.length === 2, "two reads after the wait, one per branch");
+
+  //  1 · IT TELLS THEM APART — and the twin: the two sentences are the SAME
+  //  text, so a name made of the sentence alone would collide. The branch is
+  //  what separates them, and it is also what their reasons are about.
+  ok(a[0].testo === a[1].testo,
+     "the two reads are written identically — the sentence alone cannot name them");
+  ok(a[0].ramo === "try" && a[1].ramo === "catch",
+     "…and the branch does: the good path and the failure are not one exception");
+  ok(S.identita(a[0]) !== S.identita(a[1]),
+     "…so their two names differ");
+
+  //  2 · IT SURVIVES A MOVE — the whole point. Sixty lines above the function,
+  //  the line numbers all change and the names do not.
+  const b = letto(corpo("\n".repeat(60)));
+  ok(b[0].riga === a[0].riga + 60 && b[1].riga === a[1].riga + 60,
+     "pushing the function down really does move the lines");
+  ok(S.identita(b[0]) === S.identita(a[0]) &&
+     S.identita(b[1]) === S.identita(a[1]),
+     "…and the names are byte-identical across the move: this is what a line " +
+     "number could not do, and why the fence that used one was red on arrival");
+
+  //  …and the twin of THAT: a name must not survive a rewrite of the guard it
+  //  names. The reason was written about a sentence; change the sentence and the
+  //  declaration has to be read again.
+  const riscritto = letto(corpo("").replace(
+    "if (activeWin().id !== win.id) return;\n    use(c);",
+    "if (win.id !== activeWin().id) return;\n    use(c);"));
+  ok(S.identita(riscritto[0]) !== S.identita(a[0]),
+     "a guard written a different way is a different guard, and loses its " +
+     "declaration on purpose");
+
+  //  …and a body with no name of its own is named by what it was handed to,
+  //  because "(anonima)" is the reader admitting it does not know — in a field
+  //  a fence is about to use as an identity.
+  const ignoto = S.tempoIgnoto(
+    'onChange(() => { if (activeWin().type === "shelf") draw(); });',
+    "activeWin", "x.ts");
+  ok(ignoto.length === 1 && ignoto[0].funzione === "(argomento di onChange)",
+     "a listener at the top of a module is named by the call it was handed to");
+}
+
 console.log(`sorgenti: ${checks} checks passed`);

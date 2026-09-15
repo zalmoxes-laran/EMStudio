@@ -10258,13 +10258,13 @@ function renderNarrativeInto(host: HTMLElement, win: Win): void {
     // view marks it and reports the click. Passed ALWAYS (not only in edit
     // mode): picking the chapter you are reading is navigation.
     {
-      index: () => currentChapterIndex(),
-      set: (i) => setCurrentChapterIndex(i),
+      index: () => currentChapterIndex(win),
+      set: (i) => setCurrentChapterIndex(win, i),
     },
   );
   // …and the window has something current to act on (see `ensureCurrentChapter`).
   // After the render, so the chapters it counts are the ones just drawn.
-  ensureCurrentChapter();
+  ensureCurrentChapter(win);
   renderResourcePanels(); // the story changed: its blocks panel repaints
 }
 
@@ -11038,13 +11038,18 @@ function renderTiles(): void {
 // mutators. A menu item with no current element stays disabled WITH ITS REASON
 // rather than guessing which chapter the user meant.
 
-function currentChapterIndex(): number | null {
-  const v = winCurrent(activeWin(), "chapter");
+/** The chapter a narrative window is on. `win` and not `activeWin()`: the
+ *  narrative surface is mounted once per window and `renderNarrativeInto(host,
+ *  win)` knows which — while the focus is one window for all of them. Two
+ *  narrative windows open, and the ambient read made the second one show the
+ *  first one's chapter and write its picks there. */
+function currentChapterIndex(win: Win): number | null {
+  const v = winCurrent(win, "chapter");
   return typeof v === "number" ? v : null;
 }
-function setCurrentChapterIndex(i: number | null): void {
-  if (currentChapterIndex() === i) return;      // nothing to change, nothing to do
-  setWinCurrent(activeWin(), "chapter", i);
+function setCurrentChapterIndex(win: Win, i: number | null): void {
+  if (currentChapterIndex(win) === i) return;   // nothing to change, nothing to do
+  setWinCurrent(win, "chapter", i);
   // NO RE-RENDER HERE, and this is a BUG FIX, not an optimisation.
   //
   // The narrative view sets the current chapter on `mousedown` (picking the
@@ -11143,9 +11148,9 @@ function activeNarrative(): { id: string; chapters: unknown[] } | null {
 
 /** The current chapter, validated against the narrative that is actually open —
  *  a persisted index must never outlive the chapter it pointed at. */
-function validCurrentChapter(): number | null {
+function validCurrentChapter(win: Win): number | null {
   const narr = activeNarrative();
-  const i = currentChapterIndex();
+  const i = currentChapterIndex(win);
   if (!narr || i == null) return null;
   return i >= 0 && i < narr.chapters.length ? i : null;
 }
@@ -11163,15 +11168,15 @@ function validCurrentChapter(): number | null {
  * decision: clicking any chapter changes it, and nothing is written to the
  * document — the current element lives on the window (workspace.ts).
  */
-function ensureCurrentChapter(): void {
+function ensureCurrentChapter(win: Win): void {
   const narr = activeNarrative();
   if (!narr || !narr.chapters.length) return;
-  if (validCurrentChapter() != null) return;
+  if (validCurrentChapter(win) != null) return;
   // `setWinCurrent` and not `setCurrentChapterIndex`: the latter re-renders the
   // view, which calls this again — one default must not cost a render loop. The
   // marker and the menus are brought up to date by hand, right here, which is
   // all the re-render would have done anyway.
-  setWinCurrent(activeWin(), "chapter", 0);
+  setWinCurrent(win, "chapter", 0);
   markCurrentChapter(0);
   updateWindowHeader();
 }
@@ -11212,8 +11217,11 @@ const TRANSFORM_TYPES: WindowType[] = [
 // editor. Deliberately NOT a rich text editor: EMStudio has no document body to
 // edit, and inventing one would be a second model of what a source is.
 
-function currentDocId(): string | null {
-  const v = winCurrent(activeWin(), "doc");
+/** The document a Doc window is showing. `win` and not `activeWin()`: both
+ *  callers are items of a window's own Doc menu, and since the registry carries
+ *  the window they have one to give. */
+function currentDocId(win: Win): string | null {
+  const v = winCurrent(win, "doc");
   return typeof v === "string" ? v : null;
 }
 
@@ -16433,10 +16441,16 @@ function refreshTileSurfaces(): void {
  * are.
  */
 
-/** Change the mode of the ACTIVE window (per-instance): record it on the window,
- *  then mount that projection. Another graph window keeps its own mode. */
-function setWindowMode(mode: ViewKind): void {
-  setWinMode(activeWin(), mode);
+/** Change the mode of a window (per-instance): record it on the window, then
+ *  mount that projection. Another graph window keeps its own mode.
+ *
+ *  `win` and not `activeWin()`: the only caller is the mode menu of a window's
+ *  own header, and it wrapped this in `focusThen` — moving the focus so that an
+ *  ambient read would land right. The focus move stays, because showing you
+ *  which window you just changed is its own job; what it no longer does is
+ *  carry the meaning. */
+function setWindowMode(win: Win, mode: ViewKind): void {
+  setWinMode(win, mode);
   setMode(mode); // → reflect + updateWindowHeader
 }
 
@@ -16476,8 +16490,13 @@ function magnifyWindow(winId: string): void {
   renderTiles();
 }
 
-function closeActiveWindow(): void {
-  if (!closeWindow(activeWin().id)) return; // never the last one
+/** Close a window — the one whose `×` was pressed, which is not necessarily the
+ *  one with the focus: this bar belongs to an area, and an area's chrome is
+ *  live whether or not the pointer is in it. The caller used to focus it first
+ *  so that an `activeWin()` in here would find it; that was the invariant kept
+ *  by hand, and the argument is the invariant kept by the compiler. */
+function closeActiveWindow(win: Win): void {
+  if (!closeWindow(win.id)) return; // never the last one
   renderTiles(); // the split JOINS: the sibling takes the space back
 }
 
@@ -16581,7 +16600,7 @@ function buildAreaHeader(win: Win): DocumentFragment {
     // built on OPEN, so ✓ and disabled reasons are current every time
     wireBarDropdown(toggle, list, () => {
       list.innerHTML = "";
-      for (const item of menu.items()) {
+      for (const item of menu.items(win)) {
         const b = document.createElement("button");
         const reason = item.disabledReason?.() ?? null;
         b.textContent = (item.checked?.() ? "✓ " : "") + t(item.label);
@@ -16708,8 +16727,8 @@ function buildAreaHeader(win: Win): DocumentFragment {
     close.title = t("win.close");
     close.addEventListener("click", (e) => {
       e.stopPropagation();
-      setActiveWin(win.id);
-      closeActiveWindow();
+      setActiveWin(win.id);   // the focus follows the verb, and the verb says WHICH
+      closeActiveWindow(win);
     });
     arr.appendChild(close);
   }
@@ -16816,7 +16835,7 @@ function headerModesOf(win: Win): {
       items: GRAPH_MODES.map((m) => ({
         label: t("mode.label", { mode: t(`mode.${m}`) }),
         current: m === cur,
-        run: () => focusThen(win, () => setWindowMode(m)),
+        run: () => focusThen(win, () => setWindowMode(win, m)),
       })),
     };
   }
@@ -17189,7 +17208,12 @@ interface WinMenuItem {
 }
 interface WinMenu {
   label: string;
-  items: () => WinMenuItem[];
+  /** THE WINDOW WHOSE BAR THIS IS. The registry is a module constant, so its
+   *  closures cannot see the `win` that `buildAreaHeader` has — and every entry
+   *  that needed one reached for `activeWin()` instead. The window existed at
+   *  the point the menu was built and was lost crossing into the registry; one
+   *  parameter is the whole of carrying it across. */
+  items: (win: Win) => WinMenuItem[];
 }
 
 const click = (id: string): void => document.getElementById(id)?.click();
@@ -17210,8 +17234,8 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
   graph: [
     {
       label: "Layout",
-      items: () => {
-        const mode = winMode(activeWin());
+      items: (win) => {
+        const mode = winMode(win);
         const algoItems = (["layered", "radial", "force"] as GraphAlgorithm[]).map(
           (a) => ({
             label: a[0].toUpperCase() + a.slice(1),
@@ -17249,9 +17273,9 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
       // and it has two homes that suit it — the narrative palette (always) and
       // the "+ capitolo" at the end of the story (while writing).
       label: "menu.chapter",
-      items: () => {
+      items: (win) => {
         const narr = activeNarrative();
-        const ci = validCurrentChapter();
+        const ci = validCurrentChapter(win);
         const noChapter = (): string | null =>
           !narr
             ? t("menu.noNarrative")
@@ -17264,7 +17288,7 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
             run: () => {
               if (!store || !narr || ci == null) return;
               nedit.deleteChapter(store, narr.id, ci);
-              setCurrentChapterIndex(null);
+              setCurrentChapterIndex(win, null);
               refreshNarrativeView();
             },
             disabledReason: noChapter,
@@ -17274,7 +17298,7 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
             run: () => {
               if (!store || !narr || ci == null) return;
               nedit.moveChapter(store, narr.id, ci, -1);
-              setCurrentChapterIndex(Math.max(0, ci - 1));
+              setCurrentChapterIndex(win, Math.max(0, ci - 1));
             },
             disabledReason: () => noChapter() ?? (ci === 0 ? t("menu.alreadyFirst") : null),
           },
@@ -17283,7 +17307,7 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
             run: () => {
               if (!store || !narr || ci == null) return;
               nedit.moveChapter(store, narr.id, ci, 1);
-              setCurrentChapterIndex(Math.min(narr.chapters.length - 1, ci + 1));
+              setCurrentChapterIndex(win, Math.min(narr.chapters.length - 1, ci + 1));
             },
             disabledReason: () =>
               noChapter() ??
@@ -17294,9 +17318,9 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
     },
     {
       label: "menu.insert",
-      items: () => {
+      items: (win) => {
         const narr = activeNarrative();
-        const ci = validCurrentChapter();
+        const ci = validCurrentChapter(win);
         // The embed needs a chapter AND a node to point at. The MAP points at
         // the graph itself (that is what a site map is), so it needs no
         // selection — which is the case E.D. hit: a map in the introduction.
@@ -17384,9 +17408,9 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
     },
     {
       label: "menu.ai",
-      items: () => {
+      items: (win) => {
         const narr = activeNarrative();
-        const ci = validCurrentChapter();
+        const ci = validCurrentChapter(win);
         return [
           {
             label: "menu.regenChapter",
@@ -17471,8 +17495,7 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
   viewer: [
     {
       label: "menu.collection",
-      items: () => {
-        const win = activeWin();
+      items: (win) => {
         const pinned = !!winCurrent(win, "collection");
         return [
           {
@@ -17566,13 +17589,13 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
   doc: [
     {
       label: "Documento",
-      items: () => [
+      items: (win) => [
         {
           label: "Nuovo documento",
           run: () => {
             if (!store) return;
             const id = addRow(store, "Documents");
-            if (id) setWinCurrent(activeWin(), "doc", id);
+            if (id) setWinCurrent(win, "doc", id);
             renderDocView();
           },
           disabledReason: () => (store ? null : t("menu.noGraph")),
@@ -17580,14 +17603,14 @@ const WINDOW_MENUS: Record<WindowType, WinMenu[]> = {
         {
           label: "Elimina documento corrente",
           run: () => {
-            const id = currentDocId();
+            const id = currentDocId(win);
             if (!store || !id) return;
             deleteRow(store, id);
-            setWinCurrent(activeWin(), "doc", null);
+            setWinCurrent(win, "doc", null);
             renderDocView();
           },
           disabledReason: () =>
-            currentDocId() ? null : t("menu.pickDocument"),
+            currentDocId(win) ? null : t("menu.pickDocument"),
         },
       ],
     },
@@ -17983,7 +18006,7 @@ function wireGraphCanvas(canvas: HTMLCanvasElement, winId: string): void {
     // this pans regardless of what is under the cursor.
     if (e.button === 1 || spaceHeld) {
       dragMode = "pan";
-      markCameraTouched(activeWin().id, view);
+      markCameraTouched(winId, view);
       canvas.classList.add("panning");
       canvas.setPointerCapture(e.pointerId);
       e.preventDefault();
@@ -18619,7 +18642,7 @@ function wireGraphCanvas(canvas: HTMLCanvasElement, winId: string): void {
       claim();
       e.preventDefault();
       const rect = canvas.getBoundingClientRect();
-      markCameraTouched(activeWin().id, view);
+      markCameraTouched(winId, view);
       viewport().zoomAt(
         e.clientX - rect.left,
         e.clientY - rect.top,
