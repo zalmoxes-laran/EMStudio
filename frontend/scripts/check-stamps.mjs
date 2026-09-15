@@ -31,6 +31,7 @@ async function carica(entry) {
 const S = await carica("stamp.ts");
 const H = await carica("stamp-hints.ts");
 const V = await carica("views/stamps.ts");
+const G = await carica("stamp-ingest.ts");
 
 let fatte = 0;
 const prova = (nome, fn) => { fn(); fatte++; console.log(`  ok · ${nome}`); };
@@ -658,6 +659,225 @@ prova("IL CONTROESEMPIO: comporre un percorso di timbro in una scrittura FALLISC
     }`;
   const errori = nessunaScritturaDiTimbri(cattivo, "controesempio");
   assert.ok(errori.some((e) => /percorso di TIMBRO/.test(e)));
+});
+
+
+
+// ═══ DTCEMS3 · niente entra nello store senza un verbale ═════════════════════
+
+console.log("\n· I2 — l'ingestione è un atto, e si timbra");
+
+const DEPOSITO = {
+  resourceId: "res:abc", digest: "sha256:" + "a".repeat(64),
+  name: "scatto-01.jpg", mediaType: "image/jpeg", sizeBytes: 9012,
+  room: "em.localhost/aiano", operator: { id: "https://orcid.org/0000-0002-1825-0097" },
+  at: "2026-09-15T10:00:00Z", tool: "EMStudio 1.6",
+};
+
+prova("un file non timbrato produce un atto SENZA genitori e senza come", () => {
+  const atto = G.ingestionAct([DEPOSITO], { room: DEPOSITO.room });
+  assert.deepEqual(atto.inputs, [], "nessun genitore, perché nessuno ne ha dichiarato uno");
+  assert.equal(atto.act.dtc_kind, "ingest");
+  // …e NIENTE che affermi come i byte siano stati fatti
+  for (const campo of ["technique", "software", "parameters"])
+    assert.ok(!(campo in atto.act),
+      `«${campo}» sarebbe un'affermazione su come i byte sono stati fatti, e nessuno l'ha fatta`);
+  // l'operatore ha compiuto il DEPOSITO ed è vero; non è dichiarato autore
+  assert.deepEqual(Object.keys(atto.operator), ["id"],
+    "nessuna label: senza un nome vero il bridge non crea il nodo autore, e " +
+    "nessun has_author asserisce che chi carica abbia fatto il contenuto");
+  assert.equal(atto.outputs[0].tier, "distribution",
+    "non «master»: un master è l'originale autoriale di qualcosa, e di questi " +
+    "byte non sappiamo nemmeno chi li ha fatti");
+});
+
+prova("il genere viene dal VOCABOLARIO VENDORIZZATO, non da questa riga", async () => {
+  // misurato sul datamodel, non asserito: se un giorno `ingest` sparisse
+  // dall'asse acquisition, il difetto si vedrebbe qui e non in un timbro
+  const rules = JSON.parse(
+    await readFile(`${SRC}assets/em_visual_rules.json`, "utf8"));
+  const asse = rules.dtc_kinds?.acquisition ?? {};
+  assert.ok(Object.hasOwn(asse, G.INGESTION_KIND),
+    `«${G.INGESTION_KIND}» non è nell'asse acquisition del vocabolario`);
+  for (const k of G.TRANSFER_KINDS)
+    assert.ok(Object.hasOwn(asse, k), `«${k}» non è nel vocabolario`);
+  // …e l'interfaccia non ne aggiunge: l'elenco letto è quello del datamodel
+  assert.deepEqual([...G.TRANSFER_KINDS].sort(), Object.keys(asse).sort(),
+    "l'elenco dei generi di trasferimento È l'asse acquisition, non un " +
+    "sottoinsieme scelto a mano che invecchierebbe in silenzio");
+});
+
+console.log("\n· I2 — e si VEDE che è povera");
+
+prova("le tre risposte sono tre, e vengono dalla forma", () => {
+  const ingestione = {
+    from: [], how: { dtc_kind: "ingest",
+                     acquisition: { deposited_into: "em.localhost/aiano" } } };
+  assert.deepEqual(G.describeProvenance(ingestione),
+                   { depth: "ingestion", into: "em.localhost/aiano" });
+  assert.ok(G.isIngestionRecord(ingestione));
+});
+
+prova("IL CONTROESEMPIO: una CATENA VERA non deve mai leggersi come povera", () => {
+  // È la confusione che renderebbe inutile tutto il resto: se una catena vera
+  // passasse per un verbale d'ingestione, l'etichetta smetterebbe di dire
+  // qualcosa e chi legge imparerebbe a non fidarsene.
+  const catena = {
+    from: [{ resource_id: "res:pad", digest: "sha256:" + "b".repeat(64) }],
+    how: { dtc_kind: "transformation", technique: "decimation" },
+  };
+  assert.equal(G.describeProvenance(catena).depth, "chain");
+  assert.ok(!G.isIngestionRecord(catena), "una catena NON è un'ingestione");
+});
+
+prova("IL CONTROESEMPIO: un'ORIGINE dichiarata da una persona non è un'ingestione", () => {
+  // Un'origine ha `from: []` esattamente come un'ingestione — è il caso che il
+  // formato avverte di non confondere — e quello che la distingue è che
+  // qualcuno ha DICHIARATO qualcosa: una campagna con un nome, o una tecnica.
+  const conCampagna = {
+    from: [], how: { dtc_kind: "local_import",
+                     acquisition: { campaign: "Aiano 2015", device: "Nikon D850" } } };
+  assert.equal(G.describeProvenance(conCampagna).depth, "origin");
+  assert.ok(!G.isIngestionRecord(conCampagna));
+
+  const conTecnica = {
+    from: [], how: { dtc_kind: "ingest", technique: "scansione da microfilm" } };
+  assert.equal(G.describeProvenance(conTecnica).depth, "origin",
+    "una tecnica dichiarata è qualcuno che ha detto come: non è più povera");
+  assert.ok(!G.isIngestionRecord(conTecnica));
+});
+
+prova("…e «non lo so» resta una risposta, invece di diventare «ingestione»", () => {
+  // Senza genitori, senza dichiarazioni e senza un genere che spieghi, non c'è
+  // abbastanza per dire di che specie sia. Inventarlo sarebbe peggio del tacere.
+  assert.equal(G.describeProvenance({ from: [], how: {} }).depth, "unknown");
+  assert.equal(G.describeProvenance(null).depth, "unknown");
+  assert.equal(G.describeProvenance({ from: [], how: { dtc_kind: "photogrammetry" } }).depth,
+               "unknown", "un genere che non è un trasferimento non dice «entrato»");
+});
+
+console.log("\n· I6 — quello che parte non porta niente di privato");
+
+prova("nessun percorso locale entra nei fatti che finiranno nel timbro", () => {
+  const conPercorso = { ...DEPOSITO, path: PERCORSO };
+  const atto = G.ingestionAct([conPercorso], { room: DEPOSITO.room });
+  // SUL TESTO INTERO dei fatti dell'atto — è la parte che il timbro incorpora —
+  // e non sulle chiavi: un percorso può nascondersi in un campo che nessuno ha
+  // pensato di filtrare, e un'asserzione sulle chiavi non lo vedrebbe.
+  const testo = JSON.stringify(atto.act);
+  assert.ok(!testo.includes(PERCORSO), "il percorso");
+  assert.ok(!testo.includes(PERSONA), "il nome della persona");
+  assert.ok(!testo.includes(ENTE), "il nome dell'ente");
+  // il nome del file invece SÌ: è un fatto della consegna, ed è ciò che permette
+  // a una persona di riconoscere l'oggetto
+  assert.ok(testo.includes("scatto-01.jpg"));
+  // …e il percorso vive solo dove serve al bridge per scrivere la copia di
+  // cortesia, che è un gesto locale e non parte per nessun posto
+  assert.equal(atto.outputs[0].path, PERCORSO);
+});
+
+prova("IL CONTROESEMPIO: un percorso nei fatti dell'atto viene visto", () => {
+  // scritto come lo scriverebbe qualcuno in buona fede: «annoto da dove veniva,
+  // così poi lo ritrovo» — che è esattamente ciò che le PISTE fanno, in un file
+  // che non viaggia.
+  const cattivo = { act: { acquisition: { metadata: { came_from: PERCORSO } } } };
+  const testo = JSON.stringify(cattivo.act);
+  assert.ok(testo.includes(PERCORSO) && testo.includes(PERSONA),
+    "la guardia deve vedere un percorso annidato dove nessuno lo cercherebbe");
+});
+
+console.log("\n· I3/I4 — il verbale viaggia, la posizione è una pista");
+
+prova("l'indirizzo dello store è quello dell'oggetto, e la chiave è l'impronta", () => {
+  const uri = G.storeLocator("http://em.localhost:8000/", "aiano",
+                             "sha256:" + "a".repeat(64));
+  assert.equal(uri, "http://em.localhost:8000/v1/rooms/aiano/asset/"
+    + encodeURIComponent("sha256:" + "a".repeat(64)));
+  // …e una posizione è `public` da sé: è l'unico genere di percorso utile a chi
+  // riceve, e `scopeFor` lo classifica senza che nessuno glielo dica
+  assert.equal(H.scopeFor(uri), "public");
+});
+
+prova("nessun modulo dell'ingestione scrive dentro un .stamp.json", () => {
+  // la guardia di DTCEMS1, estesa una terza volta: il modulo nuovo entra
+  // nell'elenco dei sorvegliati invece di essere un'eccezione
+  const errori = [];
+  for (const f of ["stamp.ts", "stamp-hints.ts", "views/stamps.ts",
+                   "stamp-compose.ts", "stamp-ingest.ts"])
+    errori.push(...nessunaScritturaDiTimbri(codice(f), f));
+  assert.deepEqual(errori, [], errori.join("\n"));
+});
+
+prova("IL CONTROESEMPIO: aggiornare il timbro con l'URI dello store FALLISCE", () => {
+  // La riga che I4 esiste per rendere impossibile, e la tentazione è concreta:
+  // «ho appena caricato, so l'indirizzo, lo scrivo nel verbale». Scriverlo
+  // cambierebbe i byte del timbro e quindi la sua identità, che è il digest di
+  // ciò che descrive.
+  const cattivo = `
+    async function noteTheUri(path, stamp, ref) {
+      stamp.self.locator = storeLocator(base, room, ref);
+      const res = await fetch(\`\${await bridge()}/stamp/emit\`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: stampPathFor(path), stamp }),
+      });
+      return res.ok;
+    }`;
+  const errori = nessunaScritturaDiTimbri(cattivo, "controesempio");
+  assert.ok(errori.some((e) => /percorso di TIMBRO/.test(e)),
+    "la guardia deve vedere la scrittura verso un percorso di timbro");
+});
+
+prova("il verbale si scrive PER FILE, dentro il ciclo, non alla fine del lotto", () => {
+  // IL DIFETTO CHE QUESTA PROVA RICORDA, ed era mio: timbravo l'intera consegna
+  // alla fine, cioè ripetevo l'errore che il commento del ciclo racconta di aver
+  // già corretto una volta per il registro. Una consegna di quattrocento
+  // fotografie interrotta alla duecentesima lasciava duecento oggetti nello
+  // store senza niente che dicesse chi ce li aveva messi.
+  const src = codice("main.ts");
+  const ciclo = src.split("async function publishQueue")[1]
+    .split("\n/** One object into the room's store")[0];
+  assert.ok(/await stampOne\(/.test(ciclo),
+    "il verbale si scrive dentro il ciclo per file");
+  // …e la chiamata sta DOPO quella che deposita i byte: un verbale scritto prima
+  // parlerebbe di byte che potrebbero non arrivare
+  assert.ok(ciclo.indexOf("await landRow(doc, item);\n      // …E IL SUO VERBALE")
+            > ciclo.indexOf("method: \"PUT\""),
+    "…dopo il deposito dei byte, non prima");
+  // nessun residuo della versione per lotto
+  assert.ok(!/stampTheDelivery|noteWhereTheyLanded/.test(src),
+    "nessun residuo della versione che timbrava a fine lotto");
+});
+
+prova("una sola annotazione per file, e non dentro un ramo che può saltarla", () => {
+  // la prima versione annotava dentro una funzione con un'uscita anticipata, e
+  // una consegna di soli file GIÀ TIMBRATI — il caso migliore — restava senza
+  // nessuna pista. Ora ogni strada che finisce con un verbale nello store passa
+  // di lì.
+  const src = codice("main.ts");
+  const corpo = src.split("async function stampOne")[1]
+    .split("\n/** Il verbale nello store")[0];
+  const annota = [...corpo.matchAll(/await noteWhereItLanded\(/g)];
+  assert.equal(annota.length, 2,
+    "le due strade che finiscono con un verbale nello store — quello proprio " +
+    "del file e quello d'ingestione — annotano ENTRAMBE. Una sola chiamata " +
+    "vorrebbe dire che una delle due strade è tornata a non annotare, che è " +
+    "esattamente il difetto trovato sul disco.");
+  // …e le uscite anticipate sono solo quelle in cui NON c'è niente da annotare
+  // perché non c'è niente nello store: nessuna identità, o l'emissione fallita
+  const primaAnnotazione = corpo.indexOf("await noteWhereItLanded(");
+  assert.ok(corpo.slice(0, primaAnnotazione).includes("assets.stampNeedsIdentity"),
+    "la prima uscita è quella senza identità, dove non si è depositato nulla");
+});
+
+prova("il caricamento scrive una PISTA e non tocca il verbale", () => {
+  const src = codice("main.ts");
+  assert.ok(/function noteWhereItLanded/.test(src));
+  const corpo = src.split("async function noteWhereItLanded")[1]
+    .split("\n// ──")[0];
+  assert.ok(/recordFound\(/.test(corpo), "passa dal registro delle piste");
+  assert.ok(!/stampPathFor|STAMP_SUFFIX|\.stamp\.json/.test(corpo),
+    "…e non nomina mai un percorso di timbro");
 });
 
 console.log(`\n✔ ${fatte} prove\n`);

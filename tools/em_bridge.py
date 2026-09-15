@@ -908,8 +908,23 @@ def make_handler(api):
             for out in outputs:
                 path = str((out or {}).get("path") or "").strip()
                 if not path:
-                    self._fail(400, "every output needs its `path`")
-                    return
+                    # UN'USCITA SENZA PERCORSO È LEGITTIMA QUANDO NON SI SCRIVE
+                    # UN FILE, e il caso è l'ingestione: i byte sono già nello
+                    # store della stanza, il timbro serve per accompagnarli, e
+                    # sul disco di chi carica non c'è nessun «accanto» dove
+                    # metterlo. Chiedere un percorso avrebbe voluto dire
+                    # depositare i byte una seconda volta solo per avere un nome
+                    # di cartella da dare via.
+                    #
+                    # La decisione di scrivere è PER USCITA e non per lotto: una
+                    # consegna mista — qualche file trascinato dal disco, qualche
+                    # altro lasciato cadere dal desktop — è il caso normale, e
+                    # rifiutarla tutta per la metà che non ha un percorso
+                    # sarebbe rifiutare il caso normale. Chi non ha un accanto
+                    # esce timbrato e **non scritto**, e la nota lo dice invece
+                    # di tacerlo.
+                    targets.append((out, None, None))
+                    continue
                 full = os.path.abspath(os.path.expanduser(path))
                 if not _fs_inside_roots(full):
                     self._fail(403, f"{path} is outside the folders this bridge serves")
@@ -1048,10 +1063,15 @@ def make_handler(api):
                     refused.append({"path": out.get("path"), "why": str(exc)})
                     continue
                 clean = {k: v for k, v in stamp.items() if not str(k).startswith("_")}
+                notes = list(stamp.get("_notes") or [])
+                if stamp_path is None:
+                    notes.append(
+                        "emitted and not written: these bytes have no path on "
+                        "this disk, so there is no file to put a courtesy copy "
+                        "beside. The stamp travels with the object instead.")
                 stamps.append({"path": out.get("path"), "stamp_path": stamp_path,
-                               "stamp": clean,
-                               "notes": stamp.get("_notes") or []})
-                if body.get("write", True):
+                               "stamp": clean, "notes": notes})
+                if stamp_path and body.get("write", True):
                     try:
                         with open(stamp_path, "w", encoding="utf-8") as fh:
                             # LEGGIBILE e non compatto: il lettore di ultima

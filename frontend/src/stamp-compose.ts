@@ -182,21 +182,29 @@ export interface EmitResult {
  * legge la richiesta e chi legge il `.stamp.json` vedono la stessa cosa e in
  * mezzo non c'è una traduzione da tenere allineata.
  *
- * I fatti rappresentativi della campagna viaggiano **due volte, e di proposito**:
- * come `acquisition.metadata` (dove il substrato li tiene, sull'evento) e come
- * `parameters` (dove il formato del timbro sa metterli). Vedi il report: il
- * timbro non ha oggi un posto per «quale macchina fotografica», e finché non ce
- * l'ha `parameters` è il posto meno sbagliato.
+ * I fatti rappresentativi della campagna viaggiano **una volta sola**, come
+ * `acquisition.metadata` — dove il substrato li tiene, sull'evento.
+ *
+ * Viaggiavano due volte, e il commento che stava qui diceva perché: «il timbro
+ * non ha oggi un posto per *quale macchina fotografica*, e finché non ce l'ha
+ * `parameters` è il posto meno sbagliato». Il posto ora c'è — `how.acquisition`,
+ * emesso da s3Dgraphy — e la duplicazione è diventata il difetto che quel
+ * commento voleva evitare: `parameters` vuol dire «come la tecnica è stata
+ * applicata», e un apparecchio scritto lì si traveste da parametro. La
+ * specifica lo dice con le stesse parole: *una volta sola, non anche in
+ * `parameters`*.
+ *
+ * Misurato prima di toglierlo, perché la prima misura era falsa: un bridge
+ * rimasto acceso dalla notte prima teneva in memoria la versione di `emit.py`
+ * precedente al campo, e rispondeva senza `how.acquisition` — cioè confermava
+ * il commento vecchio. Su un processo fresco il blocco esce.
  */
 export async function emitDraft(
   draft: Draft, registry: { graph_id?: string; revision?: number; room?: string } = {},
 ): Promise<EmitResult> {
+  // …e NON si rovesciano più qui dentro i fatti della campagna: hanno la loro
+  // casa in `how.acquisition`, e questo blocco vuol dire un'altra cosa.
   const parameters: Record<string, unknown> = { ...draft.parameters };
-  if (draft.origin) {
-    for (const [k, v] of Object.entries(draft.campaignMetadata)) {
-      if (v) parameters[k] = v;
-    }
-  }
   const body = {
     outputs: draft.outputs.map((o) => ({
       path: o.path,

@@ -405,8 +405,10 @@ import type { NeighbourhoodAnswer } from "./views/neighbourhood";
 // scrive l'unica cosa che questa notte scrive.
 import {
   identityOf,
+  readStamp,
   reportFolder,
   resolveFile,
+  sameDigest,
   searchForParent,
   setStampBridgeResolver,
   walkChain,
@@ -427,6 +429,10 @@ import {
 import { adaptDraft } from "./views/stamps";
 import { dtcKindsFor } from "./rules";
 import { digestOf, isStampPath, stampPathFor } from "./stamp";
+// DTCEMS3 · il verbale d'ingestione: niente entra nello store senza che si
+// sappia chi ce l'ha messo. La forma dell'atto sta qui; il verbale lo emette
+// s3Dgraphy attraverso il bridge, come per la composizione.
+import { ingestionAct, storeLocator } from "./stamp-ingest";
 import { buildGraphScene, type GraphAlgorithm } from "./views/graph";
 import { buildMatrixScene } from "./views/matrix";
 import { renderStudyPanel } from "./study-panel";
@@ -14251,6 +14257,19 @@ interface IngestItem {
    *  enum could not say it: `done` would mean "arrived" to one reader and
    *  "finished" to another. */
   signed?: boolean;
+  /** I2 · THE THIRD FACT, and it needed its own field for the same reason
+   *  `signed` did: «the bytes arrived», «somebody said what may be done with
+   *  them» and «there is a record of who put them there» are three different
+   *  sentences, and a reader who can only see one of them cannot tell a declared
+   *  ingestion from a real chain.
+   *
+   *  `own` = the file arrived carrying its own stamp, verified by digest;
+   *  `ingestion` = it did not, so the ingestion itself was stamped — a poor
+   *  provenance, and visibly so;
+   *  `false` = neither, which is the only state that must never be silent. */
+  stamped?: "own" | "ingestion" | false;
+  /** the stamp's OWN digest in the store — a stamp is bytes too */
+  stampRef?: string;
   digest?: string;
   nodeId?: string;
   note?: string;
@@ -14855,6 +14874,47 @@ function queueTally(): QueueTally {
   return tally;
 }
 
+/**
+ * I2 · Quello che il verbale dice, in una casella della riga.
+ *
+ * **Il tono è già una specifica**, e sta scritto in testa al referto delle tre
+ * classi: il verde è per un file accoppiato al suo timbro, l'ambra per un timbro
+ * orfano, il rosso SOLO per qualcosa di rotto, e la normalità non ha colore
+ * perché un referto che marchia la normalità insegna a ignorare i colori.
+ *
+ * Qui dentro quel vocabolario:
+ *
+ * * **timbrato all'origine** → verde, è lo stesso fatto che là si chiama
+ *   `paired`: questi byte sono arrivati col verbale di chi li ha fatti;
+ * * **verbale d'ingestione** → **nessun colore**. Non è un allarme: è l'esito
+ *   onesto e frequentissimo, e colorarlo direbbe che qualcosa è andato storto
+ *   mentre invece il sistema ha fatto esattamente il suo lavoro. Quello che si
+ *   vede è la PAROLA, e il titolo dice perché è povera;
+ * * **niente** → rosso, perché è l'unico caso rotto della serie: dei byte sono
+ *   nello store e niente dice chi ce li ha messi.
+ *
+ * Prima del caricamento non c'è niente da dire e la casella non c'è: una casella
+ * vuota per ogni riga in attesa sarebbe rumore su tutta la coda.
+ */
+function stampChip(item: IngestItem): HTMLElement {
+  const chip = ing("span", "ing-stamp");
+  if (item.stamped === undefined) return chip;   // non ancora caricato
+  if (item.stamped === "own") {
+    chip.classList.add("ing-stamp-own");
+    chip.textContent = t("assets.stampedOwn");
+    chip.title = t("assets.stampTravelled", { name: item.name });
+  } else if (item.stamped === "ingestion") {
+    chip.classList.add("ing-stamp-poor");
+    chip.textContent = t("assets.poorProvenance");
+    chip.title = t("assets.poorProvenanceHint");
+  } else {
+    chip.classList.add("ing-stamp-none");
+    chip.textContent = t("assets.stampFailed", { detail: "" });
+    chip.title = t("assets.stampFailed", { detail: "" });
+  }
+  return chip;
+}
+
 /** The queue: one row per file, with the deduced use as a correctable select. */
 function ingestQueue(): HTMLElement {
   const box = document.createElement("div");
@@ -14921,7 +14981,7 @@ function ingestQueue(): HTMLElement {
       renderStorage();
     });
 
-    row.append(name, kind, use, state, drop);
+    row.append(name, kind, use, stampChip(item), state, drop);
     if (item.nodeId) {
       row.addEventListener("dblclick", () => select(item.nodeId!));
       row.title = t("assets.openInspector");
@@ -15083,6 +15143,16 @@ async function publishQueue(): Promise<void> {
       // …AND ITS ROW, NOW. Not at the end of the lot: what has arrived already
       // has its story.
       await landRow(doc, item);
+      // …E IL SUO VERBALE, NOW. Stessa ragione, e io l'avevo sbagliata: lo
+      // facevo per l'intero lotto alla fine, cioè esattamente l'errore che le
+      // quattro righe qui sopra raccontano di aver già corretto una volta. Una
+      // consegna di quattrocento fotografie interrotta alla duecentesima
+      // lasciava duecento oggetti nello store senza niente che dicesse chi ce
+      // li aveva messi — che è il caso peggiore, quello per cui la regola
+      // esiste. Misurato che si può fare per file senza gemmare eventi: l'atto
+      // porta un NOME stabile, `bucket_acquisition` ne deriva l'id, e
+      // quattrocento chiamate danno un `process_id` solo (1–15 ms l'una).
+      await stampOne(item, base, room);
     } catch (err) {
       item.status = "failed";
       item.note = String(err instanceof Error ? err.message : err).slice(0, 120);
@@ -15143,6 +15213,182 @@ async function publishQueue(): Promise<void> {
     refreshInspector();
   }
   renderStorage();
+}
+
+/** One object into the room's store. The reference IS the digest, so the caller
+ *  can always verify what it got — which is why nothing here trusts a name. */
+async function putIntoStore(bytes: BodyInit, mediaType: string):
+    Promise<{ ref: string; created: boolean } | null> {
+  const base = getSettings().sync.hubUrl?.replace(/\/+$/, "") ?? "";
+  const room = sync.room;
+  if (!base || !room) return null;
+  const answer = await fetch(
+    `${base}/v1/rooms/${encodeURIComponent(room)}/asset`
+    + `?media_type=${encodeURIComponent(mediaType)}`,
+    { method: "PUT",
+      headers: hubToken ? { Authorization: `Bearer ${hubToken}` } : {},
+      body: bytes });
+  if (!answer.ok) return null;
+  const info = await answer.json() as { ref: string; created?: boolean };
+  return { ref: info.ref, created: info.created !== false };
+}
+
+/**
+ * I2 · **Niente entra nello store senza un verbale**, e I3 · il verbale viaggia
+ * con i byte. **Un file alla volta, appena atterra.**
+ *
+ * Per file e non per lotto, ed è una correzione a me stesso: lo facevo alla fine
+ * della consegna, cioè ripetevo l'errore che il ciclo qui sopra racconta di aver
+ * già corretto una volta — «una consegna di quattrocento fotografie interrotta
+ * alla duecentesima lasciava duecento oggetti nello store che il registro non
+ * aveva mai sentito nominare». Con il verbale in fondo, quei duecento oggetti
+ * restavano senza NIENTE che dicesse chi ce li aveva messi, che è precisamente
+ * il caso peggiore e la ragione per cui questa regola esiste.
+ *
+ * Costa poco e **non gemma eventi**, misurato: l'atto porta un nome stabile
+ * (`ingestione · <stanza>`), `bucket_acquisition` deriva l'id dell'evento da
+ * quel nome, e due chiamate separate tornano lo STESSO `process_id` in 1–15 ms
+ * l'una — contro i ~250 ms che un file costa comunque fra byte e registro.
+ *
+ * Due strade, e la differenza fra loro è tutta la notte:
+ *
+ * * il file **porta già il suo timbro** — un `.stamp.json` accanto, accettato
+ *   per IMPRONTA e non per nome. Si carica com'è: è il verbale di chi l'ha
+ *   fatto, e riscriverlo sarebbe sostituire la sua provenienza con la nostra;
+ * * il file **non è timbrato** — e allora l'ingestione *è* l'atto, e si timbra
+ *   quella. Un verbale povero, che dice soltanto «questa cosa è entrata qui, per
+ *   mano di questa persona, e nessuno ha dichiarato da dove venisse».
+ *
+ * **Dove va il verbale nello store**, e la risposta non è scelta a tavolino: la
+ * radice del bucket è uno spazio di chiavi indirizzato dal contenuto — la chiave
+ * *è* l'esadecimale dei byte, misurato — e i documenti con un nome stanno sotto
+ * un prefisso (`studies/`, `em/`, `blend-backups/`). Un timbro è un file, e un
+ * file in questo store si mette dove si mettono i file: **come oggetto suo, alla
+ * sua impronta**. È anche l'unica forma che rispetta la regola secondo cui due
+ * timbri che si contraddicono sullo stesso digest sono una scoperta e non un
+ * errore — due chiavi diverse, sopravvivono entrambi — mentre come metadato
+ * dell'oggetto il secondo sovrascriverebbe il primo, per giunta su un oggetto
+ * **deduplicato** (misurato: `created: false` al secondo caricamento degli
+ * stessi byte) e quindi condiviso con chiunque altro li abbia caricati.
+ *
+ * Il legame digest-artefatto → digest-verbale non sta nella chiave: sta nel
+ * grafo, ed è già una domanda che qualcuno sa rispondere
+ * (`GET /v1/corpus/neighbourhood?sha256=`). Quello che manca è una rotta che
+ * serva un timbro per nome — sta nel repo del server, e questa notte non lo
+ * tocca: nell'END OF.
+ */
+async function stampOne(item: IngestItem, base: string, room: string):
+    Promise<void> {
+  item.stamped = false;
+  const me = currentIdentity();
+  if (!me?.orcid) {
+    // Non dovrebbe accadere — il pannello non si apre senza identità — ma se
+    // accadesse, timbrare a nome di nessuno sarebbe peggio del non timbrare.
+    ingestLog(t("assets.stampNeedsIdentity"), "warn");
+    return;
+  }
+
+  // ── chi porta già il suo verbale ─────────────────────────────────────────
+  const own = item.path ? await readStamp(stampPathFor(item.path)) : null;
+  // ACCETTATO PER IMPRONTA, MAI PER NOME. Un file riesportato sopra ha accanto
+  // un timbro che parla di byte che non ci sono più: attaccarlo a questi sarebbe
+  // la provenienza falsa contro cui tutto questo è costruito.
+  if (own && sameDigest(own.self?.digest, item.digest)) {
+    const sent = await sendStamp(own);
+    if (sent) {
+      item.stamped = "own";
+      item.stampRef = sent;
+      ingestLog(t("assets.stampTravelled", { name: item.name }));
+    } else {
+      ingestLog(t("assets.stampNotTravelled", { name: item.name }), "warn");
+    }
+    await noteWhereItLanded(item, base, room);
+    return;
+  }
+  if (own) {
+    // il timbro c'è ma parla d'altro: è un'affermazione vera su byte diversi, e
+    // va detto — non riusato e non cancellato
+    ingestLog(t("assets.stampMismatch", { name: item.name }), "warn");
+  }
+
+  // ── …e chi no: l'ingestione è l'atto, e si timbra quella ─────────────────
+  const at = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+  const body = ingestionAct([{
+    resourceId: item.nodeId ?? `res:${(item.digest ?? "").slice(7, 19)}`,
+    digest: item.digest ?? "",
+    name: item.name,
+    mediaType: item.mediaType,
+    sizeBytes: item.size || undefined,
+    room,
+    operator: { id: `https://orcid.org/${me.orcid}` },
+    at,
+    tool: `EMStudio ${__EMSTUDIO_VERSION__}`,
+    path: item.path,
+  }], { room, graph_id: store?.doc.graph?.graph_id });
+  if (!body) return;
+
+  let out: { ok?: boolean; stamps?: Array<{ stamp: unknown }>; error?: string };
+  try {
+    const res = await fetch(`${await bridgeUrl()}/stamp/emit`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    out = await res.json();
+  } catch (err) {
+    ingestLog(t("assets.stampFailed", {
+      detail: String(err instanceof Error ? err.message : err) }), "warn");
+    return;
+  }
+  const stamp = out.stamps?.[0]?.stamp as Stamp | undefined;
+  if (!out.ok || !stamp) {
+    ingestLog(t("assets.stampFailed", { detail: out.error ?? "" }), "warn");
+    return;
+  }
+  const sent = await sendStamp(stamp);
+  if (!sent) {
+    ingestLog(t("assets.stampNotTravelled", { name: item.name }), "warn");
+    return;
+  }
+  item.stamped = "ingestion";
+  item.stampRef = sent;
+  ingestLog(t("assets.ingestionStamped", { name: item.name }));
+  await noteWhereItLanded(item, base, room);
+}
+
+/** Il verbale nello store, come oggetto suo. Leggibile e non compatto: il
+ *  lettore di ultima istanza è un umano con un editor, fra trent'anni. */
+async function sendStamp(stamp: Stamp): Promise<string | null> {
+  const sent = await putIntoStore(
+    new Blob([JSON.stringify(stamp, null, 1)], { type: "application/json" }),
+    "application/json");
+  return sent?.ref ?? null;
+}
+
+
+/**
+ * I4 · L'indirizzo pubblico dello store, registrato **fuori** dal verbale.
+ *
+ * Per file, come tutto il resto di questa consegna: si annota dove QUESTI byte
+ * sono atterrati, appena sono atterrati.
+ *
+ * Un URI è una POSIZIONE, e le posizioni stanno fuori dal record immutabile —
+ * non per ordine ma per necessità: riscrivere un timbro ne cambierebbe i byte e
+ * quindi l'identità, che è il digest di ciò che descrive. Quindi si scrive una
+ * pista `public`, e **il timbro non si tocca mai**: `writeHints` rifiuta per
+ * nome qualunque percorso che non finisca in `.hints.json`, e la rotta del
+ * bridge lo rifiuta una seconda volta — l'invariante è custodito ai due estremi.
+ *
+ * Solo per i file che un percorso ce l'hanno: il registro delle piste è un file
+ * accanto al file, e per dei byte arrivati dal browser non c'è un accanto.
+ */
+async function noteWhereItLanded(
+  item: IngestItem, base: string, room: string,
+): Promise<void> {
+  if (!item.path || !item.digest) return;
+  const noted = await recordFound(item.digest,
+                                  storeLocator(base, room, item.digest),
+                                  { anchor: item.path });
+  if (noted.written) ingestLog(t("assets.hintWritten", { name: item.name }));
 }
 
 // ── THE RESIDENT REGISTER · the corpus StratiGraph Server can enforce from ────────────

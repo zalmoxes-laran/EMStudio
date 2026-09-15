@@ -6736,7 +6736,11 @@ body.nv-standalone main.nv-standalone-main {
 }
 .ing-row {
   display: grid;
-  grid-template-columns: 1fr auto auto auto 22px;
+  /* SEI colonne, e la sesta è quella del verbale (DTCEMS3). Erano cinque, e
+   * aggiungere la casella senza aggiungere la colonna mandava la ✕ a capo su
+   * ogni riga: un difetto che dal sorgente non si vede, perché il numero di
+   * colonne e il numero di figli sono scritti in due file diversi. */
+  grid-template-columns: 1fr auto auto auto auto 22px;
   align-items: center;
   gap: 8px;
   padding: 4px 6px;
@@ -7136,3 +7140,22 @@ body.nv-standalone main.nv-standalone-main {
   white-space: pre; opacity: 0.9;
 }
 .stamp-emitted-note { display: block; opacity: 0.65; font-style: normal; margin-bottom: 6px; }
+
+/* ── DTCEMS3 · il verbale, nella riga della coda ──────────────────────────────
+ *
+ * IL TONO LO DETTA IL REFERTO DELLE TRE CLASSI, qui sopra, e non si reinventa:
+ * verde per un file accoppiato al suo verbale, NESSUN COLORE per la normalità,
+ * rosso solo per ciò che è rotto. Un verbale d'ingestione è l'esito onesto e
+ * frequentissimo — colorarlo direbbe che qualcosa è andato storto mentre il
+ * sistema ha fatto il suo lavoro — quindi porta la parola e non un colore, e il
+ * titolo dice perché quella provenienza è povera.
+ */
+.ing-stamp {
+  font-size: 10.5px;
+  white-space: nowrap;
+  opacity: 0.85;
+}
+.ing-stamp-own { color: #2e7d32; }
+/* la normalità: nessun colore. Deliberato — vedi sopra. */
+.ing-stamp-poor { color: inherit; opacity: 0.6; font-style: italic; }
+.ing-stamp-none { color: #b3261e; }
