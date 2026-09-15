@@ -341,7 +341,8 @@ function scrittureDi(src) {
   return out;
 }
 
-const ROTTE_DI_SCRITTURA = new Set(["/stamp/hints", "/stamp/identity"]);
+const ROTTE_DI_SCRITTURA = new Set(["/stamp/hints", "/stamp/identity",
+                                    "/stamp/emit"]);
 
 function nessunaScritturaDiTimbri(src, dove) {
   const errori = [];
@@ -443,6 +444,220 @@ prova("un timbro senza byte NON indovina la causa", () => {
     "le quattro possibilità sono elencate COME possibilità");
   assert.ok(!/stamp\.classStampNoBytesNote[^\n]*\b(was moved|is missing|deleted\.)/.test(i18n),
     "…e nessuna delle quattro è affermata");
+});
+
+// ── DTCEMS2 · comporre un passo ─────────────────────────────────────────────
+
+const C = await carica("stamp-compose.ts");
+
+console.log("\n· A2 — l'origine non è la via comoda");
+
+/**
+ * I GESTI, CONTATI SUL PREDICATO VERO e non sulla costante che li dichiara.
+ *
+ * Si parte da una bozza fresca con i soli campi dell'atto — quelli che le due
+ * strade pagano uguale — e si contano le mutazioni necessarie perché
+ * `readyToStamp` smetta di rifiutare. Contare così misura il DISEGNO: se domani
+ * qualcuno togliesse una condizione all'origine, questo numero scende e la
+ * prova cade, mentre la costante continuerebbe a dire 3.
+ */
+function gestiPerTimbrare(strada) {
+  const draft = C.newDraft([{ path: "/p/x.glb", name: "x.glb", size: 1, mtime: 1 }]);
+  draft.kind = strada === "origine" ? "local_import" : "transformation";
+  draft.at = "2026-03-14T09:00:00Z";
+  const passi = strada === "origine"
+    ? [() => { draft.origin = true; },
+       () => { draft.originDeclared = true; },
+       () => { draft.campaign = "Volo 2026-03"; }]
+    : [() => { draft.inputs.push({ resource_id: "res:a", digest: "sha256:aa",
+                                   label: "a" }); }];
+  let n = 0;
+  for (const passo of passi) {
+    if (C.readyToStamp(draft) === null) return n;   // bastava di meno
+    passo(); n++;
+  }
+  return C.readyToStamp(draft) === null ? n : Infinity;
+}
+
+prova("nominare un genitore costa 1 gesto, dichiarare un'origine ne costa 3", () => {
+  const genitore = gestiPerTimbrare("genitore");
+  const origine = gestiPerTimbrare("origine");
+  console.log(`      genitore: ${genitore} · origine: ${origine}`);
+  assert.equal(genitore, 1);
+  assert.equal(origine, 3);
+  assert.ok(origine >= genitore + 2,
+    "se dichiarare un'origine non costa sensibilmente di più, in una settimana " +
+    "è tutto un'origine finta e il timbro smette di dire qualcosa");
+  // …e i due numeri sono quelli che il modulo DICHIARA: una costante che
+  // mentisse sul proprio disegno sarebbe peggio di nessuna costante
+  assert.equal(C.gestures.nameAParent, genitore);
+  assert.equal(C.gestures.declareAnOrigin, origine);
+});
+
+prova("IL CONTROESEMPIO: un'origine senza condizioni in più fa cadere la misura", () => {
+  // Deliberato: il predicato che qualcuno scriverebbe «per semplificare».
+  const rilassato = (draft) => {
+    if (!draft.outputs.length) return "no output";
+    if (!draft.kind) return "kind";
+    if (!draft.at) return "at";
+    if (draft.origin) return null;              // ← la scorciatoia
+    if (!draft.inputs.length) return "inputs";
+    return null;
+  };
+  const draft = C.newDraft([{ path: "/p/x", name: "x", size: 1, mtime: 1 }]);
+  draft.kind = "local_import"; draft.at = "2026-01-01T00:00:00Z";
+  let n = 0;
+  for (const passo of [() => { draft.origin = true; },
+                       () => { draft.originDeclared = true; },
+                       () => { draft.campaign = "c"; }]) {
+    if (rilassato(draft) === null) break;
+    passo(); n++;
+  }
+  assert.equal(n, 1, "con quel predicato l'origine costerebbe UN gesto");
+  assert.ok(!(n >= C.gestures.nameAParent + 2),
+    "…e la prova qui sopra deve cadere su un disegno così");
+});
+
+prova("il modo ATTIVO all'apertura è «viene da qualcosa»", () => {
+  // È la riga che rende la via comoda quella giusta: scegliere «viene da» non
+  // costa un clic perché è già scelto.
+  assert.equal(C.newDraft([]).origin, false);
+});
+
+console.log("\n· A6 — quello che non deve succedere");
+
+prova("la data dell'atto NON è now() per difetto", () => {
+  assert.equal(C.newDraft([]).at, "",
+    "una data che il programma mette da sé è una data che nessuno ha visto");
+  const src = codice("main.ts");
+  // …e «oggi» esiste come GESTO, con la sua spiegazione
+  assert.ok(src.includes('dataset.field = "today"'));
+  assert.ok(codice("i18n.ts").includes("compose.todayHint"));
+});
+
+prova("il vocabolario dtc_kind non si allarga dall'interfaccia", () => {
+  const rules = codice("rules.ts");
+  assert.ok(/export function dtcKindsFor/.test(rules),
+    "i generi si leggono dal datamodel, per asse");
+  const src = codice("stamp-compose.ts") + codice("main.ts");
+  // nessun genere scritto a mano da nessuna parte nel percorso di composizione
+  for (const kind of ["photogrammetry", "transformation", "local_import",
+                      "uri_reference", "download", "ingest"]) {
+    const hits = [...src.matchAll(new RegExp(`["'\`]${kind}["'\`]`, "g"))];
+    assert.equal(hits.length, 0,
+      `«${kind}» è scritto a mano nel percorso di composizione: i generi si ` +
+      `leggono da em_visual_rules.json, e si allargano lì`);
+  }
+});
+
+prova("le PISTE non sono state toccate", () => {
+  // A6: mescolare l'emissione con la localizzazione è il modo di farsi entrare
+  // un campo mutevole dentro un record immutabile.
+  const src = codice("stamp-compose.ts");
+  assert.ok(!/hints|noteSeen|recordFound|forExport/.test(src),
+    "il modulo che compone non deve sapere niente delle piste");
+});
+
+console.log("\n· A3 — Stamp, mai Sign");
+
+/** Le chiavi che una persona LEGGE mentre compone. Elencate perché la prova
+ *  guarda i valori risolti e non il file: un valore lo si può chiedere solo se
+ *  si sa quale chiedere. */
+const CHIAVI_COMPORRE = [
+  "compose.head", "compose.question", "compose.derived", "compose.derivedHint",
+  "compose.origin", "compose.originHint", "compose.inputs", "compose.noStamped",
+  "compose.originDeclare", "compose.campaign", "compose.kind", "compose.technique",
+  "compose.parameters", "compose.software", "compose.version", "compose.commit",
+  "compose.operator", "compose.at", "compose.today", "compose.todayHint",
+  "compose.stamping", "compose.cancel", "compose.open", "compose.openFolder",
+  "compose.erratum", "compose.fromThis", "compose.fromThisHint",
+];
+
+await provaAsync("nessuna parola dell'interfaccia suggerisce una firma", async () => {
+  // SI GUARDANO LE STRINGHE, NON IL FILE. La prima versione di questa prova
+  // cercava «sign» nel testo sorgente e falliva su un COMMENTO — «STAMP, MAI
+  // SIGN» — cioè su una riga che dice esattamente la cosa giusta. È il difetto
+  // che `sorgenti.mjs` documenta in testa: una guardia che cerca una parola nel
+  // testo sta misurando il file, non il programma. Qui si importa il modulo e si
+  // leggono i VALORI che un utente vede.
+  const I = await carica("i18n.ts");
+  const visibili = [];
+  for (const key of CHIAVI_COMPORRE) {
+    const value = I.t(key);
+    assert.ok(value && value !== key, `manca la stringa ${key}`);
+    visibili.push(value);
+  }
+  const testo = visibili.join("\n");
+  for (const parola of ["sign", "signature", "signed", "firma", "firmato",
+                        "firmare", "certificat"]) {
+    const hit = new RegExp(`\\b\\w*${parola}\\w*`, "i").exec(testo);
+    assert.equal(hit, null,
+      `«${hit?.[0]}» compare in una stringa VISIBILE del comporre: non c'è una ` +
+      `chiave, non c'è non ripudiabilità, e in ambito patrimoniale «firmato» ` +
+      `promette cose che questo sistema non mantiene`);
+  }
+  assert.equal(I.t("compose.stamp", { n: "3" }), "Stamp 3");
+});
+
+prova("IL CONTROESEMPIO: una stringa che promette una firma viene vista", () => {
+  const finte = ["Sign 3 files", "Firma questo passo", "Digitally signed"];
+  for (const value of finte) {
+    const visto = ["sign", "firma", "signed"].some(
+      (w) => new RegExp(`\\b\\w*${w}\\w*`, "i").test(value));
+    assert.ok(visto, `«${value}» doveva essere vista dalla guardia`);
+  }
+  // …e una stringa onesta non deve far scattare nulla
+  assert.ok(!["sign", "firma", "signed"].some(
+    (w) => new RegExp(`\\b\\w*${w}\\w*`, "i").test("Stamp 3")));
+});
+
+prova("l'emissione NON è riscritta: si chiede al bridge", () => {
+  const src = codice("stamp-compose.ts");
+  assert.ok(/\/stamp\/emit/.test(src), "passa dalla rotta del bridge");
+  // niente che somigli a comporre un timbro qui dentro
+  assert.ok(!/"stamp":\s*1|stamp:\s*1\b/.test(src),
+    "questo modulo non costruisce mai un timbro: lo chiede");
+  assert.ok(!/digest_covers|"self"\s*:/.test(src),
+    "…e non conosce nemmeno la forma interna del verbale");
+});
+
+console.log("\n· A5 — dopo il timbro si congela");
+
+prova("un asset già timbrato mostra il TIMBRO e non un modulo", () => {
+  const src = codice("main.ts");
+  assert.ok(/function stampedBox/.test(src));
+  const corpo = src.split("function stampedBox")[1].split("\nfunction ")[0];
+  assert.ok(/dataset\.readonly = "stamp"/.test(corpo),
+    "il verbale si mostra in sola lettura");
+  assert.ok(!/<input|createElement\("input"\)/.test(corpo),
+    "nessun campo modificabile su un asset già timbrato");
+  assert.ok(/compose\.erratum/.test(corpo),
+    "…e la strada verso l'errata è detta");
+});
+
+prova("la nuova rotta di scrittura è dichiarata, e non ne passano altre", () => {
+  // la guardia di DTCEMS1, estesa: `/stamp/emit` entra nell'elenco bianco, e
+  // tutto il resto resta fuori
+  assert.ok(ROTTE_DI_SCRITTURA.has("/stamp/emit"));
+  const errori = [];
+  for (const f of ["stamp.ts", "stamp-hints.ts", "views/stamps.ts",
+                   "stamp-compose.ts"])
+    errori.push(...nessunaScritturaDiTimbri(codice(f), f));
+  assert.deepEqual(errori, [], errori.join("\n"));
+});
+
+prova("IL CONTROESEMPIO: comporre un percorso di timbro in una scrittura FALLISCE", () => {
+  const cattivo = `
+    async function patch(path, stamp) {
+      const res = await fetch(\`\${await bridge()}/stamp/emit\`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: path + STAMP_SUFFIX, stamp }),
+      });
+      return res.ok;
+    }`;
+  const errori = nessunaScritturaDiTimbri(cattivo, "controesempio");
+  assert.ok(errori.some((e) => /percorso di TIMBRO/.test(e)));
 });
 
 console.log(`\n✔ ${fatte} prove\n`);

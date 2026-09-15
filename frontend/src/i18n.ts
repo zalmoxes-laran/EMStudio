@@ -1044,6 +1044,60 @@ const EN: Dict = {
   // 2026-09-03 · the NODE's answer, and its three states. Three sentences and
   // not one spinner: empty-because-asking, empty-because-the-node-never-saw-
   // these-bytes and empty-because-the-node-is-off are three different facts.
+  // ── DTCEMS2 · comporre un passo e timbrarlo ───────────────────────────────
+  "compose.head": "Composing one step · {n} output(s)",
+  // LA DOMANDA, e non «puoi firmare?»
+  "compose.question": "Does this come from something, or is it an origin?",
+  "compose.derived": "It comes from…",
+  "compose.derivedHint": "Name the stamped file(s) this was made from",
+  "compose.origin": "It is an origin",
+  "compose.originHint":
+    "Born here. Legitimate — half the assets of a dig are origins — and "
+    + "deliberately not the shortest path: it takes the declaration and a "
+    + "campaign name.",
+  "compose.inputs": "From",
+  "compose.noStamped":
+    "no stamped file in this folder — an input must be stamped, or the child "
+    + "would descend from something with no declared identity",
+  "compose.inputNotStamped": "{name} is not stamped: it cannot be an input",
+  "compose.originDeclare":
+    "I declare these bytes are born here: no file I hold produced them",
+  "compose.campaign": "Campaign",
+  "compose.campaignHint": "e.g. Volo 2026-03 · GT16",
+  "compose.camera": "Camera",
+  "compose.lens": "Lens",
+  "compose.folder": "Folder",
+  "compose.kind": "Kind",
+  "compose.pickKind": "— from the vocabulary —",
+  "compose.technique": "Technique",
+  "compose.techniqueHint": "e.g. decimation",
+  "compose.parameters": "Parameters",
+  "compose.software": "Software",
+  "compose.version": "Version",
+  "compose.commit": "Commit",
+  "compose.operator": "Operator (ORCID)",
+  "compose.at": "Date of the act",
+  "compose.today": "today",
+  "compose.todayHint":
+    "The date of the ACT, not of now. An act that happened last March must be "
+    + "able to say so — which is why this is a gesture and not a default.",
+  // STAMP, MAI SIGN.
+  "compose.stamp": "Stamp {n}",
+  "compose.stamping": "stamping…",
+  "compose.cancel": "cancel",
+  "compose.done": "{n} stamp(s) written in {s} s",
+  "compose.open": "Compose a step for {name}…",
+  "compose.openFolder": "One act for the {n} unstamped files here…",
+  "compose.emittedHead": "{name} is stamped",
+  "compose.erratum":
+    "A stamp is never modified. If something in it is wrong the only move is to "
+    + "issue a correction — a new act, with its own date and author — and the "
+    + "place that keeps an erratum is the graph's record, which is not built yet.",
+  "compose.fromThis": "Compose a step from this…",
+  "compose.fromThisHint":
+    "Use this stamped artifact as the input of a new step — the way forward, "
+    + "which an erratum is not",
+  "compose.nothingToMake": "nothing unstamped in this folder to make from it",
   // ── DTCEMS1 · il timbro, letto dal disco ──────────────────────────────────
   "stamp.reading": "Reading what is beside {name}…",
   "stamp.chain": "{name}: a chain of {n} stamped steps, read from disk",
@@ -2188,6 +2242,59 @@ const IT: Dict = {
   "doc.description": "Descrizione",
   "doc.extractors": "{n} estrazione/i pendono da questo documento",
   "doc.reveal": "Mostra sul canvas",
+  // ── DTCEMS2 · comporre un passo e timbrarlo ───────────────────────────────
+  "compose.head": "Sto componendo un passo · {n} uscite",
+  "compose.question": "Questa cosa viene da qualcosa, oppure è un'origine?",
+  "compose.derived": "Viene da…",
+  "compose.derivedHint": "Nomina i file timbrati da cui è stata fatta",
+  "compose.origin": "È un'origine",
+  "compose.originHint":
+    "Nata qui. Legittimo — metà degli asset di uno scavo sono origini — e di "
+    + "proposito non la strada più breve: vuole la dichiarazione e il nome di "
+    + "una campagna.",
+  "compose.inputs": "Viene da",
+  "compose.noStamped":
+    "in questa cartella non c'è nessun file timbrato — un ingresso deve essere "
+    + "timbrato, altrimenti il figlio discenderebbe da qualcosa senza identità "
+    + "dichiarata",
+  "compose.inputNotStamped": "{name} non è timbrato: non può essere un ingresso",
+  "compose.originDeclare":
+    "Dichiaro che questi byte nascono qui: nessun file di cui disponga li ha prodotti",
+  "compose.campaign": "Campagna",
+  "compose.campaignHint": "es. Volo 2026-03 · GT16",
+  "compose.camera": "Fotocamera",
+  "compose.lens": "Obiettivo",
+  "compose.folder": "Cartella",
+  "compose.kind": "Genere",
+  "compose.pickKind": "— dal vocabolario —",
+  "compose.technique": "Tecnica",
+  "compose.techniqueHint": "es. decimation",
+  "compose.parameters": "Parametri",
+  "compose.software": "Software",
+  "compose.version": "Versione",
+  "compose.commit": "Commit",
+  "compose.operator": "Operatore (ORCID)",
+  "compose.at": "Data dell'atto",
+  "compose.today": "oggi",
+  "compose.todayHint":
+    "La data dell'ATTO, non di adesso. Un atto avvenuto a marzo deve poterlo "
+    + "dire — per questo è un gesto e non un valore per difetto.",
+  "compose.stamp": "Timbra {n}",
+  "compose.stamping": "sto timbrando…",
+  "compose.cancel": "annulla",
+  "compose.done": "{n} timbri scritti in {s} s",
+  "compose.open": "Componi un passo per {name}…",
+  "compose.openFolder": "Un atto solo per i {n} file non timbrati qui…",
+  "compose.emittedHead": "{name} è timbrato",
+  "compose.erratum":
+    "Un timbro non si modifica mai. Se qualcosa è sbagliato l'unica mossa è "
+    + "emettere una correzione — un atto nuovo, con la sua data e il suo autore "
+    + "— e il posto che tiene un'errata è il record del grafo, che non c'è ancora.",
+  "compose.fromThis": "Componi un passo da questo…",
+  "compose.fromThisHint":
+    "Usa questo artefatto timbrato come ingresso di un passo nuovo — la strada "
+    + "in avanti, che un'errata non è",
+  "compose.nothingToMake": "in questa cartella non c'è niente di non timbrato da farci",
   // ── DTCEMS1 · il timbro, letto dal disco ──────────────────────────────────
   "stamp.reading": "Leggo che cosa c'è accanto a {name}…",
   "stamp.chain": "{name}: una catena di {n} passi timbrati, letta dal disco",

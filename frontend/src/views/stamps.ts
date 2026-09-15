@@ -211,3 +211,72 @@ export function missingDigests(chain: Chain): string[] {
   }
   return out;
 }
+
+// ── DTCEMS2 · la BOZZA, mentre la si compone ────────────────────────────────
+
+/**
+ * Il minigrafo di un passo **che non è ancora un timbro**.
+ *
+ * Stessa scena, stesso renderer, stessa lingua del resto: comporre e leggere
+ * devono somigliarsi, perché è la stessa cosa vista prima e dopo. Quello che
+ * cambia è **che nessuno di questi nodi esiste ancora da nessuna parte** — non
+ * nel documento, non sul disco — e l'interfaccia lo dice con il marcatore
+ * `draft`, che il renderer disegna attenuato.
+ *
+ * L'uscita è quello che si sta timbrando, il processo è l'atto, gli ingressi
+ * sono i genitori nominati. Un'ORIGINE non ha ingressi e ha comunque il
+ * processo: `"from": []` **con** un `how` che lo firma vuol dire «nato qui», e
+ * si deve vedere che l'atto c'è.
+ */
+export function adaptDraft(draft: {
+  outputs: Array<{ path: string; name: string; size: number; digest?: string }>;
+  inputs: Array<{ resource_id: string; digest: string; label: string }>;
+  origin: boolean;
+  kind: string;
+  technique: string;
+  at: string;
+  operator: { id: string; label: string };
+  campaign: string;
+}): StampScene {
+  const nodes: EmNode[] = [];
+  const edges: EmEdge[] = [];
+  const stepId = "draft:step";
+  const label = draft.origin
+    ? (draft.campaign.trim() || draft.kind || "origin")
+    : (draft.technique.trim() || draft.kind || "step");
+  nodes.push({
+    id: stepId, node_type: "dtc_process", name: label,
+    data: {
+      dtc_kind: draft.kind || "transformation",
+      draft: true,
+      technique: draft.technique || undefined,
+      created_at: draft.at || undefined,
+      operator: draft.operator.id ? draft.operator : undefined,
+      _stampSummary: [
+        draft.origin ? "origin · born here" : "derived",
+        draft.kind ? `kind: ${draft.kind}` : null,
+        draft.technique ? `technique: ${draft.technique}` : null,
+        draft.at ? `at: ${draft.at}` : "no date yet",
+      ].filter(Boolean).join(" · "),
+    },
+  } as unknown as EmNode);
+
+  for (const out of draft.outputs) {
+    nodes.push(resourceNode(out.path, out.name, {
+      draft: true,
+      checksum: out.digest,
+      _stampSummary: [`${out.size} bytes`,
+                      out.digest ? short(out.digest) : "digest not computed yet"]
+        .join(" · "),
+    }));
+    edges.push(edge(stepId, out.path, EDGE_HAD_OUTPUT, { draft: true }));
+  }
+  for (const inp of draft.inputs) {
+    nodes.push(resourceNode(inp.resource_id, inp.label, {
+      checksum: inp.digest,
+      _stampSummary: `${inp.resource_id} · ${short(inp.digest)}`,
+    }));
+    edges.push(edge(stepId, inp.resource_id, EDGE_HAD_INPUT, { draft: true }));
+  }
+  return { nodes, edges, missing: 0 };
+}

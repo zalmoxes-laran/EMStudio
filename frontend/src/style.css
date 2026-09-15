@@ -7084,3 +7084,55 @@ body.nv-standalone main.nv-standalone-main {
 .stamp-report-row.plain b { color: inherit; }
 .stamp-report-row.broken b { color: #b3261e; }
 .stamp-report > button { margin-top: 6px; font-size: 11px; }
+
+/* ── DTCEMS2 · comporre un passo ──────────────────────────────────────────────
+ *
+ * IL MODO ATTIVO SI VEDE, perché è la decisione di A2: «Viene da…» è acceso
+ * all'apertura, quindi nominare un genitore costa il solo clic sul genitore,
+ * mentre l'origine vuole tre gesti. Un pannello che mostrasse i due modi uguali
+ * renderebbe le due strade equivalenti a occhio anche restando diverse nel
+ * codice — e l'occhio è quello che decide cosa fa la gente.
+ */
+.stamp-compose {
+  margin: 6px 8px 10px; padding: 8px 10px;
+  border: 1px solid var(--line, #d8d8d8); border-radius: 6px;
+  background: var(--panel, rgba(127, 127, 127, 0.06));
+  font-size: 11.5px; line-height: 1.5;
+}
+.stamp-compose-head { opacity: 0.7; margin-bottom: 6px; }
+.stamp-compose-question { font-weight: 600; margin-bottom: 4px; }
+.stamp-compose-modes { display: flex; gap: 6px; margin-bottom: 8px; }
+.stamp-compose-modes button.on {
+  outline: 1.5px solid var(--accent, #4a90d9);
+  font-weight: 600;
+}
+.stamp-compose-label { opacity: 0.7; margin: 4px 0 2px; }
+.stamp-compose-none { opacity: 0.6; font-style: normal; display: block; }
+.stamp-compose-input { display: block; width: 100%; text-align: left; margin: 2px 0; }
+.stamp-compose-input.on { outline: 1.5px solid var(--accent, #4a90d9); }
+.stamp-compose-origin { margin: 4px 0 8px; }
+.stamp-compose-origin > label:first-child {
+  display: flex; gap: 6px; align-items: flex-start; margin-bottom: 6px;
+}
+.stamp-field { display: block; margin: 3px 0; }
+.stamp-field > span { display: block; opacity: 0.7; font-size: 10.5px; }
+.stamp-field input, .stamp-field select { width: 100%; font-size: 11px; }
+.stamp-compose-row { display: flex; gap: 6px; align-items: flex-end; }
+.stamp-compose-row .stamp-field { flex: 1; }
+.stamp-compose-feet { margin-top: 8px; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.stamp-compose-why { opacity: 0.65; font-style: normal; flex-basis: 100%; }
+
+/* …e un asset GIÀ TIMBRATO: il verbale, non un modulo. Monospazio perché il
+ * lettore di ultima istanza è un umano con un editor di testo. */
+.stamp-emitted {
+  margin: 6px 8px 10px; padding: 8px 10px;
+  border: 1px solid var(--line, #d8d8d8); border-radius: 6px;
+  background: var(--panel, rgba(127, 127, 127, 0.06)); font-size: 11.5px;
+}
+.stamp-emitted-head { font-weight: 600; margin-bottom: 4px; }
+.stamp-emitted-body {
+  max-height: 280px; overflow: auto; margin: 0 0 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 10.5px;
+  white-space: pre; opacity: 0.9;
+}
+.stamp-emitted-note { display: block; opacity: 0.65; font-style: normal; margin-bottom: 6px; }

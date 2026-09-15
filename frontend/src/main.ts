@@ -417,6 +417,16 @@ import {
 } from "./stamp";
 import { adaptChain, missingDigests, type StampScene } from "./views/stamps";
 import { hintsPathFor, readHints, recordFound, setHintsBridgeResolver } from "./stamp-hints";
+// DTCEMS2 · comporre un passo e timbrarlo. La BOZZA sta qui, l'emissione passa
+// da s3Dgraphy attraverso il bridge: `stamp-compose.ts` non costruisce mai un
+// timbro, lo chiede.
+import {
+  emitDraft, kindAxis, newDraft, outputFrom, readyToStamp,
+  setComposeBridgeResolver, type Draft, type DraftInput,
+} from "./stamp-compose";
+import { adaptDraft } from "./views/stamps";
+import { dtcKindsFor } from "./rules";
+import { digestOf, isStampPath, stampPathFor } from "./stamp";
 import { buildGraphScene, type GraphAlgorithm } from "./views/graph";
 import { buildMatrixScene } from "./views/matrix";
 import { renderStudyPanel } from "./study-panel";
@@ -2440,10 +2450,17 @@ function buildScenes(): void {
   // esatto in cui qualcuno riesporta sopra, che è il caso per cui la notte
   // esiste.
   const fromDisk = diskStamps.status === "stamped" ? diskStamps.scene : null;
-  const dtcSource = fromDisk ? "stamps"
+  // DTCEMS2 · LA BOZZA VIENE PRIMA DI TUTTO mentre la si compone, perché è la
+  // cosa su cui si sta agendo. Non è una gerarchia di verità — la bozza non è
+  // vera per niente, e il renderer la disegna attenuata: è che chi compone deve
+  // vedere quello che sta componendo.
+  const draftScene = stampDraft ? adaptDraft(stampDraft) : null;
+  const dtcSource = draftScene ? "stamps" : fromDisk ? "stamps"
     : neighbour ? "neighbourhood"
     : corpusNodes.length ? "corpus" : "study";
-  scenes.dtc = fromDisk
+  scenes.dtc = draftScene
+    ? buildDtcScene(draftScene.nodes, draftScene.edges, dtcOverrides)
+    : fromDisk
     ? buildDtcScene(fromDisk.nodes, fromDisk.edges, dtcOverrides)
     : neighbour
     ? buildDtcScene(neighbour.nodes, neighbour.edges, dtcOverrides)
@@ -6457,6 +6474,7 @@ setStorageBridgeResolver(bridgeUrl);
 // bridge, e nessun modulo se lo ricostruisce (DTCEMS1).
 setStampBridgeResolver(bridgeUrl);
 setHintsBridgeResolver(bridgeUrl);
+setComposeBridgeResolver(bridgeUrl);
 document.getElementById("btn-graphml")!.addEventListener("click", async () => {
   if (!store) {
     toast("Open a document first");
@@ -13165,10 +13183,29 @@ let diskStampSeq = 0;
  *  l'ha chiesto. Non si calcola da solo: costa impronte. */
 let folderReport: FolderReport | null = null;
 
+/** LA BOZZA che si sta componendo, o null. Vive accanto a `diskStamps` e non
+ *  dentro: quello è ciò che il disco DICE, questa è ciò che una persona sta per
+ *  dirgli — e confonderli sarebbe il modo di far sembrare già vero qualcosa che
+ *  nessuno ha ancora timbrato. */
+let stampDraft: Draft | null = null;
+let stampEmitting = false;
+
 
 /** The DTC picture is the only thing that changed, so this rebuilds and draws —
  *  the pair every other state change in this module uses. */
 function redrawNeighbourhood(): void {
+  // DTCEMS2 · anche la FINESTRA DEL DISCO, e non solo la tela.
+  //
+  // Misurato a video: dopo aver timbrato, il pannello continuava a offrire
+  // «Componi un passo per…» su un file che ORA ha il suo verbale — perché
+  // `renderStorage` era girata prima che la risposta del disco arrivasse, e
+  // niente la richiamava. Offrire un gesto che il bridge rifiuterà è il modo di
+  // insegnare a una persona che il rifiuto è normale.
+  //
+  // Sta PRIMA della guardia su `store`: che cosa il disco dica di un file non
+  // dipende dall'avere un documento aperto, e la finestra del disco lo mostra
+  // comunque.
+  renderStorage();
   if (!store) return;
   buildScenes();
   draw();
@@ -13514,6 +13551,22 @@ function renderStorageInto(host: StorageHost): void {
       body.appendChild(storageEmpty(t("storage.emptyFolder")));
       return;
     }
+    // DTCEMS2 · la BOZZA in composizione, oppure — su un asset già timbrato —
+    // IL TIMBRO, che non è un modulo da compilare.
+    if (stampDraft) {
+      body.appendChild(stampComposeBox(win, listing.entries));
+    } else if (diskStamps.status === "stamped"
+               && diskStamps.path === storageSelected(win)) {
+      body.appendChild(stampedBox(diskStamps.path, diskStamps.chain.root));
+    } else {
+      const selected = storageSelected(win);
+      const entry = selected
+        ? listing.entries.find((e) => e.path === selected) : undefined;
+      if (entry && !isStampPath(entry.path))
+        body.appendChild(composeButtons(entry, listing));
+      else if (!listing.roots)
+        body.appendChild(composeFolderButton(listing));
+    }
     // DTCEMS1 · il referto delle tre classi su QUESTA cartella, quando qualcuno
     // l'ha chiesto. Sopra l'elenco perché è una frase sull'elenco.
     if (folderReport && folderReport.folder === listing.path) {
@@ -13531,6 +13584,527 @@ function renderStorageInto(host: StorageHost): void {
     // jump to the top because the pointer crossed a divider
     restoreSurfaceScroll(win, body, wasAt);
   })();
+}
+
+// ── DTCEMS2 · comporre un passo, e timbrarlo ────────────────────────────────
+//
+// IL PANNELLO STA NELLA FINESTRA DEL DISCO, e non in una finestra nuova: è dove
+// la selezione avviene, ed è l'unica superficie che sa già quali file sono
+// selezionati. Il minigrafo del passo si disegna a destra, nella vista DTC, con
+// la stessa macchina di scene di tutto il resto — comporre e leggere devono
+// somigliarsi, perché sono la stessa cosa vista prima e dopo.
+
+function openDraft(outputs: FsEntry[]): void {
+  stampDraft = newDraft(outputs.map(outputFrom));
+  // L'OPERATORE È CHI STA LAVORANDO, e non un default inventato:
+  // `currentIdentity()` è l'identità che questa sessione ha dichiarato
+  // (`identity.ts`, claim-now/verify-later). Resta modificabile, e assente resta
+  // assente — un ORCID inventato metterebbe il nome di qualcuno su un atto che
+  // non ha compiuto.
+  const me = currentIdentity();
+  if (me?.orcid) {
+    stampDraft.operator = {
+      id: `https://orcid.org/${me.orcid}`,
+      label: [me.name, me.surname].filter(Boolean).join(" "),
+    };
+  }
+  void fillDraftDigests();
+  renderStorage();
+  redrawNeighbourhood();
+}
+
+function closeDraft(): void {
+  stampDraft = null;
+  renderStorage();
+  redrawNeighbourhood();
+}
+
+/** Le impronte delle uscite, dal bridge. Servono a comporre e servono al timbro,
+ *  e si prendono UNA VOLTA: la cache di `stamp.ts` è chiavata su
+ *  (percorso, dimensione, mtime), quindi ricomporre non ricalcola. */
+async function fillDraftDigests(): Promise<void> {
+  const draft = stampDraft;
+  if (!draft) return;
+  for (const out of draft.outputs) {
+    if (out.digest) continue;
+    const digest = await digestOf(out.path, out.size, out.mtime);
+    if (stampDraft !== draft) return;         // la selezione è cambiata
+    if (digest) out.digest = digest;
+  }
+  renderStorage();
+  redrawNeighbourhood();
+}
+
+/**
+ * IL PANNELLO. La prima domanda non è «puoi firmare?» ma **«questa cosa viene da
+ * qualcosa, oppure è un'origine?»** — ed è la domanda che decide tutto il resto.
+ *
+ * Il modo «viene da qualcosa» è quello ATTIVO all'apertura, quindi nominare un
+ * genitore costa **un gesto** (il clic sul genitore). Dichiarare un'origine ne
+ * costa **tre**: il clic su «È un'origine», la spunta sulla dichiarazione, e il
+ * nome della campagna. I tre non sono attrito fine a sé stesso — il terzo è
+ * lavoro vero, e un'origine senza campagna è un'asserzione nuda — ma il conto
+ * deve restare in quest'ordine: se dichiarare un'origine costasse meno, in una
+ * settimana sarebbe tutto un'origine finta e il timbro smetterebbe di dire
+ * qualcosa. `check-stamps.mjs` misura i due numeri.
+ */
+function stampComposeBox(win: Win, entries: FsEntry[]): HTMLElement {
+  const draft = stampDraft as Draft;
+  const box = document.createElement("div");
+  box.className = "stamp-compose";
+
+  const head = document.createElement("div");
+  head.className = "stamp-compose-head";
+  head.textContent = t("compose.head", { n: String(draft.outputs.length) });
+  box.appendChild(head);
+
+  // ── 1 · LA DOMANDA ────────────────────────────────────────────────────────
+  const ask = document.createElement("div");
+  ask.className = "stamp-compose-ask";
+  const question = document.createElement("div");
+  question.className = "stamp-compose-question";
+  question.textContent = t("compose.question");
+  ask.appendChild(question);
+  const modes = document.createElement("div");
+  modes.className = "stamp-compose-modes";
+  const mode = (label: string, isOrigin: boolean, hint: string): void => {
+    const b = document.createElement("button");
+    b.className = "ghost" + (draft.origin === isOrigin ? " on" : "");
+    b.textContent = label;
+    b.title = hint;
+    b.dataset.mode = isOrigin ? "origin" : "derived";
+    b.onclick = () => {
+      draft.origin = isOrigin;
+      // cambiare strada azzera la dichiarazione: una spunta rimasta accesa da
+      // un giro precedente sarebbe un'origine dichiarata senza che nessuno
+      // l'abbia dichiarata adesso
+      draft.originDeclared = false;
+      draft.kind = "";
+      renderStorage();
+      redrawNeighbourhood();
+    };
+    modes.appendChild(b);
+  };
+  mode(t("compose.derived"), false, t("compose.derivedHint"));
+  mode(t("compose.origin"), true, t("compose.originHint"));
+  ask.appendChild(modes);
+  box.appendChild(ask);
+
+  // ── 2 · gli INGRESSI, oppure la dichiarazione d'origine ───────────────────
+  if (!draft.origin) {
+    const stamped = entries.filter((e) =>
+      e.type === "file" && !isStampPath(e.path)
+      && entries.some((s) => s.path === stampPathFor(e.path)));
+    const list = document.createElement("div");
+    list.className = "stamp-compose-inputs";
+    const label = document.createElement("div");
+    label.className = "stamp-compose-label";
+    label.textContent = t("compose.inputs");
+    list.appendChild(label);
+    if (!stamped.length) {
+      const none = document.createElement("i");
+      none.className = "stamp-compose-none";
+      // UN INGRESSO DEVE ESSERE TIMBRATO: un figlio timbrato non può discendere
+      // da qualcosa che non ha un'identità dichiarata, e dirlo qui è meglio che
+      // lasciare scegliere e poi rifiutare.
+      none.textContent = t("compose.noStamped");
+      list.appendChild(none);
+    }
+    for (const entry of stamped) {
+      const chosen = draft.inputs.some((i) => i.path === entry.path);
+      const b = document.createElement("button");
+      b.className = "ghost stamp-compose-input" + (chosen ? " on" : "");
+      b.dataset.input = entry.path;
+      b.textContent = entry.name;
+      b.onclick = () => { void toggleInput(entry, chosen); };
+      list.appendChild(b);
+    }
+    box.appendChild(list);
+  } else {
+    const decl = document.createElement("div");
+    decl.className = "stamp-compose-origin";
+    const line = document.createElement("label");
+    const tick = document.createElement("input");
+    tick.type = "checkbox";
+    tick.checked = draft.originDeclared;
+    tick.dataset.declare = "origin";
+    tick.onchange = () => {
+      draft.originDeclared = tick.checked;
+      // la spunta fa comparire/sparire l'ostacolo, non la forma del modulo
+      refreshComposeFeet();
+    };
+    const words = document.createElement("span");
+    // LA FRASE È IL GESTO: non «conferma», ma quello che si sta affermando.
+    words.textContent = t("compose.originDeclare");
+    line.append(tick, words);
+    decl.appendChild(line);
+    decl.appendChild(field(t("compose.campaign"), draft.campaign, (v) => {
+      draft.campaign = v;
+      redrawNeighbourhood();
+    }, { placeholder: t("compose.campaignHint"), key: "campaign" }));
+    for (const key of ["camera", "lens", "folder"]) {
+      decl.appendChild(field(t(`compose.${key}`), draft.campaignMetadata[key] ?? "",
+        (v) => { draft.campaignMetadata[key] = v; }, { small: true }));
+    }
+    box.appendChild(decl);
+  }
+
+  // ── 3 · l'ATTO ───────────────────────────────────────────────────────────
+  const act = document.createElement("div");
+  act.className = "stamp-compose-act";
+
+  // il genere, DAL VOCABOLARIO e non da un elenco scritto qui
+  const kinds = dtcKindsFor(kindAxis(draft));
+  const select = document.createElement("select");
+  select.dataset.field = "kind";
+  const empty = document.createElement("option");
+  empty.value = ""; empty.textContent = t("compose.pickKind");
+  select.appendChild(empty);
+  for (const k of kinds) {
+    const o = document.createElement("option");
+    o.value = k.kind; o.textContent = k.label;
+    if (draft.kind === k.kind) o.selected = true;
+    select.appendChild(o);
+  }
+  select.onchange = () => {
+    draft.kind = select.value;
+    refreshComposeFeet();
+    redrawNeighbourhood();
+  };
+  act.appendChild(labelled(t("compose.kind"), select));
+
+  act.appendChild(field(t("compose.technique"), draft.technique, (v) => {
+    draft.technique = v; redrawNeighbourhood();
+  }, { placeholder: t("compose.techniqueHint"), key: "technique" }));
+
+  act.appendChild(field(t("compose.parameters"),
+    JSON.stringify(draft.parameters), (v) => {
+      try {
+        const parsed = JSON.parse(v || "{}");
+        draft.parameters = (parsed && typeof parsed === "object" && !Array.isArray(parsed))
+          ? parsed as Record<string, unknown> : {};
+      } catch {
+        // UN JSON A META' MENTRE SI DIGITA NON E' UN ERRORE: si tiene l'ultimo
+        // valore buono e non si urla. Il bottone Stamp resta comunque governato
+        // da `readyToStamp`, che guarda i campi che contano.
+      }
+    }, { placeholder: '{"target_faces": 50000}', key: "parameters" }));
+
+  // il software, col COMMIT: «EM Tools 1.6» non dice quale build
+  const sw = draft.software[0] ?? { name: "", version: "", commit: "" };
+  const swRow = document.createElement("div");
+  swRow.className = "stamp-compose-row";
+  const setSw = (patch: Partial<typeof sw>): void => {
+    Object.assign(sw, patch);
+    draft.software = sw.name ? [sw] : [];
+  };
+  swRow.appendChild(field(t("compose.software"), sw.name ?? "",
+    (v) => setSw({ name: v }), { small: true, key: "software" }));
+  swRow.appendChild(field(t("compose.version"), sw.version ?? "",
+    (v) => setSw({ version: v }), { small: true }));
+  swRow.appendChild(field(t("compose.commit"), sw.commit ?? "",
+    (v) => setSw({ commit: v }), { small: true, placeholder: "9555447" }));
+  act.appendChild(swRow);
+
+  act.appendChild(field(t("compose.operator"), draft.operator.id, (v) => {
+    draft.operator.id = v; redrawNeighbourhood();
+  }, { placeholder: "https://orcid.org/0000-0002-…", key: "operator" }));
+
+  // ── la DATA DELL'ATTO ────────────────────────────────────────────────────
+  //
+  // Vuota all'apertura, e il bottone «oggi» è un GESTO. La data dell'atto non è
+  // `now()` per difetto: un atto avvenuto a marzo deve poterlo dire, e una data
+  // che il programma mette da sé è una data che nessuno ha visto.
+  const when = document.createElement("div");
+  when.className = "stamp-compose-row";
+  when.appendChild(field(t("compose.at"), draft.at, (v) => {
+    draft.at = v; redrawNeighbourhood();
+  }, { placeholder: "2026-03-14T09:00:00Z", key: "at" }));
+  const today = document.createElement("button");
+  today.className = "ghost";
+  today.dataset.field = "today";
+  today.textContent = t("compose.today");
+  today.title = t("compose.todayHint");
+  today.onclick = () => {
+    draft.at = new Date().toISOString().replace(/\.\d{3}Z$/, "Z");
+    renderStorage();
+    redrawNeighbourhood();
+  };
+  when.appendChild(today);
+  act.appendChild(when);
+  box.appendChild(act);
+
+  // ── 4 · STAMP ────────────────────────────────────────────────────────────
+  const why = readyToStamp(draft);
+  const feet = document.createElement("div");
+  feet.className = "stamp-compose-feet";
+  const stampBtn = document.createElement("button");
+  stampBtn.className = "primary";
+  stampBtn.dataset.action = "stamp";
+  // «STAMP», MAI «SIGN». Non c'è una chiave, non c'è non ripudiabilità, e
+  // nessun terzo può dimostrare che quel timbro l'ha emesso proprio quella
+  // persona: c'è un'impronta e una dichiarazione. In ambito patrimoniale
+  // «firmato» promette cose precise, e la promessa la paga qualcun altro in una
+  // controversia.
+  stampBtn.textContent = stampEmitting
+    ? t("compose.stamping")
+    : t("compose.stamp", { n: String(draft.outputs.length) });
+  stampBtn.disabled = !!why || stampEmitting;
+  if (why) stampBtn.title = why;
+  stampBtn.onclick = () => { void doStamp(win); };
+  const cancel = document.createElement("button");
+  cancel.className = "ghost";
+  cancel.textContent = t("compose.cancel");
+  cancel.onclick = closeDraft;
+  feet.append(stampBtn, cancel);
+  if (why) {
+    const reason = document.createElement("i");
+    reason.className = "stamp-compose-why";
+    reason.textContent = why;
+    feet.appendChild(reason);
+  }
+  box.appendChild(feet);
+  return box;
+}
+
+/**
+ * Rinfresca SOLO il piede del modulo: il bottone e la ragione per cui è spento.
+ *
+ * Non `renderStorage()`, e la ragione l'ha mostrata il pannello: ricostruire
+ * l'intero modulo a ogni tasto premuto porta via il fuoco dal campo che si sta
+ * scrivendo e rimette il cursore in testa. Ma senza rinfrescare niente il
+ * bottone resta spento con la frase di tre campi fa — **misurato a video: dopo
+ * aver scelto il genere, «Stamp» continuava a dire «the act needs a kind»** — e
+ * un bottone che mente sul proprio ostacolo manda una persona a cercare il
+ * problema dove non è.
+ *
+ * Quindi si riscrive il pezzo che cambia e nient'altro.
+ */
+function refreshComposeFeet(): void {
+  const draft = stampDraft;
+  const btn = document.querySelector<HTMLButtonElement>("button[data-action=stamp]");
+  if (!draft || !btn) return;
+  const why = readyToStamp(draft);
+  btn.disabled = !!why || stampEmitting;
+  btn.title = why ?? "";
+  const reason = document.querySelector<HTMLElement>(".stamp-compose-why");
+  if (reason) reason.textContent = why ?? "";
+}
+
+/** Un ingresso si aggiunge o si toglie — e deve essere TIMBRATO: si legge il suo
+ *  timbro e si prende da lì l'identità, che è l'unica cosa che conta. */
+async function toggleInput(entry: FsEntry, chosen: boolean): Promise<void> {
+  const draft = stampDraft;
+  if (!draft) return;
+  if (chosen) {
+    draft.inputs = draft.inputs.filter((i) => i.path !== entry.path);
+    renderStorage();
+    redrawNeighbourhood();
+    return;
+  }
+  const resolution = await resolveFile(entry);
+  if (stampDraft !== draft) return;
+  if (resolution.why !== "by-digest" || !resolution.stamp) {
+    toast(t("compose.inputNotStamped", { name: entry.name }));
+    return;
+  }
+  const input: DraftInput = {
+    resource_id: resolution.stamp.self.resource_id,
+    digest: resolution.stamp.self.digest ?? "",
+    label: entry.name,
+    path: entry.path,
+    size_bytes: entry.size,
+  };
+  draft.inputs.push(input);
+  renderStorage();
+  redrawNeighbourhood();
+}
+
+/** Emette. Il risultato lo consegna il bridge, e quello che si dice a chi guarda
+ *  è **quanti timbri sono stati scritti e quanti rifiutati**, con la ragione. */
+async function doStamp(win: Win): Promise<void> {
+  const draft = stampDraft;
+  if (!draft || stampEmitting) return;
+  stampEmitting = true;
+  renderStorage();
+  const started = performance.now();
+  try {
+    const out = await emitDraft(draft, {
+      graph_id: store?.doc?.graph?.graph_id as string | undefined,
+    });
+    const seconds = ((performance.now() - started) / 1000).toFixed(1);
+    if (out.error) {
+      toast(out.error);
+    } else if (out.written.length) {
+      toast(t("compose.done", { n: String(out.written.length), s: seconds }));
+      stampDraft = null;
+      // …e si rilegge il disco: adesso quel file HA un timbro, e la vista deve
+      // mostrare il verbale invece della bozza.
+      void askStamps(storageSelected(win));
+    }
+    for (const r of out.refused) toast(`${baseName(r.path)}: ${r.why}`);
+  } catch (err) {
+    toast(String((err as Error).message));
+  } finally {
+    stampEmitting = false;
+    renderStorage();
+    redrawNeighbourhood();
+  }
+}
+
+// ── i mattoncini del modulo ─────────────────────────────────────────────────
+
+function labelled(text: string, control: HTMLElement): HTMLElement {
+  const wrap = document.createElement("label");
+  wrap.className = "stamp-field";
+  const span = document.createElement("span");
+  span.textContent = text;
+  wrap.append(span, control);
+  return wrap;
+}
+
+function field(text: string, value: string, onInput: (v: string) => void,
+               opts: { placeholder?: string; small?: boolean; key?: string } = {},
+): HTMLElement {
+  const input = document.createElement("input");
+  input.type = "text";
+  input.value = value;
+  if (opts.placeholder) input.placeholder = opts.placeholder;
+  if (opts.key) input.dataset.field = opts.key;
+  input.oninput = () => { onInput(input.value); refreshComposeFeet(); };
+  const wrap = labelled(text, input);
+  if (opts.small) wrap.classList.add("small");
+  return wrap;
+}
+
+/** I due ingressi alla composizione: questo file, o tutti i file non timbrati
+ *  della cartella. **Il secondo è il gesto dei quattrocento scatti.** */
+function composeButtons(entry: FsEntry, listing: FsListing): HTMLElement {
+  const box = document.createElement("div");
+  box.className = "stamp-report-ask";
+  const one = document.createElement("button");
+  one.className = "ghost";
+  one.dataset.action = "compose-one";
+  one.textContent = t("compose.open", { name: entry.name });
+  one.onclick = () => openDraft([entry]);
+  box.appendChild(one);
+  box.appendChild(composeFolderButton(listing, true));
+  return box;
+}
+
+/**
+ * «Un atto solo, per tutti i file non timbrati di questa cartella.»
+ *
+ * È il gesto del rilievo fotogrammetrico: quattrocento scatti che sono origini
+ * di una campagna sola. Il formato lo prevede — un processo che produce N
+ * artefatti dà N timbri che citano lo stesso `process_id`, lecito perché il
+ * processo è immutabile — e il substrato pure: `bucket_acquisition` raggruppa i
+ * file sotto UN evento, e i fatti rappresentativi del lotto (macchina,
+ * obiettivo, cartella) stanno sull'evento invece che ripetuti quattrocento
+ * volte.
+ *
+ * Esclude i file GIÀ timbrati, e non è una comodità: un timbro emesso non si
+ * riscrive, e infilarli nella selezione vorrebbe dire proporre un gesto che il
+ * bridge rifiuterà uno per uno.
+ */
+function composeFolderButton(listing: FsListing, inline = false): HTMLElement {
+  const stampable = listing.entries.filter((e) =>
+    e.type === "file" && !isStampPath(e.path) && !e.outside
+    && !listing.entries.some((s) => s.path === stampPathFor(e.path)));
+  const b = document.createElement("button");
+  b.className = "ghost";
+  b.dataset.action = "compose-folder";
+  b.textContent = t("compose.openFolder", { n: String(stampable.length) });
+  b.disabled = !stampable.length;
+  b.onclick = () => openDraft(stampable);
+  if (inline) return b;
+  const box = document.createElement("div");
+  box.className = "stamp-report-ask";
+  box.appendChild(b);
+  return box;
+}
+
+/**
+ * UN ASSET GIÀ TIMBRATO MOSTRA IL TIMBRO, non un modulo.
+ *
+ * Prima di timbrare il minigrafo si edita liberamente; dopo, no. Un timbro
+ * emesso è un verbale immutabile e **non si può dis-dire nelle copie già
+ * uscite**: se l'autore era sbagliato, l'unica cosa che esiste è emettere una
+ * **correzione**, che è un atto nuovo con una sua data e un suo autore.
+ *
+ * Quindi qui non c'è nessun campo modificabile. Ci sono due cose:
+ *
+ * * il timbro, in sola lettura, così com'è sul disco;
+ * * **la strada in avanti**, che è comporre un passo NUOVO usando questo
+ *   artefatto come ingresso — legittima, a un clic, e già costruita.
+ *
+ * E una frase sull'errata. **Non ho messo un bottone**, ed è una decisione:
+ * un'errata è un atto che qualcuno deve TENERE, e il posto che la tiene — il
+ * record del grafo — non esiste ancora. Un bottone che scrivesse un secondo
+ * `.stamp.json` accanto al primo pregiudicherebbe la forma dell'errata prima
+ * che qualcuno l'abbia decisa, e sarebbe anche il modo di far credere che due
+ * timbri per lo stesso digest siano una correzione invece che una scoperta
+ * (s3Dgraphy li tratta come un disaccordo, e non sceglie un vincitore).
+ */
+function stampedBox(path: string, stamp: Stamp): HTMLElement {
+  const box = document.createElement("div");
+  box.className = "stamp-emitted";
+  const head = document.createElement("div");
+  head.className = "stamp-emitted-head";
+  head.textContent = t("compose.emittedHead", { name: baseName(path) });
+  box.appendChild(head);
+
+  const pre = document.createElement("pre");
+  pre.className = "stamp-emitted-body";
+  pre.dataset.readonly = "stamp";
+  pre.textContent = JSON.stringify(stamp, null, 1);
+  box.appendChild(pre);
+
+  const note = document.createElement("i");
+  note.className = "stamp-emitted-note";
+  note.textContent = t("compose.erratum");
+  box.appendChild(note);
+
+  const forward = document.createElement("button");
+  forward.className = "ghost";
+  forward.dataset.action = "compose-from";
+  forward.textContent = t("compose.fromThis");
+  forward.title = t("compose.fromThisHint");
+  forward.onclick = () => { void composeFromStamped(path, stamp); };
+  box.appendChild(forward);
+  return box;
+}
+
+/** «Componi un passo DA questo»: l'artefatto timbrato diventa l'ingresso di una
+ *  bozza nuova, e la sua uscita la si sceglie dal disco. La strada in avanti che
+ *  un'errata non è. */
+async function composeFromStamped(path: string, stamp: Stamp): Promise<void> {
+  const folder = path.slice(0, path.lastIndexOf("/")) || "/";
+  let listing: FsListing;
+  try {
+    listing = await fsList(folder);
+  } catch {
+    toast(t("storage.bridgeDown"));
+    return;
+  }
+  const stampable = listing.entries.filter((e) =>
+    e.type === "file" && !isStampPath(e.path) && e.path !== path
+    && !listing.entries.some((s) => s.path === stampPathFor(e.path)));
+  if (!stampable.length) {
+    toast(t("compose.nothingToMake"));
+    return;
+  }
+  openDraft(stampable);
+  if (stampDraft) {
+    stampDraft.inputs = [{
+      resource_id: stamp.self.resource_id,
+      digest: stamp.self.digest ?? "",
+      label: baseName(path),
+      path,
+    }];
+    renderStorage();
+    redrawNeighbourhood();
+  }
 }
 
 /** Il bottone che CHIEDE il referto. Non si calcola da solo, e non è pigrizia:

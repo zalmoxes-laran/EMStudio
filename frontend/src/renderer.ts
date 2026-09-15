@@ -521,8 +521,13 @@ export function render(
     // style at all and fall to `edgeStyle`'s generic `[4, 3]`, so in the DTC
     // view EVERY chain edge is already dashed. A dash here would have been a
     // signal identical to its background.
-    const unresolved = !!(e.edge as { data?: { unresolved?: boolean } })
-      .data?.unresolved;
+    const mark = (e.edge as { data?: { unresolved?: boolean; draft?: boolean } })
+      .data;
+    const unresolved = !!mark?.unresolved;
+    // DTCEMS2 · una BOZZA non è ancora niente: nessuno di questi archi esiste,
+    // né nel documento né sul disco. Attenuata, non colorata — un colore avrebbe
+    // detto «guarda qui», e quello che va detto è «non c'è ancora».
+    if (mark?.draft) ctx.globalAlpha = 0.28;
     ctx.setLineDash(conflict ? [] : unresolved
       ? [11 / Math.sqrt(vp.scale), 7 / Math.sqrt(vp.scale)]
       : st.dash.map((d) => d / Math.sqrt(vp.scale)));
@@ -887,6 +892,10 @@ export function render(
     // — attenuation for something that is drawn without being in the graph.
     const absent = !!(n.node.data as { unresolved?: boolean } | undefined)
       ?.unresolved;
+    // …e lo stesso per un nodo della bozza: si vede che c'è e si vede che non
+    // è ancora stato emesso.
+    const draft = !!(n.node.data as { draft?: boolean } | undefined)?.draft;
+    if (draft) ctx.globalAlpha = 0.55;
     ctx.setLineDash(
       absent
         ? [7 / vp.scale, 4 / vp.scale]
@@ -898,6 +907,7 @@ export function render(
     );
     ctx.stroke();
     ctx.setLineDash([]);
+    if (draft) ctx.globalAlpha = 1;
 
     if (n.id === state.selectedId || n.instanceOf === state.selectedId || n.id === state.hoverId) {
       // the halo hugs the DRAWN shape, not the box: a 90×32 outline around BR's

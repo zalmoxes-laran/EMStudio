@@ -286,6 +286,31 @@ export interface DtcKindItem {
   isResource: boolean;
 }
 
+/**
+ * I generi di UN SOLO asse del vocabolario DTC — `acquisition`, `process`,
+ * `input`, `output` — letti dal datamodel e **mai elencati a mano**.
+ *
+ * Serve a comporre un passo (DTCEMS2): un'origine sceglie fra i generi
+ * dell'asse `acquisition`, un passo derivato fra quelli dell'asse `process`, e
+ * sono due specie di evento che il vocabolario tiene separate da sempre.
+ * `dtcAuthoringKinds` appiattisce gli assi perché alla tavolozza serve così;
+ * qui l'asse è la domanda.
+ *
+ * **Il vocabolario non si allarga da qui.** Un genere nuovo è una voce in
+ * `em_visual_rules.json` di s3Dgraphy più `sync-datamodels.sh` — mai una
+ * stringa scritta in un campo dell'interfaccia, e mai un valore arrivato in un
+ * corpo JSON (il bridge lo rifiuta di suo: sono due recinti sullo stesso campo).
+ */
+export function dtcKindsFor(axis: string): Array<{ kind: string; label: string }> {
+  const entries = DTC_KINDS[axis] ?? {};
+  const out: Array<{ kind: string; label: string }> = [];
+  for (const kind of Object.keys(entries)) {
+    if (kind.startsWith("_")) continue;
+    out.push({ kind, label: entries[kind]?.label ?? kind });
+  }
+  return out;
+}
+
 /** The DTC authoring palette, fully data-driven: one entry per (base kind) ×
  *  (specific kind) from `dtc_kinds`. A base backed by a dedicated DTC node_type
  *  (`dtc_${base}`) creates that node; a base WITHOUT one (the OUTPUT, slice b —

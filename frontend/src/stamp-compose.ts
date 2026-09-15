@@ -1,0 +1,268 @@
+/**
+ * Comporre un passo, e timbrarlo. **L'emissione non è qui.**
+ *
+ * Questo modulo tiene la BOZZA — quello che una persona sta componendo — e la
+ * consegna al bridge, che la fa diventare un grafo con gli scrittori di
+ * s3Dgraphy e chiede alla libreria il verbale (`api.emit_stamp`). La regola di
+ * come un grafo diventa un timbro non è riscritta qui e non deve esserlo mai:
+ * è la stessa disciplina di `identityOf` in `stamp.ts`.
+ *
+ * ## La bozza si edita, il timbro no
+ *
+ * Prima di timbrare si cambia tutto; **dopo, niente**. Un timbro emesso è un
+ * verbale immutabile, e se l'autore era sbagliato non lo si può dis-dire nelle
+ * copie già uscite: si può solo emettere una **correzione**, che è un atto
+ * nuovo. Quindi qui non esiste nessuna funzione che modifichi un timbro, e il
+ * bridge rifiuta per nome un `.stamp.json` che esiste già — l'invariante è
+ * custodito ai due estremi, come per le piste.
+ *
+ * ## L'origine non è la via comoda
+ *
+ * Un file senza genitori è legittimo — metà degli asset di un progetto
+ * archeologico sono origini — ma **dichiararne una costa più gesti che nominare
+ * un genitore**, e non per attrito fine a sé stesso: perché se dichiarare
+ * un'origine fosse il bottone di default, in una settimana sarebbe tutto
+ * un'origine finta e il timbro smetterebbe di dire qualcosa.
+ *
+ * Il conto sta in {@link gestures} ed è misurato da una prova, non promesso da
+ * un commento: **1 gesto** per nominare un genitore, **3** per dichiarare
+ * un'origine — e i tre non sono finti, il terzo è dare un nome alla campagna,
+ * che è lavoro vero e senza il quale l'origine è un'asserzione nuda.
+ *
+ * ## `"from": []` due volte, e non è la stessa cosa
+ *
+ * Con un `how` che lo firma vuol dire **«nato qui»**; senza vuol dire **«non so
+ * come è stato fatto»**. Sono opposti, e questa bozza non può produrre il
+ * secondo: un passo senza ingressi e senza dichiarazione d'origine non è
+ * timbrabile, e `readyToStamp` dice perché.
+ */
+
+import type { FsEntry } from "./storage";
+
+/** Un'uscita della bozza: un file selezionato che non è ancora timbrato. */
+export interface DraftOutput {
+  path: string;
+  name: string;
+  size: number;
+  mtime: number;
+  /** calcolata quando serve; l'impronta la fa il bridge, mai la pagina */
+  digest?: string;
+  media_type?: string;
+}
+
+/** Un ingresso: **deve essere timbrato**, perché un figlio timbrato non può
+ *  discendere da qualcosa che non ha un'identità dichiarata. */
+export interface DraftInput {
+  resource_id: string;
+  digest: string;
+  label: string;
+  path?: string;
+  size_bytes?: number;
+}
+
+export interface Software { name: string; version?: string; commit?: string }
+
+export interface Draft {
+  outputs: DraftOutput[];
+  inputs: DraftInput[];
+  /** falso = viene da qualcosa (**il default**); vero = è un'origine */
+  origin: boolean;
+  /** A2 · la dichiarazione esplicita, che è il gesto in più */
+  originDeclared: boolean;
+  /** il nome della campagna: senza, un'origine è un'asserzione nuda */
+  campaign: string;
+  /** i fatti rappresentativi del lotto — macchina, obiettivo, cartella —
+   *  che appartengono all'EVENTO e non si ripetono su quattrocento file */
+  campaignMetadata: Record<string, string>;
+  kind: string;
+  technique: string;
+  parameters: Record<string, unknown>;
+  software: Software[];
+  operator: { id: string; label: string };
+  /** la data dell'ATTO, che non è quella di adesso */
+  at: string;
+}
+
+export function newDraft(outputs: DraftOutput[]): Draft {
+  return {
+    outputs,
+    inputs: [],
+    // IL DEFAULT È «VIENE DA QUALCOSA», e questa riga è la decisione di A2:
+    // la via comoda deve portare a nominare un genitore, non a dichiarare
+    // un'origine.
+    origin: false,
+    originDeclared: false,
+    campaign: "",
+    campaignMetadata: {},
+    kind: "",
+    technique: "",
+    parameters: {},
+    software: [],
+    operator: { id: "", label: "" },
+    // VUOTA di proposito: la data dell'atto non è `now()` per difetto. Un atto
+    // avvenuto a marzo deve poterlo dire, e un default che nessuno vede è una
+    // data che nessuno ha scelto. L'interfaccia offre «oggi» come un GESTO.
+    at: "",
+  };
+}
+
+/** Il conto dei gesti, dichiarato come dato e non come promessa.
+ *
+ *  Misurato da `check-stamps.mjs` contro i gestori veri dell'interfaccia: se un
+ *  giorno qualcuno accorciasse la strada dell'origine, la prova fallirebbe
+ *  prima che il difetto arrivi a un utente. */
+export const gestures = {
+  /** clic sul genitore nell'elenco dei file già timbrati. Il modo «viene da
+   *  qualcosa» è già quello attivo, quindi non costa niente sceglierlo. */
+  nameAParent: 1,
+  /** clic su «È un'origine» · spunta sulla dichiarazione · nome della campagna */
+  declareAnOrigin: 3,
+} as const;
+
+/** Perché questa bozza non si può ancora timbrare, o `null` se si può.
+ *
+ *  Una frase e non un booleano: un bottone spento senza una ragione è un vicolo
+ *  cieco, e la ragione qui è sempre una cosa che una persona può fare.
+ */
+export function readyToStamp(draft: Draft): string | null {
+  if (!draft.outputs.length) return "no output selected";
+  if (!draft.kind) return "the act needs a kind, from the controlled vocabulary";
+  if (!draft.at) return "the act needs its date — the date of the act, not today's";
+  if (draft.origin) {
+    if (!draft.originDeclared)
+      return "declare explicitly that these bytes are born here";
+    if (!draft.campaign.trim())
+      return "name the acquisition campaign: an origin with no campaign is a bare assertion";
+    return null;
+  }
+  if (!draft.inputs.length)
+    // È il caso che il formato distingue e che l'interfaccia non deve poter
+    // confondere: senza ingressi e senza dichiarazione d'origine, un timbro
+    // direbbe «non so come è stato fatto» spacciandolo per «nato qui».
+    return "name at least one stamped input, or say this is an origin";
+  return null;
+}
+
+/** L'asse del vocabolario da cui pescare `dtc_kind`: `acquisition` per
+ *  un'origine, `process` per un passo derivato. Due assi diversi perché sono
+ *  due specie di evento, e il vocabolario li tiene separati da sempre. */
+export function kindAxis(draft: Draft): "acquisition" | "process" {
+  return draft.origin ? "acquisition" : "process";
+}
+
+// ── l'emissione: si CHIEDE, non si fa ───────────────────────────────────────
+
+let resolveBridge: (() => Promise<string>) | null = null;
+
+export function setComposeBridgeResolver(fn: () => Promise<string>): void {
+  resolveBridge = fn;
+}
+
+async function bridge(): Promise<string> {
+  if (!resolveBridge) throw new Error("no bridge resolver installed");
+  return await resolveBridge();
+}
+
+export interface EmitResult {
+  ok: boolean;
+  process_id?: string;
+  stamps: Array<{ path: string; stamp_path: string; stamp: unknown; notes: string[] }>;
+  written: string[];
+  refused: Array<{ path: string; why: string }>;
+  warnings: string[];
+  /** la frase del bridge quando ha rifiutato tutto */
+  error?: string;
+}
+
+/**
+ * Manda la bozza al bridge, che la compone e la timbra **con s3Dgraphy**.
+ *
+ * Quello che parte è la bozza, non un timbro: questo modulo non ne costruisce
+ * mai uno. Il corpo è deliberatamente vicino ai nomi del formato, così chi
+ * legge la richiesta e chi legge il `.stamp.json` vedono la stessa cosa e in
+ * mezzo non c'è una traduzione da tenere allineata.
+ *
+ * I fatti rappresentativi della campagna viaggiano **due volte, e di proposito**:
+ * come `acquisition.metadata` (dove il substrato li tiene, sull'evento) e come
+ * `parameters` (dove il formato del timbro sa metterli). Vedi il report: il
+ * timbro non ha oggi un posto per «quale macchina fotografica», e finché non ce
+ * l'ha `parameters` è il posto meno sbagliato.
+ */
+export async function emitDraft(
+  draft: Draft, registry: { graph_id?: string; revision?: number; room?: string } = {},
+): Promise<EmitResult> {
+  const parameters: Record<string, unknown> = { ...draft.parameters };
+  if (draft.origin) {
+    for (const [k, v] of Object.entries(draft.campaignMetadata)) {
+      if (v) parameters[k] = v;
+    }
+  }
+  const body = {
+    outputs: draft.outputs.map((o) => ({
+      path: o.path,
+      resource_id: `res:${(o.digest ?? "").slice(7, 19) || o.name}`,
+      digest: o.digest,
+      name: o.name,
+      media_type: o.media_type,
+      packaging: "file",
+      tier: draft.origin ? "master" : "distribution",
+      size_bytes: o.size,
+    })),
+    inputs: draft.inputs.map((i) => ({
+      resource_id: i.resource_id, digest: i.digest, label: i.label,
+      size_bytes: i.size_bytes,
+    })),
+    act: {
+      dtc_kind: draft.kind,
+      technique: draft.technique || undefined,
+      parameters: Object.keys(parameters).length ? parameters : undefined,
+      software: draft.software.length ? draft.software : undefined,
+      at: draft.at,
+      origin: draft.origin,
+      acquisition: draft.origin
+        ? { name: draft.campaign.trim(), metadata: draft.campaignMetadata }
+        : undefined,
+    },
+    operator: draft.operator.id ? draft.operator : undefined,
+    registry,
+    write: true,
+  };
+  const res = await fetch(`${await bridge()}/stamp/emit`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const answer = (await res.json()) as EmitResult & { error?: string };
+  return {
+    ok: !!answer.ok,
+    process_id: answer.process_id,
+    stamps: answer.stamps ?? [],
+    written: answer.written ?? [],
+    refused: answer.refused ?? [],
+    warnings: answer.warnings ?? [],
+    error: answer.error,
+  };
+}
+
+/** Una voce di directory → un'uscita della bozza. */
+export function outputFrom(entry: FsEntry): DraftOutput {
+  return { path: entry.path, name: entry.name, size: entry.size,
+           mtime: entry.mtime, media_type: mediaTypeOf(entry.ext) };
+}
+
+/** Il media type dall'estensione — una LETTURA, e dichiarata come tale.
+ *
+ *  Debole di proposito e per questo scritta sul nodo solo quando l'estensione
+ *  la conosce: un file servito senza estensione non deve far scrivere al timbro
+ *  un tipo che nessuno ha dichiarato. Non è un vocabolario controllato, è una
+ *  comodità — e infatti l'assenza è una risposta legittima. */
+export function mediaTypeOf(ext: string): string | undefined {
+  const e = ext.toLowerCase().replace(/^\./, "");
+  return ({
+    jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", tif: "image/tiff",
+    tiff: "image/tiff", glb: "model/gltf-binary", gltf: "model/gltf+json",
+    obj: "model/obj", ply: "application/octet-stream", laz: "application/octet-stream",
+    las: "application/octet-stream", e57: "application/octet-stream",
+    pdf: "application/pdf", zip: "application/zip",
+  } as Record<string, string>)[e];
+}

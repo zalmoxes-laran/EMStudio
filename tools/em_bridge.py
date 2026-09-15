@@ -754,6 +754,20 @@ def make_handler(api):
                     self._fail(400, f"invalid JSON body: {exc}")
                     return
                 self._stamp_identity(body)
+            elif route == "/stamp/emit":
+                # DTCEMS2 · COMPORRE UN PASSO E TIMBRARLO. Tutto il lavoro lo fa
+                # s3Dgraphy attraverso `api`: qui si monta un grafo minuscolo con
+                # i suoi stessi scrittori e gli si chiede il timbro. La regola di
+                # emissione NON è riscritta da nessuna parte — né qui né, tanto
+                # meno, in TypeScript.
+                if not self._fs_gate():
+                    return
+                try:
+                    body = json.loads(raw.decode("utf-8")) if raw else {}
+                except Exception as exc:
+                    self._fail(400, f"invalid JSON body: {exc}")
+                    return
+                self._stamp_emit(body)
             elif route == "/stamp/hints":
                 # …e l'unica scrittura della notte. `<asset>.hints.json`, mai un
                 # `.stamp.json`: il rifiuto è QUI oltre che nel frontend, perché
@@ -822,6 +836,235 @@ def make_handler(api):
                 out[text] = ask({"stamp": 1,
                                  "self": {"resource_id": "ask", "digest": text}})
             self._json({"ok": True, "identities": out})
+
+        def _stamp_emit(self, body):
+            """Compone un passo e ne emette i timbri — **via s3Dgraphy, sempre**.
+
+            Il giro, e ogni anello è una funzione che esiste già sulla superficie
+            d'accesso:
+
+              1. i file diventano un em.json minuscolo  → `api.load_emjson`
+              2. l'atto diventa un evento del substrato → `api.bucket_acquisition`
+                 (origine: una campagna che ha prodotto quei file) oppure
+                 `api.declare_derivation` (un passo con degli ingressi)
+              3. ogni uscita diventa un verbale          → `api.emit_stamp`
+
+            **Un solo `process_id` per tutte le uscite** (A4): un processo che
+            produce N artefatti dà N timbri che lo citano, ed è lecito perché il
+            processo è immutabile. Per l'acquisizione lo fa già `bucket_acquisition`
+            (l'id è derivato dal NOME della campagna, così un secondo drop si
+            aggiunge invece di gemmare un secondo evento); per la derivazione lo
+            impongo passando lo stesso `process_id` a ogni chiamata.
+
+            **Tre rifiuti, e tutti e tre sono decisioni scritte nel prompt:**
+
+            * `dtc_kind` fuori dal vocabolario → 400. Un vocabolario controllato
+              non si allarga da un'interfaccia, e nemmeno da un corpo JSON
+              arrivato da fuori.
+            * `at` assente → 400. La data dell'atto non è `now()` per difetto:
+              se il processo la mettesse da sé, nessuno la vedrebbe mai.
+            * un `.stamp.json` che esiste già → rifiutato per NOME, prima di
+              comporre qualunque cosa. Un timbro emesso non si modifica: la
+              correzione è un'errata, non una riscrittura.
+            """
+            outputs = body.get("outputs")
+            act = body.get("act") or {}
+            if not isinstance(outputs, list) or not outputs:
+                self._fail(400, "POST /stamp/emit wants at least one output")
+                return
+
+            # ── il vocabolario NON si allarga da qui ─────────────────────────
+            kind = str(act.get("dtc_kind") or "").strip()
+            try:
+                from s3dgraphy.utils.utils import get_dtc_kinds
+                vocab = get_dtc_kinds()
+            except Exception as exc:        # pragma: no cover — build senza dati
+                self._fail(501, f"cannot read the dtc_kinds vocabulary: {exc}")
+                return
+            origin = bool(act.get("origin"))
+            axis = "acquisition" if origin else "process"
+            allowed = list(vocab.get(axis) or ())
+            if kind not in allowed:
+                self._fail(400,
+                           f"dtc_kind {kind!r} is not in the {axis} vocabulary "
+                           f"{allowed}. A controlled vocabulary is widened in "
+                           f"s3Dgraphy's em_visual_rules.json and synced — never "
+                           f"from an interface, and never by a JSON body.")
+                return
+
+            # ── la data dell'atto, che deve essere DETTA ─────────────────────
+            at = str(act.get("at") or "").strip()
+            if not at:
+                self._fail(400,
+                           "the act needs an `at`: the date of the act is not "
+                           "now() by default. An act that happened last March "
+                           "must be able to say so, and a default nobody sees is "
+                           "a date nobody chose.")
+                return
+
+            # ── un timbro che c'è già non si tocca ───────────────────────────
+            refused = []
+            targets = []
+            for out in outputs:
+                path = str((out or {}).get("path") or "").strip()
+                if not path:
+                    self._fail(400, "every output needs its `path`")
+                    return
+                full = os.path.abspath(os.path.expanduser(path))
+                if not _fs_inside_roots(full):
+                    self._fail(403, f"{path} is outside the folders this bridge serves")
+                    return
+                stamp_path = full + ".stamp.json"
+                if os.path.exists(stamp_path):
+                    refused.append({"path": path, "why": "already stamped"})
+                    continue
+                targets.append((out, full, stamp_path))
+            if not targets:
+                self._json({"ok": True, "stamps": [], "written": [],
+                            "refused": refused,
+                            "note": "every output was already stamped: a stamp is "
+                                    "not modified, and a correction is an erratum"})
+                return
+
+            operator = body.get("operator") or {}
+            orcid = str(operator.get("id") or "").rsplit("/", 1)[-1] or None
+
+            # ── 1 · i file diventano un grafo ────────────────────────────────
+            nodes, edges = [], []
+            for out, _full, _sp in targets:
+                data = {"checksum": out.get("digest")}
+                for key in ("media_type", "packaging", "tier", "size_bytes",
+                            "primitives", "format"):
+                    if out.get(key) not in (None, "", {}):
+                        data[key] = out[key]
+                nodes.append({"id": out["resource_id"], "node_type": "resource",
+                              "name": out.get("name") or out["resource_id"],
+                              "data": data})
+            for inp in (body.get("inputs") or []):
+                data = {"checksum": inp.get("digest")}
+                if inp.get("size_bytes") is not None:
+                    data["size_bytes"] = inp["size_bytes"]
+                nodes.append({"id": inp["resource_id"], "node_type": "resource",
+                              "name": inp.get("label") or inp["resource_id"],
+                              "data": data})
+            label = str(operator.get("label") or "").strip()
+            if label in (orcid or "", f"https://orcid.org/{orcid}"):
+                # UN'ETICHETTA CHE RIPETE L'IDENTIFICATORE NON È UN'ETICHETTA.
+                # Misurato leggendo un timbro emesso: `by.operator.label` diceva
+                # «0000-0002-5065-7970», cioè l'id un'altra volta. `label` è la
+                # cortesia per un lettore umano — un NOME — e quando il nome non
+                # si sa la risposta onesta è tacere, non ripetersi.
+                label = ""
+            if orcid and label:
+                # L'AUTORE COME NODO **SOLO SE HA UN NOME**, e la ragione è che
+                # è l'unica cosa che quel nodo aggiunge: l'identità la porta già
+                # il timbro editoriale (`created_by`), e `by.operator.label` è la
+                # cortesia per un lettore umano. Senza un nome vero il nodo non
+                # tace — `_author_of` ripiega sull'id del nodo e l'etichetta
+                # diventa «author:0000-…», cioè l'identificatore una terza volta.
+                # Quindi non lo si crea, e l'operatore esce col solo `id`.
+                nodes.append({"id": f"author:{orcid}", "node_type": "author",
+                              "name": label, "data": {"orcid": orcid}})
+            doc = {"header": {"format": "em.json", "version": "1.0"},
+                   "graph": {"graph_id": str((body.get("registry") or {})
+                                             .get("graph_id") or "compose"),
+                             "nodes": nodes, "edges": edges}}
+            try:
+                graph, warnings = api.load_emjson(doc)
+            except Exception as exc:
+                self._fail(400, f"the composed step is not a readable graph: {exc}")
+                return
+
+            # ── 2 · l'atto ───────────────────────────────────────────────────
+            out_ids = [o["resource_id"] for o, _f, _s in targets]
+            if origin:
+                acq = act.get("acquisition") or {}
+                report = api.bucket_acquisition(
+                    graph, out_ids, name=acq.get("name") or None,
+                    dtc_kind=kind, metadata=acq.get("metadata") or None,
+                    author=orcid, at=at)
+                process_id = report.get("acquisition_id")
+                warnings.extend(report.get("warnings") or [])
+            else:
+                inputs = [i["resource_id"] for i in (body.get("inputs") or [])]
+                if not inputs:
+                    self._fail(400,
+                               "a step that is not an origin needs at least one "
+                               "input. An artifact with no parents and no act is "
+                               "«I do not know how this was made», which is the "
+                               "opposite of «born here».")
+                    return
+                process_id = str(act.get("process_id") or "").strip() or None
+                for out_id in out_ids:
+                    report = api.declare_derivation(
+                        graph, out_id, inputs, process_id=process_id,
+                        name=act.get("technique") or None, author=orcid, at=at)
+                    # …e da qui in poi TUTTE le uscite citano lo stesso processo
+                    process_id = report["process_id"]
+                    warnings.extend(report.get("warnings") or [])
+
+            # ── i campi dell'atto che `api` non sa ancora portare ────────────
+            #
+            # DICHIARATO: `api.declare_derivation` non inoltra `dtc_kind`,
+            # `technique`, `parameters` né `software`, mentre la funzione sotto
+            # accetta già `dtc_kind`. Non è una regola riscritta — la REGOLA è
+            # come un grafo diventa un timbro, e quella resta in `emit_stamp` —
+            # ma sono campi che il formato nomina e che qui vanno scritti a mano
+            # sul nodo. La porta pulita sarebbe inoltrarli da `api`, e questa
+            # notte non tocca s3Dgraphy.
+            process = graph.find_node_by_id(process_id) if process_id else None
+            if process is None:
+                self._fail(500, "the act produced no event node; nothing to stamp")
+                return
+            if not isinstance(getattr(process, "data", None), dict):
+                process.data = {}
+            process.data["dtc_kind"] = kind
+            for key in ("technique", "parameters"):
+                if act.get(key) not in (None, "", {}):
+                    process.data[key] = act[key]
+            software = act.get("software")
+            if isinstance(software, list) and software:
+                process.data["software"] = software
+                first = software[0]
+                if isinstance(first, dict) and first.get("name"):
+                    process.data["tool"] = dict(first)
+            if orcid and label:
+                try:
+                    graph.add_edge(f"edge:author:{process_id}", process_id,
+                                   f"author:{orcid}", "has_author")
+                except Exception as exc:    # una connessione rifiutata è un fatto
+                    warnings.append(f"author not attached to the act: {exc}")
+
+            # ── 3 · ogni uscita diventa un verbale ───────────────────────────
+            registry = body.get("registry") or {}
+            written, stamps = [], []
+            for out, _full, stamp_path in targets:
+                try:
+                    stamp = api.emit_stamp(
+                        graph, out["resource_id"],
+                        revision=registry.get("revision"),
+                        room=registry.get("room") or None)
+                except Exception as exc:
+                    refused.append({"path": out.get("path"), "why": str(exc)})
+                    continue
+                clean = {k: v for k, v in stamp.items() if not str(k).startswith("_")}
+                stamps.append({"path": out.get("path"), "stamp_path": stamp_path,
+                               "stamp": clean,
+                               "notes": stamp.get("_notes") or []})
+                if body.get("write", True):
+                    try:
+                        with open(stamp_path, "w", encoding="utf-8") as fh:
+                            # LEGGIBILE e non compatto: il lettore di ultima
+                            # istanza è un umano con un editor, fra trent'anni.
+                            json.dump(clean, fh, ensure_ascii=False, indent=1)
+                            fh.write("\n")
+                    except OSError as exc:
+                        refused.append({"path": out.get("path"), "why": str(exc)})
+                        continue
+                    written.append(stamp_path)
+            self._json({"ok": True, "process_id": process_id, "stamps": stamps,
+                        "written": written, "refused": refused,
+                        "warnings": warnings})
 
         def _stamp_hints(self, body):
             """Scrive `<asset>.hints.json`. **L'unica scrittura, e mai un timbro.**
