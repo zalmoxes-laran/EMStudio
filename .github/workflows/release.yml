@@ -277,7 +277,15 @@ jobs:
       matrix:
         include:
           - { os: macos-14, target: aarch64-apple-darwin, label: macos-arm64 }
-          - { os: macos-13, target: x86_64-apple-darwin, label: macos-intel }
+          # NESSUN BINARIO INTEL PER macOS — deciso il 2026-09-16, e la riga è
+          # tolta invece di essere spostata su un runner vivo. Girava su
+          # `macos-13`, che GitHub ha ritirato (fine supporto 4 dic 2025): il job
+          # non falliva, restava in coda per sempre aspettando un runner che non
+          # esiste, che è peggio di un errore perché non si legge come tale.
+          # `macos-15-intel` l'avrebbe rimesso in piedi; ma un target che nessuno
+          # usa, mantenuto vivo, è tempo di build e una promessa in più da tenere.
+          # Per rimetterlo servono questa riga con `os: macos-15-intel` e un
+          # sidecar x86_64: PyInstaller non cross-compila (docs/DEVELOPMENT.md).
           - { os: windows-latest, target: x86_64-pc-windows-msvc, label: windows-x64 }
           - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, label: linux-x64 }
     runs-on: ${{ matrix.os }}
