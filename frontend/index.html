@@ -64,6 +64,15 @@
           >
             <span data-i18n="toolbar.importGraphml">Import GraphML…</span>
           </button>
+          <!-- IMPMAP · the ONE way in for a legacy dataset, whichever of the two
+               modes it is. Beside Import GraphML because it answers the same
+               question ("bring this file in"); the mapping EDITOR stays in
+               Tools, because authoring a descriptor and using one are different
+               acts and only one of them belongs in File. -->
+          <button id="btn-import-mapping" data-i18n-title="impmap.menuTitle"
+                  title="Read a table or an XML through a mapping: into a new graph, or attached to this one">
+            <span data-i18n="impmap.menu">Import with a mapping…</span>
+          </button>
           <!-- BUGS-UI · Export is a nested SUB-MENU (was a section of File):
                three formats flat in the File list read as three File commands.
                The items keep their ids, so the existing export handlers are

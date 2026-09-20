@@ -156,6 +156,7 @@ import argparse
 import base64
 import errno
 import hashlib
+import inspect
 import io
 import json
 import os
@@ -1287,18 +1288,83 @@ def make_handler(api):
             self.wfile.write(out)
 
         def _mapping_apply(self, body):
-            """Run a mapping over a source and hand back the em.json it made.
+            """Run a mapping over a source and hand back the em.json it made —
+            or, given a host graph, only what it ADDED to it.
 
-            The graph goes out as a DOCUMENT, not as an object: the editor is a
-            preview, and what the caller does with it (adopt it as a volatile
-            auxiliary, keep it as a new graph, throw it away) is the caller's.
-            `mode: volatile` marks every node it added with `aux_volatile` — the
-            same marker EMStudio's own auxiliaries carry, so an existing bake
-            promotes them and nothing needed a second concept."""
+            Two modes of loading, one endpoint, because they are one act with two
+            targets:
+
+            * **a new graph** (no `doc`). The graph goes out as a DOCUMENT, not
+              as an object: the caller decides what to do with it (adopt it as a
+              volatile auxiliary, keep it as a new graph, throw it away).
+              `mode: volatile` marks every node it added with `aux_volatile` —
+              the same marker EMStudio's own auxiliaries carry, so an existing
+              bake promotes them and nothing needed a second concept;
+            * **this graph** (`doc` + optional `graph_id`). The bridge is
+              stateless — it holds no open documents — so "the graph already
+              open" arrives the way it does on every other route here: the
+              container travels in the body and the id picks the graph inside it.
+              What comes back is then the **delta**, the nodes and edges this
+              call added, because that is what the caller injects; sending the
+              host graph back would make the caller re-adopt a copy of what it
+              already has.
+
+            `attach_only` is the third thing, and it is about neither target: it
+            says whether a row that matches NO node may create one. On, it may
+            not, and the keys that found nothing come back in
+            `report.unmatched` — without which "attach" is a quiet way of
+            inventing stratigraphic units out of typos.
+            """
             mapping = body.get("mapping")
+            mapping_path = str(body.get("mapping_path") or "").strip()
+            if not isinstance(mapping, dict) and mapping_path:
+                # THE ORDINARY CASE for a partner's descriptor: it lives beside
+                # the dataset, not in the registry. Reading it here (behind the
+                # same filesystem gate as `path`) is what makes "pick the json
+                # next to the csv" a first-class way to import.
+                if not os.path.isfile(mapping_path):
+                    self._fail(404, f"no such mapping file: {mapping_path}")
+                    return None
+                try:
+                    with open(mapping_path, encoding="utf-8-sig") as handle:
+                        mapping = json.load(handle)
+                except Exception as exc:               # noqa: BLE001
+                    self._fail(400, f"{os.path.basename(mapping_path)} is not "
+                                    f"readable as a mapping: {exc}")
+                    return None
+                if not isinstance(mapping, dict):
+                    self._fail(400, f"{os.path.basename(mapping_path)} is not a "
+                                    f"mapping object")
+                    return None
+            registry_name = str(body.get("mapping_name") or "").strip()
+            if not isinstance(mapping, dict) and registry_name:
+                # …and the third way in: a mapping already FILED, named. Loaded
+                # here rather than by the importer because `apply_mapping` works
+                # on the mapping OBJECT — it hands the name to the table
+                # importers and then overwrites what they loaded with the object
+                # it was given, so a name with no object behind it would apply an
+                # empty mapping and report ok.
+                try:
+                    from s3dgraphy.mappings import mapping_registry
+                    for kind in ("generic", "pyarchinit", "emdb", "source_list"):
+                        mapping = mapping_registry.load_mapping(registry_name,
+                                                                kind)
+                        if mapping:
+                            break
+                except Exception as exc:               # noqa: BLE001
+                    self._fail(400, f"the registry could not load "
+                                    f"{registry_name!r}: {exc}")
+                    return None
+                if not isinstance(mapping, dict) or not mapping:
+                    self._fail(404, f"no mapping named {registry_name!r} in the "
+                                    f"s3Dgraphy registry — save it first, or "
+                                    f"point at the file itself")
+                    return None
             path = str(body.get("path") or "").strip()
             if not isinstance(mapping, dict) or not path:
-                self._fail(400, "mapping-apply needs a 'mapping' and a 'path'")
+                self._fail(400, "mapping-apply needs a 'mapping' (or a "
+                                "'mapping_path', or a registered "
+                                "'mapping_name') and a 'path'")
                 return None
             if not os.path.isfile(path):
                 self._fail(404, f"no such file: {path}")
@@ -1307,12 +1373,76 @@ def make_handler(api):
             if mode not in ("volatile", "bake"):
                 self._fail(400, f"mode must be 'volatile' or 'bake', got {mode!r}")
                 return None
-            report = api.mapping_apply(mapping, path, mode=mode,
-                                       mapping_name=body.get("mapping_name"))
+            # `attach_only` is the wire name (the UI's word: attach this table to
+            # this graph); `enrich_only` is the library's, and it is the one the
+            # importers already used. One flag, and the two names are accepted
+            # here rather than renamed on either side.
+            attach_only = bool(body.get("attach_only",
+                                        body.get("enrich_only", False)))
+
+            host = None
+            doc = body.get("doc")
+            graph_id = str(body.get("graph_id") or "").strip() or None
+            if doc is not None:
+                try:
+                    container, warnings = api.load_container(doc)
+                except Exception as exc:               # noqa: BLE001
+                    self._fail(400, f"the 'doc' is not a readable em.json: {exc}")
+                    return None
+                for w in warnings:
+                    sys.stderr.write(f"  [bridge] warning: {w}\n")
+                host = (container.graphs.get(graph_id) if graph_id
+                        else next(iter(container.graphs.values()), None))
+                if host is None:
+                    self._fail(400,
+                               f"no graph {graph_id!r} in this container"
+                               if graph_id else
+                               "this container has no graph to apply onto")
+                    return None
+            elif attach_only:
+                # Refused rather than silently downgraded: attach-only against a
+                # graph that was not sent would skip EVERY row and report a
+                # cheerful ok over an empty result.
+                self._fail(400, "attach_only needs the host graph — send the "
+                                "current 'doc' (and a 'graph_id' when the "
+                                "container holds more than one)")
+                return None
+
+            if attach_only and "enrich_only" not in inspect.signature(
+                    api.mapping_apply).parameters:
+                self._fail(501, "attaching a table to an existing graph needs a "
+                                "newer s3dgraphy (api.mapping_apply has no "
+                                "enrich_only). Point the bridge at a newer "
+                                "checkout with --s3dgraphy.")
+                return None
+
+            before_nodes = ({n.node_id for n in host.nodes} if host is not None
+                            else set())
+            before_edges = ({e.edge_id for e in host.edges} if host is not None
+                            else set())
+            extra = {"enrich_only": True} if attach_only else {}
+            injector = str(body.get("injector") or "").strip()
+            if injector:
+                extra["injector"] = injector
+            report = api.mapping_apply(mapping, path, mode=mode, graph=host,
+                                       mapping_name=body.get("mapping_name"),
+                                       **extra)
             graph = report.pop("graph", None)
             out = {"ok": bool(report.get("ok")), "report": report}
             if graph is not None and report.get("ok"):
-                out["graph"] = api.graph_to_emjson(graph)
+                document = api.graph_to_emjson(graph)
+                if host is not None:
+                    # THE DELTA. The caller asked to add to a graph it is holding
+                    # in memory; handing it the whole graph back would be handing
+                    # it its own document to merge with itself.
+                    g = document.get("graph") or {}
+                    g["nodes"] = [n for n in (g.get("nodes") or [])
+                                  if n.get("id") not in before_nodes]
+                    g["edges"] = [e for e in (g.get("edges") or [])
+                                  if e.get("id") not in before_edges]
+                    out["delta"] = True
+                    out["graph_id"] = str(getattr(host, "graph_id", "") or "")
+                out["graph"] = document
             return out
 
         def _mapping_save(self, body):

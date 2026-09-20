@@ -213,7 +213,9 @@ import {
   unreadWarnings,
 } from "./stratiminer";
 import { EMTree, renderEMTree, slotLabel } from "./emtree";
-import type { EMTreeHandlers, SlotViewState } from "./emtree";
+import type {
+  AuxFileType, AuxiliaryFile, AuxMapReport, EMTreeHandlers, SlotViewState,
+} from "./emtree";
 import {
   coverage,
   getLocale,
@@ -6289,6 +6291,15 @@ async function mapAux(auxId: string): Promise<void> {
     await mapResourceCollection(f, auxId);
     return;
   }
+  // IMPMAP · a MAPPED SOURCE goes through /mapping-apply instead, because its
+  // mapping is a file beside the dataset rather than a name in the registry —
+  // which is what every partner's descriptor looks like. The five types above
+  // keep /import-em-data: that endpoint is in use, and the two ways in converge
+  // here, at the routing, not by breaking one of them.
+  if (f.fileType === "mapped_source") {
+    await mapMappedSource(f, auxId);
+    return;
+  }
   if (
     f.fileType !== "emdb_xlsx" &&
     f.fileType !== "pyarchinit" &&
@@ -6378,6 +6389,350 @@ async function mapResourceCollection(
         `must be running to scan a resource folder.`,
     );
   }
+}
+
+/**
+ * IMPMAP · map a MAPPED SOURCE onto THIS graph — the second of the two modes.
+ *
+ * The other five aux types are shapes somebody agreed on once; this one is any
+ * table or XML plus the descriptor that says how to read it, which is how a
+ * partner's dataset actually arrives. It goes through `/mapping-apply` and not
+ * `/import-em-data` because only that route takes a mapping FILE and, since this
+ * round, a host graph to land on.
+ *
+ * Two things make it the attach mode and not a second import:
+ *
+ *  * `attach_only` — a row whose key is not in this graph creates NOTHING. The
+ *    stratigraphy here is authoritative and the table enriches it; without the
+ *    flag a typo in the key column excavates a unit (measured: 620 nodes, one
+ *    bad row, 624 nodes, no warning);
+ *  * the answer is a DELTA, so it enters through the same volatile path as every
+ *    other auxiliary (`store.mapVolatile`) and the existing volatile → bake →
+ *    unmap cycle works on it without a second concept.
+ *
+ * And the keys that matched nothing are kept on the row. A count in a toast is
+ * not an answer to "which ones?" ten minutes later.
+ */
+async function mapMappedSource(f: AuxiliaryFile, auxId: string): Promise<void> {
+  if (!store) return;
+  const mappingPath = String((f.options ?? {}).mappingPath ?? "").trim();
+  const mappingName = String((f.options ?? {}).mappingName ?? "").trim();
+  if (!mappingPath && !mappingName) {
+    toast(t("impmap.needMapping"));
+    return;
+  }
+  toast(t("impmap.mapping", { name: f.name }));
+  try {
+    const answer = await applyMapping({
+      path: f.locator,
+      ...(mappingPath ? { mapping_path: mappingPath }
+                      : { mapping_name: mappingName }),
+      mode: "volatile",
+      attach_only: true,
+      // the host graph travels in the body: the bridge holds no documents, so
+      // "this graph" is said by sending it
+      doc: store.doc,
+      graph_id: String(
+        (store.doc.graph as Record<string, unknown>).graph_id ?? "",
+      ),
+      injector: auxId,
+    });
+    if (!answer) return;
+    const report = auxReportOf(answer.report);
+    const g = answer.graph?.graph;
+    const added = g && Array.isArray(g.nodes)
+      ? store.mapVolatile(auxId, g.nodes, g.edges ?? [])
+      : 0;
+    f.mapped = true;
+    f.baked = false;
+    f.report = report;
+    refreshEMTree();
+    draw();
+    toast(report.unmatchedCount
+      ? t("impmap.attachedWithUnmatched", {
+          name: f.name, added: String(added),
+          unmatched: String(report.unmatchedCount) })
+      : t("impmap.attached", { name: f.name, added: String(added) }));
+  } catch (e) {
+    toast(t("impmap.failed",
+            { detail: e instanceof Error ? e.message : String(e) }));
+  }
+}
+
+
+// ── IMPMAP · «Import with a mapping», the ONE way in ────────────────────────
+//
+// There are two ways a legacy dataset becomes a graph, and until this round each
+// lived in a different part of the interface, incompatible with the other:
+//
+//  * **the table brings the stratigraphy.** Relations in the columns; the graph
+//    is born out of the dataset. Only structured databases can do it (DANA, UA
+//    Ilici, pyArchInit). One shot — it is not repeated;
+//  * **the graph brings the stratigraphy, the table brings the rest.** Far more
+//    common: there are no relations in the table at all. The sequence is drawn
+//    here, and an external table is attached to it, mapped, and re-read whenever
+//    it changes.
+//
+// The first lived inside the mapping EDITOR (which could only ever make a new
+// graph), the second inside the auxiliary-files list (which could only take five
+// hard-coded types and a registry name). So the ordinary case — a partner's csv
+// with the descriptor written beside it — fitted neither.
+//
+// This dialog asks the three questions that actually distinguish them, and
+// nothing else: WHAT to read, HOW to read it, and WHERE it lands. The target is
+// the only real choice, and it is two radio buttons rather than two menu items,
+// because it is one act performed on two different things.
+function openImportWithMapping(): void {
+  const slot = emtree.active();
+  const modal = document.createElement("div");
+  modal.className = "modal";
+  const card = document.createElement("div");
+  card.className = "modal-card narrow";
+  card.innerHTML = `
+    <div class="modal-head"><span>${escapeHtml(t("impmap.title"))}</span></div>
+    <div class="modal-body impmap">
+      <p class="impmap-intro">${escapeHtml(t("impmap.intro"))}</p>
+      <label class="impmap-field"><span>${escapeHtml(t("impmap.source"))}</span>
+        <span class="impmap-row">
+          <input id="impmap-source" type="text" placeholder="${escapeHtml(t("impmap.sourceHint"))}" />
+          <button id="impmap-pick-source" type="button">${escapeHtml(t("impmap.choose"))}</button>
+        </span>
+      </label>
+      <fieldset class="impmap-field">
+        <legend>${escapeHtml(t("impmap.mapping"))}</legend>
+        <label class="impmap-inline">
+          <input type="radio" name="impmap-mapping" value="file" checked />
+          <span>${escapeHtml(t("impmap.mappingFile"))}</span>
+        </label>
+        <span class="impmap-row">
+          <input id="impmap-mapping-path" type="text" placeholder="${escapeHtml(t("impmap.mappingFileHint"))}" />
+          <button id="impmap-pick-mapping" type="button">${escapeHtml(t("impmap.choose"))}</button>
+        </span>
+        <label class="impmap-inline">
+          <input type="radio" name="impmap-mapping" value="registry" />
+          <span>${escapeHtml(t("impmap.mappingRegistry"))}</span>
+        </label>
+        <input id="impmap-mapping-name" type="text" placeholder="${escapeHtml(t("impmap.mappingRegistryHint"))}" disabled />
+      </fieldset>
+      <fieldset class="impmap-field">
+        <legend>${escapeHtml(t("impmap.target"))}</legend>
+        <label class="impmap-inline">
+          <input type="radio" name="impmap-target" value="new" checked />
+          <span>${escapeHtml(t("impmap.targetNew"))}</span>
+        </label>
+        <p class="aux-hint">${escapeHtml(t("impmap.targetNewWhy"))}</p>
+        <label class="impmap-inline">
+          <input type="radio" name="impmap-target" value="this" ${slot ? "" : "disabled"} />
+          <span>${escapeHtml(t("impmap.targetThis"))}${slot ? ` — ${escapeHtml(slotLabel(slot))}` : ""}</span>
+        </label>
+        <p class="aux-hint">${escapeHtml(slot ? t("impmap.targetThisWhy") : t("impmap.noGraph"))}</p>
+      </fieldset>
+      <p id="impmap-note" class="aux-hint"></p>
+    </div>
+    <div class="modal-foot">
+      <button id="impmap-cancel" type="button">${escapeHtml(t("impmap.cancel"))}</button>
+      <button id="impmap-run" class="primary" type="button">${escapeHtml(t("impmap.run"))}</button>
+    </div>`;
+  modal.appendChild(card);
+  const q = <T extends HTMLElement>(sel: string): T =>
+    card.querySelector(sel) as T;
+  const sourceInput = q<HTMLInputElement>("#impmap-source");
+  const mappingPath = q<HTMLInputElement>("#impmap-mapping-path");
+  const mappingName = q<HTMLInputElement>("#impmap-mapping-name");
+  const note = q<HTMLElement>("#impmap-note");
+  const run = q<HTMLButtonElement>("#impmap-run");
+  const close = (): void => {
+    modal.remove();
+    document.removeEventListener("keydown", onKey, true);
+  };
+  const onKey = (e: KeyboardEvent): void => {
+    if (e.key === "Escape") {
+      e.stopPropagation();
+      close();
+    }
+  };
+  const mappingMode = (): string =>
+    (card.querySelector("input[name=impmap-mapping]:checked") as HTMLInputElement)
+      .value;
+  const targetMode = (): string =>
+    (card.querySelector("input[name=impmap-target]:checked") as HTMLInputElement)
+      .value;
+  for (const radio of card.querySelectorAll("input[name=impmap-mapping]")) {
+    radio.addEventListener("change", () => {
+      const byFile = mappingMode() === "file";
+      mappingPath.disabled = !byFile;
+      q<HTMLButtonElement>("#impmap-pick-mapping").disabled = !byFile;
+      mappingName.disabled = byFile;
+    });
+  }
+  q<HTMLButtonElement>("#impmap-pick-source").addEventListener("click", () => {
+    void pickPathInto(sourceInput, note, "source");
+  });
+  q<HTMLButtonElement>("#impmap-pick-mapping").addEventListener("click", () => {
+    void pickPathInto(mappingPath, note, "mapping");
+  });
+  q<HTMLButtonElement>("#impmap-cancel").addEventListener("click", close);
+  run.addEventListener("click", () => void (async () => {
+    const path = sourceInput.value.trim();
+    const byFile = mappingMode() === "file";
+    const mapping = (byFile ? mappingPath : mappingName).value.trim();
+    if (!path) {
+      note.textContent = t("impmap.needSource");
+      return;
+    }
+    if (!mapping) {
+      note.textContent = t("impmap.needMapping");
+      return;
+    }
+    run.disabled = true;
+    note.textContent = t("impmap.working");
+    const ok = await runImportWithMapping(
+      path, byFile ? { mapping_path: mapping } : { mapping_name: mapping },
+      targetMode() === "this");
+    run.disabled = false;
+    if (ok) close();
+    else note.textContent = t("impmap.seeToast");
+  })());
+  modal.addEventListener("click", (e) => {
+    if (e.target === modal) close();
+  });
+  document.addEventListener("keydown", onKey, true);
+  document.body.appendChild(modal);
+  sourceInput.focus();
+}
+
+/** A real PATH into a field: the native dialog on the desktop, and in a browser
+ *  the system dialog plus the bridge's staging — because `<input type=file>`
+ *  hands over bytes and withholds the location, and the bridge reads the file. */
+async function pickPathInto(
+  field: HTMLInputElement, note: HTMLElement, what: "source" | "mapping",
+): Promise<void> {
+  await ensureMappingCatalog();
+  const extensions = what === "mapping"
+    ? ["json"] : Object.keys(meState.extensions ?? {});
+  if (isTauri()) {
+    const picked = await pickSourceFile(extensions);
+    if (picked) field.value = picked;
+    return;
+  }
+  const input = document.createElement("input");
+  input.type = "file";
+  if (extensions.length) input.accept = extensions.map((e) => `.${e}`).join(",");
+  input.addEventListener("change", () => void (async () => {
+    const file = input.files?.[0];
+    if (!file) return;
+    note.textContent = t("me.staging", { name: file.name });
+    const path = await stageThroughBridge(file);
+    note.textContent = path ? t("impmap.staged", { name: file.name })
+                            : t("me.stageFailed", { name: file.name });
+    if (path) field.value = path;
+  })());
+  input.click();
+}
+
+/**
+ * Run the import against whichever target was chosen. Returns whether it worked.
+ *
+ * The two branches are deliberately NOT two implementations:
+ *
+ *  * **new graph** → `mode: "bake"`, no host, nothing to skip. The document that
+ *    comes back is adopted as a graph of the project, exactly as the mapping
+ *    editor's Apply has always done;
+ *  * **this graph** → an auxiliary ROW is registered on the slot and then mapped
+ *    through the ordinary `mapAux`. Not a shortcut: an attached table is a thing
+ *    with a life (unmap, re-map when the file changes, bake when it is agreed),
+ *    and that life already exists on the auxiliary list. A second concept beside
+ *    it would be a second thing to bake.
+ */
+async function runImportWithMapping(
+  path: string, mapping: Record<string, string>, onThisGraph: boolean,
+): Promise<boolean> {
+  const name = path.split(/[\\/]/).pop() || path;
+  if (onThisGraph) {
+    const slot = emtree.active();
+    if (!slot) {
+      toast(t("impmap.noGraph"));
+      return false;
+    }
+    const auxId = crypto.randomUUID();
+    slot.auxiliaryFiles.push({
+      id: auxId,
+      name,
+      kind: "local",
+      locator: path,
+      fileType: "mapped_source" as AuxFileType,
+      baked: false,
+      mapped: false,
+      expanded: true,   // opened on arrival: this is where the unmatched appear
+      options: {
+        mappingPath: mapping.mapping_path ?? "",
+        mappingName: mapping.mapping_name ?? "",
+      },
+    });
+    refreshEMTree();
+    await mapAux(auxId);
+    // `mapAux` reports its own outcome; it also leaves `mapped` false when the
+    // bridge refused, and an aux row that was never mapped is exactly what the
+    // user should be looking at to fix the mapping and try again.
+    return true;
+  }
+  toast(t("impmap.mappingVerb", { name }));
+  try {
+    const answer = await applyMapping({ path, ...mapping, mode: "bake" });
+    const doc = answer?.graph;
+    if (!doc) throw new Error("no graph in response");
+    const report = auxReportOf(answer?.report);
+    loadDocument(doc, name, null);
+    refreshEMTree();
+    draw();
+    toast(t("impmap.imported", { name, nodes: String(report.nodesAdded),
+                                 edges: String(report.edgesAdded),
+                                 rows: String(report.rows) }));
+    return true;
+  } catch (e) {
+    toast(t("impmap.failed",
+            { detail: e instanceof Error ? e.message : String(e) }));
+    return false;
+  }
+}
+
+/** The bridge's report, in the shape the aux row keeps. */
+function auxReportOf(report: unknown): AuxMapReport {
+  const r = (report ?? {}) as Record<string, unknown>;
+  const unmatched = Array.isArray(r.unmatched)
+    ? (r.unmatched as unknown[]).map(String) : [];
+  return {
+    rows: Number(r.rows ?? 0),
+    nodesAdded: Number(r.nodes_added ?? 0),
+    edgesAdded: Number(r.edges_added ?? 0),
+    unmatched,
+    // the COUNT comes from the library, not from the list's length: the list is
+    // what came back, and a future cap on it there must not make the count lie
+    unmatchedCount: Number(r.unmatched_count ?? unmatched.length),
+  };
+}
+
+/** POST /mapping-apply. One place, because the import dialog and the aux row
+ *  are the same request with a different target. */
+async function applyMapping(
+  body: Record<string, unknown>,
+): Promise<{ report?: unknown; graph?: EmDocument; delta?: boolean } | null> {
+  const res = await fetch(`${await bridgeUrl()}/mapping-apply`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const answer = (await res.json().catch(() => null)) as
+    { ok?: boolean; error?: string; report?: { errors?: string[] };
+      graph?: EmDocument; delta?: boolean } | null;
+  if (!res.ok || !answer?.ok) {
+    // the bridge's own sentence when it has one: "no such file: …" says more
+    // than "bridge 404", and the mapping's own errors say more than either
+    const errors = answer?.report?.errors ?? [];
+    throw new Error(errors.length ? errors.join("; ")
+                                  : (answer?.error ?? `bridge ${res.status}`));
+  }
+  return answer;
 }
 document
   .getElementById("btn-new")!
@@ -6889,6 +7244,13 @@ async function importGraphmlText(text: string, srcName: string): Promise<void> {
     toast(BRIDGE_UNREACHABLE);
   }
 }
+
+// IMPMAP · the single entry. Both modes of loading a legacy dataset go through
+// this dialog; the mapping editor keeps authoring and hands the attaching over,
+// so the choice of target is asked in ONE place.
+document
+  .getElementById("btn-import-mapping")!
+  .addEventListener("click", () => openImportWithMapping());
 
 document
   .getElementById("btn-import-graphml")!

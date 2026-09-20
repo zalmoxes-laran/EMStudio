@@ -70,7 +70,15 @@ export type AuxFileType =
   | "pyarchinit"
   | "dosco"
   | "source_list"
-  | "resource_collection";
+  | "resource_collection"
+  // IMPMAP (2026-09-19) · the SIXTH, and the only one that is not a kind of
+  // file: it is a file plus the DESCRIPTOR that says how to read it. The five
+  // above each stand for a shape somebody agreed on once (an EMdb workbook, a
+  // pyArchInit database); a partner's dataset has no such shape, it has a
+  // mapping written beside it. Adding it as a type rather than widening the
+  // hard-coded gate in `mapAux` is what keeps "which sources can be attached"
+  // a list of types and not a condition in a function.
+  | "mapped_source";
 
 /** The five types with their labels and what they are for (shown in the UI). */
 export const AUX_FILE_TYPES: {
@@ -107,6 +115,11 @@ export const AUX_FILE_TYPES: {
     hint: "Folder of multimodal resources (images, documents) linked to nodes.",
     folder: true,
   },
+  {
+    value: "mapped_source",
+    label: "Mapped source",
+    hint: "Any table or XML, read through a mapping file chosen on disk (or a registry mapping): the descriptor that lives beside the dataset.",
+  },
 ];
 
 export interface AuxiliaryFile {
@@ -139,8 +152,29 @@ export interface AuxiliaryFile {
    * the mapping's shape before the mapping exists.
    */
   options?: Record<string, unknown>;
+  /**
+   * IMPMAP · what the last map actually did — kept because ONE of its numbers
+   * has no other way of being seen.
+   *
+   * `unmatched` is the list of key values that matched no node in this graph. It
+   * only exists when the source was attached (the graph is authoritative, the
+   * table enriches), and it is the difference between a typo in the key column
+   * and a unit still to be drawn. A count in a toast that has already faded is
+   * not an answer to "which ones?", so the list stays on the row.
+   */
+  report?: AuxMapReport;
   /** open in the detail panel (view state, per session) */
   expanded?: boolean;
+}
+
+/** What a map returned: the counts, and the keys that found nothing. */
+export interface AuxMapReport {
+  rows: number;
+  nodesAdded: number;
+  edgesAdded: number;
+  /** the key values that matched no node — empty unless the source was attached */
+  unmatched: string[];
+  unmatchedCount: number;
 }
 
 /**
@@ -491,6 +525,16 @@ const AUX_OPTIONS: Record<AuxFileType, AuxOptSpec[]> = {
     { key: "preserve_web_urls", label: "Preserve web URLs", kind: "bool" },
   ],
   source_list: [],
+  // IMPMAP · a mapped source carries WHICH mapping, and that is its whole
+  // configuration. Either a file (the ordinary case: the descriptor sits next to
+  // the dataset) or a registry name, never both — the import dialog writes one of
+  // the two and the bridge reads whichever it finds.
+  mapped_source: [
+    { key: "mappingPath", label: "Mapping file", kind: "text",
+      placeholder: "a path to a *_mapping.json" },
+    { key: "mappingName", label: "…or a registry mapping", kind: "text",
+      placeholder: "a name the s3Dgraphy registry knows" },
+  ],
   resource_collection: [
     { key: "thumbs_path", label: "Custom thumbnails folder", kind: "text" },
     { key: "scan_mode", label: "Scan mode", kind: "select", options: ["by_filename", "manual"] },
@@ -532,7 +576,46 @@ function auxMapNote(fileType: AuxFileType): string {
       return "Harvests a documentation folder into document nodes — needs a bridge endpoint (flagged).";
     case "resource_collection":
       return "Scans a folder of resources (bridge /scan-resources) and links them — attach-as-volatile needs the endpoint wired (flagged).";
+    case "mapped_source":
+      return "Maps via the bridge (/mapping-apply) with the mapping named below, ONTO this graph: the units already here win, and a row whose key is not in the graph is listed as unmatched instead of creating a unit.";
   }
+}
+
+/**
+ * IMPMAP · what the last map did, and above all WHAT IT DID NOT MATCH.
+ *
+ * Silence is the bug this renders away. Attaching a table to a graph skips every
+ * row whose key is not in the graph — which is right, and which is also exactly
+ * how a typo in the key column becomes invisible. The count goes in the toast;
+ * the KEYS go here, where they can still be read an hour later.
+ *
+ * Nothing is drawn before a map: a row that has never been mapped has no report,
+ * and an empty box saying "0 unmatched" would be a claim about a measurement
+ * that never happened.
+ */
+function auxReport(f: AuxiliaryFile): string {
+  const r = f.report;
+  if (!r) return "";
+  const counts = `${r.rows} row(s) read · ${r.nodesAdded} node(s) · ` +
+    `${r.edgesAdded} edge(s)`;
+  if (!r.unmatchedCount) {
+    return `<p class="aux-hint aux-report">${esc(counts)} — every key found its node.</p>`;
+  }
+  // …capped, because a mismatched key COLUMN unmatches every row, and a panel
+  // listing two thousand of them is a panel nobody scrolls to the end of. The
+  // count above it is the whole number either way.
+  const shown = r.unmatched.slice(0, 40);
+  const rest = r.unmatchedCount - shown.length;
+  return `
+    <div class="aux-report aux-unmatched">
+      <p class="aux-hint">${esc(counts)}</p>
+      <p><b>${r.unmatchedCount}</b> key(s) matched no node in this graph —
+         nothing was created for them:</p>
+      <p class="aux-keys">${shown.map((k) => `<code>${esc(k)}</code>`).join(" ")}${
+        rest > 0 ? ` <span class="aux-hint">…and ${rest} more</span>` : ""}</p>
+      <p class="aux-hint">Either the key column has a typo, or those units are
+         not drawn in this graph yet.</p>
+    </div>`;
 }
 
 /** The per-file detail panel: type, locator, per-type options, map/bake/unmap. */
@@ -557,6 +640,7 @@ function auxDetail(f: AuxiliaryFile): string {
       </label>
       ${opts.map((o) => auxOptionField(f, o)).join("")}
       <p class="aux-hint">${esc(auxMapNote(f.fileType))}</p>
+      ${auxReport(f)}
       <div class="aux-actions">
         ${f.mapped
           ? `<button data-aux-unmap="${esc(f.id)}"

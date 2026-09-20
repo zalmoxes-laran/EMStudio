@@ -2602,6 +2602,102 @@ body.sync-active #footer-brand #em-version {
   color: var(--text-faint);
 }
 
+/* IMPMAP · the import dialog. Three questions stacked, each with the reason
+   under it: the target is the only real choice and it is the one that used to be
+   made by picking a different part of the interface. */
+.impmap-intro {
+  margin: 0 0 10px;
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+/* …and stated at the same specificity as `.modal-card.narrow label`, which lays
+   its labels out as `label … control` on one line with the two pushed apart.
+   Right for a settings row, wrong for a stacked form: it put every caption at
+   the far right of the card. */
+.modal-card.narrow .impmap-field,
+.impmap-field {
+  display: block;
+  margin: 0 0 12px;
+  border: 0;
+  padding: 0;
+  font-size: 12px;
+}
+
+.modal-card.narrow .impmap-inline,
+.modal-card.narrow .impmap-row {
+  justify-content: flex-start;
+  margin: 0;
+}
+
+.impmap-field legend,
+.impmap-field > span:first-child {
+  display: block;
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+
+.impmap-row {
+  display: flex;
+  gap: 6px;
+}
+
+.impmap-row input[type="text"] {
+  flex: 1;
+  min-width: 0;
+}
+
+.impmap-field input[type="text"] {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  padding: 3px 6px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.impmap-inline {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 0 2px;
+  font-weight: 500;
+}
+
+.impmap-inline input {
+  margin: 0;
+}
+
+.impmap .aux-hint {
+  margin: 0 0 4px 20px;
+}
+
+/* IMPMAP · the map's own report, and the part that must not be quiet: the keys
+   that matched no node. Warning-coloured because it IS one — a row skipped is a
+   line of somebody's spreadsheet that did not arrive. */
+.aux-report {
+  margin: 4px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.aux-report p {
+  margin: 0 0 2px;
+}
+
+.aux-unmatched {
+  border-left: 2px solid #ffb84d;
+  padding: 4px 0 4px 7px;
+}
+
+.aux-keys code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--bg-sunken);
+  border-radius: 3px;
+  padding: 0 3px;
+  margin-right: 2px;
+}
+
 .aux-actions {
   display: flex;
   align-items: center;

@@ -991,6 +991,17 @@ function outputBox(state: MappingEditorState, h: MappingEditorHandlers,
   acts.append(download, save);
   section.appendChild(acts);
 
+  // IMPMAP · Apply is a PREVIEW, and says so. It has only ever been able to make
+  // a new graph — the result is adopted as a new slot — and for a while that was
+  // the only way to apply a mapping at all, which is how "apply" came to sound
+  // like "attach". Attaching a table to the graph you are working on now has its
+  // own entry, and the choice of target is asked THERE, once: two target pickers
+  // in two panels would be two answers to the same question.
+  const where = document.createElement("p");
+  where.className = "me-muted";
+  where.textContent = t("impmap.editorNote");
+  section.appendChild(where);
+
   if (state.applied) {
     const report = document.createElement("p");
     report.className = "me-muted";
