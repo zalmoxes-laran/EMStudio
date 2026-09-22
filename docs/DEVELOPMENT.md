@@ -367,7 +367,7 @@ a certificate installed on the machine — not something a workflow can carry.
 
 ### The manual travels with the release
 
-`EMStudio-doc` is a separate repository (`zalmoxes-laran/EMStudio-doc`, Sphinx +
+`EMStudio-doc` is a separate repository (`ExtendedMatrix/EMStudio-doc`, Sphinx +
 Read the Docs). The release checks it out and builds it with `-W`, so a broken
 reference fails the release, and passes the app's version as a Sphinx override
 (`-D version=… -D release=…`) so the built manual carries the version of the build

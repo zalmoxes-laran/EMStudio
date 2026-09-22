@@ -34,11 +34,50 @@
 // the rule needs — the `on:` keys, the job names, `uses: actions/checkout`, and
 // the `with:` block under it.
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { readdir, readFile } from "node:fs/promises";
 
 const DIR = new URL("../../.github/workflows/", import.meta.url).pathname;
+
+//: ── QUESTO REPOSITORY, LETTO E NON SCRITTO ─────────────────────────────────
+//:
+//: Qui c'era `const SELF = "<vecchio-proprietario>/EMStudio"`, e il 22
+//: settembre 2026 era falso da un giorno. La forma del guasto merita il
+//: commento: è lo script che VALIDA i workflow, e custodiva esso stesso il
+//: nome sbagliato — la terza volta in questo progetto che il file il cui
+//: mestiere è tenere il fatto giusto tiene quello vecchio, dopo
+//: `x-sibling-repos` e `.env.dev.example`.
+//:
+//: Due sorgenti, in ordine di autorità:
+//:   · `GITHUB_REPOSITORY`, dentro Actions: è il contesto del run, e nessuna
+//:     stringa lo può contraddire;
+//:   · `git remote get-url origin`, fuori: l'indirizzo a cui questo checkout
+//:     parla davvero.
+//: Se non risponde nessuno dei due, si FERMA. Un valore di ripiego renderebbe
+//: `isOurs` una moneta truccata: ogni checkout sembrerebbe di un altro repo,
+//: e il controllo passerebbe sempre — cioè si spegnerebbe da solo.
+function self() {
+  const fromCi = (process.env.GITHUB_REPOSITORY || "").trim();
+  if (fromCi) return fromCi;
+  let remote = "";
+  try {
+    remote = execFileSync("git", ["remote", "get-url", "origin"], {
+      cwd: new URL("../../", import.meta.url).pathname,
+      encoding: "utf8",
+    }).trim();
+  } catch {
+    remote = "";
+  }
+  const m = remote.match(/github\.com[/:]([^/]+)\/(.+?)(?:\.git)?$/);
+  assert.ok(m, "cannot tell which repository this is: no GITHUB_REPOSITORY and " +
+               "no usable `git remote get-url origin`. Refusing to guess — a " +
+               "fallback here would make every checkout look like somebody " +
+               "else's and the check would pass for ever.");
+  return `${m[1]}/${m[2]}`;
+}
+
 //: this repository, in the `owner/name` form a `repository:` key uses
-const SELF = "zalmoxes-laran/EMStudio";
+const SELF = self();
 
 let checks = 0;
 const ok = (cond, what) => {
@@ -64,6 +103,35 @@ function isReusable(text) {
     if (indentOf(line) === 2 && /^workflow_call:/.test(line.trim())) return true;
   }
   return false;
+}
+
+/** Le chiavi del blocco `on:`, LETTE e non cercate.
+ *
+ *  Un `grep schedule:` qui avrebbe torto due volte, e sono entrambe vere in
+ *  questo repo: `nightly.yml` porta un `schedule:` COMMENTATO (con accanto il
+ *  perché è spento, che è la parte che vale), e la sua testata nomina
+ *  `workflow_call` in prosa. Si guarda il blocco, all'indentazione giusta,
+ *  saltando i commenti — come fa `isReusable`, che esiste per la stessa
+ *  ragione. */
+function onKeys(text) {
+  const lines = text.split("\n");
+  const start = lines.findIndex((l) => /^on:\s*$/.test(l));
+  if (start < 0) {
+    const inline = lines.find((l) => /^on:/.test(l)) || "";
+    return inline.replace(/^on:\s*/, "").replace(/[[\]]/g, "")
+                 .split(",").map((s) => s.trim()).filter(Boolean);
+  }
+  const keys = [];
+  for (let i = start + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.trim() || line.trimStart().startsWith("#")) continue;
+    if (indentOf(line) === 0) break;
+    if (indentOf(line) === 2) {
+      const m = line.trim().match(/^([A-Za-z_]+):/);
+      if (m) keys.push(m[1]);
+    }
+  }
+  return keys;
 }
 
 /** Every `actions/checkout` step, with the job it is in and the `with:` keys it
@@ -156,6 +224,35 @@ ok(subject > 0, "…and at least one of its checkouts is of this repository");
       "nightly.yml CALLS the reusable workflow and is not one: its bare " +
         "checkout of the default branch is correct, and flagging it would " +
         "teach people to ignore this check");
+  }
+}
+
+// ── LA NOTTURNA HA UN BOTTONE E NON UN OROLOGIO ─────────────────────────────
+//
+// Decisione di E.D., 2 settembre 2026: il canale dev non esce più da solo. Il
+// file RESTA — `nightly.yml` è `./em.sh devrel` su un runner pulito, cioè il
+// cancello s3dgraphy e la logica `--if-changed`, che valgono a prescindere
+// dall'orario — ma lo `schedule:` è spento.
+//
+// Perché è un recinto e non un commento: uno `schedule:` è la riga che più
+// facilmente qualcuno riaccende «per provare» e poi dimentica, e una release
+// che parte da sola è una release che qualcuno deve sorvegliare. E dall'altro
+// lato: se sparisse anche `workflow_dispatch`, il file diventerebbe un
+// workflow che non può partire in nessun modo — verde, presente, inerte.
+// Rosso in entrambi i versi.
+{
+  const nightly = await readFile(DIR + "nightly.yml", "utf8").catch(() => "");
+  if (nightly) {
+    const keys = onKeys(nightly);
+    ok(!keys.includes("schedule"),
+      "nightly.yml ha di nuovo uno `schedule:` ATTIVO. Il canale dev si " +
+        "pubblica a mano (decisione di E.D., 2 set 2026): il bottone resta, " +
+        "l'orologio no. Se la decisione è cambiata, cambia anche questo " +
+        "recinto — e scrivi accanto chi l'ha cambiata.");
+    ok(keys.includes("workflow_dispatch"),
+      "nightly.yml non ha `workflow_dispatch`: senza schedule e senza " +
+        "bottone è un workflow che non può partire in nessun modo.");
+    ok(keys.length > 0, "nightly.yml ha un blocco `on:` leggibile");
   }
 }
 

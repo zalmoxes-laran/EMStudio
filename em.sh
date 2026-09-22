@@ -52,7 +52,37 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FE="$ROOT/frontend"
 REQ="$ROOT/tools/requirements.txt"
-REPO_URL="https://github.com/zalmoxes-laran/EMStudio"
+# ── DOVE STA QUESTO REPOSITORY: SI LEGGE, NON SI SCRIVE ──────────────────────
+#
+# Qui c'era l'URL battuto a mano, ed è sopravvissuto al trasferimento del
+# 22 settembre 2026 — insieme ad altre otto occorrenze del vecchio
+# proprietario. Una stringa non segue un trasloco; un `git remote` sì, perché è
+# l'indirizzo a cui questo checkout PARLA davvero. Su un fork stampa il fork,
+# che è la cosa giusta: i link che `devrel` mostra a fine corsa («guarda le
+# Actions», «ecco la release») devono puntare dove il tag è appena andato.
+#
+# Il ripiego è `Cargo.toml`, che è il posto dove un URL di repository è un
+# CAMPO e non un appunto (cargo lo pubblica). `frontend/scripts/check-owner.mjs`
+# verifica che i due concordino, quindi il ripiego non può marcire in silenzio.
+repo_url() {
+  local u=""
+  if command -v git >/dev/null 2>&1 && git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+    u="$(git -C "$ROOT" remote get-url origin 2>/dev/null || true)"
+  fi
+  if [[ -z "$u" ]]; then
+    #: niente git (un tarball, un container): il campo dichiarato
+    u="$(sed -n 's/^repository *= *"\(.*\)".*/\1/p' "$ROOT/Cargo.toml" | head -1)"
+  fi
+  #: `git@github.com:owner/name.git` e `https://…/owner/name.git` alla stessa forma
+  u="${u%.git}"
+  u="${u/git@github.com:/https://github.com/}"
+  printf '%s' "$u"
+}
+REPO_URL="$(repo_url)"
+#: e il proprietario da solo, che è ciò che serve per nominare i repo FRATELLI
+#: (il manuale) senza scriverne il proprietario una seconda volta
+REPO_OWNER="$(printf '%s' "$REPO_URL" | sed -n 's#.*github\.com/\([^/]*\)/.*#\1#p')"
+DOC_URL="https://github.com/${REPO_OWNER:-ExtendedMatrix}/EMStudio-doc"
 
 log() { printf '\033[1;36m▸ %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m⚠  %s\033[0m\n' "$*" >&2; }
@@ -576,7 +606,8 @@ sidecar build has no version to freeze"
 
 # ── the manual (EMStudio-doc), built as a check ──────────────────────────────
 #
-# The manual lives in its OWN repository (github.com/zalmoxes-laran/EMStudio-doc),
+# The manual lives in its OWN repository ($DOC_URL — the owner comes from this
+# checkout's remote, see `repo_url` at the top),
 # and this touches it as little as a thing can be touched: it is checked out and
 # BUILT, with the version passed as a Sphinx override (`-D version=… -D release=…`).
 # So a release verifies that the documentation still compiles and that it carries
@@ -587,7 +618,7 @@ do_doc() {
   local version
   version="$(app_version)"
   [[ -d "$doc/docs" ]] || die "no manual at $doc (pass the path: ./em.sh doc \
-/path/to/EMStudio-doc, or clone github.com/zalmoxes-laran/EMStudio-doc)"
+/path/to/EMStudio-doc, or clone $DOC_URL)"
   local py="python3"
   [[ -x "$doc/.venv/bin/python" ]] && py="$doc/.venv/bin/python"
   log "build the manual as a check (-W) at version $version"

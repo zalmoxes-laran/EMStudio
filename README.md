@@ -270,7 +270,7 @@ is excluded for architectural reasons (see ARCHITECTURE §4.1).
 ## Ecosystem
 
 [Extended Matrix](https://extendedmatrix.org) ·
-[s3Dgraphy](https://github.com/zalmoxes-laran/s3Dgraphy) ·
+[s3Dgraphy](https://github.com/ExtendedMatrix/s3Dgraphy) ·
 Heriverse · EM tools for Blender · developed within the
 **StratiGraph** project (Horizon Europe GA 101232855) and the CNR ISPC
 Extended Matrix framework.

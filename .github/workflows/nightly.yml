@@ -16,7 +16,9 @@
 #    desktop app freezes that wheel into its sidecar, so an unpublished pin makes
 #    a build nobody can reproduce. (E.D.'s rule, and it is an order: publish the
 #    s3dgraphy dev first, then release EMStudio.)
-# 3. **this repository.** A fork should not tag and push on a schedule.
+# 3. ~~**this repository.**~~ Era una guardia contro un fork che taggasse
+#    a orario. È caduta con l'orologio — e la sua storia sta sul job
+#    `prepare`, perché è lì che ha fatto danno.
 #
 # ── why it CALLS the release workflow instead of just pushing a tag ───────────
 #
@@ -63,7 +65,24 @@ permissions:
 
 jobs:
   prepare:
-    if: github.repository == 'zalmoxes-laran/EMStudio'
+    # ── LA GUARDIA È VIA, E VIA CON L'OROLOGIO CHE LA GIUSTIFICAVA ──────────
+    #
+    # C'era `if: github.repository == '<vecchio-proprietario>/EMStudio'`, e la sua
+    # ragione è scritta al punto 3 della testata: «A fork should not tag and
+    # push on a schedule». Con lo `schedule:` spento quella frase non ha più
+    # soggetto — su un fork il bottone lo preme solo chi ha il fork, e taggare
+    # il proprio fork è affar suo.
+    #
+    # Ma il motivo per cui è via ADESSO è peggiore, ed è misurato: dopo il
+    # trasferimento in `ExtendedMatrix` quella condizione è FALSA. Il job
+    # veniva saltato, `build` aspettava `prepare` e veniva saltato a sua volta,
+    # e il workflow finiva VERDE avendo fatto niente. Un bottone che non fa
+    # niente e non lo dice è peggio di un bottone che manca.
+    #
+    # E nota la forma del guasto: era un LETTERALE con dentro il proprietario.
+    # Se una guardia dovesse tornare, va scritta con `github.repository_owner`
+    # confrontato con qualcosa che il repo dichiara — mai con una stringa
+    # battuta a mano, che il giorno del trasloco nessuno cerca.
     runs-on: ubuntu-latest
     outputs:
       built: ${{ steps.devrel.outputs.built }}

@@ -180,7 +180,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          repository: zalmoxes-laran/EMStudio-doc
+          # IL PROPRIETARIO SI LEGGE, NON SI SCRIVE. Qui c'era
+          # `<vecchio-proprietario>/EMStudio-doc`, ed è sopravvissuta al
+          # trasferimento del 22 settembre 2026 perché una stringa battuta a
+          # mano non segue niente. Il manuale sta nella STESSA organizzazione
+          # dell'applicazione — è la ragione per cui si è spostato con lei —
+          # quindi il proprietario è quello di questo run.
+          repository: ${{ github.repository_owner }}/EMStudio-doc
           # The manual lives on the versioned branch (1.6), like the other EM
           # docs — `main` is the older initial-scaffold state and has no
           # docs/requirements.txt yet. Track the app's line here.
