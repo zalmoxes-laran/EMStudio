@@ -61,6 +61,14 @@ else male "non risponde su /health"; docker logs "$c" 2>&1 | tail -10 | sed 's/^
 # 3 · due pagine DIVERSE, riconosciute dal loro contenuto e non dallo stato
 editor="$(curl -fsS -m 5 "http://127.0.0.1:$PORTA/" || true)"
 lettore="$(curl -fsS -m 5 "http://127.0.0.1:$PORTA/read/" || true)"
+#: e la sonda: il CORPO, non il codice. Un /health che serve l'editor con un 200
+#: è una sonda che non può diventare rossa — misurato sulla prima stesura del
+#: Caddyfile di questa immagine, dove l'ordine dei direttivi faceva vincere il
+#: catch-all.
+corpo="$(curl -fsS -m 5 "http://127.0.0.1:$PORTA/health" || true)"
+[ "$corpo" = "ok" ] && ok "/health risponde col suo corpo («ok»), non con una pagina" \
+                    || male "/health risponde «$(printf %s "$corpo" | head -c 40)…», non «ok»"
+
 [ -n "$editor" ]  && ok "/ risponde con una pagina ($(printf %s "$editor" | wc -c | tr -d ' ') byte)" || male "/ non risponde"
 [ -n "$lettore" ] && ok "/read/ risponde con una pagina ($(printf %s "$lettore" | wc -c | tr -d ' ') byte)" || male "/read/ non risponde"
 if [ -n "$editor" ] && [ -n "$lettore" ] && [ "$editor" != "$lettore" ]; then
@@ -83,7 +91,16 @@ else
   for r in $rif; do
     n=$((n+1))
     url="http://127.0.0.1:$PORTA/read/${r#./}"
-    curl -fsS -m 5 -o /dev/null "$url" || { persi=$((persi+1)); printf "      404 → %s\n" "$url"; }
+    #: NON basta il codice di stato, e l'ho misurato: con un `try_files` che
+    #: ricade sulla shell, un modulo mancante risponde 200 con dentro l'HTML
+    #: della pagina. Il browser lo rifiuta per il MIME type e resta bianco;
+    #: `curl -f` lo dichiara a posto. Quindi si guarda anche COSA è arrivato.
+    ct="$(curl -s -m 5 -o /dev/null -w '%{http_code} %{content_type}' "$url")"
+    case "$ct" in
+      200*text/html*) persi=$((persi+1)); printf "      %s → %s  (è la SHELL, non l'asset)\n" "$ct" "$url" ;;
+      200*)           : ;;
+      *)              persi=$((persi+1)); printf "      %s → %s\n" "$ct" "$url" ;;
+    esac
   done
   [ "$persi" -eq 0 ] && ok "tutti i $n riferimenti del lettore rispondono 200" \
                      || male "$persi riferimenti su $n NON rispondono (pagina bianca)"

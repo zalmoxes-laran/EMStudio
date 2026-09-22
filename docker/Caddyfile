@@ -44,6 +44,11 @@
 		respond "ok" 200
 	}
 
+	# `/read` senza la barra è la stessa porta scritta a mano, e senza questo
+	# risponde 404: `handle_path` toglie il prefisso e quello che resta non è una
+	# directory. Un 308 invece di una spiegazione.
+	redir /read /read/ 308
+
 	# Il LETTORE alla sua porta. `handle_path` toglie /read, così i suoi
 	# `./assets/…` — che il browser risolve contro la DIRECTORY da cui è
 	# arrivata la shell — cadono sulla radice, dove stanno davvero.
