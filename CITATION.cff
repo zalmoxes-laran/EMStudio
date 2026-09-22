@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: EMStudio
+abstract: >-
+  The sovereign graph editor for the Extended Matrix: two views on the same
+  data — the EM swimlane matrix, with epochs as lanes and time flowing upward,
+  and the full knowledge graph with every relation visible. Web service and
+  desktop application from a single codebase.
+type: software
+authors:
+  - family-names: Demetrescu
+    given-names: Emanuel
+    email: emanuel.demetrescu@cnr.it
+    orcid: "https://orcid.org/0000-0002-5065-7970"
+    affiliation: "CNR-ISPC — Institute of Heritage Science, National Research Council of Italy"
+license: GPL-3.0-or-later
+version: 1.6.0
+repository-code: "https://github.com/zalmoxes-laran/EMStudio"
+keywords:
+  - Extended Matrix
+  - archaeology
+  - stratigraphy
+  - knowledge graph
+  - graph editor
+  - cultural heritage

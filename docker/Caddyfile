@@ -1,0 +1,64 @@
+# Il Caddyfile DI QUESTA IMMAGINE — non quello del nodo.
+#
+# Due porte d'ingresso, che sono le due che il nodo già serve
+# (`heriverse-ansible/role/templates/Caddyfile.j2:44,53`):
+#
+#   /            → index.html    l'editor   (nel nodo: /em/studio/)
+#   /read/       → reader.html   il lettore (nel nodo: /em/read/)
+#
+# Il prefisso pubblico NON è scritto qui, ed è la cosa importante: il Caddy del
+# nodo usa `handle_path`, che il prefisso lo toglie prima di inoltrare, e la
+# `base` di Vite in un build è `./` (`frontend/vite.config.ts:88`). Un prefisso
+# scritto dentro l'immagine sarebbe la terza copia di un fatto che sta già in
+# due posti, e quella che nessuno ricorda di aggiornare.
+#
+# ── NIENTE FALLBACK, E L'HO IMPARATO QUI DENTRO ──────────────────────────────
+#
+# La prima stesura di questo file aveva `try_files {path} /reader.html`, che è
+# il gesto automatico per una SPA. Misurato subito dopo, sull'immagine
+# costruita:
+#
+#   GET /read/assets/non-esiste.js   →  200  text/html
+#
+# cioè un modulo mancante risponde OK con dentro la pagina. Il browser lo
+# rifiuta per il MIME type e mostra una pagina bianca; `curl -f` lo dichiara a
+# posto. È la stessa forma che il Caddyfile del dev-stack racconta di aver
+# pagato tre giorni («what must NOT happen is a fallback answering 200 with some
+# HTML»), e non serviva nemmeno: né l'editor né il lettore fanno routing lato
+# client — il lettore riceve lo studio in `?study=`/`?emjson=`, non nel path.
+#
+# Quindi `file_server` con il suo `index` e basta: la directory serve la sua
+# pagina, e un file che non c'è risponde 404. Un guasto che sa dire di no.
+#
+# `/health` è un `handle` e non un `respond` sciolto per la stessa ragione,
+# trovata allo stesso modo: fra un `respond` e i `handle`, l'ordine dei
+# direttivi di Caddy faceva vincere il catch-all, e /health serviva l'EDITOR con
+# un 200. Una sonda che non può diventare rossa non è una sonda.
+
+:8080 {
+	# La sonda dell'orchestratore, e la stessa che un umano fa con curl. Un
+	# `respond` e non un file: deve rispondere anche se il dist fosse vuoto,
+	# perché così distingue «il server non c'è» da «il server c'è e non ha
+	# niente da servire» — che sono due guasti diversi.
+	handle /health {
+		respond "ok" 200
+	}
+
+	# Il LETTORE alla sua porta. `handle_path` toglie /read, così i suoi
+	# `./assets/…` — che il browser risolve contro la DIRECTORY da cui è
+	# arrivata la shell — cadono sulla radice, dove stanno davvero.
+	handle_path /read/* {
+		root * /srv/emstudio
+		file_server {
+			index reader.html
+		}
+	}
+
+	# L'EDITOR, che è un file solo.
+	handle {
+		root * /srv/emstudio
+		file_server {
+			index index.html
+		}
+	}
+}

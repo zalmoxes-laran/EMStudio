@@ -1,0 +1,34 @@
+# Cosa NON entra nel contesto di build.
+#
+# `docker build` manda l'INTERA cartella al daemon prima di leggere la prima
+# istruzione, e in questo repo ci sono due cose enormi che l'immagine non
+# tocca: `target/` (la build Rust del desktop Tauri) e i `node_modules` del
+# frontend, che lo stadio di build ricostruisce da `package-lock.json` — è
+# esattamente ciò che rende l'immagine riproducibile invece che soltanto uguale
+# a questo Mac.
+#
+# LA REGOLA per modificare questo file: apri il Dockerfile e leggi le righe
+# `COPY`. Tutto quello che nominano deve restare raggiungibile; il resto è peso.
+# Cosa copia questa immagine:
+#   frontend/ (senza node_modules e dist) · scripts/ · docker/Caddyfile · LICENSE
+
+# ── i due grossi ─────────────────────────────────────────────────────────────
+target/
+**/node_modules/
+frontend/dist/
+
+# ── il desktop, che non è questa immagine ────────────────────────────────────
+apps/
+crates/
+Cargo.lock
+Cargo.toml
+
+# ── storia e appunti di lavoro, che nessuna immagine usa ─────────────────────
+.git/
+.gitignore
+.github/
+.claude/
+docs/
+dev-stack/
+*.sh
+.DS_Store
