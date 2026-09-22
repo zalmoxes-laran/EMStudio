@@ -224,6 +224,42 @@ docs/               architecture, format spec, yEd parity checklist
 schemas/            JSON Schema drafts for .em.json
 ```
 
+## L'immagine web, pronta e non ancora pubblicata
+
+EMStudio è anche una **web app**, ed è quella che serve a un nodo: il desktop lo
+si installa, questo lo si raggiunge. `Dockerfile` la costruisce — uno stadio
+node che fa entrambe le build (`npm run build:all`: l'editor e il lettore) e
+un `caddy:2-alpine` che serve i file statici, senza `npm` nell'immagine finale.
+
+```
+docker buildx build -t emstudio --load .     # buildx, non `docker build`: vedi il Dockerfile
+docker run --rm -p 8080:8080 emstudio
+#   /        l'editor          /read/   il lettore          /health   la sonda
+./dev-stack/prova-immagine-web.sh emstudio
+```
+
+La prova non guarda i codici di stato: legge la shell del lettore, ne estrae
+ogni riferimento e chiede quelli — perché il guasto da prendere è la **pagina
+bianca**, cioè una shell che risponde 200 e poi chiede moduli a un indirizzo che
+non esiste.
+
+L'immagine parte con un **UID arbitrario** (`--user 12345:0`), che è quello che
+OpenShift assegna: le cose scrivibili appartengono al gruppo 0 con i permessi di
+gruppo uguali a quelli utente, e `USER` è un numero.
+
+### Non è ancora pubblicata, ed è deliberato
+
+`.github/workflows/immagine.yml` esiste ma **non ha un trigger automatico**: si
+lancia solo a mano, scrivendo il nome dell'immagine per confermare. La ragione
+sta in cima a quel file: un pacchetto GHCR non segue il trasferimento del suo
+repository, e PSNC specchia le immagini sul proprio registry — un pacchetto
+pubblicato nel namespace sbagliato e poi spostato è il danno peggiore
+disponibile.
+
+Il namespace è `ghcr.io/extendedmatrix/`, distinto da `ghcr.io/stratigraph-eccch/`
+dove stanno le immagini del progetto StratiGraph: EMStudio appartiene
+all'ecosistema Extended Matrix, che è più longevo del progetto.
+
 ## License
 
 GPL-3.0-or-later. All runtime dependencies are GPLv3-compatible

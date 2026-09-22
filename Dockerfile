@@ -8,8 +8,18 @@
 # RIFIUTA di partire se non c'è). Questa immagine è quella cartella, costruita
 # da una macchina invece che da una persona.
 #
-#   docker build -t emstudio .
+#   docker buildx build -t emstudio --load .
 #   docker run --rm -p 8080:8080 emstudio
+#
+# `buildx` e non `docker build`, e vale la pena dirlo perché il messaggio che si
+# prende sbagliando non aiuta. Il costruttore LEGACY non definisce
+# `$BUILDPLATFORM`, quindi la prima riga di questo file gli esce così:
+#
+#   failed to parse platform : "" is an invalid OS component of ""
+#
+# Misurato su un Mac con Colima e un `docker` di homebrew senza il plugin
+# (`brew install docker-buildx`). Su Docker Desktop e sui runner GitHub buildx
+# c'è già, e `docker build` LO usa.
 #
 # ── DUE PAGINE, DUE BUILD, E DEVONO ESSERE DUE ───────────────────────────────
 #
@@ -46,7 +56,13 @@
 # server statici da conoscere per servire le stesse due pagine.
 
 # ── STADIO 1 · le due build ──────────────────────────────────────────────────
-FROM node:20-slim AS build
+#
+# `--platform=$BUILDPLATFORM` per la stessa ragione dello stadio del Caddyfile,
+# più una: quello che esce di qui sono FILE STATICI, identici su ogni
+# architettura — non c'è niente da compilare per amd64 o per arm64. Costruirli
+# due volte, e una delle due dentro QEMU, sarebbe pagare l'emulatore per
+# ottenere lo stesso `dist/`.
+FROM --platform=$BUILDPLATFORM node:20-slim AS build
 
 WORKDIR /build/frontend
 
@@ -67,7 +83,28 @@ RUN npm run build:all
 # invece che contro il commento che la descrive.
 RUN node scripts/check-narrative.mjs
 
-# ── STADIO 2 · servire, e nient'altro ────────────────────────────────────────
+# ── STADIO 2 · il Caddyfile, controllato SULLA MACCHINA CHE COSTRUISCE ───────
+#
+# `--platform=$BUILDPLATFORM`, e non è pignoleria: `caddy validate` è un binario
+# Go, e in un build multi-arch lo stadio dell'architettura ALTRA gira sotto
+# QEMU. Misurato qui, costruendo linux/amd64 su un Mac arm64:
+#
+#   fatal error: bulkBarrierPreWrite: unaligned arguments
+#   crypto/x509/pkix.(*Name).FillFromRDNSequence …
+#
+# cioè il runtime di Go che muore dentro l'emulatore, con un Caddyfile
+# perfettamente valido. Su un runner GitHub (amd64) sarebbe successo allo stadio
+# arm64: la stessa trappola, specchiata. E sarebbe stata letta come «il
+# Dockerfile è rotto» invece che «il controllo gira nel posto sbagliato».
+#
+# Il Caddyfile non dipende dall'architettura. Quindi lo si controlla UNA volta,
+# sulla macchina che costruisce, nativamente — e l'immagine finale riceve il
+# file già validato.
+FROM --platform=$BUILDPLATFORM caddy:2-alpine AS caddyfile
+COPY docker/Caddyfile /etc/caddy/Caddyfile
+RUN caddy validate --config /etc/caddy/Caddyfile
+
+# ── STADIO 3 · servire, e nient'altro ────────────────────────────────────────
 #
 # Nessun `npm` qui: l'immagine finale è il dist più un server statico. Node
 # resta nello stadio di build, dove serviva.
@@ -90,14 +127,13 @@ ENV XDG_DATA_HOME=/data \
 
 COPY --from=build /build/frontend/dist /srv/emstudio
 COPY LICENSE /licenses/LICENSE
-COPY docker/Caddyfile /etc/caddy/Caddyfile
+COPY --from=caddyfile /etc/caddy/Caddyfile /etc/caddy/Caddyfile
 
 RUN addgroup -g 10001 -S emstudio 2>/dev/null || true; \
     adduser -u ${APP_UID} -G root -S -H -s /sbin/nologin emstudio; \
     mkdir -p /data /config; \
     chown -R ${APP_UID}:0 /data /config /srv/emstudio; \
-    chmod -R g=u /data /config /srv/emstudio; \
-    caddy validate --config /etc/caddy/Caddyfile
+    chmod -R g=u /data /config /srv/emstudio
 
 USER ${APP_UID}
 
